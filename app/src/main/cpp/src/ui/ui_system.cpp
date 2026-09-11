@@ -112,6 +112,7 @@ void UiSystem::render(vk::Context& ctx,
     switch (screen) {
         case Screen::Hud:
             drawHud(ctx, player, world, fps);
+            if (loading()) drawLoadingOverlay();
             break;
         case Screen::PauseMenu:
             drawHud(ctx, player, world, fps);
@@ -214,6 +215,37 @@ void UiSystem::drawDragOverlay() {
 // ============================================================
 // HUD
 // ============================================================
+// ============================================================
+// Экран загрузки: затемнение и полоса прогресса поверх HUD.
+// Показывается, пока мир вокруг игрока не догенерировался.
+// ============================================================
+void UiSystem::drawLoadingOverlay() {
+    const float w = (float)screenW_;
+    const float h = (float)screenH_;
+
+    // Затемняем сцену, чтобы недостроенный мир не отвлекал.
+    ui_.rect(0.f, 0.f, w, h, rgba(8, 12, 18, 190));
+
+    const float barW = w * 0.44f;
+    const float barH = 14.f;
+    const float bx = (w - barW) * 0.5f;
+    const float by = h * 0.62f;
+
+    const char* label = loadLabel ? loadLabel : T(StrKey::Notif_Loading);
+    ui_.text(label, bx, by - 30.f, 1.2f, COL_WHITE);
+
+    ui_.rect(bx - 2.f, by - 2.f, barW + 4.f, barH + 4.f, rgba(40, 48, 58, 255));
+    ui_.rect(bx, by, barW, barH, rgba(20, 24, 30, 255));
+
+    const float p = loadProgress < 0.f ? 0.f : (loadProgress > 1.f ? 1.f : loadProgress);
+    if (p > 0.f)
+        ui_.rect(bx, by, barW * p, barH, rgba(110, 190, 130, 255));
+
+    char pct[8];
+    std::snprintf(pct, sizeof(pct), "%d%%", (int)(p * 100.f + 0.5f));
+    ui_.text(pct, bx + barW + 14.f, by - 2.f, 1.0f, rgba(200, 210, 220, 255));
+}
+
 void UiSystem::drawHud(vk::Context& /*ctx*/,
                        player::Player& player,
                        world::ChunkManager& /*world*/,

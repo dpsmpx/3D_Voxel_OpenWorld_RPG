@@ -137,6 +137,7 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Notif_Loaded */      "Loaded",
     /* Notif_Deleted */     "Deleted",
     /* Notif_RepGained */   "Reputation changed",
+    /* Notif_Loading */     "Generating world...",
 };
 
 } // namespace en
@@ -268,6 +269,7 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Notif_Loaded */      "Загружено",
     /* Notif_Deleted */     "Удалено",
     /* Notif_RepGained */   "Репутация изменена",
+    /* Notif_Loading */     "Генерация мира...",
 };
 
 } // namespace ru

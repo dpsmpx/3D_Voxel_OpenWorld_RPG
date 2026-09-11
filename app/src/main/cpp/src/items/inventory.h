@@ -18,13 +18,20 @@ namespace items {
 constexpr u32 INV_MAIN_SLOTS    = 27;
 constexpr u32 INV_HOTBAR_SLOTS  =  9;
 constexpr u32 INV_ARMOR_SLOTS   =  4;
-constexpr u32 INV_ACC_SLOTS     =  1;
+/// Аксессуары: кольцо и амулет (ТЗ 4.1).
+constexpr u32 INV_ACC_SLOTS     =  2;
 
 constexpr u32 INV_MAIN_OFFSET   = 0;
 constexpr u32 INV_HOTBAR_OFFSET = INV_MAIN_SLOTS;
 constexpr u32 INV_ARMOR_OFFSET  = INV_HOTBAR_OFFSET + INV_HOTBAR_SLOTS;
 constexpr u32 INV_ACC_OFFSET    = INV_ARMOR_OFFSET + INV_ARMOR_SLOTS;
-constexpr u32 INV_TOTAL_SLOTS   = INV_ACC_OFFSET + INV_ACC_SLOTS;  // 41
+constexpr u32 INV_TOTAL_SLOTS   = INV_ACC_OFFSET + INV_ACC_SLOTS;  // 42
+
+/// Слоты аксессуаров по назначению.
+enum AccessorySlot : u32 {
+    ACC_RING   = 0,
+    ACC_AMULET = 1,
+};
 
 /// Индекс активного слота хотбара: 0..8
 using HotbarIndex = u8;

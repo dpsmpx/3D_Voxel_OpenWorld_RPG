@@ -62,7 +62,7 @@ enum class StrKey : u16 {
 
     // --- Уведомления ---
     Notif_LevelUp, Notif_Crafted, Notif_Saved, Notif_Loaded,
-    Notif_Deleted, Notif_RepGained,
+    Notif_Deleted, Notif_RepGained, Notif_Loading,
 
     Count
 };

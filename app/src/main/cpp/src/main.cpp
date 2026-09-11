@@ -845,6 +845,28 @@ struct Engine {
         touch.setLayoutMode(ui && ui->buttonLayoutMode &&
                             ui->screen == ui::Screen::Settings);
 
+        // ТЗ 4.6: прогресс генерации мира вокруг игрока.
+        // Считаем долю чанков в ближнем радиусе, у которых уже есть меш:
+        // пока их мало, игрок смотрит в пустоту и без индикатора не
+        // понимает, что происходит.
+        if (ui) {
+            const i32 r = std::min(4, world->viewDistance());
+            const glm::vec3 p = player->controller.state().position;
+            const i32 pcx = (i32)std::floor(p.x / (f32)world::CHUNK_SIZE);
+            const i32 pcz = (i32)std::floor(p.z / (f32)world::CHUNK_SIZE);
+
+            u32 total = 0, ready = 0;
+            for (i32 dz = -r; dz <= r; ++dz) {
+                for (i32 dx = -r; dx <= r; ++dx) {
+                    if (dx*dx + dz*dz > r*r) continue;
+                    ++total;
+                    auto c = world->findChunk(pcx + dx, pcz + dz);
+                    if (c && c->generated.load(std::memory_order_acquire)) ++ready;
+                }
+            }
+            ui->loadProgress = total ? (f32)ready / (f32)total : 1.f;
+        }
+
         if (ui) ui->tickUi(dt);
 
         evJump_ = evBreak_ = evPlace_ = evAttack_ = evFinish_ =

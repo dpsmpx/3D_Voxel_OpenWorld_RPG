@@ -111,6 +111,7 @@ public:
 
     /// ---- Утилиты ----
     void setStatus(const std::string& msg);
+    void drawLoadingOverlay();
     void tickUi(f32 dt);
 
     bool paused() const {
@@ -128,6 +129,16 @@ public:
     }
 
     bool dialogueOpen() const { return screen == Screen::Dialogue; }
+
+    // ---- Экран загрузки (ТЗ 4.6) ----
+    /// Доля готовности мира вокруг игрока, 0..1. Пока меньше единицы,
+    /// поверх HUD показывается прогресс-бар: чанки подгружаются
+    /// асинхронно, и без индикатора игрок видит пустоту без объяснения.
+    f32  loadProgress = 1.f;
+    /// Что именно грузится — строка под полосой.
+    const char* loadLabel = nullptr;
+
+    bool loading() const { return loadProgress < 0.999f; }
 
     /// Режим раскладки: кнопки можно перетаскивать по экрану (ТЗ 5.2).
     /// Пока включён, обычные действия кнопок не срабатывают.
