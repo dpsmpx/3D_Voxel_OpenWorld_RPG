@@ -208,11 +208,37 @@ source ~/.voxelrpg-env
 ./tools/termux-doctor.sh
 ```
 
+#### Если NDK не скачался автоматически
+
+Скрипт берёт ссылку на архив из релизов GitHub. С мобильного IP GitHub
+нередко отвечает «rate limit exceeded», а у части операторов API вообще
+недоступен. Тогда архив нужно скачать браузером и отдать скрипту:
+
+1. Открыть [github.com/lzhiyong/termux-ndk/releases](https://github.com/lzhiyong/termux-ndk/releases)
+2. Скачать `android-ndk-*-aarch64.zip` (около гигабайта)
+3. Выполнить:
+
+```bash
+termux-setup-storage                       # один раз, доступ к папке загрузок
+./tools/termux-setup.sh --ndk ~/storage/downloads/android-ndk-r27-aarch64.zip
+```
+
+Принимается архив (`.zip`, `.tar.xz`, `.tar.gz`, `.7z`), прямая ссылка
+(`--ndk https://...`) или уже распакованный каталог
+(`--ndk ~/android-ndk-r27`). Пакеты при этом переустанавливать не нужно:
+`--skip-packages` пропускает первый шаг.
+
+После распаковки скрипт проверяет, что NDK рабочий: есть `clang` под
+aarch64, `android.toolchain.cmake` и `native_app_glue`. Если чего-то нет,
+`ANDROID_NDK_HOME` в `~/.voxelrpg-env` **не пишется** — переменная,
+указывающая в никуда, даёт невнятную ошибку CMake вместо понятного
+«NDK не найден».
+
 Если что-то пойдёт не так, ставьте вручную и смотрите фактические имена
 пакетов через `pkg search`:
 
 ```bash
-pkg install clang cmake ninja git make zip unzip wget zlib shaderc
+pkg install clang cmake ninja git make zip unzip curl wget zlib shaderc
 pkg install openjdk-21          # если не найден: pkg search openjdk
 pkg install tur-repo            # часть инструментов живёт в TUR
 pkg install aapt2 apksigner

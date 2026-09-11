@@ -50,18 +50,40 @@ want "adb"            adb       "pkg install android-tools, для устано�
 
 echo ""
 echo "Android NDK:"
+# Подсказка об установке — одна на все ветки, чтобы не расходилась.
+ndk_hint() {
+    printf "      В pkg пакета termux-ndk НЕТ. Автоматически:\n"
+    printf "          ./tools/termux-setup.sh\n"
+    printf "      Если GitHub недоступен — скачайте android-ndk-*-aarch64.zip со\n"
+    printf "      страницы https://github.com/lzhiyong/termux-ndk/releases и укажите архив:\n"
+    printf "          ./tools/termux-setup.sh --ndk ~/storage/downloads/android-ndk-....zip\n"
+}
+
 NDK="${ANDROID_NDK_HOME:-}"
+# Переменной нет, а NDK лежит на штатном месте — разница важная:
+# надо всего лишь сделать source, а не переустанавливать гигабайт.
+if [ -z "$NDK" ] && [ -d "${HOME:-/}/android/android-ndk" ]; then
+    printf "${C_Y}  !${C_0} ANDROID_NDK_HOME не задана, но NDK найден: %s\n" "$HOME/android/android-ndk"
+    printf "      Выполните: source ~/.voxelrpg-env\n"
+    NDK="$HOME/android/android-ndk"
+fi
 if [ -z "$NDK" ]; then
     printf "${C_R}  ✗${C_0} ANDROID_NDK_HOME не задана\n"
-    printf "      В pkg пакета termux-ndk НЕТ. Запустите: ./tools/termux-setup.sh\n"
+    ndk_hint
     MISSING=$((MISSING + 1))
 elif [ ! -d "$NDK" ]; then
     printf "${C_R}  ✗${C_0} ANDROID_NDK_HOME указывает в никуда: %s\n" "$NDK"
+    ndk_hint
     MISSING=$((MISSING + 1))
 else
     printf "${C_G}  ✓${C_0} %-22s %s\n" "ANDROID_NDK_HOME" "$NDK"
 
+    # Имя каталога prebuilt у разных сборок разное — ищем по шаблону,
+    # иначе рабочий NDK объявляется сломанным из-за имени каталога.
     TC="$NDK/toolchains/llvm/prebuilt/linux-aarch64"
+    for _pb in "$NDK"/toolchains/llvm/prebuilt/*; do
+        [ -x "$_pb/bin/clang" ] && { TC="$_pb"; break; }
+    done
     if [ -x "$TC/bin/clang" ]; then
         printf "${C_G}  ✓${C_0} %-22s %s\n" "toolchain aarch64" "$TC"
     else

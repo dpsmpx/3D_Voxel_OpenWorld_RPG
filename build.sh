@@ -93,9 +93,19 @@ log "Проверка окружения..."
 if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -f "$HOME/.voxelrpg-env" ]; then
     . "$HOME/.voxelrpg-env"
     NDK_HOME="${ANDROID_NDK_HOME:-$NDK_HOME}"
-    TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-aarch64"
-    SYSROOT="$TOOLCHAIN/sysroot"
 fi
+
+# Штатное место установки termux-setup.sh — на случай, если ~/.voxelrpg-env
+# потёрт, но сам NDK на диске остался.
+if [ ! -d "$NDK_HOME" ] && [ -d "$HOME/android/android-ndk" ]; then
+    NDK_HOME="$HOME/android/android-ndk"
+fi
+
+# Каталог prebuilt называется по-разному в разных сборках NDK.
+for _pb in "$NDK_HOME"/toolchains/llvm/prebuilt/*; do
+    [ -x "$_pb/bin/clang" ] && { TOOLCHAIN="$_pb"; break; }
+done
+SYSROOT="$TOOLCHAIN/sysroot"
 
 if [ ! -d "$NDK_HOME" ]; then
     err "Android NDK не найден: $NDK_HOME"
@@ -105,6 +115,10 @@ if [ ! -d "$NDK_HOME" ]; then
     err ""
     err "Установить всё разом:"
     err "    ./tools/termux-setup.sh && source ~/.voxelrpg-env"
+    err ""
+    err "Если GitHub недоступен, скачайте android-ndk-*-aarch64.zip вручную"
+    err "с https://github.com/lzhiyong/termux-ndk/releases и укажите архив:"
+    err "    ./tools/termux-setup.sh --ndk ~/storage/downloads/android-ndk-....zip"
     err ""
     err "Посмотреть, чего именно не хватает:"
     err "    ./tools/termux-doctor.sh"
