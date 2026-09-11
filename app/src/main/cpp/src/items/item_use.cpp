@@ -1,3 +1,7 @@
+/**
+ * @file item_use.cpp
+ * @brief Предметы: определения, инвентарь, лут, подбор, использование.
+ */
 #include "item_use.h"
 #include "inventory.h"
 #include "item_pickup.h"

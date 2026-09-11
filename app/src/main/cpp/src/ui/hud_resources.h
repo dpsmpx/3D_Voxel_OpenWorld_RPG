@@ -1,3 +1,7 @@
+/**
+ * @file hud_resources.h
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../ecs/registry.h"
@@ -5,10 +9,8 @@
 
 namespace ui {
 
-// ============================================================
-// Актуальные ресурсы игрока для HUD. Читается из ECS один раз
-// за кадр; в UI передаётся как обычная структура.
-// ============================================================
+/// Актуальные ресурсы игрока для HUD. Читается из ECS один раз
+/// за кадр; в UI передаётся как обычная структура.
 struct HudResources {
     f32 hpCurrent = 0.f, hpMax = 1.f;
     f32 mpCurrent = 0.f, mpMax = 1.f;
@@ -23,8 +25,8 @@ struct HudResources {
     bool spLow() const { return spPct() < 0.15f; }
 };
 
-// Читает Health/Mana/Stamina из registry. Если компонентов нет —
-// возвращает значения по умолчанию (100/80/100).
+/// Читает Health/Mana/Stamina из registry. Если компонентов нет —
+/// возвращает значения по умолчанию (100/80/100).
 inline HudResources readHudResources(ecs::Registry& reg, ecs::Entity e) {
     HudResources r{};
 

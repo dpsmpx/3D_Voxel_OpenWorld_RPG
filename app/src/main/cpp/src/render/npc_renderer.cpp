@@ -1,3 +1,7 @@
+/**
+ * @file npc_renderer.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #include "npc_renderer.h"
 #include "../npc/npc_def.h"
 #include "../npc/npc_ai.h"

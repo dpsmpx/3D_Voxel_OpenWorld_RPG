@@ -1,3 +1,7 @@
+/**
+ * @file save_manager.h
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../ecs/registry.h"
@@ -9,9 +13,7 @@
 
 namespace save {
 
-// ============================================================
-// Результат операции сохранения/загрузки.
-// ============================================================
+/// Результат операции сохранения/загрузки.
 enum class SaveStatus : u8 {
     Ok = 0,
     FileNotFound,
@@ -23,16 +25,15 @@ enum class SaveStatus : u8 {
     ChecksumMismatch,
 };
 
+/// Человекочитаемое описание результата сохранения или загрузки.
 const char* statusString(SaveStatus s);
 
-// ============================================================
-// SaveManager — высокоуровневый API.
-//
-//   SaveManager mgr;
-//   mgr.init(internalDataPath);
-//   mgr.save(slot, world, registry, playerEntity, deltas, seed, playtime);
-//   mgr.load(slot, world, registry, playerEntity, deltas, &seed, &playtime);
-// ============================================================
+/// SaveManager — высокоуровневый API.
+///
+///   SaveManager mgr;
+///   mgr.init(internalDataPath);
+///   mgr.save(slot, world, registry, playerEntity, deltas, seed, playtime);
+///   mgr.load(slot, world, registry, playerEntity, deltas, &seed, &playtime);
 class SaveManager {
 public:
     void init(const char* baseDir);
@@ -52,7 +53,7 @@ public:
                     u32 playtimeSec,
                     const world::DayCycle& day);
 
-    // Загрузить состояние. world должен быть уже создан с тем же seed.
+    /// Загрузить состояние. world должен быть уже создан с тем же seed.
     SaveStatus load(const SaveSlot& slot,
                     world::ChunkManager& world,
                     ecs::Registry& registry,
@@ -62,7 +63,7 @@ public:
                     u32* outPlaytimeSec,
                     world::DayCycle* outDay);
 
-    // ---- Автосейв — в служебный слот (profile=2, slot=2). ----
+    /// ---- Автосейв — в служебный слот (profile=2, slot=2). ----
     static constexpr u32 AUTOSAVE_PROFILE = 2;
     static constexpr u32 AUTOSAVE_SLOT    = 2;
 
@@ -70,7 +71,7 @@ public:
         return slotMgr_.slot(AUTOSAVE_PROFILE, AUTOSAVE_SLOT);
     }
 
-    // Прочитать только метаданные слота.
+    /// Прочитать только метаданные слота.
     SaveStatus peekMeta(const SaveSlot& slot, SlotMeta& out) const;
 
 private:

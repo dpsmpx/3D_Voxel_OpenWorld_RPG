@@ -1,3 +1,7 @@
+/**
+ * @file components.h
+ * @brief Entity-Component-System: дескрипторы сущностей, sparse-set пулы, реестр.
+ */
 #pragma once
 #include "../core/types.h"
 #include "entity.h"
@@ -52,23 +56,23 @@ struct Attributes {
 struct Experience {
     u64 current = 0;
     u32 level   = 1;
-    // Таблица опыта для уровня: level^2 * 100
+    /// Таблица опыта для уровня: level^2 * 100
     u64 xpForNext() const { return (u64)level * level * 100; }
 };
 
-// — Что за сущность
+/// — Что за сущность
 enum class EntityKind : u8 {
     Player, NPC, Mob, Projectile, Item, Structure, Effect, Unknown
 };
 
 struct Kind { EntityKind value = EntityKind::Unknown; };
 
-// — Теги
+/// — Теги
 struct PlayerTag {};
 struct EnemyTag  {};
 struct NPCTag    {};
 
-// — Компонент для мобов/NPC
+/// — Компонент для мобов/NPC
 struct AIAgent {
     enum State : u8 { Idle, Patrol, Chase, Attack, Flee, Dead } state = Idle;
     Entity target{};
@@ -80,13 +84,13 @@ struct AIAgent {
     f32 attackCooldown = 0.f;
 };
 
-// — Коллайдер (для физики)
+/// — Коллайдер (для физики)
 struct Collider {
     glm::vec3 halfExtents{0.4f, 0.9f, 0.4f};
     bool      isStatic = false;
 };
 
-// — Ссылка на модель / блок для рендера
+/// — Ссылка на модель / блок для рендера
 struct Renderable {
     u32 meshId = 0;
     u32 textureId = 0;
@@ -94,7 +98,7 @@ struct Renderable {
     bool visible = true;
 };
 
-// — Идентификатор для сохранения/сериализации
+/// — Идентификатор для сохранения/сериализации
 struct PersistentId {
     u64 value = 0;
 };

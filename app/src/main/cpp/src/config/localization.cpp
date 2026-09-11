@@ -1,3 +1,7 @@
+/**
+ * @file localization.cpp
+ * @brief Настройки, локализация, счётчик игрового времени.
+ */
 #include "localization.h"
 #include "../core/log.h"
 #include <cstdarg>
@@ -103,10 +107,17 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Settings_Render */   "Render",
     /* Settings_ResetAll */ "Reset to defaults",
     /* Settings_CameraSens */"Camera Sensitivity",
+    /* Settings_InvertX */  "Invert X",
     /* Settings_InvertY */  "Invert Y",
     /* Settings_JoystickLeft */"Joystick Left Side",
     /* Settings_JoystickRadius */"Joystick Radius",
     /* Settings_JoystickDeadzone */"Joystick Deadzone",
+    /* Settings_JoystickOpacity */"Joystick Opacity",
+    /* Settings_ButtonScale */   "Button Size",
+    /* Settings_ButtonOpacity */ "Button Opacity",
+    /* Settings_ButtonLayout */  "Move Buttons",
+    /* Settings_LayoutHint */    "Drag a button to move it",
+    /* Settings_ResetLayout */   "Reset Layout",
     /* Settings_UiScale */  "UI Scale",
     /* Settings_UiOpacity */"UI Opacity",
     /* Settings_ShowFps */  "Show FPS",
@@ -227,10 +238,17 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Settings_Render */   "Графика",
     /* Settings_ResetAll */ "Сбросить всё",
     /* Settings_CameraSens */"Чувствительность камеры",
+    /* Settings_InvertX */  "Инверсия по X",
     /* Settings_InvertY */  "Инверсия по Y",
     /* Settings_JoystickLeft */"Джойстик слева",
     /* Settings_JoystickRadius */"Радиус джойстика",
     /* Settings_JoystickDeadzone */"Мёртвая зона джойстика",
+    /* Settings_JoystickOpacity */"Прозрачность джойстика",
+    /* Settings_ButtonScale */   "Размер кнопок",
+    /* Settings_ButtonOpacity */ "Прозрачность кнопок",
+    /* Settings_ButtonLayout */  "Перемещение кнопок",
+    /* Settings_LayoutHint */    "Перетащите кнопку, чтобы сдвинуть",
+    /* Settings_ResetLayout */   "Сбросить раскладку",
     /* Settings_UiScale */  "Масштаб UI",
     /* Settings_UiOpacity */"Прозрачность UI",
     /* Settings_ShowFps */  "Показывать FPS",
@@ -292,6 +310,13 @@ void Localization::setLanguage(Language l) {
 
     LOGI("Localization: язык установлен %s", languageCode(l));
 }
+
+// Таблицы индексируются StrKey напрямую: если забыть строку при
+// добавлении ключа, ошибка вылезет здесь, а не пустой надписью в игре.
+static_assert(sizeof(en::EN) / sizeof(en::EN[0]) == STR_KEY_COUNT,
+              "В английской таблице не столько строк, сколько ключей StrKey");
+static_assert(sizeof(ru::RU) / sizeof(ru::RU[0]) == STR_KEY_COUNT,
+              "В русской таблице не столько строк, сколько ключей StrKey");
 
 const char* Localization::get(StrKey k) const {
     u16 i = (u16)k;

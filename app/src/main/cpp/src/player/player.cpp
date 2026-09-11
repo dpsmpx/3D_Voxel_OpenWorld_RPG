@@ -1,3 +1,7 @@
+/**
+ * @file player.cpp
+ * @brief Игрок: ввод, движение, взаимодействие с миром и NPC.
+ */
 #include "player.h"
 #include "../combat/projectile.h"
 #include "../ecs/components.h"

@@ -1,3 +1,7 @@
+/**
+ * @file features.cpp
+ * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
+ */
 #include "features.h"
 #include "../core/log.h"
 #include <cmath>

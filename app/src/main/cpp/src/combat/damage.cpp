@@ -1,3 +1,7 @@
+/**
+ * @file damage.cpp
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
 #include "damage.h"
 #include <cmath>
 #include <random>

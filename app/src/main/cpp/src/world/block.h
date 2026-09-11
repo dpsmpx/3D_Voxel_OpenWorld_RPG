@@ -1,3 +1,7 @@
+/**
+ * @file block.h
+ * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
+ */
 #pragma once
 #include "../core/types.h"
 #include <array>
@@ -5,7 +9,7 @@
 
 namespace world {
 
-// Свойства блока — компилируются один раз, читаются из рендера/физики
+/// Свойства блока — компилируются один раз, читаются из рендера/физики
 struct BlockDef {
     const char* name;
     u8  isSolid       : 1;
@@ -23,7 +27,7 @@ struct BlockDef {
     u32 toolFlags;       // какие инструменты эффективны
 };
 
-// Реестр блоков — заполняется на старте
+/// Реестр блоков — заполняется на старте
 class BlockRegistry {
 public:
     static constexpr u16 MAX_BLOCKS = 1024;
@@ -40,7 +44,7 @@ private:
     u16 maxId_ = 0;
 };
 
-// Глобальные ID — согласованы с реестром
+/// Глобальные ID — согласованы с реестром
 enum BlockId : u16 {
     AIR     = 0,
     STONE   = 1,

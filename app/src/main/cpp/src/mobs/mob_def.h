@@ -1,3 +1,7 @@
+/**
+ * @file mob_def.h
+ * @brief Мобы: определения, конечный автомат ИИ, спавн, боссы.
+ */
 #pragma once
 #include "../core/types.h"
 #include <glm/glm.hpp>
@@ -61,7 +65,7 @@ struct MobDef {
     u8       dropMin    = 0;
     u8       dropMax    = 0;
 
-    // Phase 9: награда опытом за убийство
+    /// Phase 9: награда опытом за убийство
     u64      xpReward   = 0;
 
     f32      spawnWeight = 1.f;

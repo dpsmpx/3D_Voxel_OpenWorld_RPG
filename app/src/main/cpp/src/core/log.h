@@ -1,3 +1,7 @@
+/**
+ * @file log.h
+ * @brief Ядро движка: базовые типы, математика, планировщик задач, аллокаторы.
+ */
 #pragma once
 #include <android/log.h>
 #include <cstdio>

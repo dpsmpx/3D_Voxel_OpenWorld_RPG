@@ -1,3 +1,7 @@
+/**
+ * @file sound_registry.cpp
+ * @brief Звук: движок AAudio, процедурные эффекты, динамическая музыка.
+ */
 #include "sound_registry.h"
 #include "../core/log.h"
 #include <cmath>

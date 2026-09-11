@@ -1,3 +1,7 @@
+/**
+ * @file chunk_manager.h
+ * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
+ */
 #pragma once
 #include "chunk.h"
 #include "terrain.h"
@@ -23,16 +27,12 @@ struct ChunkCoordHash {
     }
 };
 
-// ============================================================
-// Callback для перехвата модификаций блоков.
-// Устанавливается SaveManager'ом для записи в WorldDeltaStore.
-// ============================================================
+/// Callback для перехвата модификаций блоков.
+/// Устанавливается SaveManager'ом для записи в WorldDeltaStore.
 using BlockModifyCallback = std::function<void(i32 wx, i32 wy, i32 wz, u16 newId)>;
 
-// ============================================================
-// Соседи чанка, удерживаемые владеющими ссылками: пока объект жив,
-// ни один из чанков не может быть выгружен из-под задачи меширования.
-// ============================================================
+/// Соседи чанка, удерживаемые владеющими ссылками: пока объект жив,
+/// ни один из чанков не может быть выгружен из-под задачи меширования.
 struct NeighborLease {
     std::shared_ptr<Chunk> nx, px, nz, pz;
     ChunkNeighbors view() const {
@@ -60,17 +60,17 @@ public:
     /// Забирает чанки, у которых появились новые меши для выгрузки на GPU.
     std::vector<std::shared_ptr<Chunk>> pollMeshesReady();
 
-    // ---- Управление вокселями ----
+    /// ---- Управление вокселями ----
     void setVoxel(i32 wx, i32 wy, i32 wz, u16 block);
     u16  getVoxel(i32 wx, i32 wy, i32 wz) const;
 
-    // ---- Перехват изменений блоков (Phase 11) ----
+    /// ---- Перехват изменений блоков (Phase 11) ----
     void setBlockModifyCallback(BlockModifyCallback cb) {
         std::lock_guard lk(callbackMtx_);
         blockModifyCb_ = std::move(cb);
     }
 
-    // ---- Выгрузка чанков ----
+    /// ---- Выгрузка чанков ----
     std::vector<ChunkCoord> collectUnloadCandidates(const glm::vec3& playerPos);
     void removeChunks(const std::vector<ChunkCoord>& coords);
 
@@ -84,8 +84,8 @@ public:
     usize pendingJobs() const { return jobsInFlight_.load(std::memory_order_relaxed); }
 
 private:
-    // Контекст задачи владеет чанком: задача не может застать его
-    // уничтоженным, даже если игрок ушёл и чанк выгружен.
+    /// Контекст задачи владеет чанком: задача не может застать его
+    /// уничтоженным, даже если игрок ушёл и чанк выгружен.
     struct JobCtx {
         ChunkManager*          mgr = nullptr;
         std::shared_ptr<Chunk> chunk;
@@ -118,7 +118,7 @@ private:
     u64                       frameCounter_ = 0;
     mutable std::mutex        lruMtx_;
 
-    // Callback (Phase 11)
+    /// Callback (Phase 11)
     BlockModifyCallback       blockModifyCb_;
     mutable std::mutex        callbackMtx_;
 

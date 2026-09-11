@@ -1,3 +1,7 @@
+/**
+ * @file minimap.h
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../vk/vk_context.h"
@@ -17,8 +21,8 @@ public:
                 const glm::vec3& playerPos,
                 f32 radiusBlocks = 64.f);
 
-    // Phase 15: если текстура обновилась — заливаем в GPU.
-    // Вызывать из render/prepareFrame.
+    /// Phase 15: если текстура обновилась — заливаем в GPU.
+    /// Вызывать из render/prepareFrame.
     void flushUpload(vk::Context& ctx);
 
     VkImageView view()    const { return tex_.view(); }
@@ -40,6 +44,9 @@ private:
     bool              dirty_ = false;
 };
 
+/// Цвет блока на миникарте в формате RGBA8.
+/// @param blockId идентификатор блока
+/// @return упакованный цвет; для неизвестных блоков — серый
 u32 blockMapColor(u16 blockId);
 
 } // namespace ui

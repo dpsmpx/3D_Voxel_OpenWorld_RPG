@@ -1,3 +1,7 @@
+/**
+ * @file skybox.h
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../vk/vk_pipeline.h"
@@ -7,11 +11,9 @@
 
 namespace render {
 
-// ============================================================
-// Skybox — fullscreen-triangle, рисуется ПЕРЕД сценой.
-// Depth test/write выключены, поверхность заполняет весь экран,
-// затем воксели перекрывают её.
-// ============================================================
+/// Skybox — fullscreen-triangle, рисуется ПЕРЕД сценой.
+/// Depth test/write выключены, поверхность заполняет весь экран,
+/// затем воксели перекрывают её.
 class Skybox {
 public:
     bool init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout);

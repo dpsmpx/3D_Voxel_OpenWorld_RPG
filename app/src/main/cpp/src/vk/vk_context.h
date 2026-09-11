@@ -1,3 +1,7 @@
+/**
+ * @file vk_context.h
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
 #pragma once
 #include "../core/types.h"
 #include <vulkan/vulkan.h>
@@ -16,7 +20,7 @@ public:
     bool beginFrame();
     void endFrame();
 
-    // ---- Accessors ----
+    /// ---- Accessors ----
     VkDevice         device()        const { return device_; }
     VkPhysicalDevice physicalDevice()const { return physical_; }
     VkRenderPass     renderPass()    const { return renderPass_; }
@@ -97,7 +101,7 @@ private:
     u32                      imgIdx_ = 0;
     bool                     frameStarted_ = false;
 
-    // Пакет передач: буфер и забор переиспользуются между кадрами.
+    /// Пакет передач: буфер и забор переиспользуются между кадрами.
     VkCommandBuffer          transferCmd_   = VK_NULL_HANDLE;
     VkFence                  transferFence_ = VK_NULL_HANDLE;
 };

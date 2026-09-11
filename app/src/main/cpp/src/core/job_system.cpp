@@ -1,3 +1,7 @@
+/**
+ * @file job_system.cpp
+ * @brief Ядро движка: базовые типы, математика, планировщик задач, аллокаторы.
+ */
 #include "job_system.h"
 #include "log.h"
 #include <algorithm>

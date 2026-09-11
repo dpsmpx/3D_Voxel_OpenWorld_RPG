@@ -1,3 +1,7 @@
+/**
+ * @file save_manager.cpp
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
 #include "save_manager.h"
 #include "zlib_util.h"
 #include "save_player.h"

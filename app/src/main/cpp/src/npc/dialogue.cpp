@@ -1,3 +1,7 @@
+/**
+ * @file dialogue.cpp
+ * @brief NPC: роли, диалоги с ветвлением, поведение жителей.
+ */
 #include "dialogue.h"
 #include "npc_def.h"
 #include "../ecs/components.h"

@@ -1,3 +1,7 @@
+/**
+ * @file ui_system.cpp
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
 #include "ui_system.h"
 #include "slider.h"
 #include "hud_resources.h"
@@ -859,18 +863,22 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                              0.05f, [&changeCb](float){ changeCb(); });
                 y += rowH + rowGap;
             }
+            // Invert X
+            {
+                Rect r{ innerX, y, innerW, rowH };
+                ui_.pushInteractiveRect(r, [&s, &changeCb]() {
+                    s.invertX = !s.invertX; changeCb();
+                });
+                toggleWidget(ui_, r, &s.invertX, T(StrKey::Settings_InvertX));
+                y += rowH + rowGap;
+            }
             // Invert Y
             {
                 Rect r{ innerX, y, innerW, rowH };
-                int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
+                ui_.pushInteractiveRect(r, [&s, &changeCb]() {
                     s.invertY = !s.invertY; changeCb();
                 });
-                (void)idx;
                 toggleWidget(ui_, r, &s.invertY, T(StrKey::Settings_InvertY));
-                // Обработка клика через onTap pushInteractiveRect
-                if (ui_.isInteractivePressed(idx) && ui_.hasActivePointer()) {
-                    // Изменим на отпускании
-                }
                 y += rowH + rowGap;
             }
             // Joystick left
@@ -898,6 +906,64 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 sliderWidget(ui_, r, &s.joystickDeadzone,
                              0.05f, 0.40f, T(StrKey::Settings_JoystickDeadzone),
                              0.01f, [&changeCb](float){ changeCb(); });
+                y += rowH + rowGap;
+            }
+            // Прозрачность джойстика
+            {
+                Rect r{ innerX, y, innerW, rowH };
+                sliderWidget(ui_, r, &s.joystickOpacity,
+                             0.2f, 1.0f, T(StrKey::Settings_JoystickOpacity),
+                             0.05f, [&changeCb](float){ changeCb(); });
+                y += rowH + rowGap;
+            }
+            // Размер кнопок
+            {
+                Rect r{ innerX, y, innerW, rowH };
+                sliderWidget(ui_, r, &s.buttonScale,
+                             0.6f, 1.6f, T(StrKey::Settings_ButtonScale),
+                             0.05f, [&changeCb](float){ changeCb(); });
+                y += rowH + rowGap;
+            }
+            // Прозрачность кнопок
+            {
+                Rect r{ innerX, y, innerW, rowH };
+                sliderWidget(ui_, r, &s.buttonOpacity,
+                             0.2f, 1.0f, T(StrKey::Settings_ButtonOpacity),
+                             0.05f, [&changeCb](float){ changeCb(); });
+                y += rowH + rowGap;
+            }
+            // Режим перемещения кнопок (ТЗ 5.2)
+            {
+                Rect r{ innerX, y, innerW, rowH };
+                ui_.pushInteractiveRect(r, [this]() {
+                    buttonLayoutMode = !buttonLayoutMode;
+                });
+                toggleWidget(ui_, r, &buttonLayoutMode,
+                             T(StrKey::Settings_ButtonLayout));
+                y += rowH + rowGap;
+            }
+            if (buttonLayoutMode) {
+                ui_.text(T(StrKey::Settings_LayoutHint),
+                         innerX + 8.f, y + rowH * 0.5f, 1.f,
+                         rgba(176, 176, 176, 255));
+                y += rowH + rowGap;
+
+                Rect r{ innerX, y, 260.f, rowH };
+                int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
+                    for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i) {
+                        s.buttonOffsetX[i] = 0.f;
+                        s.buttonOffsetY[i] = 0.f;
+                    }
+                    changeCb();
+                });
+                if (ui_.button(T(StrKey::Settings_ResetLayout), r, idx,
+                               rgba(90, 90, 110, 255), COL_WHITE)) {
+                    for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i) {
+                        s.buttonOffsetX[i] = 0.f;
+                        s.buttonOffsetY[i] = 0.f;
+                    }
+                    changeCb();
+                }
                 y += rowH + rowGap;
             }
             break;

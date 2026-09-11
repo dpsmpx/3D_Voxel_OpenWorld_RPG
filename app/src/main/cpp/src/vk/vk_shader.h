@@ -1,3 +1,7 @@
+/**
+ * @file vk_shader.h
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
 #pragma once
 #include "../core/types.h"
 #include <vulkan/vulkan.h>
@@ -8,11 +12,9 @@
 
 namespace vk {
 
-// ============================================================
-// Один SPIR-V модуль. Шейдеры компилируются glslc на этапе
-// сборки (см. build.sh) и попадают в APK как ассеты
-// assets/shaders/<имя>.spv.
-// ============================================================
+/// Один SPIR-V модуль. Шейдеры компилируются glslc на этапе
+/// сборки (см. build.sh) и попадают в APK как ассеты
+/// `assets/shaders/<имя>.spv`.
 class Shader {
 public:
     Shader() = default;
@@ -40,10 +42,8 @@ private:
     VkShaderModule module_ = VK_NULL_HANDLE;
 };
 
-// ============================================================
-// Кэш шейдеров по имени ассета: один VkShaderModule на файл,
-// сколько бы пайплайнов его ни использовало.
-// ============================================================
+/// Кэш шейдеров по имени ассета: один VkShaderModule на файл,
+/// сколько бы пайплайнов его ни использовало.
 class ShaderCache {
 public:
     void init(VkDevice dev, AAssetManager* mgr) { dev_ = dev; mgr_ = mgr; }

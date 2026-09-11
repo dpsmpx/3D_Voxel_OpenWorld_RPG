@@ -1,3 +1,7 @@
+/**
+ * @file scroll.cpp
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
 #include "scroll.h"
 
 // Модуль целиком inline в заголовке.

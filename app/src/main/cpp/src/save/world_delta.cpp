@@ -1,3 +1,7 @@
+/**
+ * @file world_delta.cpp
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
 #include "world_delta.h"
 #include <shared_mutex>
 #include "../core/log.h"

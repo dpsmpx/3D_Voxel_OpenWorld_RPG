@@ -1,3 +1,7 @@
+/**
+ * @file collision.cpp
+ * @brief Физика: AABB-коллизия с вокселями, raycast, контроллер персонажа.
+ */
 #include "collision.h"
 #include "../world/block.h"
 #include <cmath>

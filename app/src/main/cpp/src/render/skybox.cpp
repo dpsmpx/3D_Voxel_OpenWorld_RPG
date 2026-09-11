@@ -1,3 +1,7 @@
+/**
+ * @file skybox.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #include "skybox.h"
 #include "../core/log.h"
 

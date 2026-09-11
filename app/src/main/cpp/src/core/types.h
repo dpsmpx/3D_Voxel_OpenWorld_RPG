@@ -1,3 +1,7 @@
+/**
+ * @file types.h
+ * @brief Ядро движка: базовые типы, математика, планировщик задач, аллокаторы.
+ */
 #pragma once
 #include <cstdint>
 #include <cstddef>

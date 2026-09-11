@@ -1,3 +1,7 @@
+/**
+ * @file spawner.cpp
+ * @brief Мобы: определения, конечный автомат ИИ, спавн, боссы.
+ */
 #include "spawner.h"
 #include "mob_def.h"
 #include "mob_ai.h"

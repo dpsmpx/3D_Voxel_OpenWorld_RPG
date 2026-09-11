@@ -1,3 +1,7 @@
+/**
+ * @file render_system.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #include "render_system.h"
 #include "atlas_builder.h"
 #include "../core/log.h"

@@ -1,3 +1,7 @@
+/**
+ * @file status_effects.cpp
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
 #include "status_effects.h"
 #include "projectile.h"
 #include "../ecs/components.h"

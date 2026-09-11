@@ -1,3 +1,7 @@
+/**
+ * @file quest_generator.cpp
+ * @brief Квесты: шаблоны, процедурная генерация, журнал заданий.
+ */
 #include "quest_generator.h"
 #include "quest.h"
 #include "../world/block.h"

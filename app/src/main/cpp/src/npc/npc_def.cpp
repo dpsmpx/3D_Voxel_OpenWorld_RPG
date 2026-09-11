@@ -1,3 +1,7 @@
+/**
+ * @file npc_def.cpp
+ * @brief NPC: роли, диалоги с ветвлением, поведение жителей.
+ */
 #include "npc_def.h"
 #include "../core/log.h"
 

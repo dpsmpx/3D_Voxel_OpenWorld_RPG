@@ -1,3 +1,7 @@
+/**
+ * @file mesh_builder.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #include "mesh_builder.h"
 #include "../world/block.h"
 

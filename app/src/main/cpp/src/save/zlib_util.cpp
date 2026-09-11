@@ -1,3 +1,7 @@
+/**
+ * @file zlib_util.cpp
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
 #include "zlib_util.h"
 #include "../core/log.h"
 #include <zlib.h>

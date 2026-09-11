@@ -1,3 +1,7 @@
+/**
+ * @file save_inventory.cpp
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
 #include "save_inventory.h"
 #include "../ecs/components.h"
 #include "../combat/components.h"

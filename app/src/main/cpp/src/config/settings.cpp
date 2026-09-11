@@ -1,3 +1,7 @@
+/**
+ * @file settings.cpp
+ * @brief Настройки, локализация, счётчик игрового времени.
+ */
 #include "settings.h"
 #include "../core/log.h"
 #include <cstdio>

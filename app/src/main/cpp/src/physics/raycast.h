@@ -1,3 +1,7 @@
+/**
+ * @file raycast.h
+ * @brief Физика: AABB-коллизия с вокселями, raycast, контроллер персонажа.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../world/chunk_manager.h"
@@ -13,8 +17,8 @@ struct RayHit {
     u16        blockType = 0;
 };
 
-// DDA-обход воксельной сетки (Amanatides & Woo, 1987).
-// Возвращает первое попадание в твёрдый блок или miss.
+/// DDA-обход воксельной сетки (Amanatides & Woo, 1987).
+/// Возвращает первое попадание в твёрдый блок или miss.
 RayHit raycastVoxels(world::ChunkManager& world,
                      const glm::vec3& origin,
                      const glm::vec3& dir,

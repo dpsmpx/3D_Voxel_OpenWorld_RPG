@@ -1,3 +1,7 @@
+/**
+ * @file trade.cpp
+ * @brief Торговля с NPC: ассортимент, цены с учётом репутации.
+ */
 #include "trade.h"
 #include "../items/item_def.h"
 #include "../core/log.h"

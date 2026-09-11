@@ -1,3 +1,7 @@
+/**
+ * @file chunk.h
+ * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
+ */
 #pragma once
 #include "../core/types.h"
 #include "block.h"
@@ -16,12 +20,12 @@ constexpr i32 CHUNK_SIZE_Y = 128;                // высота мира
 constexpr i32 CHUNK_VOL = CHUNK_SIZE * CHUNK_SIZE_Y * CHUNK_SIZE;
 constexpr i32 CHUNK_MASK = CHUNK_SIZE - 1;
 
-// Индексация внутри чанка: (y * CHUNK_SIZE + z) * CHUNK_SIZE + x
+/// Индексация внутри чанка: (y * CHUNK_SIZE + z) * CHUNK_SIZE + x
 inline i32 chunkIndex(i32 x, i32 y, i32 z) {
     return (y * CHUNK_SIZE + z) * CHUNK_SIZE + x;
 }
 
-// Готовый квад после greedy meshing. Упаковка минимальная.
+/// Готовый квад после greedy meshing. Упаковка минимальная.
 struct QuadVertex {
     glm::vec3 pos;
     u16 block;
@@ -43,13 +47,11 @@ struct ChunkMesh {
     bool               built = false;  ///< quads заполнены хотя бы раз
 };
 
-// LOD уровни: 0 = полный, 1 = 1/2, 2 = 1/4, 3 = 1/8 (по рёбрам)
+/// LOD уровни: 0 = полный, 1 = 1/2, 2 = 1/4, 3 = 1/8 (по рёбрам)
 enum class Lod : u8 { Full = 0, Half = 1, Quarter = 2, Eighth = 3 };
 
-// ============================================================
-// Данные одного чанка. Держит воксели + метаданные + 2 уровня меша (LOD0, LOD1).
-// Границы обрабатываются через указатели на соседей на этапе mesh.
-// ============================================================
+/// Данные одного чанка. Держит воксели + метаданные + 2 уровня меша (LOD0, LOD1).
+/// Границы обрабатываются через указатели на соседей на этапе mesh.
 struct Chunk {
     glm::ivec3 coord{0};
 
@@ -70,7 +72,7 @@ struct Chunk {
     mutable std::mutex       meshMutex;
     std::array<ChunkMesh, 4> meshes;
 
-    // Состояние асинхронного конвейера.
+    /// Состояние асинхронного конвейера.
     std::atomic<bool> generated{false};
     std::atomic<bool> meshQueued{false};
     std::atomic<bool> removed{false};   ///< выгружен: задачи должны выйти
@@ -108,10 +110,8 @@ struct Chunk {
     }
 };
 
-// ============================================================
-// Greedy Meshing. Возвращает количество квадов.
-// Соседи нужны для корректной отсечки граней на границах чанка.
-// ============================================================
+/// Greedy Meshing. Возвращает количество квадов.
+/// Соседи нужны для корректной отсечки граней на границах чанка.
 struct ChunkNeighbors {
     const Chunk* nx = nullptr;
     const Chunk* px = nullptr;

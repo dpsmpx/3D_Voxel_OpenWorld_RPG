@@ -1,3 +1,7 @@
+/**
+ * @file npc_ai.cpp
+ * @brief NPC: роли, диалоги с ветвлением, поведение жителей.
+ */
 #include "npc_ai.h"
 #include "../ecs/components.h"
 #include "../combat/components.h"

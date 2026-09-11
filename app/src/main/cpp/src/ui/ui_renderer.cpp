@@ -1,3 +1,7 @@
+/**
+ * @file ui_renderer.cpp
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
 #include "ui_renderer.h"
 #include "ui_atlas.h"
 #include "../core/log.h"

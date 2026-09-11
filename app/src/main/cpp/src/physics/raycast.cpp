@@ -1,3 +1,7 @@
+/**
+ * @file raycast.cpp
+ * @brief Физика: AABB-коллизия с вокселями, raycast, контроллер персонажа.
+ */
 #include "raycast.h"
 #include "../world/block.h"
 #include <cmath>

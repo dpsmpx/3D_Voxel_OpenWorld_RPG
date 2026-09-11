@@ -1,3 +1,7 @@
+/**
+ * @file mob_ai.cpp
+ * @brief Мобы: определения, конечный автомат ИИ, спавн, боссы.
+ */
 #include "mob_ai.h"
 #include "mob_def.h"
 #include "../ecs/components.h"

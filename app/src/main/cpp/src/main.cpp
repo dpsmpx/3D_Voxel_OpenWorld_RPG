@@ -527,6 +527,18 @@ struct Engine {
         buttonIds_[cfg::Btn_UseItem]  = btnUseItem_;
         buttonIds_[cfg::Btn_Camera]   = btnCamera_;
 
+        // Перетаскивание кнопки сразу сохраняется в настройки.
+        touch.setLayoutCallback([this](u32 buttonId, glm::vec2 off) {
+            auto& s = cfg::settings();
+            for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i) {
+                if (buttonIds_[i] != buttonId) continue;
+                s.buttonOffsetX[i] = off.x;
+                s.buttonOffsetY[i] = off.y;
+                s.save(settingsPath);
+                break;
+            }
+        });
+
         applyInputSettings();
     }
 
@@ -828,6 +840,10 @@ struct Engine {
                 musicCtx.playerHealthPct = hp->max > 0.f ? hp->current / hp->max : 1.f;
             musicDirector.update(dt, musicCtx);
         }
+
+        // Режим раскладки живёт в UI, а перетаскивание — во вводе.
+        touch.setLayoutMode(ui && ui->buttonLayoutMode &&
+                            ui->screen == ui::Screen::Settings);
 
         if (ui) ui->tickUi(dt);
 

@@ -1,3 +1,7 @@
+/**
+ * @file faction.cpp
+ * @brief Фракции и репутация.
+ */
 #include "faction.h"
 
 namespace factions {

@@ -1,3 +1,7 @@
+/**
+ * @file touch.cpp
+ * @brief Сенсорное управление: джойстик, экранные кнопки, геймпад.
+ */
 #include "touch.h"
 #include <android/input.h>
 #include <algorithm>
@@ -116,6 +120,20 @@ void TouchInput::setButtonVisible(u32 id, bool v) {
     if (Button* b = findButton(id)) b->visible = v;
 }
 
+void TouchInput::setLayoutMode(bool on) {
+    if (layoutMode_ == on) return;
+    layoutMode_ = on;
+    draggedBtn_ = 0;
+    dragTouch_  = -1;
+    // Выходя из режима, гасим «залипшие» нажатия.
+    for (auto& b : buttons_) {
+        if (b.pressed) {
+            b.pressed = false;
+            b.touchId = -1;
+        }
+    }
+}
+
 void TouchInput::setJoystickLeftHanded(bool leftHanded) {
     if (joystickLeft_ == leftHanded) return;
     joystickLeft_ = leftHanded;
@@ -186,15 +204,29 @@ void TouchInput::beginTouch(i32 id, f32 x, f32 y, f32 t) {
     // 2. Экранные кнопки. Расстояние считаем в пикселях, поэтому
     //    попадание не зависит от соотношения сторон.
     for (auto& b : buttons_) {
-        if (!b.visible || b.pressed) continue;
+        if (!b.visible) continue;
         const glm::vec2 c = buttonCenterPx(b);
         const f32 r = buttonRadiusPx(b);
-        if (glm::length(glm::vec2(x, y) - c) <= r) {
-            b.pressed = true;
-            b.touchId = id;
-            if (b.onPress) b.onPress(b.id);
+        if (glm::length(glm::vec2(x, y) - c) > r) continue;
+
+        // В режиме раскладки касание кнопки её перетаскивает,
+        // а не запускает действие.
+        if (layoutMode_) {
+            draggedBtn_ = b.id;
+            dragTouch_  = id;
+            dragGrabNdc_ = {
+                 (x / (f32)screenW_) * 2.f - 1.f,
+                -((y / (f32)screenH_) * 2.f - 1.f),
+            };
+            dragGrabNdc_ -= buttonCenter(b.id);
             return;
         }
+
+        if (b.pressed) continue;
+        b.pressed = true;
+        b.touchId = id;
+        if (b.onPress) b.onPress(b.id);
+        return;
     }
 
     // 3. Джойстик появляется под пальцем на своей половине экрана.
@@ -217,6 +249,27 @@ void TouchInput::moveTouch(i32 id, f32 x, f32 y, f32 t) {
 
     if (tp->uiConsumed) {
         if (uiRouter_) uiRouter_(id, x, y, 2);
+        return;
+    }
+
+    // Перетаскивание кнопки в режиме раскладки.
+    if (layoutMode_ && draggedBtn_ && dragTouch_ == id) {
+        Button* b = findButton(draggedBtn_);
+        if (b) {
+            glm::vec2 ndc{
+                 (x / (f32)screenW_) * 2.f - 1.f,
+                -((y / (f32)screenH_) * 2.f - 1.f),
+            };
+            ndc -= dragGrabNdc_;
+            // Раскладка хранится до зеркалирования под левшу.
+            glm::vec2 base = b->center;
+            if (!joystickLeft_) { ndc.x = -ndc.x; }
+            glm::vec2 off = ndc - base;
+            // Не даём утащить кнопку за край экрана.
+            off.x = glm::clamp(off.x, -1.6f, 1.6f);
+            off.y = glm::clamp(off.y, -1.6f, 1.6f);
+            b->userOffset = off;
+        }
         return;
     }
 
@@ -247,6 +300,17 @@ void TouchInput::endTouch(i32 id, f32 x, f32 y, f32 t) {
     TouchPoint* tp = findTouch(id);
     if (!tp) return;
     tp->duration = t - tp->startTime;
+
+    if (layoutMode_ && draggedBtn_ && dragTouch_ == id) {
+        if (onLayoutChanged_) {
+            if (const Button* b = findButton(draggedBtn_))
+                onLayoutChanged_(b->id, b->userOffset);
+        }
+        draggedBtn_ = 0;
+        dragTouch_  = -1;
+        *tp = TouchPoint{};
+        return;
+    }
 
     if (tp->uiConsumed) {
         if (uiRouter_) uiRouter_(id, x, y, 1);

@@ -1,3 +1,7 @@
+/**
+ * @file terrain.cpp
+ * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
+ */
 #include "terrain.h"
 #include "block.h"
 #include <cmath>

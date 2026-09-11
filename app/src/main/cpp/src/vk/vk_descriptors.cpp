@@ -1,3 +1,7 @@
+/**
+ * @file vk_descriptors.cpp
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
 #include "vk_descriptors.h"
 #include "../core/log.h"
 

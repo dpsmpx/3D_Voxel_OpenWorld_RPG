@@ -1,3 +1,7 @@
+/**
+ * @file skill_tree.cpp
+ * @brief Прогрессия: опыт, уровни, атрибуты, Древо Познания.
+ */
 #include "skill_tree.h"
 #include "../core/log.h"
 #include <cstring>

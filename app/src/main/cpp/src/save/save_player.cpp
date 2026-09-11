@@ -1,3 +1,7 @@
+/**
+ * @file save_player.cpp
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
 #include "save_player.h"
 #include "save_inventory.h"
 #include "../core/log.h"

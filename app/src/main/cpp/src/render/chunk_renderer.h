@@ -1,3 +1,7 @@
+/**
+ * @file chunk_renderer.h
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../core/math.h"
@@ -34,7 +38,7 @@ public:
                 const glm::vec3& cameraPos,
                 OcclusionCuller* occlusion = nullptr);
 
-    // Метрики
+    /// Метрики
     u32 lastDrawnChunks() const { return lastDrawnChunks_; }
     u32 lastDrawnIndices() const { return lastDrawnIndices_; }
     u32 lastLodCounts(int lod) const { return lodCounts_[lod]; }
@@ -56,7 +60,7 @@ private:
     /// LOD нет в видеопамяти, uploadChunks() догрузит его в след. кадре.
     struct LodRequest { world::ChunkCoord coord; u8 lod; };
 
-    // LOD thresholds (в метрах, кв.расстояние)
+    /// LOD thresholds (в метрах, кв.расстояние)
     static constexpr f32 LOD0_SQ = 64.f * 64.f;
     static constexpr f32 LOD1_SQ = 160.f * 160.f;
     static constexpr f32 LOD2_SQ = 320.f * 320.f;

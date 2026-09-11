@@ -1,3 +1,7 @@
+/**
+ * @file spatial_hash.cpp
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
 #include "spatial_hash.h"
 #include "../ecs/components.h"
 #include <cmath>

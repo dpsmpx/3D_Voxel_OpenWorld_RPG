@@ -1,3 +1,7 @@
+/**
+ * @file vk_staging_pool.cpp
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
 #include "vk_staging_pool.h"
 #include "../core/log.h"
 #include <algorithm>

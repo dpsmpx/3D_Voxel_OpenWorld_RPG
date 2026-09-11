@@ -1,3 +1,7 @@
+/**
+ * @file item_def.h
+ * @brief Предметы: определения, инвентарь, лут, подбор, использование.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../world/block.h"
@@ -6,10 +10,8 @@
 
 namespace items {
 
-// ============================================================
-// Категория предмета. Определяет, как UI его отображает
-// и как логика с ним обращается.
-// ============================================================
+/// Категория предмета. Определяет, как UI его отображает
+/// и как логика с ним обращается.
 enum class ItemCategory : u8 {
     Block = 0,       // ставится в мир
     Weapon,          // экипируется как оружие
@@ -22,9 +24,7 @@ enum class ItemCategory : u8 {
     Count
 };
 
-// ============================================================
-// Редкость. Определяет цвет иконки в UI и вес в дропе.
-// ============================================================
+/// Редкость. Определяет цвет иконки в UI и вес в дропе.
 enum class ItemRarity : u8 {
     Common = 0,
     Uncommon,
@@ -34,10 +34,8 @@ enum class ItemRarity : u8 {
     Count
 };
 
-// ============================================================
-// Одно определение предмета. Неизменяемая структура,
-// создаётся один раз при старте.
-// ============================================================
+/// Одно определение предмета. Неизменяемая структура,
+/// создаётся один раз при старте.
 struct ItemDef {
     const char*  name;
     const char*  description;
@@ -47,31 +45,29 @@ struct ItemDef {
     u16  maxStack;         // 1 для оружия/брони, 64 для блоков
     u32  value;            // базовая цена в золоте
 
-    // Ссылка на игровой объект — интерпретируется по категории
+    /// Ссылка на игровой объект — интерпретируется по категории
     union {
         u16 blockId;       // для Block
         u16 weaponId;      // для Weapon
         u16 effectId;      // для Potion / Food
     } payload{};
 
-    // Атлас-иконка — либо block id (тайл в block atlas),
-    // либо специальный тайл (для не-блочных предметов).
+    /// Атлас-иконка — либо block id (тайл в block atlas),
+    /// либо специальный тайл (для не-блочных предметов).
     u8  iconTile     = 0;   // 0..255
     bool iconIsBlock = true;  // true → block atlas, false → item atlas (Phase 13)
 
-    // Для Potion / Food — эффекты
+    /// Для Potion / Food — эффекты
     f32 restoreHealth  = 0.f;
     f32 restoreMana    = 0.f;
     f32 restoreStamina = 0.f;
     f32 effectDuration = 0.f;
 
-    // Требования для крафта
+    /// Требования для крафта
     u16 requiredCraftLevel = 0;
 };
 
-// ============================================================
-// Реестр. Singleton, строится при первом обращении.
-// ============================================================
+/// Реестр. Singleton, строится при первом обращении.
 enum ItemId : u16 {
     ITEM_NONE = 0,
 
@@ -133,7 +129,7 @@ public:
     static const ItemRegistry& instance();
     const ItemDef& get(u16 id) const;
 
-    // ---- Быстрые проверки ----
+    /// ---- Быстрые проверки ----
     bool   isBlock(u16 id)    const { return get(id).category == ItemCategory::Block; }
     bool   isWeapon(u16 id)   const { return get(id).category == ItemCategory::Weapon; }
     bool   isPotion(u16 id)   const { return get(id).category == ItemCategory::Potion; }
@@ -145,23 +141,21 @@ public:
     ItemRarity rarity(u16 id) const { return get(id).rarity; }
     const char* name(u16 id) const { return get(id).name; }
 
-    // ---- Обратные преобразования ----
-    // Для block id → item id.
+    /// ---- Обратные преобразования ----
+    /// Для block id → item id.
     u16 blockToItem(u16 blockId) const;
 
 private:
     ItemRegistry();
     ItemDef defs_[ITEM_MAX_DEFS];
 
-    // Таблица block → item (перестраивается при создании).
+    /// Таблица block → item (перестраивается при создании).
     u16 blockToItem_[world::BLOCK_COUNT] = {};
 };
 
 inline const ItemRegistry& items() { return ItemRegistry::instance(); }
 
-// ============================================================
-// Утилиты UI
-// ============================================================
+/// Утилиты UI
 const char* rarityName(ItemRarity r);
 u32         rarityColor(ItemRarity r);   // RGBA packed
 

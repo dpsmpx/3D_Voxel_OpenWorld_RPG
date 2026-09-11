@@ -1,3 +1,7 @@
+/**
+ * @file save_format.h
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
 #pragma once
 #include "../core/types.h"
 #include <vector>
@@ -20,13 +24,11 @@ namespace save {
 constexpr u32 SAVE_MAGIC   = 0x47525856;   // "VXRG"
 constexpr u32 SAVE_VERSION = 1;
 
-// ============================================================
-// ByteWriter — аккумулирует байты, пишет всё LE.
-// Имена методов с префиксом write*, чтобы не затенять
-// псевдонимы типов u8/u32/f32 из core/types.h.
-// Varint используется для экономии на больших массивах
-// (block mods, координаты).
-// ============================================================
+/// ByteWriter — аккумулирует байты, пишет всё LE.
+/// Имена методов с префиксом write*, чтобы не затенять
+/// псевдонимы типов u8/u32/f32 из core/types.h.
+/// Varint используется для экономии на больших массивах
+/// (block mods, координаты).
 class ByteWriter {
 public:
     void writeU8(u8 v)   { buf_.push_back(v); }
@@ -55,7 +57,7 @@ public:
         writeU64(bits);
     }
 
-    // Varint: 7-bit groups, LSB-first, high bit = continue.
+    /// Varint: 7-bit groups, LSB-first, high bit = continue.
     void varU32(u32 v) {
         while (v >= 0x80) {
             buf_.push_back((u8)((v & 0x7F) | 0x80));
@@ -101,11 +103,9 @@ private:
     std::vector<u8> buf_;
 };
 
-// ============================================================
-// ByteReader — читает из буфера с курсором.
-// Любая неудачная операция выставляет error_ и блокирует
-// дальнейшие чтения (проверяйте ok()).
-// ============================================================
+/// ByteReader — читает из буфера с курсором.
+/// Любая неудачная операция выставляет error_ и блокирует
+/// дальнейшие чтения (проверяйте ok()).
 class ByteReader {
 public:
     ByteReader(const u8* data, usize size)

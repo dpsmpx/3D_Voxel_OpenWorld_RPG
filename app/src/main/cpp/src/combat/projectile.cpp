@@ -1,3 +1,7 @@
+/**
+ * @file projectile.cpp
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
 #include "projectile.h"
 #include "components.h"
 #include "status_effects.h"

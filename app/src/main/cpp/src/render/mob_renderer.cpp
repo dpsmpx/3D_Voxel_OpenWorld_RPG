@@ -1,3 +1,7 @@
+/**
+ * @file mob_renderer.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #include "mob_renderer.h"
 #include "../mobs/mob_def.h"
 #include "../mobs/mob_ai.h"

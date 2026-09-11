@@ -1,3 +1,7 @@
+/**
+ * @file ui_system.h
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../vk/vk_context.h"
@@ -66,7 +70,7 @@ public:
     Screen screen = Screen::Hud;
     bool showFps = true;
 
-    // ---- SaveLoad ----
+    /// ---- SaveLoad ----
     SaveLoadMode saveLoadMode = SaveLoadMode::Save;
     std::array<std::array<save::SlotMeta, 3>, 3> slotMeta{};
     void refreshSlotMeta(save::SaveSlotManager& mgr);
@@ -75,23 +79,23 @@ public:
     crafting::StationType nearbyStation = crafting::StationType::None;
     i32 selectedRecipeIdx = -1;
 
-    // ---- Trade ----
+    /// ---- Trade ----
     TradeContext tradeCtx{};
 
-    // ---- Enchant ----
+    /// ---- Enchant ----
     EnchantContext enchantCtx{};
     u32 nearbyAltar = 0;
 
-    // ---- Drag & drop ----
+    /// ---- Drag & drop ----
     DragDrop drag{};
 
-    // ---- Миникарта ----
+    /// ---- Миникарта ----
     Minimap minimap;
 
-    // ---- Настройки ----
+    /// ---- Настройки ----
     SettingsTab settingsTab = SettingsTab::Input;
 
-    // ---- Коллбэки ----
+    /// ---- Коллбэки ----
     std::function<void(u32 profile, u32 slot)> onSaveRequested;
     std::function<void(u32 profile, u32 slot)> onLoadRequested;
     std::function<void(u32 profile, u32 slot)> onDeleteRequested;
@@ -105,7 +109,7 @@ public:
     std::function<void(u32 slotIndex)>         onEquipHotbar;
     std::function<void()>                      onSettingsChanged;
 
-    // ---- Утилиты ----
+    /// ---- Утилиты ----
     void setStatus(const std::string& msg);
     void tickUi(f32 dt);
 
@@ -124,6 +128,10 @@ public:
     }
 
     bool dialogueOpen() const { return screen == Screen::Dialogue; }
+
+    /// Режим раскладки: кнопки можно перетаскивать по экрану (ТЗ 5.2).
+    /// Пока включён, обычные действия кнопок не срабатывают.
+    bool buttonLayoutMode = false;
 
     /// Аппаратная кнопка «Назад»: закрывает текущий экран, а не игру.
     /// Из HUD открывает паузу — так же, как это делают все Android-игры.
@@ -216,7 +224,7 @@ private:
 
     void drawStatusToast();
 
-    // ---- Помощники ----
+    /// ---- Помощники ----
     void drawItemIcon(items::ItemStack& stack, float x, float y, float size,
                       bool selected);
     void drawDragOverlay();
@@ -227,10 +235,10 @@ private:
     i32        screenH_ = 1920;
     VkDevice   dev_ = VK_NULL_HANDLE;
 
-    // Drag-and-drop тач
+    /// Drag-and-drop тач
     i32        dragTouchId_ = -1;
 
-    // Скролл
+    /// Скролл
     Scroll craftScroll;
     Scroll questScroll;
     Scroll tradeScroll;
@@ -238,7 +246,7 @@ private:
     std::string statusMessage;
     f32         statusTimer = 0.f;
 
-    // Кэш для HUD (чтобы не дёргать ECS каждый кадр)
+    /// Кэш для HUD (чтобы не дёргать ECS каждый кадр)
     f32 cachedHpPct = 1.f;
     f32 cachedMpPct = 1.f;
     f32 cachedSpPct = 1.f;

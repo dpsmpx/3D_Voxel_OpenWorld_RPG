@@ -1,3 +1,7 @@
+/**
+ * @file save_slot.cpp
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
 #include "save_slot.h"
 #include "save_format.h"
 #include "../core/log.h"

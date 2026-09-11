@@ -1,3 +1,7 @@
+/**
+ * @file noise.cpp
+ * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
+ */
 #include "noise.h"
 #include <algorithm>
 

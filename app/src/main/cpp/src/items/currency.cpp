@@ -1,3 +1,7 @@
+/**
+ * @file currency.cpp
+ * @brief Предметы: определения, инвентарь, лут, подбор, использование.
+ */
 #include "currency.h"
 #include <cstdio>
 

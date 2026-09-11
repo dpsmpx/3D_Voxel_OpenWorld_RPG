@@ -1,3 +1,7 @@
+/**
+ * @file spawner.h
+ * @brief Мобы: определения, конечный автомат ИИ, спавн, боссы.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../ecs/registry.h"
@@ -24,7 +28,7 @@ public:
     u32 mobCount() const { return mobCount_; }
 
 private:
-    // Лимиты
+    /// Лимиты
     static constexpr u32 MAX_MOBS_TOTAL    = 60;
     static constexpr u32 MAX_MOBS_PER_CHUNK = 3;
     static constexpr f32 SPAWN_RADIUS       = 40.f;
@@ -39,7 +43,7 @@ private:
     /// Подземелья, в которых босс уже поставлен: второй раз не спавним.
     std::unordered_set<u64> bossPlaced_;
 
-    // Track per-chunk mob count (координаты чанка → счётчик)
+    /// Track per-chunk mob count (координаты чанка → счётчик)
     std::unordered_map<world::ChunkCoord, u8, world::ChunkCoordHash> perChunk_;
 
     u16 pickMobId(world::TerrainGenerator& gen, i32 x, i32 z, bool night,

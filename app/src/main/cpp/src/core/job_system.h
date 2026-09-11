@@ -1,3 +1,7 @@
+/**
+ * @file job_system.h
+ * @brief Ядро движка: базовые типы, математика, планировщик задач, аллокаторы.
+ */
 #pragma once
 #include "types.h"
 #include <atomic>
@@ -12,8 +16,8 @@ namespace jobs {
 
 using JobFn = void(*)(void*);
 
-// Счётчик для отслеживания завершения группы задач.
-// Можно инкрементировать из любого потока, декрементировать по завершении.
+/// Счётчик для отслеживания завершения группы задач.
+/// Можно инкрементировать из любого потока, декрементировать по завершении.
 class Counter {
 public:
     void add(i32 n = 1) { count_.fetch_add(n, std::memory_order_relaxed); }
@@ -43,15 +47,15 @@ public:
     void start(u32 workerCount = 0);
     void stop();
 
-    // Отправить одиночную задачу. Из главного потока — в глобальную очередь.
-    // Из воркера — в собственную (для locality).
+    /// Отправить одиночную задачу. Из главного потока — в глобальную очередь.
+    /// Из воркера — в собственную (для locality).
     void submit(JobFn fn, void* data = nullptr);
 
-    // Отправить с отслеживанием: counter->add() вызывается автоматически.
+    /// Отправить с отслеживанием: counter->add() вызывается автоматически.
     void submit(Counter* c, JobFn fn, void* data = nullptr);
 
-    // Параллельный цикл [0, count), разбитый на куски не меньше minChunk.
-    // fn(begin, end) вызывается на воркерах. Блокирует до завершения.
+    /// Параллельный цикл [0, count), разбитый на куски не меньше minChunk.
+    /// fn(begin, end) вызывается на воркерах. Блокирует до завершения.
     void parallelFor(u32 count, u32 minChunk,
                      const std::function<void(u32,u32)>& fn);
 
@@ -65,7 +69,7 @@ public:
         Counter* counter = nullptr;  // nullptr = без отслеживания
     };
 
-    // Per-worker state
+    /// Per-worker state
     struct Worker {
         std::thread             thread;
         std::deque<Job>         local;

@@ -39,3 +39,4 @@ run.sh
 deploy.sh
 .env
 build/hostcheck/
+build/docs/

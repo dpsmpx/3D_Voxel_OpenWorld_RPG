@@ -1,3 +1,7 @@
+/**
+ * @file vk_texture.h
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
 #pragma once
 #include "../core/types.h"
 #include <vulkan/vulkan.h>
@@ -15,8 +19,8 @@ public:
 
     void destroy();
 
-    // Phase 15: обновление содержимого текстуры через staging buffer
-    // и vkCmdCopyBufferToImage. Формат — должен совпадать с исходным.
+    /// Phase 15: обновление содержимого текстуры через staging buffer
+    /// и vkCmdCopyBufferToImage. Формат — должен совпадать с исходным.
     bool upload(VkDevice dev, VkPhysicalDevice phys,
                 VkCommandPool pool, VkQueue queue,
                 const void* pixels, u64 byteSize);

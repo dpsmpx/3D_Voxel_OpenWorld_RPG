@@ -1,3 +1,7 @@
+/**
+ * @file weapon.cpp
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
 #include "weapon.h"
 #include "../core/log.h"
 

@@ -1,3 +1,7 @@
+/**
+ * @file vk_texture.cpp
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
 #include "vk_texture.h"
 #include "../core/log.h"
 #include <cstring>

@@ -1,3 +1,7 @@
+/**
+ * @file pathfinding.cpp
+ * @brief Навигация по воксельной сетке: поиск пути A*.
+ */
 #include "pathfinding.h"
 #include "../block.h"
 #include <unordered_map>

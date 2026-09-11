@@ -1,3 +1,7 @@
+/**
+ * @file projectile_renderer.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #include "projectile_renderer.h"
 #include "../combat/projectile.h"
 #include "../ecs/components.h"

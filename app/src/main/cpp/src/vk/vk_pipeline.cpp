@@ -1,3 +1,7 @@
+/**
+ * @file vk_pipeline.cpp
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
 #include "vk_pipeline.h"
 #include "vk_shader.h"
 #include "../core/log.h"

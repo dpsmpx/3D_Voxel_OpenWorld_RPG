@@ -1,3 +1,7 @@
+/**
+ * @file drag_drop.cpp
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
 #include "drag_drop.h"
 
 // Реализация целиком inline в заголовке — модуль чистого состояния.

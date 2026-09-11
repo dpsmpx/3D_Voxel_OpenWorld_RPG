@@ -1,3 +1,7 @@
+/**
+ * @file localization.h
+ * @brief Настройки, локализация, счётчик игрового времени.
+ */
 #pragma once
 #include "../core/types.h"
 #include "settings.h"
@@ -6,10 +10,8 @@
 
 namespace config {
 
-// ============================================================
-// Ключ локализации. Все ключи собраны в одном enum, чтобы
-// компилятор ловил опечатки.
-// ============================================================
+/// Ключ локализации. Все ключи собраны в одном enum, чтобы
+/// компилятор ловил опечатки.
 enum class StrKey : u16 {
     None = 0,
 
@@ -48,8 +50,11 @@ enum class StrKey : u16 {
     // --- Настройки ---
     Settings_Title, Settings_Input, Settings_Ui, Settings_Audio,
     Settings_Game, Settings_Render, Settings_ResetAll,
-    Settings_CameraSens, Settings_InvertY, Settings_JoystickLeft,
+    Settings_CameraSens, Settings_InvertX, Settings_InvertY,
+    Settings_JoystickLeft,
     Settings_JoystickRadius, Settings_JoystickDeadzone,
+    Settings_JoystickOpacity, Settings_ButtonScale, Settings_ButtonOpacity,
+    Settings_ButtonLayout, Settings_LayoutHint, Settings_ResetLayout,
     Settings_UiScale, Settings_UiOpacity, Settings_ShowFps,
     Settings_ShowDebug, Settings_Master, Settings_Music, Settings_Sfx,
     Settings_Language, Settings_Autosave, Settings_AutosaveInterval,
@@ -64,23 +69,21 @@ enum class StrKey : u16 {
 
 constexpr u16 STR_KEY_COUNT = (u16)StrKey::Count;
 
-// ============================================================
-// Система локализации. Хранит таблицу строк для текущего языка.
-// Инициализируется при старте, переключается в настройках.
-// ============================================================
+/// Система локализации. Хранит таблицу строк для текущего языка.
+/// Инициализируется при старте, переключается в настройках.
 class Localization {
 public:
     static Localization& instance();
 
-    // Установить язык.
+    /// Установить язык.
     void setLanguage(Language l);
     Language language() const { return current_; }
 
-    // Получить строку.
+    /// Получить строку.
     const char* get(StrKey k) const;
 
-    // Для отладочной/динамической подстановки: format "HP: %d/%d".
-    // Возвращает результат в internal-буфере (не потокобезопасно).
+    /// Для отладочной/динамической подстановки: format "HP: %d/%d".
+    /// Возвращает результат в internal-буфере (не потокобезопасно).
     const char* format(StrKey k, ...);
 
 private:
@@ -101,7 +104,7 @@ private:
 
 inline Localization& L() { return Localization::instance(); }
 
-// Удобная короткая форма.
+/// Удобная короткая форма.
 inline const char* T(StrKey k) { return Localization::instance().get(k); }
 
 } // namespace config

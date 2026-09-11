@@ -1,3 +1,7 @@
+/**
+ * @file crafting_station.cpp
+ * @brief Крафт: рецепты, станции, проверка требований.
+ */
 #include "crafting_station.h"
 #include "../ecs/components.h"
 #include "../world/chunk_manager.h"

@@ -1,3 +1,7 @@
+/**
+ * @file occlusion.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #include "occlusion.h"
 #include "../world/block.h"
 #include <algorithm>

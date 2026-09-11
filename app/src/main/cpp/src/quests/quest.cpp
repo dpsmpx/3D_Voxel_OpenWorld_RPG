@@ -1,3 +1,7 @@
+/**
+ * @file quest.cpp
+ * @brief Квесты: шаблоны, процедурная генерация, журнал заданий.
+ */
 #include "quest.h"
 #include "../progression/progression.h"
 #include "../progression/resource_regen.h"

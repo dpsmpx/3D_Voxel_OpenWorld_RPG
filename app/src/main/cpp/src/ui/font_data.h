@@ -1,3 +1,7 @@
+/**
+ * @file font_data.h
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
 #pragma once
 #include "../core/types.h"
 

@@ -1,3 +1,7 @@
+/**
+ * @file render_system.h
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../vk/vk_context.h"

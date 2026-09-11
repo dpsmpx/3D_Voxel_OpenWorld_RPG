@@ -1,3 +1,7 @@
+/**
+ * @file biome.cpp
+ * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
+ */
 #include "biome.h"
 #include "noise.h"
 #include "block.h"

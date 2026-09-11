@@ -1,3 +1,7 @@
+/**
+ * @file mob_def.cpp
+ * @brief Мобы: определения, конечный автомат ИИ, спавн, боссы.
+ */
 #include "mob_def.h"
 #include "../core/log.h"
 

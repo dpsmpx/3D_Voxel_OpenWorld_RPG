@@ -1,3 +1,7 @@
+/**
+ * @file attributes.cpp
+ * @brief Прогрессия: опыт, уровни, атрибуты, Древо Познания.
+ */
 #include "attributes.h"
 #include <algorithm>
 #include <cmath>

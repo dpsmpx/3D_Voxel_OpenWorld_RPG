@@ -1,3 +1,7 @@
+/**
+ * @file save_npc.cpp
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
 #include "save_npc.h"
 #include "../ecs/components.h"
 #include "../core/log.h"

@@ -1,3 +1,7 @@
+/**
+ * @file vk_buffer.h
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
 #pragma once
 #include "../core/types.h"
 #include <vulkan/vulkan.h>
@@ -11,10 +15,8 @@ enum class BufferUsage {
     Staging,
 };
 
-// ============================================================
-// GpuBuffer — владеет VkBuffer + VkDeviceMemory.
-// Для device-local буферов загрузка идёт через временный staging.
-// ============================================================
+/// GpuBuffer — владеет VkBuffer + VkDeviceMemory.
+/// Для device-local буферов загрузка идёт через временный staging.
 class Buffer {
 public:
     bool create(VkDevice dev, VkPhysicalDevice phys,
@@ -22,16 +24,16 @@ public:
 
     void destroy();
 
-    // Только для hostVisible. Для device-local — используйте upload().
+    /// Только для hostVisible. Для device-local — используйте upload().
     void* map();
     void  unmap();
 
-    // Загрузка данных. Для device-local создаёт staging и копирует.
-    // Для hostVisible делает прямой memcpy.
+    /// Загрузка данных. Для device-local создаёт staging и копирует.
+    /// Для hostVisible делает прямой memcpy.
     void upload(VkDevice dev, VkPhysicalDevice phys, VkCommandBuffer cmdOrNull,
                 const void* data, u64 size);
 
-    // Прямая запись для hostVisible (карты памяти не меняются).
+    /// Прямая запись для hostVisible (карты памяти не меняются).
     void write(const void* data, u64 size);
 
     VkBuffer       handle()      const { return buf_; }

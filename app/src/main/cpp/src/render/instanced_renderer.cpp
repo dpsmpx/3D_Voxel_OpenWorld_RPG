@@ -1,3 +1,7 @@
+/**
+ * @file instanced_renderer.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #include "instanced_renderer.h"
 #include "../core/log.h"
 #include "../world/block.h"

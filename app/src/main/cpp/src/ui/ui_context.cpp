@@ -1,3 +1,7 @@
+/**
+ * @file ui_context.cpp
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
 #include "ui_context.h"
 #include "../core/log.h"
 #include <cmath>

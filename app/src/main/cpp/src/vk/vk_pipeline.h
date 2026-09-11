@@ -1,3 +1,7 @@
+/**
+ * @file vk_pipeline.h
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
 #pragma once
 #include "../core/types.h"
 #include <vulkan/vulkan.h>
@@ -5,12 +9,10 @@
 namespace vk {
 class ShaderCache;
 
-// ============================================================
-// Описание вершинного формата. Раньше layout был зашит в
-// GraphicsPipeline одним вариантом (stride 24, vec3+vec2+rgba)
-// и совпадал только с воксельным шейдером — у UI, контура, мобов
-// и травы форматы другие. Теперь каждый рендерер объявляет свой.
-// ============================================================
+/// Описание вершинного формата. Раньше layout был зашит в
+/// GraphicsPipeline одним вариантом (stride 24, vec3+vec2+rgba)
+/// и совпадал только с воксельным шейдером — у UI, контура, мобов
+/// и травы форматы другие. Теперь каждый рендерер объявляет свой.
 struct VertexBinding {
     u32  stride      = 0;
     bool perInstance = false;
@@ -30,8 +32,8 @@ struct PipelineDesc {
     const char*           fragName;
     VkFormat              depthFormat;
 
-    // Вершинный формат. Пустой список — рисование без вершинного
-    // буфера (например, полноэкранный треугольник скайбокса).
+    /// Вершинный формат. Пустой список — рисование без вершинного
+    /// буфера (например, полноэкранный треугольник скайбокса).
     const VertexBinding*  bindings     = nullptr;
     u32                   bindingCount = 0;
     const VertexAttr*     attrs        = nullptr;
@@ -42,7 +44,7 @@ struct PipelineDesc {
     bool                  depthWrite = true;
     bool                  blend      = false;
 
-    // Phase 7: push constants
+    /// Phase 7: push constants
     u32                   pushConstantSize = 0;
     VkShaderStageFlags    pushConstantStage = VK_SHADER_STAGE_VERTEX_BIT;
 };

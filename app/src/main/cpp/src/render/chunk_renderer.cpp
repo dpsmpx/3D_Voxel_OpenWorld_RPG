@@ -1,3 +1,7 @@
+/**
+ * @file chunk_renderer.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #include "chunk_renderer.h"
 #include "../core/log.h"
 #include <algorithm>

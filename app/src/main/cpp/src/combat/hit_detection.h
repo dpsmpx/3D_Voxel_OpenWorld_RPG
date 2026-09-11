@@ -1,3 +1,7 @@
+/**
+ * @file hit_detection.h
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../ecs/registry.h"
@@ -19,10 +23,8 @@ bool losClear(world::ChunkManager& world,
               const glm::vec3& from,
               const glm::vec3& to);
 
-// ============================================================
-// Melee-конус. Использует SpatialHash для быстрого поиска.
-// Передай nullptr в hash, если хочешь fallback на полный перебор.
-// ============================================================
+/// Melee-конус. Использует SpatialHash для быстрого поиска.
+/// Передай nullptr в hash, если хочешь fallback на полный перебор.
 void meleeConeHits(world::ChunkManager& world,
                    ecs::Registry& reg,
                    const SpatialHash* hash,

@@ -1,3 +1,7 @@
+/**
+ * @file ui_renderer.h
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../vk/vk_context.h"
@@ -12,7 +16,7 @@
 
 namespace ui {
 
-// Формат UI-вершины: pos(NDC) + uv + цвет
+/// Формат UI-вершины: pos(NDC) + uv + цвет
 struct UiVertex {
     glm::vec2 pos;      // 8 байт
     glm::vec2 uv;       // 8 байт
@@ -24,9 +28,9 @@ public:
     bool init(vk::Context& ctx, AAssetManager* mgr);
     void destroy();
 
-    // Один "батч" = один descriptor set (атлас). Мы держим 2 батча:
-    //   slot 0 — font atlas (по умолчанию)
-    //   slot 1 — block atlas (external)
+    /// Один "батч" = один descriptor set (атлас). Мы держим 2 батча:
+    ///   slot 0 — font atlas (по умолчанию)
+    ///   slot 1 — block atlas (external)
     void beginFrame();
     void setAtlas(int slot);   // 0 или 1
     void pushQuad(glm::vec2 pos, glm::vec2 size,
@@ -37,10 +41,10 @@ public:
                           u32 rgba) { pushQuad(pos, size, u0, v0, u1, v1, rgba); }
     void endFrame();
 
-    // Загружает накопленные вершины в GPU и выпускает команды.
+    /// Загружает накопленные вершины в GPU и выпускает команды.
     void flush(vk::Context& ctx);
 
-    // Второй атлас (block atlas) — подключается извне
+    /// Второй атлас (block atlas) — подключается извне
     void attachExternalAtlas(VkImageView view, VkSampler sampler);
 
     float whiteU() const { return whiteU_; }
@@ -58,14 +62,14 @@ private:
     // Атлас шрифта
     vk::Texture2D fontAtlas_;
 
-    // Внешний (block) атлас — descriptor set для него
+    /// Внешний (block) атлас — descriptor set для него
     VkDescriptorSet extSet_ = VK_NULL_HANDLE;
 
     VkDescriptorSetLayout descLayout_ = VK_NULL_HANDLE;
     VkDescriptorPool      descPool_   = VK_NULL_HANDLE;
     VkDescriptorSet fontSet_ = VK_NULL_HANDLE;
 
-    // Буферы вершин (по 2 на кадр in flight)
+    /// Буферы вершин (по 2 на кадр in flight)
     struct FrameBuf {
         vk::Buffer vb;
         u32 vertexCount = 0;
@@ -74,7 +78,7 @@ private:
     static constexpr u32 MAX_FRAMES = vk::Context::MAX_FRAMES;
     FrameBuf frames_[MAX_FRAMES];
 
-    // CPU-side буферы
+    /// CPU-side буферы
     std::vector<UiVertex> verts_[2];  // по атласу
     int activeSlot_ = 0;
     u32 currentFrame_ = 0;

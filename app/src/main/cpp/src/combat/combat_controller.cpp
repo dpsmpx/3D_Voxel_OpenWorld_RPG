@@ -1,3 +1,7 @@
+/**
+ * @file combat_controller.cpp
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
 #include "combat_controller.h"
 #include "status_effects.h"
 #include "projectile.h"

@@ -1,3 +1,7 @@
+/**
+ * @file chunk_manager.cpp
+ * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
+ */
 #include "chunk_manager.h"
 #include "../core/log.h"
 #include "../core/memory.h"

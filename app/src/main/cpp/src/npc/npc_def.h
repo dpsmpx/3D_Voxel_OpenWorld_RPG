@@ -1,3 +1,7 @@
+/**
+ * @file npc_def.h
+ * @brief NPC: роли, диалоги с ветвлением, поведение жителей.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../factions/faction.h"
@@ -5,9 +9,7 @@
 
 namespace npc {
 
-// ============================================================
-// Роль NPC — определяет доступные взаимодействия.
-// ============================================================
+/// Роль NPC — определяет доступные взаимодействия.
 enum class NpcRole : u8 {
     Villager = 0,   // простой житель, можно поговорить
     QuestGiver,     // выдаёт квесты
@@ -18,9 +20,7 @@ enum class NpcRole : u8 {
     Count
 };
 
-// ============================================================
-// Определение типа NPC.
-// ============================================================
+/// Определение типа NPC.
 struct NpcDef {
     const char* name;
     NpcRole     role;
@@ -36,12 +36,12 @@ struct NpcDef {
 
     bool hostile;          // атакует ли игрока без провокации
 
-    // Внешний вид — параметры для воксельного рендера
+    /// Внешний вид — параметры для воксельного рендера
     u32 bodyColor;
     u32 headColor;
     u32 accentColor;
 
-    // Диалоговые ключи (используются DialogueSystem)
+    /// Диалоговые ключи (используются DialogueSystem)
     const char* dialogueRoot;
 };
 
@@ -68,14 +68,12 @@ private:
 
 inline const NpcRegistry& npcRegistry() { return NpcRegistry::instance(); }
 
-// ============================================================
-// Компонент ECS — NPC-сущность.
-// ============================================================
+/// Компонент ECS — NPC-сущность.
 struct NpcTag {
     u16 id = NPC_NONE;
 };
 
-// FSM-состояние NPC
+/// FSM-состояние NPC
 struct NpcAI {
     enum State : u8 {
         Idle = 0,
@@ -99,14 +97,14 @@ struct NpcAI {
     f32   damageFlash = 0.f;
     f32   deathTimer = 0.f;
 
-    // Только для Guard
+    /// Только для Guard
     u32   guardTarget = 0;
 
-    // Только для QuestGiver — текущий предложенный квест
+    /// Только для QuestGiver — текущий предложенный квест
     u32   offeredQuest = 0;
     f32   offerCooldown = 0.f;
 
-    // Диалог (когда активен)
+    /// Диалог (когда активен)
     bool  inDialogue = false;
 };
 

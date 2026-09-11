@@ -1,3 +1,7 @@
+/**
+ * @file camera.h
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../core/math.h"
@@ -10,7 +14,7 @@
 
 namespace render {
 
-// Раскладка обязана совпадать с блоком CameraUbo во всех шейдерах.
+/// Раскладка обязана совпадать с блоком CameraUbo во всех шейдерах.
 struct CameraUbo {
     glm::mat4 viewProj;
     glm::mat4 invViewProj;
@@ -41,7 +45,7 @@ public:
     f32  yaw()   const { return yaw_; }
     f32  pitch() const { return pitch_; }
 
-    // Камера-таргет (позиция ступней игрока)
+    /// Камера-таргет (позиция ступней игрока)
     void setTargetPosition(const glm::vec3& t) { targetPos_ = t; }
     void setFirstPerson(bool fp)               { firstPerson_ = fp; }
     void setFirstPersonEye(f32 e)              { firstEyeH_ = e; }
@@ -49,22 +53,22 @@ public:
     void setThirdPersonHeight(f32 h)           { thirdOff_ = h; }
     void setHeadBob(f32 phase, f32 amount)     { bobPhase_ = phase; bobAmount_ = amount; }
 
-    // Вычислить позицию камеры с учётом коллизии. Вызывается после setTargetPosition.
+    /// Вычислить позицию камеры с учётом коллизии. Вызывается после setTargetPosition.
     void followTarget(world::ChunkManager& world, const glm::vec3& aimDir) {
-        // Сглаженная цель (чуть выше ступней для третьего лица)
+        /// Сглаженная цель (чуть выше ступней для третьего лица)
         glm::vec3 pivot = targetPos_ + glm::vec3(0, thirdOff_, 0);
 
         if (firstPerson_) {
-            // Лёгкая тряска при ходьбе
+            /// Лёгкая тряска при ходьбе
             f32 bobY = std::sin(bobPhase_ * 2.f) * bobAmount_;
             f32 bobX = std::cos(bobPhase_) * bobAmount_ * 0.5f;
-            // Сдвиг по осям камеры
+            /// Сдвиг по осям камеры
             glm::vec3 right { std::cos(yaw_), 0.f, -std::sin(yaw_) };
             position_ = targetPos_ + glm::vec3(0, firstEyeH_, 0)
                       + glm::vec3(0, bobY, 0)
                       + right * bobX;
         } else {
-            // Third person: желаемое положение за спиной
+            /// Third person: желаемое положение за спиной
             glm::vec3 desired = pivot - aimDir * thirdDist_;
 
             // Raycast от pivot к desired. Если что-то мешает — сократить дистанцию.
@@ -77,7 +81,7 @@ public:
         }
     }
 
-    // Направления (используются игроком и UBO)
+    /// Направления (используются игроком и UBO)
     glm::vec3 forward() const {
         f32 cp = std::cos(pitch_), sp = std::sin(pitch_);
         return { cp * std::sin(yaw_), sp, cp * std::cos(yaw_) };

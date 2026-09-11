@@ -1,3 +1,7 @@
+/**
+ * @file progression.cpp
+ * @brief Прогрессия: опыт, уровни, атрибуты, Древо Познания.
+ */
 #include "progression.h"
 #include "resource_regen.h"
 #include "../core/log.h"

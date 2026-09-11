@@ -1,3 +1,7 @@
+/**
+ * @file quest_def.cpp
+ * @brief Квесты: шаблоны, процедурная генерация, журнал заданий.
+ */
 #include "quest_def.h"
 #include "../core/log.h"
 #include <cstring>
