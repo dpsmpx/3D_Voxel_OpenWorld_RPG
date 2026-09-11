@@ -179,29 +179,48 @@
 
 ## Сборка
 
-### Требования
-
-**Termux** (или любой ARM64 Linux):
+### Подготовка окружения (один раз)
 
 ```bash
-pkg update
-pkg install termux-ndk cmake ninja git clang shaderc
-pkg install openjdk-17 aapt2 apksigner d8 zip
+git clone https://github.com/dpsmpx/3D_Voxel_OpenWorld_RPG.git
+cd 3D_Voxel_OpenWorld_RPG
+chmod +x tools/*.sh build.sh
+./tools/termux-setup.sh
+source ~/.voxelrpg-env
 ```
 
-**Дополнительно** (опционально, для сборки через gradle):
+Скрипт ставит пакеты, скачивает Android NDK и прописывает переменные
+окружения. Занимает несколько минут: NDK весит сотни мегабайт.
+
+> **Почему не просто `pkg install`.**
+> Пакета `termux-ndk` в Termux **не существует** — это название проекта
+> на GitHub, а не пакета. Официальный NDK от Google собран под x86_64 и
+> на телефоне не запустится; нужна сборка под `linux-aarch64`, которую
+> публикует [lzhiyong/termux-ndk](https://github.com/lzhiyong/termux-ndk).
+> Имя пакета Java тоже менялось: `openjdk-17` в свежих установках Termux
+> уже не ставится, сейчас это `openjdk-21`. Поэтому имена не зашиты —
+> `termux-setup.sh` проверяет, что доступно, и ставит подходящее.
+
+Проверить, чего не хватает, и получить конкретную команду для каждого
+пункта:
 
 ```bash
-# Android SDK
-export ANDROID_HOME=$HOME/android-sdk
-# Скачать command line tools + build-tools 34.0.0
+./tools/termux-doctor.sh
+```
+
+Если что-то пойдёт не так, ставьте вручную и смотрите фактические имена
+пакетов через `pkg search`:
+
+```bash
+pkg install clang cmake ninja git make zip unzip wget zlib shaderc
+pkg install openjdk-21          # если не найден: pkg search openjdk
+pkg install tur-repo            # часть инструментов живёт в TUR
+pkg install aapt2 apksigner
 ```
 
 ### Быстрая сборка
 
 ```bash
-cd voxel-rpg
-chmod +x build.sh
 ./build.sh
 ```
 
