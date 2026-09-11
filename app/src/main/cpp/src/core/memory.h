@@ -6,6 +6,7 @@
 #include <new>
 #include <type_traits>
 #include <memory>
+#include <memory_resource>
 #include <utility>
 #include <vector>
 
@@ -217,6 +218,47 @@ private:
 };
 
 // ============================================================
+// ArenaResource — адаптер Arena к std::pmr (требование ТЗ 3.2).
+//
+// Позволяет отдавать арену стандартным контейнерам:
+//
+//     mem::Arena arena;
+//     mem::ArenaResource res{arena};
+//     std::pmr::vector<Quad> quads{&res};
+//
+// Все выделения контейнера идут bump-указателем, освобождение —
+// одним arena.reset() в конце кадра. Освобождение поэлементно
+// не делается: deallocate — пустая операция, это и есть смысл
+// арены.
+// ============================================================
+class ArenaResource final : public std::pmr::memory_resource {
+public:
+    explicit ArenaResource(Arena& arena) : arena_(&arena) {}
+
+private:
+    void* do_allocate(usize bytes, usize align) override {
+        void* p = arena_->alloc(bytes, align);
+        // Сигнатура обязывает вернуть валидный указатель; при OOM
+        // честнее упасть здесь, чем отдать nullptr в контейнер.
+        ASSERT_MSG(p, "ArenaResource: арена исчерпана");
+        return p;
+    }
+
+    void do_deallocate(void*, usize, usize) override {
+        // Арена освобождается целиком через Arena::reset().
+    }
+
+    bool do_is_equal(const std::pmr::memory_resource& o) const noexcept override {
+        // Сравниваем по адресу: dynamic_cast недоступен, сборка идёт
+        // с -fno-rtti. Два ресурса взаимозаменяемы только если это
+        // один и тот же объект — для арены этого достаточно.
+        return this == &o;
+    }
+
+    Arena* arena_;
+};
+
+// ============================================================
 // FrameAllocator — две арены с чередованием.
 // Данные, выделенные в кадре N, живут до конца кадра N+1: этого
 // хватает, чтобы рендер дочитал то, что подготовил апдейт.
@@ -235,11 +277,15 @@ public:
     template<typename T, typename... Args>
     T* make(Args&&... args) { return cur_.make<T>(std::forward<Args>(args)...); }
 
+    /// Ресурс памяти текущего кадра для std::pmr-контейнеров.
+    std::pmr::memory_resource* resource() { return &curRes_; }
+
     usize totalBytes() const { return cur_.totalBytes() + prev_.totalBytes(); }
 
 private:
     Arena cur_{4u << 20};
     Arena prev_{4u << 20};
+    ArenaResource curRes_{cur_};
 };
 
 } // namespace mem

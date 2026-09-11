@@ -1,5 +1,6 @@
 #include "chunk_manager.h"
 #include "../core/log.h"
+#include "../core/memory.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -196,14 +197,24 @@ void ChunkManager::jobMesh(void* data) {
         }
 
         const ChunkNeighbors nb = lease.view();
-        std::vector<Quad> quads;
+
+        // Временные квады живут в арене воркера: за кадр меширования
+        // это десятки тысяч элементов, и отдавать их системному
+        // аллокатору по одному переаллоцированию на чанк дорого.
+        // Арена переиспользуется между чанками — см. ТЗ 3.2 о пулах
+        // и std::pmr.
+        static thread_local mem::Arena         meshArena{ 1u << 20 };
+        static thread_local mem::ArenaResource meshRes{ meshArena };
+        meshArena.reset();
+        std::pmr::vector<Quad> quads{ &meshRes };
 
         for (u8 lod = 0; lod < 4; ++lod) {
             quads.clear();
             buildGreedyMesh(*c, nb, quads, (Lod)lod);
 
             std::lock_guard mlk(c->meshMutex);
-            c->meshes[lod].quads    = quads;      // копия: quads переиспользуется
+            // Копия в обычный vector: меш переживает арену воркера.
+            c->meshes[lod].quads.assign(quads.begin(), quads.end());
             c->meshes[lod].revision = ctx->version;
             c->meshes[lod].built    = true;
             c->meshes[lod].ready.store(true, std::memory_order_release);

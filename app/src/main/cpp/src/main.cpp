@@ -28,6 +28,7 @@
 #include "vk/vk_context.h"
 
 #include "world/chunk_manager.h"
+#include "world/block.h"
 #include "world/enchant_altar.h"
 #include "world/day_cycle.h"
 
@@ -550,13 +551,14 @@ struct Engine {
         }
     }
 
-    /// Рядом ли идёт бой: есть ли враждебный моб, который нас
-    /// преследует или атакует. Нужен музыкальному директору.
-    bool combatNearby() const {
-        if (!player) return false;
+    /// Сколько враждебных мобов рядом преследуют игрока или атакуют.
+    /// Музыкальный директор поднимает напряжение по этому числу.
+    i32 hostilesNearby() const {
+        if (!player) return 0;
         const glm::vec3 ppos = player->controller.state().position;
         auto& reg = const_cast<ecs::Registry&>(registry);
         auto& pool = reg.pool<ecs::AIAgent>();
+        i32 count = 0;
         for (usize i = 0; i < pool.size(); ++i) {
             const auto& agent = pool.at((u32)i);
             if (agent.state != ecs::AIAgent::Chase &&
@@ -566,7 +568,21 @@ struct Engine {
             auto* tf = reg.get<ecs::Transform>(e);
             if (!tf) continue;
             const glm::vec3 d = tf->position - ppos;
-            if (glm::dot(d, d) < 32.f * 32.f) return true;
+            if (glm::dot(d, d) < 32.f * 32.f) ++count;
+        }
+        return count;
+    }
+
+    /// Под землёй ли игрок: есть ли над головой непрозрачное
+    /// перекрытие. Определяет выбор музыкального трека.
+    bool isUnderground(const glm::vec3& pos) const {
+        if (!world) return false;
+        const i32 x = (i32)std::floor(pos.x);
+        const i32 z = (i32)std::floor(pos.z);
+        const i32 y0 = (i32)std::floor(pos.y) + 2;
+        for (i32 y = y0; y < world::CHUNK_SIZE_Y; ++y) {
+            const u16 b = world->getVoxel(x, y, z);
+            if (b != world::AIR && !world::blocks().isTransparent(b)) return true;
         }
         return false;
     }
@@ -796,9 +812,20 @@ struct Engine {
             audio::engine().update(dt, listener);
 
             musicCtx.paused = ui ? ui->paused() : false;
-            // В бою — если рядом есть враждебный моб в состоянии Chase/Attack.
-            musicCtx.inCombat = combatNearby();
+
+            // Бой — если рядом моб в состоянии Chase/Attack.
+            musicCtx.nearbyHostiles = hostilesNearby();
+            musicCtx.inCombat = musicCtx.nearbyHostiles > 0;
+
+            // Деревня — рядом станция крафта или NPC.
             musicCtx.inVillage = ui && ui->nearbyStation != crafting::StationType::None;
+
+            // Под землёй — если над головой есть перекрытие.
+            const glm::vec3 ppos = player->controller.state().position;
+            musicCtx.underground = isUnderground(ppos);
+
+            if (auto* hp = registry.get<ecs::Health>(player->entity()))
+                musicCtx.playerHealthPct = hp->max > 0.f ? hp->current / hp->max : 1.f;
             musicDirector.update(dt, musicCtx);
         }
 

@@ -13,6 +13,9 @@
 #include "world/chunk.h"
 #include "world/noise.h"
 #include "world/terrain.h"
+#include "world/day_cycle.h"
+#include "mobs/mob_ai.h"
+#include "mobs/mob_def.h"
 
 #include <atomic>
 #include <cmath>
@@ -244,6 +247,28 @@ void testMemory() {
     Node* again = pool.alloc();
     check(again != nullptr, "слоты переиспользуются");
     pool.free(again);
+
+    // ---- std::pmr поверх арены (требование ТЗ 3.2) ----
+    mem::Arena pmrArena(1 << 16);
+    mem::ArenaResource res(pmrArena);
+
+    std::pmr::vector<int> v(&res);
+    for (int i = 0; i < 5000; ++i) v.push_back(i);
+    bool contentOk = (v.size() == 5000);
+    for (int i = 0; i < 5000 && contentOk; ++i)
+        if (v[(usize)i] != i) contentOk = false;
+    check(contentOk, "std::pmr::vector поверх арены хранит данные верно");
+
+    const usize usedBefore = pmrArena.totalBytes();
+    check(usedBefore > 0, "выделения ушли в арену, а не в кучу");
+
+    v.clear();
+    v.shrink_to_fit();
+    pmrArena.reset();
+    std::pmr::vector<int> v2(&res);
+    v2.push_back(7);
+    check(v2.size() == 1 && v2[0] == 7, "после reset арену можно использовать снова");
+    check(res.is_equal(res), "ресурс равен сам себе");
 }
 
 // ------------------------------------------------------------
@@ -402,6 +427,90 @@ void testGreedyMesh() {
     check(again.size() == q0.size(), "меширование детерминировано");
 }
 
+// ------------------------------------------------------------
+// Игровые сутки
+// ------------------------------------------------------------
+void testDayCycle() {
+    group("world::DayCycle");
+
+    world::DayCycle c;
+    c.reset(0.30f, 0);
+    check(!c.isNight(), "утро — не ночь");
+    check(c.day() == 0, "счётчик суток стартует с нуля");
+
+    // Полдень ярче полуночи.
+    c.reset(0.50f, 0);
+    const f32 noonLight = c.skyLight();
+    c.reset(0.00f, 0);
+    const f32 midnightLight = c.skyLight();
+    check(noonLight > midnightLight, "днём светлее, чем ночью");
+    check(midnightLight >= 0.10f, "ночью не абсолютная темнота");
+    check(noonLight <= 1.01f, "освещённость не превышает единицу");
+
+    c.reset(0.00f, 0);
+    check(c.isNight(), "полночь — ночь");
+    c.reset(0.90f, 0);
+    check(c.isNight(), "поздний вечер — ночь");
+
+    // Солнце поднимается к полудню и садится к полуночи.
+    c.reset(0.50f, 0);
+    check(c.sunElevation() > 0.9f, "в полдень солнце в зените");
+    c.reset(0.00f, 0);
+    check(c.sunElevation() < -0.9f, "в полночь солнце в надире");
+
+    // Переход суток происходит ровно один раз.
+    c.reset(0.99f, 3);
+    i32 changes = 0;
+    for (int i = 0; i < 200; ++i) {
+        c.tick(world::DayCycle::DAY_LENGTH_SEC * 0.001f);
+        if (c.dayJustChanged()) ++changes;
+    }
+    check(changes == 1, "смена суток срабатывает один раз");
+    check(c.day() == 4, "номер суток увеличился");
+    check(c.timeOfDay() >= 0.f && c.timeOfDay() < 1.f, "время суток остаётся в [0,1)");
+
+    // Сериализация восстанавливает состояние.
+    world::DayCycle d;
+    d.setRaw(0.625f, 12);
+    check(d.day() == 12 && std::fabs(d.rawTime() - 0.625f) < 1e-5f,
+          "состояние восстанавливается из сохранения");
+}
+
+// ------------------------------------------------------------
+// Фазы боя с боссом
+// ------------------------------------------------------------
+void testBossPhases() {
+    group("mobs::bossPhaseFor");
+
+    check(mobs::bossPhaseFor(1.0f, 3) == 0, "полное здоровье — первая фаза");
+    check(mobs::bossPhaseFor(0.9f, 3) == 0, "выше 2/3 — всё ещё первая");
+    check(mobs::bossPhaseFor(0.5f, 3) == 1, "между 1/3 и 2/3 — вторая");
+    check(mobs::bossPhaseFor(0.2f, 3) == 2, "ниже 1/3 — последняя");
+    check(mobs::bossPhaseFor(0.0f, 3) == 2, "ноль здоровья — последняя фаза");
+    check(mobs::bossPhaseFor(0.5f, 1) == 0, "у обычного моба фаза всегда нулевая");
+    check(mobs::bossPhaseFor(0.6f, 2) == 0, "две фазы: выше половины — первая");
+    check(mobs::bossPhaseFor(0.4f, 2) == 1, "две фазы: ниже половины — вторая");
+
+    // Фаза не может уменьшаться при падении здоровья.
+    u8 prev = 0;
+    bool monotonic = true;
+    for (int i = 100; i >= 0; --i) {
+        const u8 p = mobs::bossPhaseFor((f32)i / 100.f, 3);
+        if (p < prev) monotonic = false;
+        prev = p;
+    }
+    check(monotonic, "фаза только растёт по мере потери здоровья");
+
+    const auto& warden = mobs::mobRegistry().get(mobs::MOB_BOSS_WARDEN);
+    check(warden.isBoss && warden.phaseCount == 3, "Каменный Страж — босс с тремя фазами");
+    check(warden.slamRadius > 0.f, "у Стража есть удар по площади");
+    check(warden.spawnWeight == 0.f, "босс не участвует в обычном спавне");
+
+    const auto& hollow = mobs::mobRegistry().get(mobs::MOB_BOSS_HOLLOW);
+    check(hollow.isBoss && hollow.phaseCount == 2, "Полый Владыка — босс с двумя фазами");
+    check(hollow.enrageMult > 1.f, "на последней фазе босс усиливается");
+}
+
 } // namespace
 
 int main() {
@@ -413,6 +522,8 @@ int main() {
     testJobSystem();
     testSaveFormat();
     testGreedyMesh();
+    testDayCycle();
+    testBossPhases();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);
     if (g_failed) {

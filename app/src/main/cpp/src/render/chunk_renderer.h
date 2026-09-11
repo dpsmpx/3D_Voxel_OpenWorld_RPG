@@ -6,6 +6,7 @@
 #include "../vk/vk_staging_pool.h"
 #include "../world/chunk_manager.h"
 #include "mesh_builder.h"
+#include "occlusion.h"
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -26,9 +27,12 @@ public:
 
     void forgetChunk(world::ChunkCoord c);
 
+    /// occlusion может быть nullptr — тогда работает только
+    /// отсечение по пирамиде видимости.
     void render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout layout,
                 VkDescriptorSet set, const math::Frustum& frustum,
-                const glm::vec3& cameraPos);
+                const glm::vec3& cameraPos,
+                OcclusionCuller* occlusion = nullptr);
 
     // Метрики
     u32 lastDrawnChunks() const { return lastDrawnChunks_; }

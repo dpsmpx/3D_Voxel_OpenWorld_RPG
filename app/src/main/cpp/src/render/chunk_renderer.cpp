@@ -166,7 +166,8 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx,
 // ============================================================
 void ChunkRenderer::render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout layout,
                            VkDescriptorSet set, const math::Frustum& frustum,
-                           const glm::vec3& cameraPos)
+                           const glm::vec3& cameraPos,
+                           OcclusionCuller* occlusion)
 {
     VkCommandBuffer cmd = ctx.currentCmd();
 
@@ -187,6 +188,7 @@ void ChunkRenderer::render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout l
     lastDrawnChunks_  = 0;
     lastDrawnIndices_ = 0;
     for (auto& l : lodCounts_) l = 0;
+    if (occlusion) occlusion->resetStats();
 
     constexpr f32 CH = (f32)world::CHUNK_SIZE;
     constexpr f32 CY = (f32)world::CHUNK_SIZE_Y;
@@ -197,6 +199,13 @@ void ChunkRenderer::render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout l
 
         math::AABB aabb; aabb.min = cmin; aabb.max = cmax;
         if (!frustum.intersectsAABB(aabb)) continue;
+
+        // Отсечение перекрытых чанков: дешевле, чем отправить их
+        // на растеризацию и получить полный overdraw.
+        if (occlusion && occlusion->isOccluded(coord, cameraPos)) {
+            occlusion->countCulled();
+            continue;
+        }
 
         const glm::vec3 center = (cmin + cmax) * 0.5f;
         const glm::vec3 d = center - cameraPos;

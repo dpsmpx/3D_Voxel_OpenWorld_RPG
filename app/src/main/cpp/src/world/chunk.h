@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 #include <mutex>
 #include <shared_mutex>
+#include <memory_resource>
 #include <vector>
 
 namespace world {
@@ -120,7 +121,16 @@ struct ChunkNeighbors {
     const Chunk* pz = nullptr;
 };
 
+/// Строит слитый меш уровня детализации lod.
+/// Контейнер вывода шаблонный: задача меширования складывает квады
+/// в std::pmr::vector поверх арены воркера, тесты — в обычный vector.
+template<typename QuadContainer>
+u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
+                        QuadContainer& outQuads, Lod lod);
+
 u32 buildGreedyMesh(const Chunk& chunk, const ChunkNeighbors& nb,
                     std::vector<Quad>& outQuads, Lod lod);
+u32 buildGreedyMesh(const Chunk& chunk, const ChunkNeighbors& nb,
+                    std::pmr::vector<Quad>& outQuads, Lod lod);
 
 } // namespace world

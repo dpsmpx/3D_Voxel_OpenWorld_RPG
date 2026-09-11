@@ -17,15 +17,17 @@ struct MusicContext {
 };
 
 // ============================================================
-// MusicDirector — управляет музыкой.
+// MusicDirector — управляет музыкой (ТЗ 7).
 //
-// Две петли: "explore" и "combat". Обе играются одновременно,
-// но громкость каждой модулируется tension (0..1).
-//   - tension = 0 → слышна только explore
-//   - tension = 1 → слышна только combat
+// Четыре петли играют одновременно с нулевой громкостью, а
+// переключение — это кроссфейд их уровней. Так переходы всегда
+// плавные и без щелчков: ни один трек не стартует и не
+// останавливается посреди игры.
 //
-// tension плавно двигается к target с разной скоростью
-// атаки/релаксации.
+//   explore  — мирное исследование, база
+//   combat   — бой, вытесняет остальные
+//   dungeon  — под землёй
+//   village  — рядом со станциями крафта и жителями
 // ============================================================
 class MusicDirector {
 public:
@@ -43,9 +45,16 @@ public:
     f32 tension() const { return tension_; }
 
 private:
+    /// Сколько треков крутится одновременно.
+    static constexpr u32 TRACK_COUNT = 4;
+    enum Track : u32 { Explore = 0, Combat, Dungeon, Village };
+
+    /// Плавно ведёт текущий уровень к целевому.
+    static void approach(f32& value, f32 target, f32 rate, f32 dt);
+
     AudioEngine* engine_ = nullptr;
-    VoiceHandle exploreVoice_;
-    VoiceHandle combatVoice_;
+    VoiceHandle  voices_[TRACK_COUNT];
+    f32          levels_[TRACK_COUNT] = { 1.f, 0.f, 0.f, 0.f };
 
     f32 tension_       = 0.f;
     f32 targetTension_ = 0.f;
@@ -53,7 +62,7 @@ private:
 
     bool paused_ = false;
 
-    // Время атаки/релаксации.
+    // Время атаки/релаксации кроссфейда.
     static constexpr f32 ATTACK_TIME  = 0.8f;
     static constexpr f32 RELEASE_TIME = 2.5f;
 };

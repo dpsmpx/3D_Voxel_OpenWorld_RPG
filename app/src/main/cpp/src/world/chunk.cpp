@@ -41,8 +41,9 @@ constexpr FaceAxes FACES[6] = {
 // Greedy Meshing по 3 осям × 6 граней × слоям.
 // mask[u][v] хранит block id для активной грани на текущем слое.
 // ============================================================
-u32 buildGreedyMesh(const Chunk& chunk, const ChunkNeighbors& nb,
-                    std::vector<Quad>& outQuads, Lod lod)
+template<typename QuadContainer>
+u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
+                        QuadContainer& outQuads, Lod lod)
 {
     outQuads.clear();
     const i32 step  = 1 << (u8)lod;   // шаг по осям: 1, 2, 4, 8
@@ -164,6 +165,18 @@ u32 buildGreedyMesh(const Chunk& chunk, const ChunkNeighbors& nb,
     }
 
     return (u32)outQuads.size();
+}
+
+// Явные инстанциации: обычный vector для тестов и инструментов,
+// pmr-вариант для задачи меширования поверх арены воркера.
+u32 buildGreedyMesh(const Chunk& chunk, const ChunkNeighbors& nb,
+                    std::vector<Quad>& outQuads, Lod lod) {
+    return buildGreedyMeshInto(chunk, nb, outQuads, lod);
+}
+
+u32 buildGreedyMesh(const Chunk& chunk, const ChunkNeighbors& nb,
+                    std::pmr::vector<Quad>& outQuads, Lod lod) {
+    return buildGreedyMeshInto(chunk, nb, outQuads, lod);
 }
 
 } // namespace world

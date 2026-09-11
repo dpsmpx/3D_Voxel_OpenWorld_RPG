@@ -65,6 +65,12 @@ enum SoundId : u16 {
     SOUND_CRAFT,
     SOUND_ENCHANT,
 
+    // --- Музыка (ТЗ 7: 3-4 трека с плавными переходами) ---
+    SOUND_MUSIC_EXPLORE,   ///< мирное исследование
+    SOUND_MUSIC_COMBAT,    ///< бой
+    SOUND_MUSIC_DUNGEON,   ///< подземелье
+    SOUND_MUSIC_VILLAGE,   ///< деревня
+
     SOUND_COUNT
 };
 

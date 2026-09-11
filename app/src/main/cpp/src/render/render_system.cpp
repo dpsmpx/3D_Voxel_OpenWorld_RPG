@@ -107,6 +107,14 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     const auto ready = world.pollMeshesReady();
     chunkRenderer_.uploadChunks(ctx, ready, camera_.position());
 
+    // Карта перекрытий обновляется раз в полсекунды: мир меняется
+    // медленнее, а полный обход чанков недёшев.
+    occlusionTimer_ += 1.f / 60.f;
+    if (occlusionTimer_ >= 0.5f) {
+        occlusionTimer_ = 0.f;
+        occlusion_.rebuild(world, camera_.position(), world.viewDistance() + 1);
+    }
+
     mobRenderer_.rebuild(registry);
     mobRenderer_.upload(ctx);
 
@@ -145,7 +153,7 @@ void RenderSystem::render(vk::Context& ctx) {
     skybox_.render(ctx);
 
     chunkRenderer_.render(ctx, voxelPipeline_.handle(), voxelPipeline_.layout(),
-                          ds, fr, camera_.position());
+                          ds, fr, camera_.position(), &occlusion_);
 
     npcRenderer_.render(ctx);
     mobRenderer_.render(ctx, fr);
