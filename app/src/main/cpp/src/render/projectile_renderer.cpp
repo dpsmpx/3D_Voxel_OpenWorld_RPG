@@ -1,0 +1,189 @@
+﻿#include "projectile_renderer.h"
+#include "../combat/projectile.h"
+#include "../ecs/components.h"
+#include "../core/log.h"
+#include <cstring>
+
+namespace render {
+
+namespace {
+
+struct CubeVertex { glm::vec3 pos; };
+constexpr CubeVertex CUBE_V[24] = {
+    {{-0.5f,-0.5f,-0.5f}},{{ 0.5f,-0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{-0.5f, 0.5f,-0.5f}},
+    {{-0.5f,-0.5f, 0.5f}},{{ 0.5f,-0.5f, 0.5f}},{{ 0.5f, 0.5f, 0.5f}},{{-0.5f, 0.5f, 0.5f}},
+    {{-0.5f,-0.5f,-0.5f}},{{-0.5f, 0.5f,-0.5f}},{{-0.5f, 0.5f, 0.5f}},{{-0.5f,-0.5f, 0.5f}},
+    {{ 0.5f,-0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f, 0.5f}},{{ 0.5f,-0.5f, 0.5f}},
+    {{-0.5f,-0.5f,-0.5f}},{{ 0.5f,-0.5f,-0.5f}},{{ 0.5f,-0.5f, 0.5f}},{{-0.5f,-0.5f, 0.5f}},
+    {{-0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f, 0.5f}},{{-0.5f, 0.5f, 0.5f}},
+};
+constexpr u32 CUBE_I[36] = {
+     0, 1, 2,  0, 2, 3,
+     4, 5, 6,  4, 6, 7,
+     8, 9,10,  8,10,11,
+    12,13,14, 12,14,15,
+    16,17,18, 16,18,19,
+    20,21,22, 20,22,23,
+};
+
+} // namespace
+
+bool ProjectileRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout) {
+    dev_ = ctx.device();
+    shaders_.init(dev_, mgr);
+
+    u64 vbBytes = sizeof(CUBE_V);
+    if (!vbo_.create(dev_, ctx.physicalDevice(), vbBytes, vk::BufferUsage::Vertex, false)) return false;
+    {
+        auto* s = new vk::Buffer();
+        s->create(dev_, ctx.physicalDevice(), vbBytes, vk::BufferUsage::Staging, true);
+        s->write(CUBE_V, vbBytes);
+        ctx.submitOneShot([&](VkCommandBuffer cmd){
+            VkBufferCopy c{0,0,vbBytes};
+            vkCmdCopyBuffer(cmd, s->handle(), vbo_.handle(), 1, &c);
+        });
+        s->destroy(); delete s;
+    }
+
+    u64 ibBytes = sizeof(CUBE_I);
+    if (!ibo_.create(dev_, ctx.physicalDevice(), ibBytes, vk::BufferUsage::Index, false)) return false;
+    {
+        auto* s = new vk::Buffer();
+        s->create(dev_, ctx.physicalDevice(), ibBytes, vk::BufferUsage::Staging, true);
+        s->write(CUBE_I, ibBytes);
+        ctx.submitOneShot([&](VkCommandBuffer cmd){
+            VkBufferCopy c{0,0,ibBytes};
+            vkCmdCopyBuffer(cmd, s->handle(), ibo_.handle(), 1, &c);
+        });
+        s->destroy(); delete s;
+    }
+
+    vk::PipelineDesc d{};
+    d.renderPass  = ctx.renderPass();
+    d.descLayout  = descLayout;
+    d.vertName    = "shaders/projectile.vert.spv";
+    d.fragName    = "shaders/projectile.frag.spv";
+    d.depthFormat = ctx.depthFormat();
+    d.cullMode    = VK_CULL_MODE_NONE;
+    d.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    d.depthTest   = true;
+    d.depthWrite  = false;
+    d.blend       = true;
+    d.instanced   = true;
+    if (!pipeline_.create(dev_, shaders_, d)) return false;
+
+    cpu_.reserve(256);
+    LOGI("ProjectileRenderer готов");
+    return true;
+}
+
+void ProjectileRenderer::rebuild(ecs::Registry& reg) {
+    cpu_.clear();
+
+    // --- Снаряды ---
+    {
+        auto& pool = reg.pool<combat::Projectile>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            ecs::Entity e = pool.entityAt((u32)i);
+            auto* p  = pool.get(e);
+            auto* tf = reg.get<ecs::Transform>(e);
+            if (!p || !tf) continue;
+
+            MobInstance inst{};
+            inst.pos   = tf->position;
+            inst.size  = glm::vec3(p->scale * 2.f);
+            inst.color = p->colorRGBA;
+            inst.yaw   = 0.f;
+            cpu_.push_back(inst);
+        }
+    }
+
+    // --- HitFx ---
+    {
+        auto& pool = reg.pool<combat::HitFx>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            ecs::Entity e = pool.entityAt((u32)i);
+            auto* fx = pool.get(e);
+            auto* tf = reg.get<ecs::Transform>(e);
+            if (!fx || !tf) continue;
+
+            f32 t = 1.f - fx->lifeRemaining / std::max(0.001f, fx->lifeTime);
+            f32 s = fx->startScale + (fx->endScale - fx->startScale) * t;
+
+            // Затухание альфы
+            u8 a = (u8)(255.f * (1.f - t));
+
+            u32 c = fx->colorRGBA;
+            u8 r = (c >> 24) & 0xFF;
+            u8 g = (c >> 16) & 0xFF;
+            u8 b = (c >>  8) & 0xFF;
+            u32 faded = ((u32)r << 24) | ((u32)g << 16) | ((u32)b << 8) | a;
+
+            MobInstance inst{};
+            inst.pos   = tf->position;
+            inst.size  = glm::vec3(s);
+            inst.color = faded;
+            inst.yaw   = 0.f;
+            cpu_.push_back(inst);
+        }
+    }
+
+    instanceCount_ = (u32)cpu_.size();
+}
+
+void ProjectileRenderer::upload(vk::Context& ctx) {
+    if (instanceCount_ == 0) return;
+
+    u64 bytes = (u64)instanceCount_ * sizeof(MobInstance);
+    if (!instanceGpu_.handle() || instanceCapacity_ < bytes) {
+        if (instanceGpu_.handle()) instanceGpu_.destroy();
+        if (!instanceGpu_.create(dev_, ctx.physicalDevice(), bytes,
+                                 vk::BufferUsage::Vertex, false)) return;
+        instanceCapacity_ = bytes;
+    }
+
+    auto* s = new vk::Buffer();
+    s->create(dev_, ctx.physicalDevice(), bytes, vk::BufferUsage::Staging, true);
+    s->write(cpu_.data(), bytes);
+    ctx.submitOneShot([&](VkCommandBuffer cmd){
+        VkBufferCopy c{0,0,bytes};
+        vkCmdCopyBuffer(cmd, s->handle(), instanceGpu_.handle(), 1, &c);
+        VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+    });
+    s->destroy(); delete s;
+}
+
+void ProjectileRenderer::render(vk::Context& ctx) {
+    if (instanceCount_ == 0 || !instanceGpu_.handle()) return;
+    VkCommandBuffer cmd = ctx.currentCmd();
+
+    VkViewport vp{};
+    vp.width  = (f32)ctx.extent().width;
+    vp.height = (f32)ctx.extent().height;
+    vp.minDepth = 0.f; vp.maxDepth = 1.f;
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    VkRect2D sc{}; sc.extent = ctx.extent();
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
+    VkBuffer vbs[2] = { vbo_.handle(), instanceGpu_.handle() };
+    VkDeviceSize offs[2] = { 0, 0 };
+    vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offs);
+    vkCmdBindIndexBuffer(cmd, ibo_.handle(), 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, 36, instanceCount_, 0, 0, 0);
+}
+
+void ProjectileRenderer::destroy() {
+    vbo_.destroy();
+    ibo_.destroy();
+    instanceGpu_.destroy();
+    pipeline_.destroy();
+    shaders_.destroyAll();
+    dev_ = VK_NULL_HANDLE;
+}
+
+} // namespace render

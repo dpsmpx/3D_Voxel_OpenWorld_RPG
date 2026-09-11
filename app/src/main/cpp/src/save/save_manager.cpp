@@ -1,0 +1,232 @@
+﻿#include "save_manager.h"
+#include "zlib_util.h"
+#include "save_player.h"
+#include "save_npc.h"
+#include "save_inventory.h"
+#include "../core/log.h"
+#include "../ecs/components.h"
+#include "../progression/progression.h"
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+
+namespace save {
+
+const char* statusString(SaveStatus s) {
+    switch (s) {
+        case SaveStatus::Ok:                 return "OK";
+        case SaveStatus::FileNotFound:       return "File not found";
+        case SaveStatus::ReadError:          return "Read error";
+        case SaveStatus::WriteError:         return "Write error";
+        case SaveStatus::BadMagic:           return "Bad magic";
+        case SaveStatus::UnsupportedVersion: return "Unsupported version";
+        case SaveStatus::CorruptedData:      return "Corrupted data";
+        case SaveStatus::ChecksumMismatch:   return "Checksum mismatch";
+    }
+    return "?";
+}
+
+void SaveManager::init(const char* baseDir) {
+    slotMgr_.init(baseDir);
+    initialized_ = true;
+}
+
+SaveStatus SaveManager::save(const SaveSlot& slot,
+                             world::ChunkManager& world,
+                             ecs::Registry& registry,
+                             ecs::Entity playerEntity,
+                             const WorldDeltaStore& deltas,
+                             u64 worldSeed,
+                             u32 playtimeSec)
+{
+    if (!initialized_) return SaveStatus::WriteError;
+    (void)world;
+
+    ByteWriter body;
+    body.reserve(256 * 1024);
+
+    serializePlayer(body, registry, playerEntity);
+    deltas.write(body);
+    serializeNpcState(body, registry);
+    serializePickups(body, registry);
+
+    std::vector<u8> compressed = zcompress(body.data(), 6);
+    if (compressed.empty() && !body.empty()) {
+        return SaveStatus::WriteError;
+    }
+
+    ByteWriter header;
+    header.u32(SAVE_MAGIC);
+    header.u32(SAVE_VERSION);
+    header.u32(slot.profile());
+    header.u32(slot.slot());
+    header.u64(worldSeed);
+    header.u64((u64)std::time(nullptr) * 1000ULL);
+    header.u32(playtimeSec);
+    header.u32((u32)body.size());
+    header.u32((u32)compressed.size());
+    header.u32(crc32_compute(compressed.data(), compressed.size()));
+
+    std::string path = slot.dataPath();
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) {
+        LOGE("Save: не удалось открыть %s", path.c_str());
+        return SaveStatus::WriteError;
+    }
+
+    bool ok = true;
+    ok = ok && std::fwrite(header.data().data(), 1, header.size(), f) == header.size();
+    ok = ok && std::fwrite(compressed.data(), 1, compressed.size(), f) == compressed.size();
+    std::fclose(f);
+
+    if (!ok) {
+        std::remove(path.c_str());
+        return SaveStatus::WriteError;
+    }
+
+    SlotMeta meta{};
+    meta.exists       = true;
+    meta.version      = SAVE_VERSION;
+    meta.profileId    = slot.profile();
+    meta.slotId       = slot.slot();
+    meta.seed         = worldSeed;
+    meta.timestampMs  = (u64)std::time(nullptr) * 1000ULL;
+    meta.playtimeSec  = playtimeSec;
+    meta.slotChecksum = crc32_compute(compressed.data(), compressed.size());
+
+    if (auto* prog = registry.get<progression::Progression>(playerEntity)) {
+        meta.playerLevel = prog->level;
+    }
+    std::snprintf(meta.worldName,  sizeof(meta.worldName),  "World %08llX",
+                  (unsigned long long)(worldSeed & 0xFFFFFFFFULL));
+    std::snprintf(meta.playerName, sizeof(meta.playerName), "Adventurer");
+
+    slot.writeMeta(meta);
+
+    LOGI("Save OK: %s  body=%zu  comp=%zu  delta_chunks=%zu  mods=%zu",
+         path.c_str(), body.size(), compressed.size(),
+         deltas.chunkCount(), deltas.totalMods());
+
+    return SaveStatus::Ok;
+}
+
+SaveStatus SaveManager::load(const SaveSlot& slot,
+                             world::ChunkManager& world,
+                             ecs::Registry& registry,
+                             ecs::Entity playerEntity,
+                             WorldDeltaStore& deltas,
+                             u64* outSeed,
+                             u32* outPlaytimeSec)
+{
+    if (!initialized_) return SaveStatus::ReadError;
+
+    std::string path = slot.dataPath();
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+        LOGE("Load: не найден %s", path.c_str());
+        return SaveStatus::FileNotFound;
+    }
+
+    u8 headBuf[44];
+    if (std::fread(headBuf, 1, 44, f) != 44) {
+        std::fclose(f);
+        return SaveStatus::ReadError;
+    }
+
+    ByteReader hr(headBuf, 44);
+
+    u32 magic = 0, version = 0, profile = 0, slotId = 0;
+    u64 seed = 0, ts = 0;
+    u32 playtime = 0, origSize = 0, compSize = 0, checksum = 0;
+
+    if (!hr.u32v(magic))         { std::fclose(f); return SaveStatus::ReadError; }
+    if (magic != SAVE_MAGIC)     { std::fclose(f); return SaveStatus::BadMagic; }
+    if (!hr.u32v(version))       { std::fclose(f); return SaveStatus::ReadError; }
+    if (version != SAVE_VERSION) { std::fclose(f); return SaveStatus::UnsupportedVersion; }
+
+    hr.u32v(profile);
+    hr.u32v(slotId);
+    hr.u64v(seed);
+    hr.u64v(ts);
+    hr.u32v(playtime);
+    hr.u32v(origSize);
+    hr.u32v(compSize);
+    hr.u32v(checksum);
+
+    (void)profile; (void)slotId; (void)ts;
+
+    // ============================================================
+    // Phase 15: проверка seed
+    // Если seed из сейва не совпадает с seed мира — сейв непригоден.
+    // ============================================================
+    if (world.seed() != seed) {
+        LOGE("Save: seed mismatch (file=%llX world=%llX)",
+             (unsigned long long)seed,
+             (unsigned long long)world.seed());
+        std::fclose(f);
+        return SaveStatus::CorruptedData;
+    }
+
+    std::vector<u8> compressed(compSize);
+    usize read = std::fread(compressed.data(), 1, compSize, f);
+    std::fclose(f);
+
+    if (read != compSize) return SaveStatus::ReadError;
+
+    u32 actualCrc = crc32_compute(compressed.data(), compressed.size());
+    if (actualCrc != checksum) {
+        LOGE("Save: CRC mismatch (expected=%u actual=%u)", checksum, actualCrc);
+        return SaveStatus::ChecksumMismatch;
+    }
+
+    std::vector<u8> body = zdecompress(compressed, 64ull * 1024ull * 1024ull);
+    if (body.size() != origSize) {
+        LOGE("Save: decompressed size mismatch (%zu vs %u)",
+             body.size(), origSize);
+        return SaveStatus::CorruptedData;
+    }
+
+    ByteReader br(body);
+
+    if (!deserializePlayer(br, registry, playerEntity)) {
+        LOGE("Save: player deserialize failed");
+        return SaveStatus::CorruptedData;
+    }
+
+    if (!deltas.read(br)) {
+        LOGE("Save: world delta deserialize failed");
+        return SaveStatus::CorruptedData;
+    }
+
+    if (!deserializeNpcState(br, registry)) {
+        LOGE("Save: npc deserialize failed");
+        return SaveStatus::CorruptedData;
+    }
+
+    if (!deserializePickups(br, registry)) {
+        LOGE("Save: pickups deserialize failed");
+        return SaveStatus::CorruptedData;
+    }
+
+    deltas.applyAll(world);
+
+    if (outSeed)        *outSeed = seed;
+    if (outPlaytimeSec) *outPlaytimeSec = playtime;
+
+    LOGI("Load OK: %s  seed=%llX  playtime=%us  delta_chunks=%zu  mods=%zu",
+         path.c_str(),
+         (unsigned long long)seed, playtime,
+         deltas.chunkCount(), deltas.totalMods());
+
+    return SaveStatus::Ok;
+}
+
+SaveStatus SaveManager::peekMeta(const SaveSlot& slot, SlotMeta& out) const {
+    if (slot.readMeta(out)) {
+        out.exists = true;
+        return SaveStatus::Ok;
+    }
+    return SaveStatus::FileNotFound;
+}
+
+} // namespace save

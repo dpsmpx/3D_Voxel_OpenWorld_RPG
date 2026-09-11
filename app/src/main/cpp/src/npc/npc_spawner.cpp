@@ -1,0 +1,237 @@
+﻿#include "npc_spawner.h"
+#include "npc_def.h"
+#include "npc_ai.h"
+#include "../ecs/components.h"
+#include "../combat/components.h"
+#include "../world/block.h"
+#include "../core/log.h"
+#include <cmath>
+#include <unordered_set>
+#include <vector>
+
+namespace npc {
+
+using namespace ecs;
+
+namespace {
+
+// Тот же хэш, что в features.cpp structs::layoutFor
+u32 hashXZ(i32 x, i32 z, u64 seed) {
+    u64 h = (u64)(u32)x * 0x9E3779B97F4A7C15ULL;
+    h ^= (u64)(u32)z * 0xC4CEB9FE1A85EC53ULL;
+    h ^= seed;
+    h ^= h >> 33; h *= 0xFF51AFD7ED558CCDULL;
+    h ^= h >> 33;
+    return (u32)h;
+}
+
+// Детерминированный уникальный ключ для NPC.
+// Комбинируем координаты super-chunk + индекс внутри деревни.
+u64 npcPersistentKey(i32 sx, i32 sz, u32 idx) {
+    u64 k = (u64)(u32)sx;
+    k |= (u64)(u32)sz << 32;
+    k ^= (u64)idx * 0x9E3779B97F4A7C15ULL;
+    return k;
+}
+
+// Детерминированное позиционирование NPC внутри деревни
+// (позиция + роль + ID).
+struct NpcSpec {
+    u16      typeId;
+    glm::vec3 pos;
+};
+
+// Генерирует список NPC для конкретной деревни.
+// Возвращает false, если super-chunk — не Village.
+bool generateVillageNpcs(world::ChunkManager& world,
+                         i32 sx, i32 sz, u64 worldSeed,
+                         std::vector<NpcSpec>& out,
+                         std::vector<u64>& keysOut)
+{
+    const u32 h = hashXZ(sx, sz, worldSeed ^ 0x517);
+    const u32 sel = h & 0xFF;
+    if (sel >= 51) return false;   // не деревня (по логике features)
+
+    // Совпадает с features::structs::layoutFor
+    const i32 baseX = sx * 256;
+    const i32 baseZ = sz * 256;
+    const i32 ox = (i32)((h >> 8) & 0x3F);
+    const i32 oz = (i32)((h >> 14) & 0x3F);
+    const i32 half = 48;
+    const i32 cx = baseX + ox + 32;
+    const i32 cz = baseZ + oz + 32;
+
+    const i32 wy = world.generator().surfaceHeight(cx, cz);
+
+    out.clear();
+    keysOut.clear();
+
+    auto addNpc = [&](u16 type, f32 ox, f32 oz) {
+        NpcSpec s;
+        s.typeId = type;
+        i32 px = cx + (i32)ox;
+        i32 pz = cz + (i32)oz;
+        i32 py = world.generator().surfaceHeight(px, pz);
+        s.pos = { (f32)px + 0.5f, (f32)py + 0.5f, (f32)pz + 0.5f };
+        out.push_back(s);
+    };
+
+    // 1 элдер (рядом с колодцем)
+    addNpc(NPC_QUEST_GIVER, 2.f, 2.f);
+    // 1-2 торговца
+    addNpc(NPC_TRADER, -3.f, 2.f);
+    if ((h >> 20) & 1) addNpc(NPC_TRADER, 3.f, -3.f);
+    // 1 кузнец
+    addNpc(NPC_BLACKSMITH, -5.f, -3.f);
+    // 1 лекарь
+    addNpc(NPC_HEALER, 5.f, 5.f);
+    // 3-5 стражников
+    i32 guards = 3 + (i32)((h >> 22) & 0x3);
+    for (i32 i = 0; i < guards; ++i) {
+        f32 ang = (f32)i / (f32)guards * 6.28318f;
+        f32 r = 12.f + (f32)((h >> (i * 2)) & 0x7);
+        addNpc(NPC_GUARD, std::cos(ang) * r, std::sin(ang) * r);
+    }
+    // 3-6 жителей (случайно разбросаны)
+    i32 villagers = 3 + (i32)((h >> 26) & 0x3);
+    for (i32 i = 0; i < villagers; ++i) {
+        f32 ang = (f32)((h >> (i + 4)) & 0xFF) / 255.f * 6.28318f;
+        f32 r   = 6.f + (f32)((h >> (i * 3 + 8)) & 0xF);
+        addNpc(NPC_VILLAGER, std::cos(ang) * r, std::sin(ang) * r);
+    }
+
+    // Индексы для ключей
+    for (u32 i = 0; i < out.size(); ++i) {
+        keysOut.push_back(npcPersistentKey(sx, sz, i));
+    }
+
+    (void)half; (void)wy;
+    return true;
+}
+
+} // namespace
+
+void NpcSpawner::update(world::ChunkManager& world,
+                        ecs::Registry& reg,
+                        const glm::vec3& playerPos,
+                        u64 worldSeed)
+{
+    spawnTimer_ += 1.f / 60.f;
+    despawnTimer_ += 1.f / 60.f;
+
+    // ---- Спавн ----
+    if (spawnTimer_ >= 0.75f) {
+        spawnTimer_ = 0.f;
+
+        const i32 playerSx = (i32)std::floor(playerPos.x / (f32)SUPER_BLOCKS);
+        const i32 playerSz = (i32)std::floor(playerPos.z / (f32)SUPER_BLOCKS);
+
+        for (i32 dz = -2; dz <= 2; ++dz) {
+            for (i32 dx = -2; dx <= 2; ++dx) {
+                const i32 sx = playerSx + dx;
+                const i32 sz = playerSz + dz;
+
+                // Уже есть NPC из этой деревни?
+                // Проверяем по наличию хотя бы одного NpcAI с ключом super-chunk.
+                // Простой способ — используем первый ключ как маркер.
+                bool anyExists = false;
+                {
+                    auto& pool = reg.pool<NpcAI>();
+                    for (usize i = 0; i < pool.size(); ++i) {
+                        auto* ai = pool.get(pool.entityAt((u32)i));
+                        if (!ai) continue;
+                        // Используем homePos как маркер деревни
+                        // Ищем совпадение по super-chunk
+                        i32 nSx = (i32)std::floor(ai->homePos.x / (f32)SUPER_BLOCKS);
+                        i32 nSz = (i32)std::floor(ai->homePos.z / (f32)SUPER_BLOCKS);
+                        if (nSx == sx && nSz == sz) {
+                            anyExists = true;
+                            break;
+                        }
+                    }
+                }
+                if (anyExists) continue;
+
+                std::vector<NpcSpec> specs;
+                std::vector<u64> keys;
+                if (!generateVillageNpcs(world, sx, sz, worldSeed, specs, keys)) continue;
+
+                // Проверка расстояния до игрока — не спавним далеко
+                f32 ddx = specs.empty() ? 9999.f
+                                        : specs[0].pos.x - playerPos.x;
+                f32 ddz = specs.empty() ? 9999.f
+                                        : specs[0].pos.z - playerPos.z;
+                if (ddx * ddx + ddz * ddz > SPAWN_DIST * SPAWN_DIST) continue;
+
+                for (const auto& s : specs) {
+                    const NpcDef& def = npcRegistry().get(s.typeId);
+                    if (def.maxHealth <= 0.f) continue;
+
+                    ecs::Entity e = reg.create();
+
+                    ecs::Transform tf;
+                    tf.position = s.pos;
+                    reg.add(e, tf);
+
+                    reg.add(e, ecs::Velocity{});
+                    reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
+
+                    ecs::Collider col;
+                    col.halfExtents = glm::vec3(def.bodyRadius,
+                                                def.bodyHeight * 0.5f,
+                                                def.bodyRadius);
+                    col.isStatic = false;
+                    reg.add(e, col);
+
+                    reg.add(e, ecs::Kind{ ecs::EntityKind::NPC });
+                    reg.add(e, ecs::NPCTag{});
+
+                    combat::Combatant cmb;
+                    cmb.faction = combat::Faction::NPC;
+                    cmb.radius  = def.bodyRadius;
+                    cmb.height  = def.bodyHeight;
+                    reg.add(e, cmb);
+
+                    reg.add(e, combat::StatusEffects{});
+
+                    NpcTag tag;
+                    tag.id = s.typeId;
+                    reg.add(e, tag);
+
+                    NpcAI ai;
+                    ai.homePos = s.pos;
+                    ai.state   = NpcAI::Idle;
+                    reg.add(e, ai);
+
+                    ++activeCount_;
+                }
+            }
+        }
+    }
+
+    // ---- Деспавн ----
+    if (despawnTimer_ >= 2.0f) {
+        despawnTimer_ = 0.f;
+
+        std::vector<ecs::Entity> toRemove;
+        auto& pool = reg.pool<NpcAI>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            ecs::Entity e = pool.entityAt((u32)i);
+            auto* ai = pool.get(e);
+            auto* tf = reg.get<Transform>(e);
+            if (!ai || !tf) continue;
+
+            glm::vec3 d = tf->position - playerPos;
+            d.y = 0.f;
+            if (glm::length(d) > DESPAWN_DIST) {
+                toRemove.push_back(e);
+            }
+        }
+        for (auto e : toRemove) {
+            reg.destroy(e);
+            if (activeCount_ > 0) --activeCount_;
+        }
+    }
+}
+
+} // namespace npc

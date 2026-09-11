@@ -1,0 +1,53 @@
+﻿# Build outputs
+build/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Native
+*.o
+*.so
+*.a
+*.d
+.ninja_deps
+.ninja_log
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# Android
+.gradle/
+local.properties
+app/src/main/jniLibs/
+app/src/main/assets/shaders/
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Keystores — не коммитим!
+*.keystore
+*.jks
+
+# Termux
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# IDE
+.vscode/
+*.code-workspace
+
+# Third-party (клонируется build.sh)
+third_party/
+
+# Локальные скрипты
+run.sh
+deploy.sh
