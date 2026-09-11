@@ -1,14 +1,16 @@
-﻿#pragma once
+/**
+ * @file scroll.h
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
+#pragma once
 #include "../core/types.h"
 
 namespace ui {
 
-// ============================================================
-// Скролл для списков (крафт, торговля, квесты, чат).
-//
-// Хранит смещение в "пикселях контента", максимальное значение,
-// скорость для инерции. На вход — только дельты касаний.
-// ============================================================
+/// Скролл для списков (крафт, торговля, квесты, чат).
+///
+/// Хранит смещение в "пикселях контента", максимальное значение,
+/// скорость для инерции. На вход — только дельты касаний.
 struct Scroll {
     f32 offset      = 0.f;   // текущее смещение в пикселях
     f32 maxOffset   = 0.f;   // верхняя граница (зависит от контента)
@@ -16,13 +18,13 @@ struct Scroll {
     f32 friction    = 6.f;   // коэффициент затухания
     f32 minVelocity = 4.f;   // порог остановки
 
-    // Активное перетаскивание
+    /// Активное перетаскивание
     bool dragging   = false;
     i32  touchId    = -1;
     f32  dragStartY = 0.f;
     f32  dragStartOffset = 0.f;
 
-    // ---- Установка границ ----
+    /// ---- Установка границ ----
     void setMax(f32 m) {
         maxOffset = (m > 0.f) ? m : 0.f;
         clampOffset();
@@ -38,8 +40,8 @@ struct Scroll {
         if (offset > maxOffset)  offset = maxOffset;
     }
 
-    // ---- Управление перетаскиванием ----
-    // Возвращает true, если тач захвачен.
+    /// ---- Управление перетаскиванием ----
+    /// Возвращает true, если тач захвачен.
     bool beginDrag(i32 id, f32 y) {
         if (dragging) return false;
         dragging = true;
@@ -50,7 +52,7 @@ struct Scroll {
         return true;
     }
 
-    // Обновление позиции. dyPixelsToContent — множитель (обычно 1.0).
+    /// Обновление позиции. dyPixelsToContent — множитель (обычно 1.0).
     bool updateDrag(i32 id, f32 y, f32 pixelToContent = 1.f) {
         if (!dragging || touchId != id) return false;
         f32 dy = y - dragStartY;
@@ -80,7 +82,7 @@ struct Scroll {
         return true;
     }
 
-    // ---- Инерция / покадровое обновление ----
+    /// ---- Инерция / покадровое обновление ----
     void tick(f32 dt) {
         if (dragging) return;
         if (velocity > -minVelocity && velocity < minVelocity) {
@@ -105,7 +107,7 @@ struct Scroll {
         touchId = -1; dragStartY = 0.f; dragStartOffset = 0.f;
     }
 
-    // ---- Утилиты для рендера ----
+    /// ---- Утилиты для рендера ----
     i32 firstVisibleRow(f32 rowHeight, f32 rowGap) const {
         if (rowHeight + rowGap <= 0.f) return 0;
         return (i32)(offset / (rowHeight + rowGap));

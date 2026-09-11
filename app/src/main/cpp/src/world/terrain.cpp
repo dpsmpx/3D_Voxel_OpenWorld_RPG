@@ -1,4 +1,9 @@
-﻿#include "terrain.h"
+/**
+ * @file terrain.cpp
+ * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
+ */
+#include "terrain.h"
+#include "block.h"
 #include <cmath>
 #include <algorithm>
 
@@ -12,52 +17,62 @@ TerrainGenerator::TerrainGenerator(u64 seed)
       seed_(seed)
 {}
 
-i32 TerrainGenerator::surfaceHeight(i32 x, i32 z) const {
-    // Базовая высота от климата
-    BiomeField::Sample clim = biome_.sample(x, z, 32);
-    f32 h = 32.f + clim.heightMod;
+TerrainGenerator::Column TerrainGenerator::column(i32 x, i32 z) const {
+    Column col;
+
+    // Шумовые поля не зависят от высоты — считаем их один раз.
+    col.climate = biome_.fields(x, z);
+
+    f32 h = 32.f + col.climate.heightMod;
 
     // Локальная детализация (мелкий рельеф)
-    f32 detail = heightBase_.fbm3D((f32)x * 0.015f, 0.f, (f32)z * 0.015f, 3);
-    h += detail * 4.f;
+    h += heightBase_.fbm3D((f32)x * 0.015f, 0.f, (f32)z * 0.015f, 3) * 4.f;
 
     // Скалы в горах
-    if (clim.peaks > 0.3f && clim.erosion < 0.5f) {
-        f32 ridge = 1.f - std::fabs(heightBase_.sample3D((f32)x * 0.03f, 0.f, (f32)z * 0.03f));
-        h += ridge * clim.peaks * 12.f;
+    if (col.climate.peaks > 0.3f && col.climate.erosion < 0.5f) {
+        const f32 ridge =
+            1.f - std::fabs(heightBase_.sample3D((f32)x * 0.03f, 0.f, (f32)z * 0.03f));
+        h += ridge * col.climate.peaks * 12.f;
     }
 
-    if (h < 1.f)  h = 1.f;
+    if (h < 1.f)   h = 1.f;
     if (h > 127.f) h = 127.f;
-    return (i32)h;
+    col.surface = (i32)h;
+
+    // Биом уточняется уже по фактической высоте.
+    biome_.classify(col.climate, col.surface);
+    return col;
+}
+
+i32 TerrainGenerator::surfaceHeight(i32 x, i32 z) const {
+    return column(x, z).surface;
 }
 
 BiomeId TerrainGenerator::biomeAt(i32 x, i32 z) const {
-    i32 h = surfaceHeight(x, z);
-    return biome_.sample(x, z, h).biome;
+    return column(x, z).climate.biome;
 }
 
 BiomeField::Sample TerrainGenerator::sampleClimate(i32 x, i32 z, i32 surfaceY) const {
     return biome_.sample(x, z, surfaceY);
 }
 
+TerrainGenerator::CaveDensity
+TerrainGenerator::caveDensity(f32 x, f32 y, f32 z) const {
+    // Две ridged-поверхности: туннель там, где обе близки к единице.
+    // По вертикали шум сжат в 1.6 раза — ходы получаются пологими.
+    constexpr f32 SCALE = 1.f / 48.f;
+    const f32 sx = x * SCALE, sy = y * SCALE * 1.6f, sz = z * SCALE;
+
+    CaveDensity d;
+    const f32 a = cavesA_.sample3D(sx, sy, sz);
+    const f32 b = cavesB_.sample3D(sx, sy, sz);
+    d.tunnel = std::min(1.f - std::fabs(a), 1.f - std::fabs(b));
+    d.hall   = cavesA_.fbm3D(x * 0.008f, y * 0.015f, z * 0.008f, 3);
+    return d;
+}
+
 bool TerrainGenerator::isCave(i32 x, i32 y, i32 z) const {
-    // Ridged noise: 1 - |n|. Две поверхности → "червячные" туннели.
-    // Туннель образуется там, где ОБА значения близки к 1.
-    const f32 scale = 1.f / 48.f;
-    f32 a = cavesA_.sample3D((f32)x * scale, (f32)y * scale * 1.6f, (f32)z * scale);
-    f32 b = cavesB_.sample3D((f32)x * scale, (f32)y * scale * 1.6f, (f32)z * scale);
-    f32 ridgeA = 1.f - std::fabs(a);
-    f32 ridgeB = 1.f - std::fabs(b);
-
-    // Обе поверхности в узком коридоре
-    if (ridgeA > 0.90f && ridgeB > 0.90f) return true;
-
-    // Большие залы — низкочастотный шум
-    f32 hall = cavesA_.fbm3D((f32)x * 0.008f, (f32)y * 0.015f, (f32)z * 0.008f, 3);
-    if (hall > 0.65f && y < 40) return true;
-
-    return false;
+    return isCaveAt(caveDensity((f32)x, (f32)y, (f32)z), y);
 }
 
 u16 TerrainGenerator::oreAt(i32 x, i32 y, i32 z) const {

@@ -1,4 +1,8 @@
-﻿#include "components.h"
+/**
+ * @file components.cpp
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
+#include "components.h"
 #include "../ecs/components.h"
 
 namespace combat {

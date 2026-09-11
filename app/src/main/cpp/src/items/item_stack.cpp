@@ -1,4 +1,8 @@
-﻿#include "item_stack.h"
+/**
+ * @file item_stack.cpp
+ * @brief Предметы: определения, инвентарь, лут, подбор, использование.
+ */
+#include "item_stack.h"
 
 namespace items {
 

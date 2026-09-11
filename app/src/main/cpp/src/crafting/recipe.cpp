@@ -1,4 +1,8 @@
-﻿#include "recipe.h"
+/**
+ * @file recipe.cpp
+ * @brief Крафт: рецепты, станции, проверка требований.
+ */
+#include "recipe.h"
 #include "../core/log.h"
 #include "../items/item_def.h"
 

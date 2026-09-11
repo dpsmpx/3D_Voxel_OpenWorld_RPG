@@ -1,4 +1,8 @@
-﻿#include "vk_shader.h"
+/**
+ * @file vk_shader.cpp
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
+#include "vk_shader.h"
 #include "../core/log.h"
 #include <cstdio>
 #include <vector>

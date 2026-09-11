@@ -1,13 +1,15 @@
-﻿#pragma once
+/**
+ * @file enchantment.h
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
+#pragma once
 #include "../core/types.h"
 #include "damage.h"
 
 namespace combat {
 
-// ============================================================
-// Типы зачарований. Накладываются на оружие в кузне (Phase 11)
-// или выпадают как свитки/эссенции.
-// ============================================================
+/// Типы зачарований. Накладываются на оружие в кузне (Phase 11)
+/// или выпадают как свитки/эссенции.
 enum class EnchantmentId : u8 {
     None = 0,
     Fire,        // +fire-урон и поджог
@@ -25,14 +27,12 @@ struct Enchantment {
     u8            level = 1;   // 1..3
 };
 
-// ============================================================
-// Результат применения зачарования к одному удару.
-// primary — модифицированный основной урон.
-// secondary — вторичный магический урон (если зачарование
-//             добавляет стихийный урон).
-// lifestealFraction — доля нанесённого урона, возвращаемая в HP.
-// attackSpeedMult — множитель скорости атаки (для Swift).
-// ============================================================
+/// Результат применения зачарования к одному удару.
+/// primary — модифицированный основной урон.
+/// secondary — вторичный магический урон (если зачарование
+///             добавляет стихийный урон).
+/// lifestealFraction — доля нанесённого урона, возвращаемая в HP.
+/// attackSpeedMult — множитель скорости атаки (для Swift).
 struct EnchantResult {
     DamageInstance primary;
     DamageInstance secondary;
@@ -43,7 +43,7 @@ struct EnchantResult {
 EnchantResult applyEnchantment(const DamageInstance& base,
                                const Enchantment& ench);
 
-// Имя для UI
+/// Имя для UI
 const char* enchantmentName(EnchantmentId id);
 
 } // namespace combat

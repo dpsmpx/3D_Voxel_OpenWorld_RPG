@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file projectile.h
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
+#pragma once
 #include "../core/types.h"
 #include "../ecs/registry.h"
 #include "../world/chunk_manager.h"
@@ -7,9 +11,7 @@
 
 namespace combat {
 
-// ============================================================
-// Компонент снаряда.
-// ============================================================
+/// Компонент снаряда.
 struct Projectile {
     u16             weaponId    = 0;
     glm::vec3       velocity    { 0.f };
@@ -30,9 +32,7 @@ struct Projectile {
     bool            isSpell   = false;
 };
 
-// ============================================================
-// Короткоживущий визуальный эффект попадания.
-// ============================================================
+/// Короткоживущий визуальный эффект попадания.
 struct HitFx {
     f32 lifeTime       = 0.22f;
     f32 lifeRemaining  = 0.22f;
@@ -41,9 +41,7 @@ struct HitFx {
     u32 colorRGBA      = 0xFFFFFFFF;
 };
 
-// ============================================================
-// Параметры создания снаряда.
-// ============================================================
+/// Параметры создания снаряда.
 struct ProjectileSpawnParams {
     u16             weaponId      = 0;
     glm::vec3       origin        { 0.f };
@@ -66,9 +64,7 @@ struct ProjectileSpawnParams {
 ecs::Entity spawnProjectile(ecs::Registry& reg,
                             const ProjectileSpawnParams& params);
 
-// ============================================================
-// Создать визуальный эффект попадания в мировой точке.
-// ============================================================
+/// Создать визуальный эффект попадания в мировой точке.
 ecs::Entity spawnHitFx(ecs::Registry& reg,
                        const glm::vec3& position,
                        u32 colorRGBA,
@@ -76,16 +72,12 @@ ecs::Entity spawnHitFx(ecs::Registry& reg,
                        f32 endScale,
                        f32 lifetime);
 
-// ============================================================
-// Покадровое обновление снарядов.
-// ============================================================
+/// Покадровое обновление снарядов.
 void updateProjectiles(world::ChunkManager& world,
                        ecs::Registry& reg,
                        f32 dt);
 
-// ============================================================
-// Покадровое обновление HitFx.
-// ============================================================
+/// Покадровое обновление HitFx.
 void updateHitFx(ecs::Registry& reg, f32 dt);
 
 ecs::Entity projectileCheckEntityHit(ecs::Registry& reg,

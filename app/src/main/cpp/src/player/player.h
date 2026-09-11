@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file player.h
+ * @brief Игрок: ввод, движение, взаимодействие с миром и NPC.
+ */
+#pragma once
 #include "../core/types.h"
 #include "../ecs/registry.h"
 #include "../physics/character_controller.h"
@@ -44,15 +48,15 @@ class Player {
 public:
     void init(ecs::Registry& reg, const glm::vec3& spawnPos);
 
-    // Базовый апдейт без spatial hash (fallback).
+    /// Базовый апдейт без spatial hash (fallback).
     void update(world::ChunkManager& world,
                 const PlayerInput& input,
                 f32 dt,
                 f32 cameraYaw,
                 f32 cameraPitch);
 
-    // Phase 15: апдейт с spatial hash — используется в main.
-    // hash может быть nullptr — тогда падаем на полный перебор.
+    /// Phase 15: апдейт с spatial hash — используется в main.
+    /// hash может быть nullptr — тогда падаем на полный перебор.
     void updateWithHash(world::ChunkManager& world,
                         const combat::SpatialHash* hash,
                         const PlayerInput& input,
@@ -71,7 +75,7 @@ public:
 
     ecs::Entity entity() const { return entity_; }
 
-    // Прямой доступ к реестру — нужен UI и другим системам.
+    /// Прямой доступ к реестру — нужен UI и другим системам.
     ecs::Registry* registryHandle() const { return reg_; }
 
     progression::Progression* progression();
@@ -94,7 +98,7 @@ public:
     void setActiveHotbar(u8 idx);
     u16 selectedBlock() const;
 
-    // Камера
+    /// Камера
     CameraMode cameraMode = CameraMode::ThirdPerson;
     f32 thirdPersonDistance = 5.5f;
     f32 thirdPersonHeight   = 1.10f;
@@ -130,7 +134,7 @@ public:
     // Пока не используется — оставлено для расширения.
 
 private:
-    // Общая реализация для update / updateWithHash.
+    /// Общая реализация для update / updateWithHash.
     void updateImpl(world::ChunkManager& world,
                     const combat::SpatialHash* hash,
                     const PlayerInput& input,

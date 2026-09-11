@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Иконка запуска: изометрический воксельный блок.
+  Векторная, поэтому не нужны растровые mipmap под каждую плотность.
+  Рабочая область adaptive icon — центральные 72x72 из 108x108.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- верхняя грань -->
+    <path
+        android:fillColor="#7BC96F"
+        android:pathData="M54,26 L80,40 L54,54 L28,40 Z" />
+    <!-- левая грань -->
+    <path
+        android:fillColor="#4E8B46"
+        android:pathData="M28,40 L54,54 L54,84 L28,70 Z" />
+    <!-- правая грань -->
+    <path
+        android:fillColor="#3A6B35"
+        android:pathData="M80,40 L80,70 L54,84 L54,54 Z" />
+</vector>

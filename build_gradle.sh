@@ -1,4 +1,4 @@
-﻿#!/data/data/com.termux/files/usr/bin/bash
+#!/data/data/com.termux/files/usr/bin/bash
 # ============================================================
 # VoxelRPG: сборка APK через gradle (альтернативный путь).
 #

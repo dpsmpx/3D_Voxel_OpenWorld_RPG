@@ -1,4 +1,8 @@
-﻿#include "inventory.h"
+/**
+ * @file inventory.cpp
+ * @brief Предметы: определения, инвентарь, лут, подбор, использование.
+ */
+#include "inventory.h"
 #include "../core/log.h"
 #include <algorithm>
 #include <cstring>

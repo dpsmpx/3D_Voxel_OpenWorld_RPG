@@ -1,16 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.voxelrpg.game"
-    android:versionCode="1"
-    android:versionName="1.0.0">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- applicationId, versionCode и versionName задаются в app/build.gradle.
+         Атрибут package здесь запрещён начиная с AGP 8. -->
+
+    <!-- Рендер целиком на Vulkan 1.1: требуем уровень 1.1 (0x00401000). -->
     <uses-feature
-        android:glEsVersion="0x00030001"
+        android:name="android.hardware.vulkan.version"
+        android:version="0x00401000"
         android:required="true" />
 
     <uses-feature
-        android:name="android.hardware.vulkan.version"
-        android:version="0x400003"
+        android:name="android.hardware.vulkan.level"
+        android:version="1"
         android:required="false" />
 
     <uses-feature
@@ -21,14 +23,12 @@
         android:name="android.hardware.gamepad"
         android:required="false" />
 
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+    <!-- Сохранения лежат в internalDataPath, разрешения на внешнее
+         хранилище не нужны. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
-        android:label="Voxel RPG"
+        android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:hasCode="false"
@@ -41,7 +41,7 @@
 
         <activity
             android:name="android.app.NativeActivity"
-            android:label="Voxel RPG"
+            android:label="@string/app_name"
             android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|density|uiMode"
             android:screenOrientation="sensorLandscape"
             android:exported="true"

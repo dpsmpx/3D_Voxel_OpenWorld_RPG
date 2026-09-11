@@ -1,4 +1,4 @@
-﻿// Корневой build.gradle
+// Корневой build.gradle
 buildscript {
     repositories {
         google()

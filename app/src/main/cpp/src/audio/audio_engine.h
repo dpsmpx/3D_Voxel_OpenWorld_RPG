@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file audio_engine.h
+ * @brief Звук: движок AAudio, процедурные эффекты, динамическая музыка.
+ */
+#pragma once
 #include "../core/types.h"
 #include "audio_types.h"
 #include "sound.h"
@@ -104,6 +108,8 @@ private:
     AudioListener listenerCache_;
 };
 
+/// Глобальный экземпляр движка. Создаётся при первом обращении,
+/// живёт до конца процесса.
 AudioEngine& engine();
 
 } // namespace audio

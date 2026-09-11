@@ -1,219 +1,242 @@
+/**
+ * @file registry.h
+ * @brief Entity-Component-System: реестр поверх EnTT.
+ */
 #pragma once
 #include "../core/types.h"
 #include "../core/log.h"
-#include <vector>
-#include <typeindex>
-#include <unordered_map>
+#include "entity.h"
+#include <entt/entt.hpp>
+#include <array>
 #include <memory>
 #include <utility>
+#include <vector>
 
 namespace ecs {
 
 // ============================================================
-// Sparse-set ��������� ��� ������ ���� ����������.
-// O(1) ����������/��������/�����, ������� ��������.
+// ComponentPool<T> — представление хранилища EnTT в терминах
+// игрового кода: плотный массив компонентов с доступом по индексу.
+//
+// Собственного хранения нет: это тонкая обёртка над
+// entt::storage<T>, которая переводит entt::entity в ecs::Entity
+// и обратно. Порядок обхода — порядок EnTT.
 // ============================================================
 template<typename T>
 class ComponentPool {
 public:
+    using Storage = entt::storage<T>;
+
+    explicit ComponentPool(entt::registry& reg, Storage& st)
+        : reg_(&reg), st_(&st) {}
+
+    /// Добавляет компонент; повторный вызов перезаписывает существующий.
     void add(Entity e, T c) {
-        ASSERT(!has(e));
-        ensure(e.id);
-        sparse_[e.id] = (u32)dense_.size();
-        entities_.push_back(e);
-        dense_.push_back(std::move(c));
+        const EnttEntity h = e.toEntt();
+        if (!reg_->valid(h)) return;
+        if (st_->contains(h)) st_->patch(h, [&](T& dst) { dst = std::move(c); });
+        else                  st_->emplace(h, std::move(c));
     }
 
     void remove(Entity e) {
-        if (!has(e)) return;
-        u32 idx = sparse_[e.id];
-        u32 last = (u32)dense_.size() - 1;
-        if (idx != last) {
-            dense_[idx]    = std::move(dense_[last]);
-            entities_[idx] = entities_[last];
-            sparse_[entities_[idx].id] = idx;
-        }
-        dense_.pop_back();
-        entities_.pop_back();
-        sparse_[e.id] = NIL;
+        const EnttEntity h = e.toEntt();
+        if (st_->contains(h)) st_->erase(h);
     }
 
     T* get(Entity e) {
-        if (!has(e)) return nullptr;
-        return &dense_[sparse_[e.id]];
+        const EnttEntity h = e.toEntt();
+        return st_->contains(h) ? &st_->get(h) : nullptr;
     }
 
     const T* get(Entity e) const {
-        if (!has(e)) return nullptr;
-        return &dense_[sparse_[e.id]];
+        const EnttEntity h = e.toEntt();
+        return st_->contains(h) ? &st_->get(h) : nullptr;
     }
 
-    bool has(Entity e) const {
-        return e.id < sparse_.size() && sparse_[e.id] != NIL;
+    bool has(Entity e) const { return st_->contains(e.toEntt()); }
+
+    usize size() const { return st_->size(); }
+
+    /// Сущность по плотному индексу [0, size()).
+    Entity entityAt(u32 i) const { return Entity::fromEntt(st_->data()[i]); }
+
+    /// Компонент по тому же плотному индексу.
+    T&       at(u32 i)       { return st_->get(st_->data()[i]); }
+    const T& at(u32 i) const { return st_->get(st_->data()[i]); }
+
+    /// Снимок списка сущностей. Копия, а не ссылка: обход можно
+    /// безопасно совмещать с добавлением и удалением компонентов.
+    std::vector<Entity> entities() const {
+        std::vector<Entity> out;
+        out.reserve(st_->size());
+        for (usize i = 0; i < st_->size(); ++i) out.push_back(entityAt((u32)i));
+        return out;
     }
-
-    usize size() const { return dense_.size(); }
-    Entity  entityAt(u32 i) const { return entities_[i]; }
-    T&      at(u32 i)       { return dense_[i]; }
-    const T& at(u32 i) const{ return dense_[i]; }
-
-    auto& entities() { return entities_; }
-    auto& data()     { return dense_; }
 
 private:
-    void ensure(u32 id) {
-        if (id >= sparse_.size()) sparse_.resize(id + 1, NIL);
-    }
-
-    static constexpr u32 NIL = 0xFFFFFFFFu;
-    std::vector<u32>    sparse_;   // e.id -> dense index
-    std::vector<Entity> entities_;
-    std::vector<T>      dense_;
+    entt::registry* reg_;
+    Storage*        st_;
 };
 
 // ============================================================
-// Registry � �������� ���� ����� + ������������� ��������� ���������.
+// Registry — владелец сущностей и компонентов.
+//
+// Хранение и итерацию выполняет EnTT (требование ТЗ 3.2);
+// этот класс даёт игровому коду привычный интерфейс и
+// перегрузки для подсистем, хранящих сущность как u32.
+//
+// Не потокобезопасен: используется из игрового потока, фоновые
+// задачи работают с копиями данных.
 // ============================================================
 class Registry {
 public:
-    Entity create() {
-        u32 id;
-        if (!free_.empty()) {
-            id = free_.back();
-            free_.pop_back();
-        } else {
-            id = ++nextId_;
-            if (id == 0) id = ++nextId_;  // ���������� 0 (NULL)
-            generations_.push_back(0);
-        }
-        Entity e{ id, generations_[id - 1] };
-        alive_.push_back(e);
-        return e;
-    }
+    Entity create() { return Entity::fromEntt(reg_.create()); }
 
+    /// Удаляет сущность и все её компоненты.
+    /// Повторный вызов со старым дескриптором ничего не делает.
     void destroy(Entity e) {
-        if (!e.valid() || e.id > nextId_) return;
-        // ���������� �� ���� �����
-        for (auto& [_, base] : pools_) base->destroy(e);
-        // ��������� ���������
-        generations_[e.id - 1]++;
-        free_.push_back(e.id);
+        const EnttEntity h = e.toEntt();
+        if (reg_.valid(h)) reg_.destroy(h);
     }
 
-    bool alive(Entity e) const {
-        if (!e.valid() || e.id > nextId_) return false;
-        return generations_[e.id - 1] == e.gen;
+    bool alive(Entity e) const { return reg_.valid(e.toEntt()); }
+
+    /// Восстанавливает дескриптор по «голому» индексу.
+    /// Текущее поколение берётся у реестра: вызывающий хранил
+    /// только индекс. Возвращает невалидный Entity, если сущности нет.
+    Entity fromId(u32 id) const {
+        if (id == 0) return Entity{};
+        const auto idx = (EnttTraits::entity_type)(id - 1u);
+
+        // registry::current отдаёт поколение, закреплённое сейчас за
+        // индексом. Для никогда не выдававшегося или освобождённого
+        // индекса это версия-надгробие.
+        const EnttEntity probe = EnttTraits::construct(idx, 0);
+        const auto version = reg_.current(probe);
+        if (version == EnttTraits::to_version(entt::tombstone)) return Entity{};
+
+        const EnttEntity actual = EnttTraits::construct(idx, version);
+        if (!reg_.valid(actual)) return Entity{};
+        return Entity::fromEntt(actual);
     }
 
+    usize aliveCount() const {
+        const auto* storage = reg_.storage<EnttEntity>();
+        return storage ? storage->free_list() : 0;
+    }
+
+    /// Хранилище компонентов данного типа.
+    ///
+    /// Возвращается ссылка на закэшированный дескриптор: игровой код
+    /// повсеместно пишет `auto& pool = reg.pool<T>()`, а сам дескриптор
+    /// — это пара указателей, создавать его каждый раз незачем.
     template<typename T>
     ComponentPool<T>& pool() {
-        auto key = std::type_index(typeid(T));
-        auto it = pools_.find(key);
-        if (it != pools_.end())
-            return static_cast<PoolHolder<T>*>(it->second.get())->pool;
-        auto p = std::make_unique<PoolHolder<T>>();
-        auto* raw = &p->pool;
-        pools_[key] = std::move(p);
-        return *raw;
+        const u32 tid = componentTypeId<T>();
+        if (tid >= poolCache_.size()) poolCache_.resize(tid + 1);
+        if (!poolCache_[tid]) {
+            poolCache_[tid] = std::make_unique<PoolHolder<T>>(
+                ComponentPool<T>(reg_, reg_.storage<T>()));
+        }
+        return static_cast<PoolHolder<T>*>(poolCache_[tid].get())->pool;
     }
 
     template<typename T>
     void add(Entity e, T c) { pool<T>().add(e, std::move(c)); }
 
     template<typename T>
-    T* get(Entity e) { return pool<T>().get(e); }
+    T* get(Entity e) {
+        const EnttEntity h = e.toEntt();
+        if (!reg_.valid(h)) return nullptr;
+        return reg_.try_get<T>(h);
+    }
 
     template<typename T>
-    bool has(Entity e) { return pool<T>().has(e); }
+    bool has(Entity e) {
+        const EnttEntity h = e.toEntt();
+        return reg_.valid(h) && reg_.all_of<T>(h);
+    }
 
     template<typename T>
-    void remove(Entity e) { pool<T>().remove(e); }
+    void remove(Entity e) {
+        const EnttEntity h = e.toEntt();
+        if (reg_.valid(h)) reg_.remove<T>(h);
+    }
+
+    // ------------------------------------------------------------
+    // Перегрузки для подсистем, хранящих сущность как «голый» u32
+    // (урон, снаряды, диалоги, UI, сохранения).
+    //
+    // Внимание: индекс не несёт поколения, поэтому обращение по
+    // нему попадёт в новую сущность, если слот переиспользован.
+    // Там, где это важно, храните Entity.
+    // ------------------------------------------------------------
+    template<typename T> T*   get(u32 id)      { return get<T>(fromId(id)); }
+    template<typename T> bool has(u32 id)      { return has<T>(fromId(id)); }
+    template<typename T> void remove(u32 id)   { remove<T>(fromId(id)); }
+    template<typename T> void add(u32 id, T c) { add<T>(fromId(id), std::move(c)); }
+    void destroy(u32 id)                       { destroy(fromId(id)); }
+    bool alive(u32 id) const                   { return alive(fromId(id)); }
 
     // ============================================================
-    // �������� �� ���������, ������� ��� ������������� ����������.
-    // ��������� �� ������ ���������� ����, ��� ��������.
+    // View — обход сущностей, имеющих все перечисленные компоненты.
+    // Пересечение наборов выполняет EnTT; список копируется, чтобы
+    // callback мог безопасно добавлять и удалять компоненты.
     // ============================================================
     template<typename... Cs>
-    struct View {
-        explicit View(Registry& r) : reg(r) {
-            std::initializer_list<usize> sizes = { reg.pool<Cs>().size()... };
-            smallest_ = 0;
-            usize minSize = ~usize(0);
-            usize idx = 0;
-            for (usize s : sizes) {
-                if (s < minSize) { minSize = s; smallest_ = idx; }
-                ++idx;
-            }
-        }
+    class View {
+    public:
+        explicit View(entt::registry& r) : reg_(&r) {}
 
         template<typename F>
         void each(F&& f) {
-            eachImpl(std::forward<F>(f),
-                     std::index_sequence_for<Cs...>{});
-        }
+            static_assert(sizeof...(Cs) > 0, "View требует хотя бы один компонент");
+            std::vector<EnttEntity> snapshot;
+            auto v = reg_->view<Cs...>();
+            snapshot.reserve(v.size_hint());
+            for (auto h : v) snapshot.push_back(h);
 
-    private:
-        template<typename F, usize... Is>
-        void eachImpl(F&& f, std::index_sequence<Is...>) {
-            // �������� ������ �� ��� ����
-            auto& primary = pickPool<Is...>(std::integral_constant<usize, 0>{});
-            (void)primary;
-            iterateByIndex<F, Is...>(std::forward<F>(f),
-                                     std::integral_constant<usize, 0>{},
-                                     std::make_index_sequence<sizeof...(Cs)>{});
-        }
-
-        // ��� ���������� ����������; � ���������� ���������� ��������
-        // and-it-join ��������. ��� �������� ����� ����� � ������ ��
-        // ������ ���������� ���� � ��������� has<> �� ���������.
-
-        template<usize... Is>
-        auto& pickPool(std::integral_constant<usize, 0>) {
-            // ���������� ������ ��� � ��������, ������������ ��������
-            // ������ � iterateByIndex.
-            return reg.pool<std::tuple_element_t<0, std::tuple<Cs...>>>();
-        }
-
-        template<typename F, usize... Is>
-        void iterateByIndex(F&& f,
-                            std::integral_constant<usize, 0>,
-                            std::index_sequence<Is...>)
-        {
-            // ��������� �� ������� ���������� (���������).
-            // � ��������� �������� � �������� "smallest pool first".
-            auto& p = reg.pool<std::tuple_element_t<0, std::tuple<Cs...>>>();
-            auto& ents = p.entities();
-            for (usize i = 0; i < ents.size(); ++i) {
-                Entity e = ents[i];
-                if ((reg.pool<Cs>().has(e) && ...)) {
-                    f(e, *reg.pool<Cs>().get(e)...);
-                }
+            for (auto h : snapshot) {
+                if (!reg_->valid(h)) continue;
+                if (!reg_->all_of<Cs...>(h)) continue;
+                f(Entity::fromEntt(h), reg_->get<Cs>(h)...);
             }
         }
 
-        Registry& reg;
-        usize smallest_;
+    private:
+        entt::registry* reg_;
     };
 
     template<typename... Cs>
-    View<Cs...> view() { return View<Cs...>(*this); }
+    View<Cs...> view() { return View<Cs...>(reg_); }
+
+    /// Прямой доступ к реестру EnTT — для кода, которому нужны
+    /// возможности библиотеки сверх этой обёртки.
+    entt::registry&       raw()       { return reg_; }
+    const entt::registry& raw() const { return reg_; }
 
 private:
-    struct IPoolBase {
-        virtual ~IPoolBase() = default;
-        virtual void destroy(Entity e) = 0;
-    };
+    /// Идентификаторы типов компонентов без RTTI: сборка идёт с
+    /// -fno-rtti, поэтому typeid использовать нельзя.
+    struct IPoolHolder { virtual ~IPoolHolder() = default; };
     template<typename T>
-    struct PoolHolder : IPoolBase {
+    struct PoolHolder : IPoolHolder {
+        explicit PoolHolder(ComponentPool<T> p) : pool(std::move(p)) {}
         ComponentPool<T> pool;
-        void destroy(Entity e) override { pool.remove(e); }
     };
 
-    u32 nextId_ = 0;
-    std::vector<u32>    generations_;
-    std::vector<Entity> alive_;
-    std::vector<u32>    free_;
-    std::unordered_map<std::type_index, std::unique_ptr<IPoolBase>> pools_;
+    static u32 nextComponentTypeId() {
+        static u32 counter = 0;
+        return counter++;
+    }
+    template<typename T>
+    static u32 componentTypeId() {
+        static const u32 id = nextComponentTypeId();
+        return id;
+    }
+
+    entt::registry                            reg_;
+    std::vector<std::unique_ptr<IPoolHolder>> poolCache_;
 };
 
 } // namespace ecs

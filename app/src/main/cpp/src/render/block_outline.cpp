@@ -1,8 +1,19 @@
-﻿#include "block_outline.h"
+/**
+ * @file block_outline.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
+#include "block_outline.h"
 #include "../core/log.h"
 #include <cstring>
 
 namespace render {
+
+// Вершинный формат контура: позиция + цвет, без UV.
+static const vk::VertexBinding kBindings[1] = { { 28, false } };
+static const vk::VertexAttr kAttrs[2] = {
+    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    0  },   // inPos
+    { 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 12 },   // inColor
+};
 
 struct OutlineVertex {
     glm::vec3 pos;
@@ -46,6 +57,10 @@ bool BlockOutline::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLay
     d.depthTest   = true;
     d.depthWrite  = false;
     d.blend       = true;
+    d.bindings     = kBindings;
+    d.bindingCount = 1;
+    d.attrs        = kAttrs;
+    d.attrCount    = 2;
     d.pushConstantSize  = sizeof(BlockOutlinePush);
     d.pushConstantStage = VK_SHADER_STAGE_VERTEX_BIT;
     if (!pipeline_.create(dev_, shaders_, d)) return false;
@@ -72,7 +87,8 @@ void BlockOutline::render(vk::Context& ctx, VkDescriptorSet uboSet,
                        VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
 
     VkDeviceSize offs[] = { 0 };
-    vkCmdBindVertexBuffers(cmd, 0, 1, &vbo_.handle(), offs);
+    const VkBuffer vb = vbo_.handle();
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offs);
     vkCmdDraw(cmd, 24, 1, 0, 0);
 }
 

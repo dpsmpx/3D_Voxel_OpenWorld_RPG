@@ -1,3 +1,7 @@
+/**
+ * @file vk_context.h
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
 #pragma once
 #include "../core/types.h"
 #include <vulkan/vulkan.h>
@@ -16,7 +20,7 @@ public:
     bool beginFrame();
     void endFrame();
 
-    // ---- Accessors ----
+    /// ---- Accessors ----
     VkDevice         device()        const { return device_; }
     VkPhysicalDevice physicalDevice()const { return physical_; }
     VkRenderPass     renderPass()    const { return renderPass_; }
@@ -30,10 +34,36 @@ public:
     u32              frameInFlight() const { return currentFrame_; }
     static constexpr u32 MAX_FRAMES = 2;
 
-    // ---- One-shot submit ----
-    // ��������� fn(cmd) � ��������� ��������� ������, ��� ����������.
-    // ������������ ��� upload (buffer copy, image layout transition).
+    // ---- Одиночная передача ----
+    /// Выполняет fn(cmd) в отдельном командном буфере и ждёт завершения.
+    /// Полная остановка конвейера, поэтому годится только для редких
+    /// операций на старте (layout-переходы текстур). Для потоковой
+    /// загрузки чанков используйте пакет beginTransferBatch/end.
     void submitOneShot(const std::function<void(VkCommandBuffer)>& fn);
+
+    // ---- Пакетная передача ----
+    /// Открывает командный буфер, куда можно сложить произвольное
+    /// число копий. Возвращает VK_NULL_HANDLE при ошибке.
+    /// Вложенные вызовы запрещены.
+    VkCommandBuffer beginTransferBatch();
+
+    /// Отправляет накопленный пакет и ждёт его завершения — один
+    /// vkQueueSubmit и одно ожидание на любое количество копий.
+    void endTransferBatch();
+
+    bool transferBatchOpen() const { return transferCmd_ != VK_NULL_HANDLE; }
+
+    /// Поддерживает ли устройство формат для сэмплирования текстуры.
+    /// Нужно для ASTC: на части GPU его нет, и тогда рендер откатывается
+    /// на несжатый атлас.
+    bool formatSupportsSampling(VkFormat fmt) const {
+        if (!physical_) return false;
+        VkFormatProperties props{};
+        vkGetPhysicalDeviceFormatProperties(physical_, fmt, &props);
+        return (props.optimalTilingFeatures &
+                VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+    }
+
     void waitIdle() const { if (device_) vkDeviceWaitIdle(device_); }
 
 private:
@@ -81,6 +111,10 @@ private:
     u32                      currentFrame_ = 0;
     u32                      imgIdx_ = 0;
     bool                     frameStarted_ = false;
+
+    /// Пакет передач: буфер и забор переиспользуются между кадрами.
+    VkCommandBuffer          transferCmd_   = VK_NULL_HANDLE;
+    VkFence                  transferFence_ = VK_NULL_HANDLE;
 };
 
 } // namespace vk

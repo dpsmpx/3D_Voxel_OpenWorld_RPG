@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file ui_context.h
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
+#pragma once
 #include "../core/types.h"
 #include "../vk/vk_context.h"
 #include "../config/localization.h"
@@ -40,14 +44,14 @@ public:
     void beginFrame();
     void endFrame();
 
-    // ---- Примитивы ----
+    /// ---- Примитивы ----
     void rect(float x, float y, float w, float h, UiColor c);
     void rectOutline(float x, float y, float w, float h, float thickness, UiColor c);
     void text(const std::string& s, float x, float y, float scale, UiColor c);
     float textWidth(const std::string& s, float scale) const;
     float textHeight(float scale) const { return 7.f * scale; }
 
-    // ---- Кнопка ----
+    /// ---- Кнопка ----
     bool button(const std::string& label, Rect r, int interactiveIdx,
                 UiColor bg, UiColor fg);
 
@@ -55,11 +59,11 @@ public:
     int  pushInteractiveRect(Rect r, std::function<void()> onTap);
     bool isInteractivePressed(int idx) const;
 
-    // ---- Маршрутизация тача ----
+    /// ---- Маршрутизация тача ----
     bool handleTouch(i32 id, float px, float py, int phase);
 
-    // ---- Доступ к активному тачу (Phase 13) ----
-    // Позволяет слайдерам и drag-and-drop читать текущую позицию.
+    /// ---- Доступ к активному тачу (Phase 13) ----
+    /// Позволяет слайдерам и drag-and-drop читать текущую позицию.
     bool  hasActivePointer() const { return pointerActive_; }
     i32   activePointerId()  const { return activePointerId_; }
     float pointerX()         const { return pointerX_; }
@@ -68,7 +72,7 @@ public:
         return pointerActive_ && r.contains(pointerX_, pointerY_);
     }
 
-    // ---- Доступ к размеру ----
+    /// ---- Доступ к размеру ----
     i32 screenWidth()  const { return screenW_; }
     i32 screenHeight() const { return screenH_; }
 
@@ -92,8 +96,8 @@ private:
     std::vector<Interactive> interactives_;
     std::vector<PendingTap>  pendingTaps_;
 
-    // Активный тач — тот, который начал первое касание в этом кадре
-    // и ещё не завершился. Используется для слайдеров и drag.
+    /// Активный тач — тот, который начал первое касание в этом кадре
+    /// и ещё не завершился. Используется для слайдеров и drag.
     bool  pointerActive_ = false;
     i32   activePointerId_ = -1;
     float pointerX_ = 0.f;

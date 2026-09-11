@@ -1,4 +1,8 @@
-﻿#include "playtime.h"
+/**
+ * @file playtime.cpp
+ * @brief Настройки, локализация, счётчик игрового времени.
+ */
+#include "playtime.h"
 #include <cstdio>
 
 namespace config {

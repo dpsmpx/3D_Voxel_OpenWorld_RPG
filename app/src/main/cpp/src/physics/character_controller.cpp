@@ -1,4 +1,8 @@
-﻿#include "character_controller.h"
+/**
+ * @file character_controller.cpp
+ * @brief Физика: AABB-коллизия с вокселями, raycast, контроллер персонажа.
+ */
+#include "character_controller.h"
 #include "../world/block.h"
 #include <cmath>
 #include <algorithm>

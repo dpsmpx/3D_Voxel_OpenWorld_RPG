@@ -1,14 +1,16 @@
-﻿#pragma once
+/**
+ * @file vk_descriptors.h
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
+#pragma once
 #include "../core/types.h"
 #include <vulkan/vulkan.h>
 #include <vector>
 
 namespace vk {
 
-// ============================================================
-// DescriptorSet — layout + pool + per-frame sets.
-// На кадр: UBO (binding 0) + atlas (binding 1).
-// ============================================================
+/// DescriptorSet — layout + pool + per-frame sets.
+/// На кадр: UBO (binding 0) + atlas (binding 1).
 class DescriptorSet {
 public:
     bool create(VkDevice dev, u32 framesInFlight);
@@ -17,7 +19,7 @@ public:
     VkDescriptorSetLayout layout() const { return layout_; }
     VkDescriptorSet       set(u32 frame) const { return sets_[frame]; }
 
-    // Привязать ресурсы к конкретному сету кадра.
+    /// Привязать ресурсы к конкретному сету кадра.
     void bindUbo(u32 frame, VkBuffer ubo, u64 size);
     void bindTexture(u32 frame, VkImageView view, VkSampler sampler);
 

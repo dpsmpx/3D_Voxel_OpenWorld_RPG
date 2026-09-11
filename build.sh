@@ -1,4 +1,4 @@
-﻿#!/data/data/com.termux/files/usr/bin/bash
+#!/data/data/com.termux/files/usr/bin/bash
 # ============================================================
 # VoxelRPG: скрипт сборки APK в Termux.
 #
@@ -100,12 +100,26 @@ else
     USE_GRADLE=0
 fi
 
-# ---- GLM ----
-if [ ! -d "$PROJ/third_party/glm" ]; then
+# ---- Заголовочные зависимости ----
+mkdir -p "$PROJ/third_party"
+
+if [ ! -d "$PROJ/third_party/glm/glm" ]; then
     log "Клонирую GLM..."
-    mkdir -p "$PROJ/third_party"
     git clone --depth=1 https://github.com/g-truc/glm.git "$PROJ/third_party/glm"
     ok "GLM готов"
+fi
+
+# EnTT — ECS из ТЗ 3.2. Нужен только single-header.
+if [ ! -f "$PROJ/third_party/entt/include/entt/entt.hpp" ]; then
+    log "Клонирую EnTT..."
+    rm -rf "$PROJ/third_party/entt-src"
+    git clone --depth=1 --branch v3.13.2 \
+        https://github.com/skypjack/entt.git "$PROJ/third_party/entt-src"
+    mkdir -p "$PROJ/third_party/entt/include/entt"
+    cp "$PROJ/third_party/entt-src/single_include/entt/entt.hpp" \
+       "$PROJ/third_party/entt/include/entt/"
+    rm -rf "$PROJ/third_party/entt-src"
+    ok "EnTT готов"
 fi
 
 # ---- Компиляция шейдеров ----
@@ -137,6 +151,13 @@ if [ "$SHADER_COUNT" -eq 0 ]; then
 else
     ok "Скомпилировано шейдеров: $SHADER_COUNT"
 fi
+
+# ---- Атлас блоков в ASTC (ТЗ 3.3) ----
+# Шаг необязательный: без astcenc игра соберёт атлас процедурно
+# при старте, только он займёт вчетверо больше видеопамяти.
+log "Атлас блоков..."
+"$PROJ/tools/atlas/build.sh" "$SRC_DIR/assets" || \
+    warn "Атлас в ASTC не собран — будет процедурный RGBA8"
 
 # ---- CMake ----
 log "Конфигурация CMake ($MODE)..."
@@ -210,14 +231,12 @@ log "aapt2 compile..."
 RES_DIR="$SRC_DIR/res"
 RES_ZIP="$APK_OUT_DIR/res.zip"
 
-if [ -d "$RES_DIR" ]; then
-    aapt2 compile --dir "$RES_DIR" -o "$RES_ZIP"
-else
-    warn "Директория res отсутствует, создаю пустой ресурс"
-    mkdir -p /tmp/empty_res
-    touch /tmp/empty_res/.keep
-    aapt2 compile --dir /tmp/empty_res -o "$RES_ZIP" 2>/dev/null || true
+if [ ! -d "$RES_DIR" ]; then
+    err "Директория ресурсов не найдена: $RES_DIR"
+    err "Манифест ссылается на @mipmap/ic_launcher — без res сборка не пройдёт."
+    exit 1
 fi
+aapt2 compile --dir "$RES_DIR" -o "$RES_ZIP"
 
 # ---- aapt2 link ----
 log "aapt2 link..."
@@ -232,7 +251,6 @@ aapt2 link \
     -o base.apk \
     -I "$ANDROID_JAR" \
     --manifest "$MANIFEST" \
-    --java /tmp/gen \
     --min-sdk-version "$API" \
     --target-sdk-version 34 \
     --version-code 1 \
@@ -240,20 +258,7 @@ aapt2 link \
     --no-version-vectors \
     -A "$SRC_DIR/assets" \
     --auto-add-overlay \
-    "$RES_ZIP" 2>/dev/null || {
-        # Если ресурсов нет, пробуем без них.
-        warn "Повтор aapt2 link без ресурсов..."
-        aapt2 link \
-            -o base.apk \
-            -I "$ANDROID_JAR" \
-            --manifest "$MANIFEST" \
-            --min-sdk-version "$API" \
-            --target-sdk-version 34 \
-            --version-code 1 \
-            --version-name "1.0.0" \
-            -A "$SRC_DIR/assets" \
-            --auto-add-overlay
-    }
+    "$RES_ZIP"
 
 if [ ! -f "base.apk" ]; then
     err "aapt2 link не создал base.apk"
@@ -273,28 +278,52 @@ rm -rf "$STAGING"
 mkdir -p "$STAGING/lib/$ABI"
 cp "$JNI_DIR"/*.so "$STAGING/lib/$ABI/"
 
-# Добавляем в APK
+# Манифест объявляет extractNativeLibs="false": система грузит .so
+# прямо из APK, поэтому они должны лежать без сжатия (-0), иначе
+# установка пройдёт, а запуск — нет.
 cd "$STAGING"
-zip -q -r ../base.apk lib
+zip -q -0 -r ../base.apk lib
 
 cd "$APK_OUT_DIR"
-ok "Native libs добавлены"
+ok "Native libs добавлены (без сжатия)"
 
 # ---- zipalign ----
 log "zipalign..."
 if command -v zipalign >/dev/null 2>&1; then
+    # -p выравнивает .so по границе страницы: обязательно для
+    # extractNativeLibs="false".
     zipalign -f -p 4 base.apk aligned.apk
     mv aligned.apk base.apk
     ok "zipalign выполнен"
 else
-    warn "zipalign не найден — пропускаем"
+    err "zipalign не найден, а он обязателен при extractNativeLibs=false"
+    err "Установи Android SDK build-tools"
+    exit 1
 fi
 
 # ---- Подпись ----
 log "Подпись APK..."
 
+# Release-ключ, если он есть; иначе debug.
+RELEASE_KEYSTORE="$APP_DIR/release.keystore"
+if [ "$MODE" = "release" ] && [ -f "$RELEASE_KEYSTORE" ] \
+   && command -v apksigner >/dev/null 2>&1; then
+    log "Подписываю release-ключом..."
+    apksigner sign \
+        --ks "$RELEASE_KEYSTORE" \
+        --ks-pass "pass:${RELEASE_KEYSTORE_PASSWORD:-release}" \
+        --ks-key-alias "${RELEASE_KEY_ALIAS:-release}" \
+        --key-pass "pass:${RELEASE_KEY_PASSWORD:-release}" \
+        --out "$APK_OUT_DIR/${GAME_NAME}.apk" \
+        base.apk
+    ok "APK подписан release-ключом"
+    SKIP_DEBUG_SIGN=1
+else
+    SKIP_DEBUG_SIGN=0
+fi
+
 # Создаём debug keystore, если его нет.
-if [ ! -f "$DEBUG_KEYSTORE" ]; then
+if [ "$SKIP_DEBUG_SIGN" -eq 0 ] && [ ! -f "$DEBUG_KEYSTORE" ]; then
     log "Создаю debug keystore..."
     keytool -genkeypair \
         -keystore "$DEBUG_KEYSTORE" \
@@ -312,7 +341,9 @@ if [ ! -f "$DEBUG_KEYSTORE" ]; then
         }
 fi
 
-if command -v apksigner >/dev/null 2>&1; then
+if [ "$SKIP_DEBUG_SIGN" -eq 1 ]; then
+    :   # уже подписан release-ключом
+elif command -v apksigner >/dev/null 2>&1; then
     apksigner sign \
         --ks "$DEBUG_KEYSTORE" \
         --ks-pass pass:android \

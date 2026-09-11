@@ -1,4 +1,4 @@
-﻿#version 450
+#version 450
 
 layout(location = 0) in vec4 vColor;
 
@@ -9,6 +9,7 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 screenSize;
     vec4 sunDir;
     vec4 fogParams;
+    vec4 skyColor;
 } cam;
 
 layout(location = 0) out vec4 outColor;

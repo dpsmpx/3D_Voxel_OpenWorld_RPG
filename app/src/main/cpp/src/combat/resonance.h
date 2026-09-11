@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file resonance.h
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
+#pragma once
 #include "../core/types.h"
 
 namespace combat {
@@ -18,6 +22,9 @@ struct ResonanceBonuses {
     f32 rangeMult;
 };
 
+/// Бонусы за текущий стек резонанса.
+/// @param stack число накопленных зарядов, 0..RESONANCE_MAX
+/// @return таблица множителей урона, скорости и крита
 const ResonanceBonuses& resonanceBonuses(i32 stack);
 
 struct ResonanceState {
@@ -29,12 +36,12 @@ struct ResonanceState {
     i32  comboCounter       = 0;
     f32  recentHitFlash     = 0.f;
 
-    // Phase 9: gainMult — множитель накопления резонанса.
+    /// Phase 9: gainMult — множитель накопления резонанса.
     void onHit(bool wasCritical, f32 gainMult = 1.f);
     void onMiss();
     void update(f32 dt);
 
-    // Возвращает множитель урона финишера.
+    /// Возвращает множитель урона финишера.
     f32 consumeFinisher();
 
     const ResonanceBonuses& bonuses() const { return resonanceBonuses(stack); }

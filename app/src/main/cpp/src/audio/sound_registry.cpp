@@ -1,4 +1,8 @@
-﻿#include "sound_registry.h"
+/**
+ * @file sound_registry.cpp
+ * @brief Звук: движок AAudio, процедурные эффекты, динамическая музыка.
+ */
+#include "sound_registry.h"
 #include "../core/log.h"
 #include <cmath>
 #include <cstring>
@@ -340,6 +344,90 @@ void genExploreMusic(Sound& s, u32 sr) {
     }
 }
 
+// Подземелье: низкий дрон, редкие капли, никакой мелодии —
+// напряжение без ритма.
+void genDungeonMusic(Sound& s, u32 sr) {
+    const f32 dur = 20.f;
+    const u32 n = (u32)(sr * dur);
+    s.samples.assign(n, 0.f);
+    s.frames = n;
+    s.sampleRate = sr;
+    s.looping = true;
+    s.defaultGain = 0.45f;
+
+    // Два дрона в кварту, слегка расстроенные — даёт биения.
+    addChordTo(s, sr, 0.0f,  10.f, 55.00f, 73.42f, 82.41f, 0.30f);
+    addChordTo(s, sr, 10.0f, 10.f, 49.00f, 65.41f, 73.42f, 0.30f);
+
+    // Редкие «капли»: короткий высокий тон с длинным хвостом.
+    Rng r(0xD00Du);
+    for (int i = 0; i < 10; ++i) {
+        const f32 t0 = (f32)i * 2.0f + (f32)(r.next() % 140) * 0.01f;
+        if (t0 >= dur - 1.5f) break;
+        const f32 f = 900.f + (f32)(r.next() % 700);
+        const u32 start = (u32)(t0 * sr);
+        const u32 nf = (u32)(1.2f * sr);
+        for (u32 j = 0; j < nf; ++j) {
+            const u32 idx = start + j;
+            if (idx >= n) break;
+            const f32 t = (f32)j / (f32)sr;
+            const f32 env = std::exp(-t * 5.f);
+            s.samples[idx] += std::sin(t * f * 6.2831853f) * env * 0.10f;
+        }
+    }
+
+    f32 maxAmp = 0.f;
+    for (f32 v : s.samples) maxAmp = std::max(maxAmp, std::abs(v));
+    if (maxAmp > 0.f) {
+        const f32 k = 0.85f / maxAmp;
+        for (f32& v : s.samples) v *= k;
+    }
+}
+
+// Деревня: мажорная последовательность, светлее и теплее explore.
+void genVillageMusic(Sound& s, u32 sr) {
+    const f32 dur = 16.f;
+    const u32 n = (u32)(sr * dur);
+    s.samples.assign(n, 0.f);
+    s.frames = n;
+    s.sampleRate = sr;
+    s.looping = true;
+    s.defaultGain = 0.50f;
+
+    // C - G - Am - F, классический круг мажора.
+    addChordTo(s, sr, 0.0f,  4.0f, 130.81f, 196.00f, 261.63f, 0.32f);
+    addChordTo(s, sr, 4.0f,  4.0f,  98.00f, 146.83f, 196.00f, 0.32f);
+    addChordTo(s, sr, 8.0f,  4.0f, 110.00f, 164.81f, 220.00f, 0.32f);
+    addChordTo(s, sr, 12.0f, 4.0f,  87.31f, 130.81f, 174.61f, 0.32f);
+
+    // Мелодия бодрее: короткие ноты, ровный шаг.
+    const f32 scale[5] = { 392.00f, 440.00f, 523.25f, 587.33f, 659.25f };
+    Rng r(0xBEEFu);
+    for (int i = 0; i < 16; ++i) {
+        const f32 t0 = (f32)i * 0.95f;
+        if (t0 >= dur - 0.8f) break;
+        const f32 f = scale[r.next() % 5];
+        const u32 start = (u32)(t0 * sr);
+        const u32 nf = (u32)(0.7f * sr);
+        for (u32 j = 0; j < nf; ++j) {
+            const u32 idx = start + j;
+            if (idx >= n) break;
+            const f32 t = (f32)j / (f32)sr;
+            const f32 tt = t / 0.7f;
+            f32 env = std::sin(tt * 3.14159f);
+            env *= env;
+            s.samples[idx] += std::sin(t * f * 6.2831853f) * env * 0.10f;
+        }
+    }
+
+    f32 maxAmp = 0.f;
+    for (f32 v : s.samples) maxAmp = std::max(maxAmp, std::abs(v));
+    if (maxAmp > 0.f) {
+        const f32 k = 0.85f / maxAmp;
+        for (f32& v : s.samples) v *= k;
+    }
+}
+
 void genCombatMusic(Sound& s, u32 sr) {
     f32 dur = 8.f;
     u32 n = (u32)(sr * dur);
@@ -508,6 +596,12 @@ void SoundRegistry::init(u32 sampleRate) {
     genSweepTone(sounds_[SOUND_DOOR_CLOSE], sampleRate, 0.25f, 600.f, 300.f, 0.30f, 12.f);
     genTwoToneBlip(sounds_[SOUND_CRAFT], sampleRate, 0.20f, 700.f, 900.f, 0.35f);
     genSweepTone(sounds_[SOUND_ENCHANT], sampleRate, 0.60f, 300.f, 1200.f, 0.32f, 6.f);
+
+    // --- Музыка (ТЗ 7) ---
+    genExploreMusic(sounds_[SOUND_MUSIC_EXPLORE], sampleRate);
+    genCombatMusic (sounds_[SOUND_MUSIC_COMBAT],  sampleRate);
+    genDungeonMusic(sounds_[SOUND_MUSIC_DUNGEON], sampleRate);
+    genVillageMusic(sounds_[SOUND_MUSIC_VILLAGE], sampleRate);
 
     initialized_ = true;
     LOGI("SoundRegistry: готово");

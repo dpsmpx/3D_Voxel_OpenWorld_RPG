@@ -1,4 +1,8 @@
-﻿#include "skybox.h"
+/**
+ * @file skybox.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
+#include "skybox.h"
 #include "../core/log.h"
 
 namespace render {
@@ -17,7 +21,10 @@ bool Skybox::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout de
     d.depthTest    = false;
     d.depthWrite   = false;
     d.blend        = false;
-    d.instanced    = false;
+    d.bindings     = nullptr;   // полноэкранный треугольник строится в шейдере
+    d.bindingCount = 0;
+    d.attrs        = nullptr;
+    d.attrCount    = 0;
 
     if (!pipeline_.create(dev_, shaders_, d)) return false;
     LOGI("Skybox готов");

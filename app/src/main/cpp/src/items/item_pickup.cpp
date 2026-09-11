@@ -1,4 +1,8 @@
-﻿#include "item_pickup.h"
+/**
+ * @file item_pickup.cpp
+ * @brief Предметы: определения, инвентарь, лут, подбор, использование.
+ */
+#include "item_pickup.h"
 #include "../ecs/components.h"
 #include "../physics/raycast.h"
 #include "../world/block.h"

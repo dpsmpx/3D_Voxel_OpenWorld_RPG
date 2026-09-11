@@ -1,4 +1,8 @@
-﻿#include "enchantment.h"
+/**
+ * @file enchantment.cpp
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
+#include "enchantment.h"
 #include <algorithm>
 
 namespace combat {

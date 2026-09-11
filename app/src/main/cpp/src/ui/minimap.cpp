@@ -1,4 +1,8 @@
-﻿#include "minimap.h"
+/**
+ * @file minimap.cpp
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
+#include "minimap.h"
 #include "../world/block.h"
 #include "../core/log.h"
 #include <cmath>

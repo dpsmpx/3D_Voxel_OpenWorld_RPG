@@ -1,4 +1,4 @@
-﻿#version 450
+#version 450
 layout(location = 0) in vec3 inPos;
 
 layout(location = 1) in vec3 iPos;
@@ -13,6 +13,7 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 screenSize;
     vec4 sunDir;
     vec4 fogParams;
+    vec4 skyColor;
 } cam;
 
 layout(location = 0) out vec4 vColor;

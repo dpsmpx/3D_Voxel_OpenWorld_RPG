@@ -1,24 +1,70 @@
-﻿#include "render_system.h"
+/**
+ * @file render_system.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
+#include "render_system.h"
 #include "atlas_builder.h"
+#include "astc.h"
 #include "../core/log.h"
 #include "../config/settings.h"
 #include <glm/glm.hpp>
 
 namespace render {
 
+// Вершинный формат террейна — см. VoxelVertex в mesh_builder.h.
+static const vk::VertexBinding kVoxelBindings[1] = { { sizeof(VoxelVertex), false } };
+static const vk::VertexAttr kVoxelAttrs[4] = {
+    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // inPos
+    { 1, 0, VK_FORMAT_R32G32_SFLOAT,    12 },   // inUv (в тайлах)
+    { 2, 0, VK_FORMAT_R32G32_SFLOAT,    20 },   // inTileOrigin
+    { 3, 0, VK_FORMAT_R8G8B8A8_UNORM,   28 },   // inColor
+};
+
 bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
     dev_ = ctx.device();
     shaders_.init(dev_, mgr);
 
-    AtlasData atlasData = buildProceduralAtlas();
-    if (!atlas_.create(ctx.device(), ctx.physicalDevice(),
-                       ctx.gfxQueue(), ctx.gfxFamily(),
-                       atlasData.width, atlasData.height,
-                       VK_FORMAT_R8G8B8A8_UNORM,
-                       atlasData.pixels.data(), atlasData.pixels.size(),
-                       VK_FILTER_NEAREST,
-                       VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                       true)) {
+    // Атлас блоков. Сжатый ASTC 4x4 (ТЗ 3.3) экономит вчетверо
+    // памяти и пропускной способности, но поддержан не везде и
+    // собирается на этапе сборки утилитой tools/atlas. Если ассета
+    // нет или GPU формат не тянет — собираем процедурный RGBA8.
+    bool atlasReady = false;
+    if (ctx.formatSupportsSampling(VK_FORMAT_ASTC_4x4_UNORM_BLOCK)) {
+        const AstcImage astc = loadAstcAsset(mgr, "textures/blocks.astc");
+        if (astc.valid() && astc.blockX == 4 && astc.blockY == 4) {
+            atlasReady = atlas_.create(
+                ctx.device(), ctx.physicalDevice(),
+                ctx.gfxQueue(), ctx.gfxFamily(),
+                astc.width, astc.height,
+                VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
+                astc.data.data(), astc.data.size(),
+                VK_FILTER_LINEAR,
+                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                false);
+            if (atlasReady)
+                LOGI("Атлас: ASTC 4x4, %zu КБ", astc.data.size() / 1024);
+        }
+    } else {
+        LOGI("Атлас: ASTC 4x4 не поддержан устройством");
+    }
+
+    if (!atlasReady) {
+        const AtlasData atlasData = buildProceduralAtlas();
+        atlasReady = atlas_.create(
+            ctx.device(), ctx.physicalDevice(),
+            ctx.gfxQueue(), ctx.gfxFamily(),
+            atlasData.width, atlasData.height,
+            VK_FORMAT_R8G8B8A8_UNORM,
+            atlasData.pixels.data(), atlasData.pixels.size(),
+            VK_FILTER_NEAREST,
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            true);
+        if (atlasReady)
+            LOGI("Атлас: процедурный RGBA8, %zu КБ",
+                 atlasData.pixels.size() / 1024);
+    }
+
+    if (!atlasReady) {
         LOGE("Атлас не создан");
         return false;
     }
@@ -47,6 +93,10 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
         d.depthTest   = true;
         d.depthWrite  = true;
         d.blend       = false;
+        d.bindings     = kVoxelBindings;
+        d.bindingCount = 1;
+        d.attrs        = kVoxelAttrs;
+        d.attrCount    = 4;
         if (!voxelPipeline_.create(dev_, shaders_, d)) return false;
     }
 
@@ -91,8 +141,16 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     currentFps_    = fps;
     lastHit_       = targetHit;
 
-    auto ready = world.pollMeshesReady();
-    if (!ready.empty()) chunkRenderer_.uploadChunks(ctx, ready);
+    const auto ready = world.pollMeshesReady();
+    chunkRenderer_.uploadChunks(ctx, ready, camera_.position());
+
+    // Карта перекрытий обновляется раз в полсекунды: мир меняется
+    // медленнее, а полный обход чанков недёшев.
+    occlusionTimer_ += 1.f / 60.f;
+    if (occlusionTimer_ >= 0.5f) {
+        occlusionTimer_ = 0.f;
+        occlusion_.rebuild(world, camera_.position(), world.viewDistance() + 1);
+    }
 
     mobRenderer_.rebuild(registry);
     mobRenderer_.upload(ctx);
@@ -132,7 +190,7 @@ void RenderSystem::render(vk::Context& ctx) {
     skybox_.render(ctx);
 
     chunkRenderer_.render(ctx, voxelPipeline_.handle(), voxelPipeline_.layout(),
-                          ds, fr, camera_.position());
+                          ds, fr, camera_.position(), &occlusion_);
 
     npcRenderer_.render(ctx);
     mobRenderer_.render(ctx, fr);

@@ -1,4 +1,8 @@
-﻿#include "resource_regen.h"
+/**
+ * @file resource_regen.cpp
+ * @brief Прогрессия: опыт, уровни, атрибуты, Древо Познания.
+ */
+#include "resource_regen.h"
 #include "progression.h"
 #include "../ecs/components.h"
 #include <algorithm>

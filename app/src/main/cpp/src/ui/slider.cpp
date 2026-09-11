@@ -1,4 +1,8 @@
-﻿#include "slider.h"
+/**
+ * @file slider.cpp
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
+#include "slider.h"
 #include "../core/log.h"
 #include <algorithm>
 #include <cstdio>

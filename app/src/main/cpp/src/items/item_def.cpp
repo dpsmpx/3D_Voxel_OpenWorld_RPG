@@ -1,4 +1,8 @@
-﻿#include "item_def.h"
+/**
+ * @file item_def.cpp
+ * @brief Предметы: определения, инвентарь, лут, подбор, использование.
+ */
+#include "item_def.h"
 #include "../core/log.h"
 #include <cstring>
 

@@ -1,4 +1,9 @@
-﻿#include "hit_detection.h"
+/**
+ * @file hit_detection.cpp
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
+#include "hit_detection.h"
+#include "components.h"
 #include "../ecs/components.h"
 #include "../physics/raycast.h"
 #include "../world/block.h"

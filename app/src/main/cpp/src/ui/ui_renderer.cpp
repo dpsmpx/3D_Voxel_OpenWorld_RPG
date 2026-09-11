@@ -1,9 +1,21 @@
-﻿#include "ui_renderer.h"
+/**
+ * @file ui_renderer.cpp
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
+#include "ui_renderer.h"
 #include "ui_atlas.h"
 #include "../core/log.h"
 #include <cstring>
 
 namespace ui {
+
+// Вершинный формат UI: позиция уже в NDC, поэтому vec2, а не vec3.
+static const vk::VertexBinding kBindings[1] = { { sizeof(UiVertex), false } };
+static const vk::VertexAttr kAttrs[3] = {
+    { 0, 0, VK_FORMAT_R32G32_SFLOAT,  0  },   // inPos
+    { 1, 0, VK_FORMAT_R32G32_SFLOAT,  8  },   // inUv
+    { 2, 0, VK_FORMAT_R8G8B8A8_UNORM, 16 },   // inColor
+};
 
 bool UiRenderer::init(vk::Context& ctx, AAssetManager* mgr) {
     dev_ = ctx.device();
@@ -73,6 +85,10 @@ bool UiRenderer::init(vk::Context& ctx, AAssetManager* mgr) {
     pd.depthTest   = false;
     pd.depthWrite  = false;
     pd.blend       = true;
+    pd.bindings     = kBindings;
+    pd.bindingCount = 1;
+    pd.attrs        = kAttrs;
+    pd.attrCount    = 3;
     if (!pipeline_.create(dev_, shaders_, pd)) return false;
 
     verts_[0].reserve(8192);
@@ -173,7 +189,8 @@ void UiRenderer::flush(vk::Context& ctx) {
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 pipeline_.layout(), 0, 1, &ds, 0, nullptr);
         VkDeviceSize offs[] = { 0 };
-        vkCmdBindVertexBuffers(cmd, 0, 1, &fb.vb.handle(), offs);
+        const VkBuffer vb = fb.vb.handle();
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offs);
         vkCmdDraw(cmd, fb.vertexCount, 1, 0, 0);
     }
 }

@@ -1,4 +1,8 @@
-﻿#include "npc_spawner.h"
+/**
+ * @file npc_spawner.cpp
+ * @brief NPC: роли, диалоги с ветвлением, поведение жителей.
+ */
+#include "npc_spawner.h"
 #include "npc_def.h"
 #include "npc_ai.h"
 #include "../ecs/components.h"

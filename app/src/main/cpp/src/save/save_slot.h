@@ -1,14 +1,16 @@
-﻿#pragma once
+/**
+ * @file save_slot.h
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
+#pragma once
 #include "../core/types.h"
 #include <string>
 #include <vector>
 
 namespace save {
 
-// ============================================================
-// Метаданные слота — маленький бинарный файл рядом с сейвом.
-// Позволяет показать список слотов без чтения полного файла.
-// ============================================================
+/// Метаданные слота — маленький бинарный файл рядом с сейвом.
+/// Позволяет показать список слотов без чтения полного файла.
 struct SlotMeta {
     bool exists       = false;
     u32  version      = 0;
@@ -24,12 +26,10 @@ struct SlotMeta {
     char worldName[32]  = {};
 };
 
-// ============================================================
-// SaveSlot — пути к файлам слота.
-// Директория: <internalDataPath>/saves/
-// Сейв:  p<profile>_s<slot>.vxs
-// Мета:  p<profile>_s<slot>.meta
-// ============================================================
+/// SaveSlot — пути к файлам слота.
+/// Директория: `internalDataPath/saves/`
+/// Сейв:  `p<профиль>_s<слот>.vxs`
+/// Мета:  `p<профиль>_s<слот>.meta`
 class SaveSlot {
 public:
     SaveSlot() = default;
@@ -56,21 +56,19 @@ private:
     u32 slot_    = 0;
 };
 
-// ============================================================
-// SaveSlotManager — знает директорию, перечисляет слоты.
-// ============================================================
+/// SaveSlotManager — знает директорию, перечисляет слоты.
 class SaveSlotManager {
 public:
     static constexpr u32 NUM_PROFILES = 3;
     static constexpr u32 NUM_SLOTS    = 3;
 
-    // baseDir — ANativeActivity::internalDataPath.
-    // Создаёт <baseDir>/saves/ при необходимости.
+    /// baseDir — ANativeActivity::internalDataPath.
+    /// Создаёт `baseDir/saves/` при необходимости.
     void init(const char* baseDir);
 
     SaveSlot slot(u32 profile, u32 slot) const;
 
-    // Прочитать метаданные всех 9 слотов.
+    /// Прочитать метаданные всех 9 слотов.
     void scanAll(SlotMeta outMeta[NUM_PROFILES][NUM_SLOTS]) const;
 
     const std::string& savesDir()   const { return savesDir_; }

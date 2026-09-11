@@ -1,4 +1,9 @@
-﻿#include "crafting.h"
+/**
+ * @file crafting.cpp
+ * @brief Крафт: рецепты, станции, проверка требований.
+ */
+#include "crafting.h"
+#include "../ecs/components.h"
 #include "crafting_station.h"
 #include "../ecs/registry.h"
 #include "../core/log.h"

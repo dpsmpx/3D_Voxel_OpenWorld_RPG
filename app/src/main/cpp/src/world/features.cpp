@@ -1,7 +1,12 @@
-﻿#include "features.h"
+/**
+ * @file features.cpp
+ * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
+ */
+#include "features.h"
 #include "../core/log.h"
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 namespace world {
 using namespace feat_util;
@@ -134,9 +139,10 @@ static void stampTree(Chunk& c, i32 bx, i32 groundY, i32 bz, const TreeShape& s)
 
 void applyTrees(Chunk& chunk, const FeatureContext& ctx) {
     const auto& terrain = *ctx.terrain;
-    const BiomeDef& biome = terrain.field().def(terrain.biomeAt(
-        chunk.coord.x * CHUNK_SIZE + CHUNK_SIZE/2,
-        chunk.coord.z * CHUNK_SIZE + CHUNK_SIZE/2));
+    const i32 midX = chunk.coord.x * CHUNK_SIZE + CHUNK_SIZE / 2;
+    const i32 midZ = chunk.coord.z * CHUNK_SIZE + CHUNK_SIZE / 2;
+    const BiomeDef& biome = terrain.field().def(
+        ctx.columnAt(CHUNK_SIZE / 2, CHUNK_SIZE / 2, midX, midZ).climate.biome);
 
     if (biome.treeType == TreeType::None || biome.treeDensity <= 0.01f) return;
 
@@ -152,9 +158,9 @@ void applyTrees(Chunk& chunk, const FeatureContext& ctx) {
         i32 lx = (i32)(rng & 0x1F);          // 0..31
         i32 lz = (i32)((rng >> 5) & 0x1F);
 
-        i32 wx = chunk.coord.x * CHUNK_SIZE + lx;
-        i32 wz = chunk.coord.z * CHUNK_SIZE + lz;
-        i32 surface = terrain.surfaceHeight(wx, wz);
+        const i32 wx = chunk.coord.x * CHUNK_SIZE + lx;
+        const i32 wz = chunk.coord.z * CHUNK_SIZE + lz;
+        const i32 surface = ctx.columnAt(lx, lz, wx, wz).surface;
         if (surface >= CHUNK_SIZE_Y - 12) continue;
 
         // Проверим, что под деревом подходящий блок (не вода, не песок в океане)
@@ -180,20 +186,62 @@ void applyCaves(Chunk& chunk, const FeatureContext& ctx) {
     const i32 baseX = chunk.coord.x * CHUNK_SIZE;
     const i32 baseZ = chunk.coord.z * CHUNK_SIZE;
 
+    // Поле плотности сэмплируется на решётке с шагом STEP и линейно
+    // интерполируется. Прямая проверка каждого вокселя стоила пяти
+    // выборок шума на воксель — около 200 тысяч на чанк.
+    constexpr i32 STEP = 4;
+    constexpr i32 GX   = CHUNK_SIZE   / STEP + 1;   // 9
+    constexpr i32 GY   = CHUNK_SIZE_Y / STEP + 1;   // 33
+    constexpr i32 GZ   = CHUNK_SIZE   / STEP + 1;   // 9
+
+    static thread_local std::vector<TerrainGenerator::CaveDensity> grid;
+    grid.resize(GX * GY * GZ);
+
+    for (i32 gx = 0; gx < GX; ++gx)
+        for (i32 gy = 0; gy < GY; ++gy)
+            for (i32 gz = 0; gz < GZ; ++gz)
+                grid[(gx * GY + gy) * GZ + gz] = terrain.caveDensity(
+                    (f32)(baseX + gx * STEP),
+                    (f32)(gy * STEP),
+                    (f32)(baseZ + gz * STEP));
+
+    auto at = [&](i32 gx, i32 gy, i32 gz) -> const TerrainGenerator::CaveDensity& {
+        return grid[(gx * GY + gy) * GZ + gz];
+    };
+
     for (i32 x = 0; x < CHUNK_SIZE; ++x) {
+        const i32 gx = x / STEP;
+        const f32 tx = (f32)(x % STEP) / (f32)STEP;
+
         for (i32 z = 0; z < CHUNK_SIZE; ++z) {
-            i32 wx = baseX + x, wz = baseZ + z;
-            i32 surface = terrain.surfaceHeight(wx, wz);
+            const i32 wx = baseX + x, wz = baseZ + z;
+            const i32 surface = ctx.columnAt(x, z, wx, wz).surface;
+            const i32 gz = z / STEP;
+            const f32 tz = (f32)(z % STEP) / (f32)STEP;
 
             // Карвим только ниже поверхности - 1
             for (i32 y = 2; y < surface - 1 && y < CHUNK_SIZE_Y; ++y) {
-                u16 cur = chunk.voxels[chunkIndex(x, y, z)];
-                if (cur == AIR || cur == BEDROCK) continue;
-                if (cur == WATER) continue;
+                const u16 cur = chunk.voxels[chunkIndex(x, y, z)];
+                if (cur == AIR || cur == BEDROCK || cur == WATER) continue;
 
-                if (terrain.isCave(wx, y, wz)) {
-                    chunk.voxels[chunkIndex(x, y, z)] = AIR;
+                const i32 gy = y / STEP;
+                const f32 ty = (f32)(y % STEP) / (f32)STEP;
+
+                // Трилинейная интерполяция обоих полей плотности.
+                TerrainGenerator::CaveDensity d{0.f, 0.f};
+                for (i32 i = 0; i < 8; ++i) {
+                    const i32 dx = i & 1, dy = (i >> 1) & 1, dz = (i >> 2) & 1;
+                    const f32 w = (dx ? tx : 1.f - tx)
+                                * (dy ? ty : 1.f - ty)
+                                * (dz ? tz : 1.f - tz);
+                    if (w <= 0.f) continue;
+                    const auto& g = at(gx + dx, gy + dy, gz + dz);
+                    d.tunnel += g.tunnel * w;
+                    d.hall   += g.hall   * w;
                 }
+
+                if (TerrainGenerator::isCaveAt(d, y))
+                    chunk.voxels[chunkIndex(x, y, z)] = AIR;
             }
         }
     }
@@ -209,8 +257,8 @@ void applyOres(Chunk& chunk, const FeatureContext& ctx) {
 
     for (i32 x = 0; x < CHUNK_SIZE; ++x) {
         for (i32 z = 0; z < CHUNK_SIZE; ++z) {
-            i32 wx = baseX + x, wz = baseZ + z;
-            i32 surface = terrain.surfaceHeight(wx, wz);
+            const i32 wx = baseX + x, wz = baseZ + z;
+            const i32 surface = ctx.columnAt(x, z, wx, wz).surface;
 
             for (i32 y = 2; y < surface - 3 && y < CHUNK_SIZE_Y; ++y) {
                 u16 cur = chunk.voxels[chunkIndex(x, y, z)];
@@ -234,8 +282,8 @@ void applyLiquids(Chunk& chunk, const FeatureContext& ctx) {
 
     for (i32 x = 0; x < CHUNK_SIZE; ++x) {
         for (i32 z = 0; z < CHUNK_SIZE; ++z) {
-            i32 wx = baseX + x, wz = baseZ + z;
-            i32 surface = terrain.surfaceHeight(wx, wz);
+            const i32 wx = baseX + x, wz = baseZ + z;
+            const i32 surface = ctx.columnAt(x, z, wx, wz).surface;
 
             // Вода: от текущей поверхности до SEA_LEVEL
             for (i32 y = surface; y <= TerrainGenerator::SEA_LEVEL; ++y) {
@@ -586,6 +634,28 @@ void stampAltar(Chunk& c, const FeatureContext& ctx, const structs::Layout& L) {
 }
 
 } // namespace
+
+// ============================================================
+// Публичный запрос подземелий: та же детерминированная раскладка,
+// что использует applyStructures, но без генерации вокселей.
+// ============================================================
+DungeonSite dungeonAt(i32 superX, i32 superZ, u64 worldSeed) {
+    DungeonSite site;
+    const structs::Layout L = structs::layoutFor(superX, superZ, worldSeed);
+    if (L.kind != structs::Dungeon) return site;
+
+    site.exists = true;
+    site.seed   = L.seed;
+    // Зал босса — на дне первой комнаты коридора, там же, где
+    // stampDungeon вырезает пол.
+    const i32 y0 = 10 + (i32)(L.seed % 8);
+    site.center = {
+        (L.minBlock.x + L.maxBlock.x) / 2,
+        y0,
+        (L.minBlock.z + L.maxBlock.z) / 2,
+    };
+    return site;
+}
 
 void applyStructures(Chunk& chunk, const FeatureContext& ctx) {
     // Чанк → диапазон super-chunk'ов

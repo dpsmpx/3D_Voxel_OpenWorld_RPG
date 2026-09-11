@@ -1,10 +1,29 @@
-﻿#include "instanced_renderer.h"
+/**
+ * @file instanced_renderer.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
+#include "instanced_renderer.h"
 #include "../core/log.h"
-#include "../world/noise.h"
+#include "../world/block.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <random>
 
 namespace render {
+
+// Вершинный формат: квад биллборда + инстанс GrassInstance.
+static const vk::VertexBinding kBindings[2] = {
+    { 20,                      false },   // vec3 pos + vec2 uv
+    { sizeof(GrassInstance),   true  },
+};
+static const vk::VertexAttr kAttrs[7] = {
+    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // inPos
+    { 1, 0, VK_FORMAT_R32G32_SFLOAT,    12 },   // inUv
+    { 3, 1, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // iPos
+    { 4, 1, VK_FORMAT_R32_SFLOAT,       12 },   // iScale
+    { 5, 1, VK_FORMAT_R32G32_SFLOAT,    16 },   // iUvOrigin
+    { 6, 1, VK_FORMAT_R8G8B8A8_UNORM,   24 },   // iColor
+    { 7, 1, VK_FORMAT_R32_SFLOAT,       28 },   // iYaw
+};
 
 namespace {
 
@@ -46,7 +65,10 @@ bool InstancedRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorS
     d.depthTest   = true;
     d.depthWrite  = true;
     d.blend       = true;                // альфа-текстура травы
-    d.instanced   = true;
+    d.bindings     = kBindings;
+    d.bindingCount = 2;
+    d.attrs        = kAttrs;
+    d.attrCount    = 7;
     if (!pipeline_.create(dev_, shaders_, d)) return false;
 
     // VBO
@@ -114,13 +136,16 @@ void InstancedRenderer::populateGrass(const world::ChunkManager& world,
                 f32 ddz = (f32)wz - playerPos.z;
                 if (ddx*ddx + ddz*ddz > radius*radius) continue;
 
-                i32 surf = world.generator().surfaceHeight(wx, wz);
-                u16 ground = world.generator().surfaceBlock(0.f, 0.f);
+                const i32 surf = world.generator().surfaceHeight(wx, wz);
 
-                // Спавним только на траве/песке
-                i32 sy = surf;
-                // (упрощение — берём surfaceBlock из генератора)
-                // В Phase 4 уточним по реальному getVoxel.
+                // Трава растёт только на реальном грунте и только если
+                // над ним воздух: getVoxel учитывает пещеры, воду и
+                // постройки игрока, в отличие от высоты из генератора.
+                const u16 ground = world.getVoxel(wx, surf - 1, wz);
+                if (ground != world::GRASS && ground != world::SAND) continue;
+                if (world.getVoxel(wx, surf, wz) != world::AIR) continue;
+
+                const i32 sy = surf;
 
                 GrassInstance inst{};
                 inst.pos = { (f32)wx + 0.5f, (f32)sy, (f32)wz + 0.5f };

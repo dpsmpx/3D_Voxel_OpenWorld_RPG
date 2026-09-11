@@ -1,4 +1,9 @@
-﻿#include "world_delta.h"
+/**
+ * @file world_delta.cpp
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
+#include "world_delta.h"
+#include <shared_mutex>
 #include "../core/log.h"
 #include "../world/block.h"
 
@@ -60,13 +65,18 @@ void WorldDeltaStore::applyAll(world::ChunkManager& world) const {
     std::lock_guard lk(mtx_);
 
     for (const auto& [coord, delta] : deltas_) {
-        Chunk* c = world.getChunk(coord.x, coord.z);
+        auto c = world.getChunk(coord.x, coord.z);
         if (!c) continue;
 
-        for (const auto& m : delta.mods) {
-            i32 lx, ly, lz;
-            decodeIndex(m.index, lx, ly, lz);
-            c->voxels[linearIndex(lx, ly, lz)] = m.block;
+        {
+            // Пишем весь набор изменений под одним замком: меширование
+            // не увидит чанк наполовину применённым.
+            std::unique_lock vlk(c->voxelMutex);
+            for (const auto& m : delta.mods) {
+                i32 lx, ly, lz;
+                decodeIndex(m.index, lx, ly, lz);
+                c->voxels[linearIndex(lx, ly, lz)] = m.block;
+            }
         }
         c->version.fetch_add(1, std::memory_order_release);
     }
@@ -78,13 +88,13 @@ void WorldDeltaStore::write(ByteWriter& w) const {
     w.varU32((u32)deltas_.size());
 
     for (const auto& [coord, delta] : deltas_) {
-        w.i32(coord.x);
-        w.i32(coord.z);
+        w.writeI32(coord.x);
+        w.writeI32(coord.z);
         w.varU32((u32)delta.mods.size());
 
         for (const auto& m : delta.mods) {
             w.varU32(m.index);
-            w.u16(m.block);
+            w.writeU16(m.block);
         }
     }
 }

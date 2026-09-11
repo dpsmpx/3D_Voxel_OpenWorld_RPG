@@ -1,4 +1,8 @@
-﻿#include "resonance.h"
+/**
+ * @file resonance.cpp
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
+#include "resonance.h"
 #include <algorithm>
 
 namespace combat {

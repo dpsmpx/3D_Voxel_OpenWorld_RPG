@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file vk_texture.h
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
+#pragma once
 #include "../core/types.h"
 #include <vulkan/vulkan.h>
 
@@ -15,8 +19,8 @@ public:
 
     void destroy();
 
-    // Phase 15: обновление содержимого текстуры через staging buffer
-    // и vkCmdCopyBufferToImage. Формат — должен совпадать с исходным.
+    /// Phase 15: обновление содержимого текстуры через staging buffer
+    /// и vkCmdCopyBufferToImage. Формат — должен совпадать с исходным.
     bool upload(VkDevice dev, VkPhysicalDevice phys,
                 VkCommandPool pool, VkQueue queue,
                 const void* pixels, u64 byteSize);
@@ -27,6 +31,11 @@ public:
     u32         width()      const { return width_; }
     u32         height()     const { return height_; }
     u32         mipLevels()  const { return mipLevels_; }
+    VkFormat    format()     const { return format_; }
+
+    /// Сжатый ли формат (BC, ETC2, ASTC). Для таких нельзя строить
+    /// мипы на устройстве и нельзя считать размер как width*height*bpp.
+    static bool isCompressedFormat(VkFormat fmt);
 
 private:
     static u32 findMemoryType(VkPhysicalDevice phys, u32 bits, VkMemoryPropertyFlags p);

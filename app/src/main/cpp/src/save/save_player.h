@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file save_player.h
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
+#pragma once
 #include "../core/types.h"
 #include "../ecs/registry.h"
 #include "save_format.h"
@@ -27,7 +31,10 @@ namespace save {
 //   - ActiveDialogue (диалог закрывается)
 // ============================================================
 
+/// Пишет игрока: позицию, здоровье, атрибуты, навыки, квесты.
 void serializePlayer(ByteWriter& w, ecs::Registry& reg, ecs::Entity player);
+/// Читает игрока из сейва и применяет к существующей сущности.
+/// @return false при повреждённых данных
 bool deserializePlayer(ByteReader& r, ecs::Registry& reg, ecs::Entity player);
 
 } // namespace save

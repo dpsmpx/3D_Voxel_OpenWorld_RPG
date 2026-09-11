@@ -1,5 +1,10 @@
+/**
+ * @file components.h
+ * @brief Entity-Component-System: РґРµСЃРєСЂРёРїС‚РѕСЂС‹ СЃСѓС‰РЅРѕСЃС‚РµР№, sparse-set РїСѓР»С‹, СЂРµРµСЃС‚СЂ.
+ */
 #pragma once
 #include "../core/types.h"
+#include "entity.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <string>
@@ -7,8 +12,8 @@
 namespace ecs {
 
 // ============================================================
-// Основные компоненты игрока, мобов, предметов.
-// Все — POD по духу (простые структуры, тривиальное копирование).
+// РћСЃРЅРѕРІРЅС‹Рµ РєРѕРјРїРѕРЅРµРЅС‚С‹ РёРіСЂРѕРєР°, РјРѕР±РѕРІ, РїСЂРµРґРјРµС‚РѕРІ.
+// Р’СЃРµ вЂ” POD РїРѕ РґСѓС…Сѓ (РїСЂРѕСЃС‚С‹Рµ СЃС‚СЂСѓРєС‚СѓСЂС‹, С‚СЂРёРІРёР°Р»СЊРЅРѕРµ РєРѕРїРёСЂРѕРІР°РЅРёРµ).
 // ============================================================
 
 struct Transform {
@@ -51,23 +56,23 @@ struct Attributes {
 struct Experience {
     u64 current = 0;
     u32 level   = 1;
-    // Таблица опыта для уровня: level^2 * 100
+    /// РўР°Р±Р»РёС†Р° РѕРїС‹С‚Р° РґР»СЏ СѓСЂРѕРІРЅСЏ: level^2 * 100
     u64 xpForNext() const { return (u64)level * level * 100; }
 };
 
-// — Что за сущность
+/// вЂ” Р§С‚Рѕ Р·Р° СЃСѓС‰РЅРѕСЃС‚СЊ
 enum class EntityKind : u8 {
     Player, NPC, Mob, Projectile, Item, Structure, Effect, Unknown
 };
 
 struct Kind { EntityKind value = EntityKind::Unknown; };
 
-// — Теги
+/// вЂ” РўРµРіРё
 struct PlayerTag {};
 struct EnemyTag  {};
 struct NPCTag    {};
 
-// — Компонент для мобов/NPC
+/// вЂ” РљРѕРјРїРѕРЅРµРЅС‚ РґР»СЏ РјРѕР±РѕРІ/NPC
 struct AIAgent {
     enum State : u8 { Idle, Patrol, Chase, Attack, Flee, Dead } state = Idle;
     Entity target{};
@@ -79,13 +84,13 @@ struct AIAgent {
     f32 attackCooldown = 0.f;
 };
 
-// — Коллайдер (для физики)
+/// вЂ” РљРѕР»Р»Р°Р№РґРµСЂ (РґР»СЏ С„РёР·РёРєРё)
 struct Collider {
     glm::vec3 halfExtents{0.4f, 0.9f, 0.4f};
     bool      isStatic = false;
 };
 
-// — Ссылка на модель / блок для рендера
+/// вЂ” РЎСЃС‹Р»РєР° РЅР° РјРѕРґРµР»СЊ / Р±Р»РѕРє РґР»СЏ СЂРµРЅРґРµСЂР°
 struct Renderable {
     u32 meshId = 0;
     u32 textureId = 0;
@@ -93,7 +98,7 @@ struct Renderable {
     bool visible = true;
 };
 
-// — Идентификатор для сохранения/сериализации
+/// вЂ” РРґРµРЅС‚РёС„РёРєР°С‚РѕСЂ РґР»СЏ СЃРѕС…СЂР°РЅРµРЅРёСЏ/СЃРµСЂРёР°Р»РёР·Р°С†РёРё
 struct PersistentId {
     u64 value = 0;
 };

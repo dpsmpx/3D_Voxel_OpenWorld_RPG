@@ -1,4 +1,4 @@
-﻿# VoxelRPG ProGuard rules
+# VoxelRPG ProGuard rules
 #
 # Игра полностью нативная: Java-код отсутствует, RTTI/exceptions
 # выключены в C++. ProGuard здесь — минимальный.

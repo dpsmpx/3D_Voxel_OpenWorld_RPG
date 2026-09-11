@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file item_pickup.h
+ * @brief Предметы: определения, инвентарь, лут, подбор, использование.
+ */
+#pragma once
 #include "../core/types.h"
 #include "../ecs/registry.h"
 #include "../world/chunk_manager.h"
@@ -19,7 +23,7 @@ struct ItemPickup {
     f32       blinkTimer    = 0.f;
     f32       pickDelay     = 0.3f;
 
-    // Phase 15: физика
+    /// Phase 15: физика
     bool      onGround = false;
 };
 
@@ -28,7 +32,7 @@ ecs::Entity spawnPickup(ecs::Registry& reg,
                         const ItemStack& stack,
                         const glm::vec3& initialVelocity = glm::vec3(0));
 
-// Phase 15: обновление с raycast-коллизией против вокселей.
+/// Phase 15: обновление с raycast-коллизией против вокселей.
 void updatePickups(world::ChunkManager& world,
                    ecs::Registry& reg,
                    ecs::Entity playerEntity,

@@ -1,3 +1,7 @@
+/**
+ * @file vk_context.cpp
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
 #include "vk_context.h"
 #include "../core/log.h"
 #include <algorithm>
@@ -70,7 +74,7 @@ bool Context::createInstance() {
     ci.pApplicationInfo        = &app;
     ci.enabledExtensionCount   = 2;
     ci.ppEnabledExtensionNames = exts;
-    // ��� ���� � ������; �������� ��� �������
+    // Без слоёв в релизе; включить для отладки
     (void)layers;
 
     VKCHECK(vkCreateInstance(&ci, nullptr, &instance_));
@@ -87,7 +91,7 @@ bool Context::createSurface(ANativeWindow* w) {
 bool Context::pickPhysicalDevice() {
     u32 count = 0;
     vkEnumeratePhysicalDevices(instance_, &count, nullptr);
-    if (!count) { LOGE("��� Vulkan-���������"); return false; }
+    if (!count) { LOGE("Нет Vulkan-устройств"); return false; }
     std::vector<VkPhysicalDevice> devs(count);
     vkEnumeratePhysicalDevices(instance_, &count, devs.data());
 
@@ -99,29 +103,35 @@ bool Context::pickPhysicalDevice() {
         vkGetPhysicalDeviceProperties(d, &props);
         if (props.apiVersion < VK_API_VERSION_1_1) continue;
 
-        // ���� ������� � �������� � ������������
+        // Ищем очередь с графикой и презентацией
         u32 qCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(d, &qCount, nullptr);
         std::vector<VkQueueFamilyProperties> qs(qCount);
         vkGetPhysicalDeviceQueueFamilyProperties(d, &qCount, qs.data());
 
-        bool hasGfx = false, hasPresent = false;
-        u32 gfxFam = 0, presentFam = 0;
+        // Нужно одно семейство, умеющее и графику, и презентацию:
+        // движок использует одну очередь, раздельные семейства
+        // потребовали бы передачи владения изображениями swapchain.
+        bool hasUniversal = false;
+        u32  gfxFam = 0;
         for (u32 i = 0; i < qCount; ++i) {
-            if (qs[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { hasGfx = true; gfxFam = i; }
+            if (!(qs[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) continue;
             VkBool32 present = VK_FALSE;
             vkGetPhysicalDeviceSurfaceSupportKHR(d, i, surface_, &present);
-            if (present) { hasPresent = true; presentFam = i; }
+            if (!present) continue;
+            hasUniversal = true;
+            gfxFam = i;
+            break;
         }
-        if (!hasGfx || !hasPresent) continue;
+        if (!hasUniversal) continue;
 
-        // ������� swapchain extension
+        // Требуем swapchain extension
         u32 extCount = 0;
         vkEnumerateDeviceExtensionProperties(d, nullptr, &extCount, nullptr);
         std::vector<VkExtensionProperties> exts(extCount);
         vkEnumerateDeviceExtensionProperties(d, nullptr, &extCount, exts.data());
         bool hasSwapchain = false;
-        for (auto& e : exts) if (!strcmp(e.extensionName, VK_KHR_swapchain)) { hasSwapchain = true; break; }
+        for (auto& e : exts) if (!strcmp(e.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) { hasSwapchain = true; break; }
         if (!hasSwapchain) continue;
 
         i32 score = 0;
@@ -135,7 +145,7 @@ bool Context::pickPhysicalDevice() {
         }
     }
 
-    if (best == VK_NULL_HANDLE) { LOGE("��� ����������� GPU"); return false; }
+    if (best == VK_NULL_HANDLE) { LOGE("Нет подходящего GPU"); return false; }
     physical_ = best;
     return true;
 }
@@ -228,7 +238,7 @@ bool Context::createImageViews() {
 
 bool Context::createDepthResources() {
     depthFormat_ = findDepthFormat(physical_);
-    if (depthFormat_ == VK_FORMAT_UNDEFINED) { LOGE("�� ������ depth format"); return false; }
+    if (depthFormat_ == VK_FORMAT_UNDEFINED) { LOGE("Не найден depth format"); return false; }
 
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ici.imageType = VK_IMAGE_TYPE_2D;
@@ -344,7 +354,7 @@ bool Context::createCommandPool() {
 }
 
 bool Context::createCommandBuffers() {
-    cmdBuffers_.resize(MAX_FRAMES_IN_FLIGHT);
+    cmdBuffers_.resize(MAX_FRAMES);
     VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     ai.commandPool        = cmdPool_;
     ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -354,15 +364,15 @@ bool Context::createCommandBuffers() {
 }
 
 bool Context::createSyncObjects() {
-    imgAvailable_.resize(MAX_FRAMES_IN_FLIGHT);
-    renderFinished_.resize(MAX_FRAMES_IN_FLIGHT);
-    inFlight_.resize(MAX_FRAMES_IN_FLIGHT);
+    imgAvailable_.resize(MAX_FRAMES);
+    renderFinished_.resize(MAX_FRAMES);
+    inFlight_.resize(MAX_FRAMES);
 
     VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+    for (u32 i = 0; i < MAX_FRAMES; ++i) {
         VKCHECK(vkCreateSemaphore(device_, &si, nullptr, &imgAvailable_[i]));
         VKCHECK(vkCreateSemaphore(device_, &si, nullptr, &renderFinished_[i]));
         VKCHECK(vkCreateFence    (device_, &fi, nullptr, &inFlight_[i]));
@@ -388,7 +398,7 @@ void Context::onResize(ANativeWindow* /*window*/) {
     if (!createImageViews())   { LOGE("resize: image views"); return; }
     if (!createDepthResources()){ LOGE("resize: depth"); return; }
     if (!createFramebuffers()) { LOGE("resize: framebuffers"); return; }
-    LOGI("Swapchain ����������: %ux%u", swapExtent_.width, swapExtent_.height);
+    LOGI("Swapchain пересоздан: %ux%u", swapExtent_.width, swapExtent_.height);
 }
 
 bool Context::beginFrame() {
@@ -397,7 +407,7 @@ bool Context::beginFrame() {
     VkResult r = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
                                        imgAvailable_[currentFrame_], VK_NULL_HANDLE, &imgIdx_);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
-        // ����������� swapchain � ������� main loop
+        // Пересоздать swapchain — вызовет main loop
         return false;
     }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return false;
@@ -408,7 +418,7 @@ bool Context::beginFrame() {
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     vkBeginCommandBuffer(cmdBuffers_[currentFrame_], &bi);
 
-    // ��������� render pass
+    // Открываем render pass
     VkClearValue clears[2];
     clears[0].color = {{ 0.45f, 0.62f, 0.85f, 1.0f }};
     clears[1].depthStencil = { 1.0f, 0 };
@@ -451,14 +461,22 @@ void Context::endFrame() {
     pi.pImageIndices = &imgIdx_;
     vkQueuePresentKHR(gfxQueue_, &pi);
 
-    currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES_IN_FLIGHT;
+    currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES;
     frameStarted_ = false;
 }
 
 void Context::shutdown() {
     if (device_) {
         vkDeviceWaitIdle(device_);
-        for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        if (transferCmd_ != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(device_, cmdPool_, 1, &transferCmd_);
+            transferCmd_ = VK_NULL_HANDLE;
+        }
+        if (transferFence_ != VK_NULL_HANDLE) {
+            vkDestroyFence(device_, transferFence_, nullptr);
+            transferFence_ = VK_NULL_HANDLE;
+        }
+        for (u32 i = 0; i < MAX_FRAMES; ++i) {
             vkDestroySemaphore(device_, imgAvailable_[i], nullptr);
             vkDestroySemaphore(device_, renderFinished_[i], nullptr);
             vkDestroyFence(device_, inFlight_[i], nullptr);
@@ -473,6 +491,68 @@ void Context::shutdown() {
     instance_ = VK_NULL_HANDLE;
     device_   = VK_NULL_HANDLE;
     surface_  = VK_NULL_HANDLE;
+}
+
+// ============================================================
+// Пакетная передача: один командный буфер и один забор на весь
+// кадр загрузки. Заменяет схему «submit + wait на каждую копию»,
+// из-за которой загрузка чанка стоила восьми остановок GPU.
+// ============================================================
+VkCommandBuffer Context::beginTransferBatch() {
+    if (transferCmd_ != VK_NULL_HANDLE) {
+        LOGE("beginTransferBatch: пакет уже открыт");
+        return VK_NULL_HANDLE;
+    }
+
+    if (transferFence_ == VK_NULL_HANDLE) {
+        VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        if (vkCreateFence(device_, &fi, nullptr, &transferFence_) != VK_SUCCESS) {
+            LOGE("beginTransferBatch: не создан fence");
+            return VK_NULL_HANDLE;
+        }
+    }
+
+    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    ai.commandPool        = cmdPool_;
+    ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(device_, &ai, &transferCmd_) != VK_SUCCESS) {
+        transferCmd_ = VK_NULL_HANDLE;
+        LOGE("beginTransferBatch: не выделен командный буфер");
+        return VK_NULL_HANDLE;
+    }
+
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(transferCmd_, &bi);
+    return transferCmd_;
+}
+
+void Context::endTransferBatch() {
+    if (transferCmd_ == VK_NULL_HANDLE) return;
+
+    // Один барьер на весь пакет: дальше вершинный ввод читает всё,
+    // что мы только что скопировали.
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+    vkCmdPipelineBarrier(transferCmd_,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                         0, 1, &mb, 0, nullptr, 0, nullptr);
+
+    vkEndCommandBuffer(transferCmd_);
+
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers    = &transferCmd_;
+
+    vkResetFences(device_, 1, &transferFence_);
+    vkQueueSubmit(gfxQueue_, 1, &si, transferFence_);
+    vkWaitForFences(device_, 1, &transferFence_, VK_TRUE, UINT64_MAX);
+
+    vkFreeCommandBuffers(device_, cmdPool_, 1, &transferCmd_);
+    transferCmd_ = VK_NULL_HANDLE;
 }
 
 void Context::submitOneShot(const std::function<void(VkCommandBuffer)>& fn) {

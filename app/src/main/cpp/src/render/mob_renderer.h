@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file mob_renderer.h
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
+#pragma once
 #include "../core/types.h"
 #include "../core/math.h"
 #include "../vk/vk_buffer.h"
@@ -12,7 +16,7 @@
 
 namespace render {
 
-// Формат инстанса: pos (12) + size (12) + color (4) + yaw (4) = 32
+/// Формат инстанса: pos (12) + size (12) + color (4) + yaw (4) = 32
 struct MobInstance {
     glm::vec3 pos;
     glm::vec3 size;
@@ -26,13 +30,13 @@ public:
     bool init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout);
     void destroy();
 
-    // Перестраивает инстанс-буфер из ECS-сущностей
+    /// Перестраивает инстанс-буфер из ECS-сущностей
     void rebuild(ecs::Registry& reg);
 
-    // Загружает инстансы в GPU. Вызывается 1 раз за кадр.
+    /// Загружает инстансы в GPU. Вызывается 1 раз за кадр.
     void upload(vk::Context& ctx);
 
-    // Рисует
+    /// Рисует
     void render(vk::Context& ctx, const math::Frustum& frustum);
 
     u32 instanceCount() const { return instanceCount_; }

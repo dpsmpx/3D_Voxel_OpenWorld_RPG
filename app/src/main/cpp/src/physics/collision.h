@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file collision.h
+ * @brief Физика: AABB-коллизия с вокселями, raycast, контроллер персонажа.
+ */
+#pragma once
 #include "../core/types.h"
 #include "../world/chunk_manager.h"
 #include <glm/glm.hpp>
@@ -13,8 +17,8 @@ struct CollisionFlags {
     bool onCeiling = false;
 };
 
-// AABB игрока: pos — точка на ступнях по центру основания.
-// halfWidth — половина по X и Z. height — полная высота.
+/// AABB игрока: pos — точка на ступнях по центру основания.
+/// halfWidth — половина по X и Z. height — полная высота.
 struct PlayerBox {
     f32 halfWidth = 0.30f;
     f32 height    = 1.80f;
@@ -33,13 +37,13 @@ struct PlayerBox {
     }
 };
 
-// Проверка пересечения AABB с твёрдыми вокселями.
+/// Проверка пересечения AABB с твёрдыми вокселями.
 bool overlapsSolid(world::ChunkManager& world,
                    const glm::vec3& bmin,
                    const glm::vec3& bmax);
 
-// Разрешает движение по осям (Y → X → Z). Модифицирует pos и delta.
-// Возвращает флаги столкновений.
+/// Разрешает движение по осям (Y → X → Z). Модифицирует pos и delta.
+/// Возвращает флаги столкновений.
 CollisionFlags resolveMovement(world::ChunkManager& world,
                                glm::vec3& pos,
                                glm::vec3& delta,

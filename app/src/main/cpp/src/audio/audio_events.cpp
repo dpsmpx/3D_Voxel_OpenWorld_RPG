@@ -1,4 +1,8 @@
-﻿#include "audio_events.h"
+/**
+ * @file audio_events.cpp
+ * @brief Звук: движок AAudio, процедурные эффекты, динамическая музыка.
+ */
+#include "audio_events.h"
 #include "../world/block.h"
 #include <algorithm>
 

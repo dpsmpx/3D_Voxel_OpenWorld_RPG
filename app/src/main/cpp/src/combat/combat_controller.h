@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file combat_controller.h
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
+#pragma once
 #include "../core/types.h"
 #include "../ecs/registry.h"
 #include "../world/chunk_manager.h"
@@ -28,7 +32,7 @@ struct CombatAction {
     glm::vec3 hitPoint{0};
 };
 
-// Phase 15: добавлен параметр spatial hash (может быть nullptr).
+/// Phase 15: добавлен параметр spatial hash (может быть nullptr).
 void updateCombat(world::ChunkManager& world,
                   ecs::Registry& reg,
                   const SpatialHash* hash,

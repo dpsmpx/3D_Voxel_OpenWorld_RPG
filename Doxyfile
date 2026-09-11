@@ -1,0 +1,70 @@
+# ============================================================
+# Doxygen для VoxelRPG (требование ТЗ 9).
+#
+#   pkg install doxygen graphviz
+#   doxygen Doxyfile
+#   открыть build/docs/html/index.html
+# ============================================================
+
+PROJECT_NAME           = "VoxelRPG"
+PROJECT_BRIEF          = "Воксельная Action-RPG для Android"
+PROJECT_NUMBER         = 1.0.0
+
+OUTPUT_DIRECTORY       = build/docs
+OUTPUT_LANGUAGE        = Russian
+CREATE_SUBDIRS         = NO
+
+INPUT                  = app/src/main/cpp/src docs/ARCHITECTURE.md README.md
+FILE_PATTERNS          = *.h *.cpp *.md
+RECURSIVE              = YES
+USE_MDFILE_AS_MAINPAGE = README.md
+
+# Документируем весь публичный API, включая то, что ещё без комментария:
+# так видно, где пробелы, а не только то, что уже описано.
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+EXTRACT_PRIVATE        = NO
+HIDE_UNDOC_MEMBERS     = NO
+
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = YES
+MULTILINE_CPP_IS_BRIEF = NO
+INHERIT_DOCS           = YES
+TAB_SIZE               = 4
+
+# Предупреждать о недокументированном — так проверяется требование ТЗ 9.
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = YES
+WARN_LOGFILE           = build/docs/doxygen-warnings.txt
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_LATEX         = NO
+GENERATE_TREEVIEW      = YES
+
+# Диаграммы классов и вызовов — архитектурная схема из ТЗ 9.
+HAVE_DOT               = YES
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = YES
+INCLUDE_GRAPH          = YES
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+# types.h и log.h включены почти отовсюду — порога по умолчанию не хватает.
+DOT_GRAPH_MAX_NODES    = 120
+
+# Заголовки-заглушки хост-проверки к документации не относятся.
+EXCLUDE                = tools/hostcheck third_party build
+EXCLUDE_PATTERNS       = */build/*
+
+# Макросы Vulkan и Android сбивают парсер.
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES
+PREDEFINED             = __ANDROID__ \
+                         VK_USE_PLATFORM_ANDROID_KHR \
+                         DOXYGEN_SHOULD_SKIP_THIS

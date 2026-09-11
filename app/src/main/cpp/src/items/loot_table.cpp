@@ -1,4 +1,8 @@
-﻿#include "loot_table.h"
+/**
+ * @file loot_table.cpp
+ * @brief Предметы: определения, инвентарь, лут, подбор, использование.
+ */
+#include "loot_table.h"
 #include "item_def.h"
 #include "../mobs/mob_def.h"
 #include "../core/log.h"

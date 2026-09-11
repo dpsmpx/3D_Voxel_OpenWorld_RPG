@@ -1,4 +1,8 @@
-﻿#include "enchant_altar.h"
+/**
+ * @file enchant_altar.cpp
+ * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
+ */
+#include "enchant_altar.h"
 #include "../ecs/components.h"
 #include "../items/currency.h"
 #include "../items/item_def.h"

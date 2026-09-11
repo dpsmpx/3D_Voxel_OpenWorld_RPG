@@ -1,4 +1,4 @@
-﻿#version 450
+#version 450
 
 void main() {
     vec2 uv = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);

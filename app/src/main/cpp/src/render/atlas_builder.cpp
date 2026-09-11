@@ -1,4 +1,8 @@
-﻿#include "atlas_builder.h"
+/**
+ * @file atlas_builder.cpp
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
+#include "atlas_builder.h"
 #include "../world/block.h"
 #include <random>
 #include <cstring>

@@ -1,13 +1,15 @@
-﻿#pragma once
+/**
+ * @file sound.h
+ * @brief Звук: движок AAudio, процедурные эффекты, динамическая музыка.
+ */
+#pragma once
 #include "../core/types.h"
 #include <vector>
 
 namespace audio {
 
-// ============================================================
-// Звуковой буфер. Моно, PCM float32.
-// Длительность вычисляется как frames / sampleRate.
-// ============================================================
+/// Звуковой буфер. Моно, PCM float32.
+/// Длительность вычисляется как frames / sampleRate.
 struct Sound {
     std::vector<f32> samples;   // размер = frames
     u32 sampleRate = 48000;
@@ -23,7 +25,7 @@ struct Sound {
         return sampleRate > 0 ? (f32)frames / (f32)sampleRate : 0.f;
     }
 
-    // Сэмпл в произвольной позиции (без интерполяции).
+    /// Сэмпл в произвольной позиции (без интерполяции).
     inline f32 at(u32 frame) const {
         if (frame >= frames) return 0.f;
         return samples[frame];

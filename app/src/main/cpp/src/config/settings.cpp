@@ -1,4 +1,8 @@
-﻿#include "settings.h"
+/**
+ * @file settings.cpp
+ * @brief Настройки, локализация, счётчик игрового времени.
+ */
+#include "settings.h"
 #include "../core/log.h"
 #include <cstdio>
 #include <cstring>
@@ -84,6 +88,14 @@ void Settings::clamp() {
     cameraSensitivity  = std::clamp(cameraSensitivity, 0.1f, 5.0f);
     joystickRadius     = std::clamp(joystickRadius, 80.f, 220.f);
     joystickDeadzone   = std::clamp(joystickDeadzone, 0.05f, 0.40f);
+    joystickOpacity    = std::clamp(joystickOpacity, 0.2f, 1.0f);
+    buttonScale        = std::clamp(buttonScale, 0.6f, 1.6f);
+    buttonOpacity      = std::clamp(buttonOpacity, 0.2f, 1.0f);
+    // Кнопку нельзя утащить за пределы экрана.
+    for (u32 i = 0; i < BUTTON_SLOTS; ++i) {
+        buttonOffsetX[i] = std::clamp(buttonOffsetX[i], -1.6f, 1.6f);
+        buttonOffsetY[i] = std::clamp(buttonOffsetY[i], -1.6f, 1.6f);
+    }
     uiScale            = std::clamp(uiScale, 0.75f, 1.5f);
     uiOpacity          = std::clamp(uiOpacity, 0.4f, 1.0f);
     masterVolume       = std::clamp(masterVolume, 0.f, 1.f);
@@ -129,10 +141,21 @@ bool Settings::save(const std::string& path) const {
 
     std::fprintf(f, "[Input]\n");
     wf("camera_sensitivity", cameraSensitivity);
+    wb("invert_x",           invertX);
     wb("invert_y",           invertY);
     wb("joystick_left",      joystickLeftHanded);
     wf("joystick_radius",    joystickRadius);
     wf("joystick_deadzone",  joystickDeadzone);
+    wf("joystick_opacity",   joystickOpacity);
+    wf("button_scale",       buttonScale);
+    wf("button_opacity",     buttonOpacity);
+
+    // Раскладка кнопок: по строке на слот, чтобы файл оставался читаемым.
+    for (u32 i = 0; i < BUTTON_SLOTS; ++i) {
+        char key[32];
+        std::snprintf(key, sizeof(key), "button_%u_offset", i);
+        std::fprintf(f, "%s=%.4f,%.4f\n", key, buttonOffsetX[i], buttonOffsetY[i]);
+    }
 
     std::fprintf(f, "\n[UI]\n");
     wf("ui_scale",           uiScale);
@@ -175,6 +198,8 @@ bool Settings::load(const std::string& path) {
 
         if (std::strcmp(kv.key, "camera_sensitivity") == 0)
             cameraSensitivity = readF32(kv.value, cameraSensitivity);
+        else if (std::strcmp(kv.key, "invert_x") == 0)
+            invertX = readBool(kv.value, invertX);
         else if (std::strcmp(kv.key, "invert_y") == 0)
             invertY = readBool(kv.value, invertY);
         else if (std::strcmp(kv.key, "joystick_left") == 0)
@@ -183,6 +208,24 @@ bool Settings::load(const std::string& path) {
             joystickRadius = readF32(kv.value, joystickRadius);
         else if (std::strcmp(kv.key, "joystick_deadzone") == 0)
             joystickDeadzone = readF32(kv.value, joystickDeadzone);
+        else if (std::strcmp(kv.key, "joystick_opacity") == 0)
+            joystickOpacity = readF32(kv.value, joystickOpacity);
+        else if (std::strcmp(kv.key, "button_scale") == 0)
+            buttonScale = readF32(kv.value, buttonScale);
+        else if (std::strcmp(kv.key, "button_opacity") == 0)
+            buttonOpacity = readF32(kv.value, buttonOpacity);
+        else if (std::strncmp(kv.key, "button_", 7) == 0 &&
+                 std::strstr(kv.key, "_offset")) {
+            // button_<N>_offset=x,y
+            const u32 idx = (u32)std::atoi(kv.key + 7);
+            if (idx < BUTTON_SLOTS) {
+                const char* comma = std::strchr(kv.value, ',');
+                if (comma) {
+                    buttonOffsetX[idx] = (f32)std::atof(kv.value);
+                    buttonOffsetY[idx] = (f32)std::atof(comma + 1);
+                }
+            }
+        }
 
         else if (std::strcmp(kv.key, "ui_scale") == 0)
             uiScale = readF32(kv.value, uiScale);

@@ -1,4 +1,8 @@
-﻿#include "block.h"
+/**
+ * @file block.cpp
+ * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
+ */
+#include "block.h"
 #include "../core/log.h"
 #include <cstring>
 

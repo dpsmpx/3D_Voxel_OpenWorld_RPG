@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file vk_staging_pool.h
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
+#pragma once
 #include "../core/types.h"
 #include <vulkan/vulkan.h>
 #include <vector>
@@ -14,13 +18,11 @@ struct StagingBuffer {
     bool           inUse    = false;
 };
 
-// ============================================================
-// StagingPool — переиспользует staging-буферы между upload'ами.
-// Аллокация vkAllocateMemory происходит редко (только рост capacity).
-// Предполагается, что вызывающий код синхронно дожидается завершения
-// GPU-работы перед release() (в нашем случае — submitOneShot).
-// Не потокобезопасен — вызовы только с главного потока.
-// ============================================================
+/// StagingPool — переиспользует staging-буферы между upload'ами.
+/// Аллокация vkAllocateMemory происходит редко (только рост capacity).
+/// Предполагается, что вызывающий код синхронно дожидается завершения
+/// GPU-работы перед release() (в нашем случае — submitOneShot).
+/// Не потокобезопасен — вызовы только с главного потока.
 class StagingPool {
 public:
     bool init(VkDevice dev, VkPhysicalDevice phys);

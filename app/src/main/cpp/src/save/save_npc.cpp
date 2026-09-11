@@ -1,4 +1,9 @@
-﻿#include "save_npc.h"
+/**
+ * @file save_npc.cpp
+ * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
+ */
+#include "save_npc.h"
+#include "../ecs/components.h"
 #include "../core/log.h"
 #include "../npc/npc_def.h"
 #include "../npc/npc_ai.h"
@@ -35,7 +40,7 @@ void serializeNpcState(ByteWriter& w, ecs::Registry& reg) {
     }
 
     w.varU32((u32)deadKeys.size());
-    for (u32 k : deadKeys) w.u32(k);
+    for (u32 k : deadKeys) w.writeU32(k);
 }
 
 bool deserializeNpcState(ByteReader& r, ecs::Registry& reg) {

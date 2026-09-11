@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file instanced_renderer.h
+ * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ */
+#pragma once
 #include "../core/types.h"
 #include "../core/math.h"
 #include "../vk/vk_buffer.h"
@@ -12,7 +16,7 @@
 
 namespace render {
 
-// Instance layout должен совпадать с vertex input pipeline.
+/// Instance layout должен совпадать с vertex input pipeline.
 struct GrassInstance {
     glm::vec3 pos;       // offset 0
     f32       scale;     // offset 12
@@ -22,14 +26,12 @@ struct GrassInstance {
 };
 static_assert(sizeof(GrassInstance) == 32, "GrassInstance должен быть 32 байта");
 
-// ============================================================
-// InstancedRenderer — рисует cross-quad геометрию (биллборд),
-// один draw-call на все instances.
-//
-// Инстансы заполняются методом populateGrass() из ChunkManager'а
-// (логика спавна травы эволюционирует в Phase 7 под полноценную
-// систему частиц/декораций).
-// ============================================================
+/// InstancedRenderer — рисует cross-quad геометрию (биллборд),
+/// один draw-call на все instances.
+///
+/// Инстансы заполняются методом populateGrass() из ChunkManager'а
+/// (логика спавна травы эволюционирует в Phase 7 под полноценную
+/// систему частиц/декораций).
 class InstancedRenderer {
 public:
     bool init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout);

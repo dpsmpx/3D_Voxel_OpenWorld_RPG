@@ -1,4 +1,8 @@
-﻿#include "status_effects.h"
+/**
+ * @file status_effects.cpp
+ * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
+ */
+#include "status_effects.h"
 #include "projectile.h"
 #include "../ecs/components.h"
 #include "../mobs/mob_def.h"
@@ -52,7 +56,7 @@ static void onTargetDeath(ecs::Registry& reg,
     }
 
     if (xpReward > 0) {
-        progression::rewardKillXP(reg, killerEntity, xpReward);
+        progression::rewardKillXP(reg, reg.fromId(killerEntity), xpReward);
     }
 }
 

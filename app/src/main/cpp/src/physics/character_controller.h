@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file character_controller.h
+ * @brief Физика: AABB-коллизия с вокселями, raycast, контроллер персонажа.
+ */
+#pragma once
 #include "../core/types.h"
 #include "../world/chunk_manager.h"
 #include "collision.h"
@@ -37,7 +41,7 @@ public:
     void setPosition(const glm::vec3& p) { state_.position = p; state_.velocity = glm::vec3(0); }
     void addImpulse(const glm::vec3& v)  { state_.velocity += v; }
 
-    // Параметры движения
+    /// Параметры движения
     f32 walkSpeed       = 4.5f;
     f32 sprintSpeed     = 7.5f;
     f32 swimSpeed       = 3.0f;
@@ -52,7 +56,7 @@ public:
     f32 coyoteTime      = 0.12f;
     f32 jumpBufferTime  = 0.15f;
 
-    // Phase 15
+    /// Phase 15
     f32 stepHeight      = 0.60f;   // максимальная высота автоматического подъёма
     f32 stepCheckDist   = 0.30f;   // насколько вперёд проверяем при step-up
     bool enableStepUp   = true;
@@ -65,12 +69,12 @@ public:
 private:
     CharacterState state_;
     void detectEnvironment(world::ChunkManager& world);
-    // Phase 15: возвращает true, если удалось автоматически подняться
-    // на препятствие не выше stepHeight.
+    /// Phase 15: возвращает true, если удалось автоматически подняться
+    /// на препятствие не выше stepHeight.
     bool tryStepUp(world::ChunkManager& world,
                    const glm::vec3& moveDelta);
-    // Phase 15: если игрок стоит близко к земле и падает медленно —
-    // притягиваем вниз.
+    /// Phase 15: если игрок стоит близко к земле и падает медленно —
+    /// притягиваем вниз.
     void snapDown(world::ChunkManager& world, f32 dt);
 };
 

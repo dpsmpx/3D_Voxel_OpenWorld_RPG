@@ -1,4 +1,8 @@
-﻿#include "vk_buffer.h"
+/**
+ * @file vk_buffer.cpp
+ * @brief Тонкая обёртка над Vulkan: контекст, буферы, текстуры, пайплайны.
+ */
+#include "vk_buffer.h"
 #include "vk_context.h"
 #include "../core/log.h"
 #include <cstring>

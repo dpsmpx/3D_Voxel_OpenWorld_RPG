@@ -1,4 +1,8 @@
-﻿#include "ui_system.h"
+/**
+ * @file ui_system.cpp
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ */
+#include "ui_system.h"
 #include "slider.h"
 #include "hud_resources.h"
 #include "../combat/weapon.h"
@@ -108,6 +112,7 @@ void UiSystem::render(vk::Context& ctx,
     switch (screen) {
         case Screen::Hud:
             drawHud(ctx, player, world, fps);
+            if (loading()) drawLoadingOverlay();
             break;
         case Screen::PauseMenu:
             drawHud(ctx, player, world, fps);
@@ -210,6 +215,37 @@ void UiSystem::drawDragOverlay() {
 // ============================================================
 // HUD
 // ============================================================
+// ============================================================
+// Экран загрузки: затемнение и полоса прогресса поверх HUD.
+// Показывается, пока мир вокруг игрока не догенерировался.
+// ============================================================
+void UiSystem::drawLoadingOverlay() {
+    const float w = (float)screenW_;
+    const float h = (float)screenH_;
+
+    // Затемняем сцену, чтобы недостроенный мир не отвлекал.
+    ui_.rect(0.f, 0.f, w, h, rgba(8, 12, 18, 190));
+
+    const float barW = w * 0.44f;
+    const float barH = 14.f;
+    const float bx = (w - barW) * 0.5f;
+    const float by = h * 0.62f;
+
+    const char* label = loadLabel ? loadLabel : T(StrKey::Notif_Loading);
+    ui_.text(label, bx, by - 30.f, 1.2f, COL_WHITE);
+
+    ui_.rect(bx - 2.f, by - 2.f, barW + 4.f, barH + 4.f, rgba(40, 48, 58, 255));
+    ui_.rect(bx, by, barW, barH, rgba(20, 24, 30, 255));
+
+    const float p = loadProgress < 0.f ? 0.f : (loadProgress > 1.f ? 1.f : loadProgress);
+    if (p > 0.f)
+        ui_.rect(bx, by, barW * p, barH, rgba(110, 190, 130, 255));
+
+    char pct[8];
+    std::snprintf(pct, sizeof(pct), "%d%%", (int)(p * 100.f + 0.5f));
+    ui_.text(pct, bx + barW + 14.f, by - 2.f, 1.0f, rgba(200, 210, 220, 255));
+}
+
 void UiSystem::drawHud(vk::Context& /*ctx*/,
                        player::Player& player,
                        world::ChunkManager& /*world*/,
@@ -859,18 +895,22 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                              0.05f, [&changeCb](float){ changeCb(); });
                 y += rowH + rowGap;
             }
+            // Invert X
+            {
+                Rect r{ innerX, y, innerW, rowH };
+                ui_.pushInteractiveRect(r, [&s, &changeCb]() {
+                    s.invertX = !s.invertX; changeCb();
+                });
+                toggleWidget(ui_, r, &s.invertX, T(StrKey::Settings_InvertX));
+                y += rowH + rowGap;
+            }
             // Invert Y
             {
                 Rect r{ innerX, y, innerW, rowH };
-                int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
+                ui_.pushInteractiveRect(r, [&s, &changeCb]() {
                     s.invertY = !s.invertY; changeCb();
                 });
-                (void)idx;
                 toggleWidget(ui_, r, &s.invertY, T(StrKey::Settings_InvertY));
-                // Обработка клика через onTap pushInteractiveRect
-                if (ui_.isInteractivePressed(idx) && ui_.hasActivePointer()) {
-                    // Изменим на отпускании
-                }
                 y += rowH + rowGap;
             }
             // Joystick left
@@ -898,6 +938,64 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 sliderWidget(ui_, r, &s.joystickDeadzone,
                              0.05f, 0.40f, T(StrKey::Settings_JoystickDeadzone),
                              0.01f, [&changeCb](float){ changeCb(); });
+                y += rowH + rowGap;
+            }
+            // Прозрачность джойстика
+            {
+                Rect r{ innerX, y, innerW, rowH };
+                sliderWidget(ui_, r, &s.joystickOpacity,
+                             0.2f, 1.0f, T(StrKey::Settings_JoystickOpacity),
+                             0.05f, [&changeCb](float){ changeCb(); });
+                y += rowH + rowGap;
+            }
+            // Размер кнопок
+            {
+                Rect r{ innerX, y, innerW, rowH };
+                sliderWidget(ui_, r, &s.buttonScale,
+                             0.6f, 1.6f, T(StrKey::Settings_ButtonScale),
+                             0.05f, [&changeCb](float){ changeCb(); });
+                y += rowH + rowGap;
+            }
+            // Прозрачность кнопок
+            {
+                Rect r{ innerX, y, innerW, rowH };
+                sliderWidget(ui_, r, &s.buttonOpacity,
+                             0.2f, 1.0f, T(StrKey::Settings_ButtonOpacity),
+                             0.05f, [&changeCb](float){ changeCb(); });
+                y += rowH + rowGap;
+            }
+            // Режим перемещения кнопок (ТЗ 5.2)
+            {
+                Rect r{ innerX, y, innerW, rowH };
+                ui_.pushInteractiveRect(r, [this]() {
+                    buttonLayoutMode = !buttonLayoutMode;
+                });
+                toggleWidget(ui_, r, &buttonLayoutMode,
+                             T(StrKey::Settings_ButtonLayout));
+                y += rowH + rowGap;
+            }
+            if (buttonLayoutMode) {
+                ui_.text(T(StrKey::Settings_LayoutHint),
+                         innerX + 8.f, y + rowH * 0.5f, 1.f,
+                         rgba(176, 176, 176, 255));
+                y += rowH + rowGap;
+
+                Rect r{ innerX, y, 260.f, rowH };
+                int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
+                    for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i) {
+                        s.buttonOffsetX[i] = 0.f;
+                        s.buttonOffsetY[i] = 0.f;
+                    }
+                    changeCb();
+                });
+                if (ui_.button(T(StrKey::Settings_ResetLayout), r, idx,
+                               rgba(90, 90, 110, 255), COL_WHITE)) {
+                    for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i) {
+                        s.buttonOffsetX[i] = 0.f;
+                        s.buttonOffsetY[i] = 0.f;
+                    }
+                    changeCb();
+                }
                 y += rowH + rowGap;
             }
             break;

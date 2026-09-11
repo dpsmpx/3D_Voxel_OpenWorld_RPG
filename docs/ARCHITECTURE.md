@@ -1,4 +1,4 @@
-﻿# Архитектура VoxelRPG
+# Архитектура VoxelRPG
 
 Техническое описание внутренней структуры игры.
 
@@ -23,48 +23,53 @@
 
 ## 2. ECS (Entity-Component-System)
 
-### 2.1 Registry
+### 2.1 Хранилище
 
-`ecs::Registry` хранит компоненты в **sparse-set** структурах:
+Хранение и итерацию компонентов выполняет **EnTT** (требование ТЗ 3.2).
+Библиотека заголовочная, клонируется `build.sh` в `third_party/entt`
+и в репозиторий не коммитится.
 
-```
-sparse_[entityId] → denseIndex
-dense_[denseIndex] = component
-entities_[denseIndex] = Entity
-```
+`ecs::Registry` — тонкая обёртка над `entt::registry`. Она существует
+не ради абстракции ради абстракции, а решает две конкретные задачи:
 
-**Свойства:**
-- O(1) add / get / remove.
-- Плотная итерация по `data()`.
-- Генерационные handles защищают от dangling.
+1. **Дескриптор, разложенный на части.** `entt::entity` упаковывает
+   индекс и поколение в одно 32-битное число. Подсистемы урона,
+   снарядов, диалогов и сохранений хранят сущность как «голый» `u32`,
+   поэтому `ecs::Entity` держит `id` (индекс + 1) и `gen` (поколение)
+   раздельно, а `Registry::fromId()` восстанавливает полный дескриптор
+   через `entt::registry::current()`.
+
+2. **Плотный доступ по индексу.** Игровой код повсеместно пишет
+
+   ```cpp
+   auto& pool = reg.pool<MobAI>();
+   for (usize i = 0; i < pool.size(); ++i) {
+       ecs::Entity e = pool.entityAt((u32)i);
+       auto& ai = pool.at((u32)i);
+   }
+   ```
+
+   `ComponentPool<T>` — это пара указателей на `entt::registry` и
+   `entt::storage<T>`; сам он ничего не хранит.
+
+Сборка идёт с `ENTT_NO_ETO`: EnTT хранит и пустые компоненты-теги.
+Один байт на тег дешевле, чем ветвление `if constexpr` по всему
+адаптеру — без этого `storage<PlayerTag>::get()` возвращал бы `void`.
 
 ### 2.2 Компоненты
 
-Все компоненты — **POD-структуры** с тривиальным копированием.
-Хранятся по значению в `ComponentPool<T>`.
-
-Категории:
-
-- **Core:** Transform, Velocity, Health, Mana, Stamina, Attributes,
-  Experience, Collider, Kind, PlayerTag/EnemyTag/NPCTag.
-- **Combat:** Combatant, EquippedWeapon, WeaponState, ResonanceState,
-  StatusEffects, Projectile, HitFx.
-- **AI:** AIAgent (базовый), MobAI (специализация), NpcAI.
-- **Items:** Inventory, Wallet, ItemPickup.
-- **Progression:** Progression, SkillTree.
-- **Quests:** QuestLog, Quest, Reputation.
-- **Story:** ActiveDialogue.
-- **Structures:** CraftingStation, EnchantAltar.
+POD-структуры в `ecs/components.h`: `Transform`, `Velocity`, `Health`,
+`Mana`, `Stamina`, `Attributes`, `Experience`, `Kind`, `AIAgent`,
+`Collider`, `Renderable`, `PersistentId` и теги `PlayerTag`,
+`EnemyTag`, `NPCTag`. Специфичные для подсистем компоненты живут
+рядом со своим кодом: `combat::Combatant`, `mobs::MobAI`,
+`npc::NpcTag`, `trade::TradeInventory` и так далее.
 
 ### 2.3 Потоки
 
-Каждая система явно объявляет, что читает и что пишет.
-В текущей реализации `main.cpp` — единственный **writer** на игровом
-потоке. Job-system воркеры пишут только в **свои** структуры
-(генерация чанков), и результаты публикуются через mutex-guarded
-очереди.
-
----
+`Registry` не потокобезопасен и используется только из игрового
+потока. Фоновые задачи (генерация и меширование чанков) работают с
+`world::Chunk` под его собственными блокировками и в ECS не лезут.
 
 ## 3. Мир
 

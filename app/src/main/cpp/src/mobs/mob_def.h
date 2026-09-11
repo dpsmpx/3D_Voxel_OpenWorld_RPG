@@ -1,4 +1,8 @@
-﻿#pragma once
+/**
+ * @file mob_def.h
+ * @brief Мобы: определения, конечный автомат ИИ, спавн, боссы.
+ */
+#pragma once
 #include "../core/types.h"
 #include <glm/glm.hpp>
 
@@ -61,11 +65,25 @@ struct MobDef {
     u8       dropMin    = 0;
     u8       dropMax    = 0;
 
-    // Phase 9: награда опытом за убийство
+    /// Phase 9: награда опытом за убийство
     u64      xpReward   = 0;
 
     f32      spawnWeight = 1.f;
     bool     spawnsInLight = false;
+
+    // ---- Боссы (ТЗ 4.5) ----
+    /// Босс не появляется обычным спавном: его ставит генератор
+    /// подземелья, один на подземелье.
+    bool     isBoss      = false;
+    /// Сколько фаз у боя. Фаза меняется по порогам здоровья:
+    /// граница i — при health/max ниже (phaseCount - i) / phaseCount.
+    u8       phaseCount  = 1;
+    /// Множитель урона и скорости атаки на последней фазе.
+    f32      enrageMult  = 1.6f;
+    /// Радиус АоЕ-удара, который босс использует вместо обычной
+    /// атаки раз в несколько ударов. 0 — нет особой атаки.
+    f32      slamRadius  = 0.f;
+    f32      slamDamage  = 0.f;
 };
 
 enum MobId : u16 {
@@ -77,6 +95,11 @@ enum MobId : u16 {
     MOB_SKELETON,
     MOB_GOBLIN,
     MOB_SLIME,
+
+    // Боссы подземелий: спавнятся генератором структур, не спавнером.
+    MOB_BOSS_WARDEN,     ///< Каменный Страж — три фазы, удар по площади
+    MOB_BOSS_HOLLOW,     ///< Полый Владыка — две фазы, быстрые серии
+
     MOB_COUNT
 };
 
