@@ -1,4 +1,4 @@
-﻿#include "npc_spawner.h"
+#include "npc_spawner.h"
 #include "npc_def.h"
 #include "npc_ai.h"
 #include "../ecs/components.h"

@@ -1,4 +1,4 @@
-﻿#include "spawner.h"
+#include "spawner.h"
 #include "mob_def.h"
 #include "mob_ai.h"
 #include "../ecs/components.h"

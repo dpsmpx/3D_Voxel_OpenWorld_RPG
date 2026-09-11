@@ -1,4 +1,4 @@
-﻿#include "trade.h"
+#include "trade.h"
 #include "../items/item_def.h"
 #include "../core/log.h"
 #include <cmath>

@@ -1,4 +1,4 @@
-﻿#include "status_effects.h"
+#include "status_effects.h"
 #include "projectile.h"
 #include "../ecs/components.h"
 #include "../mobs/mob_def.h"
@@ -52,7 +52,7 @@ static void onTargetDeath(ecs::Registry& reg,
     }
 
     if (xpReward > 0) {
-        progression::rewardKillXP(reg, killerEntity, xpReward);
+        progression::rewardKillXP(reg, reg.fromId(killerEntity), xpReward);
     }
 }
 

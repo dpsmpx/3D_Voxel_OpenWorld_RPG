@@ -1,4 +1,4 @@
-﻿#include "zlib_util.h"
+#include "zlib_util.h"
 #include "../core/log.h"
 #include <zlib.h>
 #include <cstring>

@@ -1,4 +1,4 @@
-﻿#include "playtime.h"
+#include "playtime.h"
 #include <cstdio>
 
 namespace config {

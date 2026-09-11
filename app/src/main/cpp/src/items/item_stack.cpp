@@ -1,4 +1,4 @@
-﻿#include "item_stack.h"
+#include "item_stack.h"
 
 namespace items {
 

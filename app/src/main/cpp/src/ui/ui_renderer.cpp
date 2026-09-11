@@ -1,4 +1,4 @@
-﻿#include "ui_renderer.h"
+#include "ui_renderer.h"
 #include "ui_atlas.h"
 #include "../core/log.h"
 #include <cstring>
@@ -173,7 +173,8 @@ void UiRenderer::flush(vk::Context& ctx) {
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 pipeline_.layout(), 0, 1, &ds, 0, nullptr);
         VkDeviceSize offs[] = { 0 };
-        vkCmdBindVertexBuffers(cmd, 0, 1, &fb.vb.handle(), offs);
+        const VkBuffer vb = fb.vb.handle();
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offs);
         vkCmdDraw(cmd, fb.vertexCount, 1, 0, 0);
     }
 }

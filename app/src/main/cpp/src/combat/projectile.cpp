@@ -1,4 +1,4 @@
-﻿#include "projectile.h"
+#include "projectile.h"
 #include "components.h"
 #include "status_effects.h"
 #include "../ecs/components.h"
@@ -167,7 +167,7 @@ void updateProjectiles(world::ChunkManager& world,
 
         ecs::Entity target = checkOneCandidate(
             reg, tf->position, proj->scale,
-            proj->ownerFaction, proj->ownerEntity);
+            proj->ownerFaction, reg.fromId(proj->ownerEntity));
 
         if (target.valid()) {
             const f32 dmgMain = applyDamage(reg, target, proj->damage);

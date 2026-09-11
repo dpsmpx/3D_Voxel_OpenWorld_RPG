@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
 #include "../factions/faction.h"
 #include <glm/glm.hpp>

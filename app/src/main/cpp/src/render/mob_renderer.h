@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
 #include "../core/math.h"
 #include "../vk/vk_buffer.h"

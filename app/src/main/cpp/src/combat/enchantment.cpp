@@ -1,4 +1,4 @@
-﻿#include "enchantment.h"
+#include "enchantment.h"
 #include <algorithm>
 
 namespace combat {

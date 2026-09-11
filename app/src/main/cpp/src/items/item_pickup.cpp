@@ -1,4 +1,4 @@
-﻿#include "item_pickup.h"
+#include "item_pickup.h"
 #include "../ecs/components.h"
 #include "../physics/raycast.h"
 #include "../world/block.h"

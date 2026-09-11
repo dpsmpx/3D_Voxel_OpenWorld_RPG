@@ -1,4 +1,4 @@
-﻿#include "inventory.h"
+#include "inventory.h"
 #include "../core/log.h"
 #include <algorithm>
 #include <cstring>

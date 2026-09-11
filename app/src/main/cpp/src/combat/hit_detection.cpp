@@ -1,4 +1,5 @@
-﻿#include "hit_detection.h"
+#include "hit_detection.h"
+#include "components.h"
 #include "../ecs/components.h"
 #include "../physics/raycast.h"
 #include "../world/block.h"

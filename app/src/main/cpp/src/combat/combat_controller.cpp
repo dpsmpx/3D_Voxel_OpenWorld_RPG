@@ -1,4 +1,4 @@
-﻿#include "combat_controller.h"
+#include "combat_controller.h"
 #include "status_effects.h"
 #include "projectile.h"
 #include "../ecs/components.h"

@@ -1,4 +1,4 @@
-﻿#include "vk_shader.h"
+#include "vk_shader.h"
 #include "../core/log.h"
 #include <cstdio>
 #include <vector>

@@ -1,9 +1,10 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
 #include "../vk/vk_context.h"
 #include "../vk/vk_shader.h"
 #include "../vk/vk_pipeline.h"
 #include "../vk/vk_texture.h"
+#include "../vk/vk_buffer.h"
 #include "../vk/vk_descriptors.h"
 #include <android/asset_manager.h>
 #include <glm/glm.hpp>
@@ -60,8 +61,8 @@ private:
     // Внешний (block) атлас — descriptor set для него
     VkDescriptorSet extSet_ = VK_NULL_HANDLE;
 
-    VkDescriptorSetLayout descriptorLayout_ = VK_NULL_HANDLE;
-    VkDescriptorPool pool_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descLayout_ = VK_NULL_HANDLE;
+    VkDescriptorPool      descPool_   = VK_NULL_HANDLE;
     VkDescriptorSet fontSet_ = VK_NULL_HANDLE;
 
     // Буферы вершин (по 2 на кадр in flight)

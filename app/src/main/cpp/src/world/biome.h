@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
 #include <glm/glm.hpp>
 
@@ -41,7 +41,7 @@ struct BiomeDef {
     f32 treeDensity;        // деревьев на чанк (в среднем)
     TreeType treeType;
     f32 grassDensity;       // инстансов травы на чанк
-    u8 baseHeightOffset;    // смещение базовой высоты
+    i8 baseHeightOffset;    // смещение базовой высоты (может быть ниже базы)
     f32 temperature;        // справочная
 };
 
@@ -50,7 +50,7 @@ struct BiomeDef {
 // Кэшируем последний запрос — генерация идёт построчно по (x,z),
 // а y не влияет на биом, кроме высоты.
 // ============================================================
-struct SimplexNoise;  // fwd
+class SimplexNoise;  // fwd
 
 class BiomeField {
 public:

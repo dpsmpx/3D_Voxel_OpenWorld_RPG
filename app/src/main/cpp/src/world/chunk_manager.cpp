@@ -1,4 +1,4 @@
-﻿#include "chunk_manager.h"
+#include "chunk_manager.h"
 #include "../core/log.h"
 #include <algorithm>
 #include <cmath>
@@ -259,7 +259,7 @@ void ChunkManager::setVoxel(i32 wx, i32 wy, i32 wz, u16 block) {
     enqueueMesh({cx, cz+1});
 }
 
-u16 ChunkManager::getVoxel(i32 wx, i32 wy, i32 wz) {
+u16 ChunkManager::getVoxel(i32 wx, i32 wy, i32 wz) const {
     if (wy < 0 || wy >= CHUNK_SIZE_Y) return AIR;
     i32 cx = wx >> 5, cz = wz >> 5;
     std::shared_lock lk(chunksMtx_);

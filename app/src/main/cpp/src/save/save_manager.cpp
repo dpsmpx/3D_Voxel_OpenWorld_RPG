@@ -1,4 +1,4 @@
-﻿#include "save_manager.h"
+#include "save_manager.h"
 #include "zlib_util.h"
 #include "save_player.h"
 #include "save_npc.h"
@@ -56,16 +56,16 @@ SaveStatus SaveManager::save(const SaveSlot& slot,
     }
 
     ByteWriter header;
-    header.u32(SAVE_MAGIC);
-    header.u32(SAVE_VERSION);
-    header.u32(slot.profile());
-    header.u32(slot.slot());
-    header.u64(worldSeed);
-    header.u64((u64)std::time(nullptr) * 1000ULL);
-    header.u32(playtimeSec);
-    header.u32((u32)body.size());
-    header.u32((u32)compressed.size());
-    header.u32(crc32_compute(compressed.data(), compressed.size()));
+    header.writeU32(SAVE_MAGIC);
+    header.writeU32(SAVE_VERSION);
+    header.writeU32(slot.profile());
+    header.writeU32(slot.slot());
+    header.writeU64(worldSeed);
+    header.writeU64((u64)std::time(nullptr) * 1000ULL);
+    header.writeU32(playtimeSec);
+    header.writeU32((u32)body.size());
+    header.writeU32((u32)compressed.size());
+    header.writeU32(crc32_compute(compressed.data(), compressed.size()));
 
     std::string path = slot.dataPath();
     FILE* f = std::fopen(path.c_str(), "wb");

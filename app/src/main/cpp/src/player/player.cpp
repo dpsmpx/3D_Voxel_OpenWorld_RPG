@@ -1,4 +1,5 @@
-﻿#include "player.h"
+#include "player.h"
+#include "../combat/projectile.h"
 #include "../ecs/components.h"
 #include "../combat/status_effects.h"
 #include "../combat/hit_detection.h"
@@ -178,7 +179,7 @@ void Player::tryInteract(ecs::Registry& reg, world::ChunkManager& world) {
     if (!tag) return;
     const npc::NpcDef& def = npc::npcRegistry().get(tag->id);
 
-    if (npc::startDialogue(reg, (u32)entity_, (u32)npcE, def.dialogueRoot)) {
+    if (npc::startDialogue(reg, world, (u32)entity_, (u32)npcE, def.dialogueRoot)) {
         if (auto* ai = reg.get<npc::NpcAI>(npcE)) {
             ai->inDialogue = true;
             ai->state = npc::NpcAI::Talk;
@@ -187,7 +188,6 @@ void Player::tryInteract(ecs::Registry& reg, world::ChunkManager& world) {
         // Phase 14: звук открытия диалога (используем UI-click).
         audio::events().uiClick();
     }
-    (void)world;
 }
 
 // ============================================================

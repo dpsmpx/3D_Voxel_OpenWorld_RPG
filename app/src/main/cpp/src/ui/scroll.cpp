@@ -1,4 +1,4 @@
-﻿#include "scroll.h"
+#include "scroll.h"
 
 // Модуль целиком inline в заголовке.
 

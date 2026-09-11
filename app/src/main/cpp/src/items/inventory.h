@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
 #include "item_stack.h"
 #include <array>

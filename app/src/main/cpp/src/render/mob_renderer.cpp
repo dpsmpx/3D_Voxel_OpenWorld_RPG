@@ -1,4 +1,4 @@
-﻿#include "mob_renderer.h"
+#include "mob_renderer.h"
 #include "../mobs/mob_def.h"
 #include "../mobs/mob_ai.h"
 #include "../ecs/components.h"

@@ -1,4 +1,5 @@
-﻿#include "crafting.h"
+#include "crafting.h"
+#include "../ecs/components.h"
 #include "crafting_station.h"
 #include "../ecs/registry.h"
 #include "../core/log.h"

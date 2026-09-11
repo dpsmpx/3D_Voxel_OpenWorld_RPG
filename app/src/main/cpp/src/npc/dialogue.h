@@ -1,5 +1,6 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
+#include "../world/chunk_manager.h"
 #include "../ecs/registry.h"
 #include "../factions/faction.h"
 #include "../quests/quest_def.h"
@@ -109,7 +110,10 @@ inline const DialogueRegistry& dialogues() {
 // Логика: начать диалог с NPC. Заполняет ActiveDialogue
 // у игрока, копируя шаблон и подставляя опции квестов.
 // ============================================================
+/// Начинает диалог. world нужен генератору квестов: элдер
+/// подбирает цель задания по реальному содержимому мира.
 bool startDialogue(ecs::Registry& reg,
+                   world::ChunkManager& world,
                    u32 playerEntity,
                    u32 npcEntity,
                    const char* dialogueRoot);

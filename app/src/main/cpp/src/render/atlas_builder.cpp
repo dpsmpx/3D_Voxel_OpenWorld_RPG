@@ -1,4 +1,4 @@
-﻿#include "atlas_builder.h"
+#include "atlas_builder.h"
 #include "../world/block.h"
 #include <random>
 #include <cstring>

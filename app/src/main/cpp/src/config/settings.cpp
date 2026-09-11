@@ -1,4 +1,4 @@
-﻿#include "settings.h"
+#include "settings.h"
 #include "../core/log.h"
 #include <cstdio>
 #include <cstring>

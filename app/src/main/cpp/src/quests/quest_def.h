@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
 #include "../world/block.h"
 #include "../mobs/mob_def.h"

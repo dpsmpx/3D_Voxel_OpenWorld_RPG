@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "biome.h"
 #include "noise.h"
 #include "../core/types.h"
@@ -36,7 +36,7 @@ public:
 
     // Доступ к климату и шуму для features
     const BiomeField& field() const { return biome_; }
-    const SimplexNoise& noise() const { return caves_; }
+    const SimplexNoise& noise() const { return cavesA_; }
 
 private:
     mutable BiomeField biome_;

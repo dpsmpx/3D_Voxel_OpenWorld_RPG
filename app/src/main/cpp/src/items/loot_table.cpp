@@ -1,4 +1,4 @@
-﻿#include "loot_table.h"
+#include "loot_table.h"
 #include "item_def.h"
 #include "../mobs/mob_def.h"
 #include "../core/log.h"

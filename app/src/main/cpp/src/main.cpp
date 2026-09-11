@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // src/main.cpp — точка входа VoxelRPG. Фазы 1–15.
 // ============================================================
 
@@ -223,7 +223,7 @@ struct Engine {
             touch.setJoystickRadius(s.joystickRadius);
 
             if (ui) ui->showFps = s.showFps;
-            if (world) world.setViewDistance(s.viewDistance);
+            if (world) world->setViewDistance(s.viewDistance);
 
             cfg::L().setLanguage(s.language);
 
@@ -545,7 +545,7 @@ struct Engine {
             // Phase 15: обновляем spatial hash перед боем
             spatialHash.ensureFresh(registry);
 
-            player->updateWithHash(*world, *render, spatialHash, pin, dt,
+            player->updateWithHash(*world, &spatialHash, pin, dt,
                                    cameraYawPitch.x, cameraYawPitch.y);
 
             // Phase 14: звук шагов
@@ -827,7 +827,11 @@ static void handleCmd(android_app* app, int32_t cmd) {
     }
 }
 
-void android_main(android_app* app) {
+// ============================================================
+// Точка входа. Вызывается из android_native_app_glue (код на C),
+// поэтому имя не должно искажаться C++-манглингом.
+// ============================================================
+extern "C" void android_main(android_app* app) {
     LOGI("================================================");
     LOGI(" VoxelRPG: android_main (Phase 1-15)");
     LOGI("================================================");

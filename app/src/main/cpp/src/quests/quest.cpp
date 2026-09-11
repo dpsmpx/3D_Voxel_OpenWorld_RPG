@@ -1,4 +1,4 @@
-﻿#include "quest.h"
+#include "quest.h"
 #include "../progression/progression.h"
 #include "../progression/resource_regen.h"
 #include "../ecs/components.h"

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "chunk.h"
 #include "terrain.h"
 #include "../core/types.h"

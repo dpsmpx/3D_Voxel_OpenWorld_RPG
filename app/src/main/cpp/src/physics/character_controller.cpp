@@ -1,4 +1,4 @@
-﻿#include "character_controller.h"
+#include "character_controller.h"
 #include "../world/block.h"
 #include <cmath>
 #include <algorithm>

@@ -1,4 +1,4 @@
-﻿#include "components.h"
+#include "components.h"
 #include "../ecs/components.h"
 
 namespace combat {

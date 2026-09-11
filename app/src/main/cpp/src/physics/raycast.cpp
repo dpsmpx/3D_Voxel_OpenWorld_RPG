@@ -1,4 +1,4 @@
-﻿#include "raycast.h"
+#include "raycast.h"
 #include "../world/block.h"
 #include <cmath>
 

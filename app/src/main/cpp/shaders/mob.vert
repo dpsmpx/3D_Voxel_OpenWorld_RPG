@@ -1,4 +1,4 @@
-﻿#version 450
+#version 450
 layout(location = 0) in vec3 inPos;        // unit cube in [-0.5, 0.5]
 
 // Instance

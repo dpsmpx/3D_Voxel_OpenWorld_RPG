@@ -1,4 +1,4 @@
-﻿#include "slider.h"
+#include "slider.h"
 #include "../core/log.h"
 #include <algorithm>
 #include <cstdio>

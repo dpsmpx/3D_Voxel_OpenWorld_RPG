@@ -1,6 +1,7 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
 #include "../ecs/registry.h"
+#include "../world/chunk_manager.h"
 #include "recipe.h"
 #include <glm/glm.hpp>
 
@@ -30,7 +31,7 @@ struct CraftingStation {
 class StationSpawner {
 public:
     void update(ecs::Registry& reg,
-                class world::ChunkManager& world,
+                world::ChunkManager& world,
                 const glm::vec3& playerPos,
                 u64 worldSeed);
 

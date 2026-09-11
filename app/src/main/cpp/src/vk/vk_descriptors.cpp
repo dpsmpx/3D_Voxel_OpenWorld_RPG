@@ -1,4 +1,4 @@
-﻿#include "vk_descriptors.h"
+#include "vk_descriptors.h"
 #include "../core/log.h"
 
 namespace vk {

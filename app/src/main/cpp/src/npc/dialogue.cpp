@@ -1,4 +1,5 @@
-﻿#include "dialogue.h"
+#include "dialogue.h"
+#include "npc_def.h"
 #include "../ecs/components.h"
 #include "../factions/faction.h"
 #include "../quests/quest.h"
@@ -210,6 +211,7 @@ bool choiceIsAvailable(ecs::Registry& reg,
 // startDialogue
 // ============================================================
 bool startDialogue(ecs::Registry& reg,
+                   world::ChunkManager& world,
                    u32 playerEntity,
                    u32 npcEntity,
                    const char* dialogueRoot)
@@ -261,10 +263,7 @@ bool startDialogue(ecs::Registry& reg,
                 opts.repTier = rep->tier(FactionId::Villagers);
             }
 
-            ecs::Entity qe = quests::generateQuest(reg, *(world::ChunkManager*)nullptr, opts);
-            // ВАЖНО: generateQuest требует world, но у нас его нет в диалоге.
-            // Реальная интеграция — передача world через параметр.
-            // Здесь — упрощённый fallback: без world.
+            const ecs::Entity qe = quests::generateQuest(reg, world, opts);
             ai->offeredQuest = (u32)qe;
         }
 

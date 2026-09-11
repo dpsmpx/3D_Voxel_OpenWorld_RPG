@@ -1,4 +1,4 @@
-﻿#include "audio_events.h"
+#include "audio_events.h"
 #include "../world/block.h"
 #include <algorithm>
 

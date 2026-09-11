@@ -1,4 +1,4 @@
-﻿#include "mob_def.h"
+#include "mob_def.h"
 #include "../core/log.h"
 
 namespace mobs {

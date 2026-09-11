@@ -1,4 +1,6 @@
-﻿#include "quest_generator.h"
+#include "quest_generator.h"
+#include "quest.h"
+#include "../world/block.h"
 #include "../ecs/components.h"
 #include "../progression/progression.h"
 #include "../progression/resource_regen.h"
@@ -318,7 +320,7 @@ void finalizeQuest(Quest& q,
 
     // Предметы как награда — Phase 12 (инвентарь). Пока — блок.
     if (q.tmpl.difficulty >= QuestDifficulty::Hard) {
-        q.rewards.itemBlockId = IRON_ORE;
+        q.rewards.itemBlockId = world::IRON_ORE;
         q.rewards.itemCount   = 1 + (u8)(rng.next() % 3);
     }
 

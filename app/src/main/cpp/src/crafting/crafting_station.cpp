@@ -1,4 +1,4 @@
-﻿#include "crafting_station.h"
+#include "crafting_station.h"
 #include "../ecs/components.h"
 #include "../world/chunk_manager.h"
 #include "../core/log.h"

@@ -1,4 +1,4 @@
-﻿#include "vk_pipeline.h"
+#include "vk_pipeline.h"
 #include "vk_shader.h"
 #include "../core/log.h"
 

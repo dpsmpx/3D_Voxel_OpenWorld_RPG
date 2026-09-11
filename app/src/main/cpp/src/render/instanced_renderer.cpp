@@ -1,6 +1,6 @@
-﻿#include "instanced_renderer.h"
+#include "instanced_renderer.h"
 #include "../core/log.h"
-#include "../world/noise.h"
+#include "../world/block.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <random>
 
@@ -114,13 +114,16 @@ void InstancedRenderer::populateGrass(const world::ChunkManager& world,
                 f32 ddz = (f32)wz - playerPos.z;
                 if (ddx*ddx + ddz*ddz > radius*radius) continue;
 
-                i32 surf = world.generator().surfaceHeight(wx, wz);
-                u16 ground = world.generator().surfaceBlock(0.f, 0.f);
+                const i32 surf = world.generator().surfaceHeight(wx, wz);
 
-                // Спавним только на траве/песке
-                i32 sy = surf;
-                // (упрощение — берём surfaceBlock из генератора)
-                // В Phase 4 уточним по реальному getVoxel.
+                // Трава растёт только на реальном грунте и только если
+                // над ним воздух: getVoxel учитывает пещеры, воду и
+                // постройки игрока, в отличие от высоты из генератора.
+                const u16 ground = world.getVoxel(wx, surf - 1, wz);
+                if (ground != world::GRASS && ground != world::SAND) continue;
+                if (world.getVoxel(wx, surf, wz) != world::AIR) continue;
+
+                const i32 sy = surf;
 
                 GrassInstance inst{};
                 inst.pos = { (f32)wx + 0.5f, (f32)sy, (f32)wz + 0.5f };

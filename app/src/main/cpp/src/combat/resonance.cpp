@@ -1,4 +1,4 @@
-﻿#include "resonance.h"
+#include "resonance.h"
 #include <algorithm>
 
 namespace combat {

@@ -1,4 +1,4 @@
-﻿#include "skill_tree.h"
+#include "skill_tree.h"
 #include "../core/log.h"
 #include <cstring>
 #include <vector>

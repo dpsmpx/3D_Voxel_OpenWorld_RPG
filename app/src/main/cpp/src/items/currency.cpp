@@ -1,4 +1,4 @@
-﻿#include "currency.h"
+#include "currency.h"
 #include <cstdio>
 
 namespace items {

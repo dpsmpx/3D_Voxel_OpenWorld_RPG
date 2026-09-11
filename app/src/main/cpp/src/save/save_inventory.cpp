@@ -1,4 +1,5 @@
-﻿#include "save_inventory.h"
+#include "save_inventory.h"
+#include "../ecs/components.h"
 #include "../combat/components.h"
 #include "../core/log.h"
 
@@ -9,37 +10,37 @@ using namespace ecs;
 void serializeInventory(ByteWriter& w, ecs::Registry& reg, ecs::Entity player) {
     // ---- Inventory ----
     if (auto* inv = reg.get<items::Inventory>(player)) {
-        w.u8(1);
-        w.u8(inv->activeHotbar);
+        w.writeU8(1);
+        w.writeU8(inv->activeHotbar);
 
         // Все слоты сериализуем подряд.
         for (u32 i = 0; i < items::INV_TOTAL_SLOTS; ++i) {
             const auto& s = inv->at(i);
             if (s.empty()) {
-                w.u8(0);
+                w.writeU8(0);
                 continue;
             }
-            w.u8(1);
-            w.u16(s.itemId);
-            w.u16(s.count);
-            w.u8((u8)s.enchant.id);
-            w.u8(s.enchant.level);
+            w.writeU8(1);
+            w.writeU16(s.itemId);
+            w.writeU16(s.count);
+            w.writeU8((u8)s.enchant.id);
+            w.writeU8(s.enchant.level);
         }
-    } else w.u8(0);
+    } else w.writeU8(0);
 
     // ---- Wallet ----
     if (auto* wal = reg.get<items::Wallet>(player)) {
-        w.u8(1);
-        w.u64(wal->gold);
-    } else w.u8(0);
+        w.writeU8(1);
+        w.writeU64(wal->gold);
+    } else w.writeU8(0);
 
     // ---- Equipped weapon (дублируется для надёжности) ----
     if (auto* eq = reg.get<combat::EquippedWeapon>(player)) {
-        w.u8(1);
-        w.u16(eq->weaponId);
-        w.u8((u8)eq->enchant.id);
-        w.u8(eq->enchant.level);
-    } else w.u8(0);
+        w.writeU8(1);
+        w.writeU16(eq->weaponId);
+        w.writeU8((u8)eq->enchant.id);
+        w.writeU8(eq->enchant.level);
+    } else w.writeU8(0);
 }
 
 bool deserializeInventory(ByteReader& r, ecs::Registry& reg, ecs::Entity player) {
@@ -139,12 +140,12 @@ void serializePickups(ByteWriter& w, ecs::Registry& reg) {
         auto* tf = reg.get<Transform>(e);
         if (!p || !tf) continue;
 
-        w.f32(tf->position.x);
-        w.f32(tf->position.y);
-        w.f32(tf->position.z);
-        w.u16(p->stack.itemId);
-        w.u16(p->stack.count);
-        w.f32(p->lifeRemaining);
+        w.writeF32(tf->position.x);
+        w.writeF32(tf->position.y);
+        w.writeF32(tf->position.z);
+        w.writeU16(p->stack.itemId);
+        w.writeU16(p->stack.count);
+        w.writeF32(p->lifeRemaining);
     }
 }
 

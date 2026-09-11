@@ -1,4 +1,4 @@
-﻿#include "save_slot.h"
+#include "save_slot.h"
 #include "save_format.h"
 #include "../core/log.h"
 #include <cstdio>
@@ -42,14 +42,14 @@ bool SaveSlot::metaExists() const {
 bool SaveSlot::writeMeta(const SlotMeta& meta) const {
     ByteWriter w;
 
-    w.u32(meta.version);
-    w.u32(meta.profileId);
-    w.u32(meta.slotId);
-    w.u64(meta.seed);
-    w.u64(meta.timestampMs);
-    w.u32(meta.playtimeSec);
-    w.u32(meta.playerLevel);
-    w.u32(meta.slotChecksum);
+    w.writeU32(meta.version);
+    w.writeU32(meta.profileId);
+    w.writeU32(meta.slotId);
+    w.writeU64(meta.seed);
+    w.writeU64(meta.timestampMs);
+    w.writeU32(meta.playtimeSec);
+    w.writeU32(meta.playerLevel);
+    w.writeU32(meta.slotChecksum);
 
     char pname[32] = {};
     std::memcpy(pname, meta.playerName, 31);

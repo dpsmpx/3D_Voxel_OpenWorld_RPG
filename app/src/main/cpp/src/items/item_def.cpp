@@ -1,4 +1,4 @@
-﻿#include "item_def.h"
+#include "item_def.h"
 #include "../core/log.h"
 #include <cstring>
 

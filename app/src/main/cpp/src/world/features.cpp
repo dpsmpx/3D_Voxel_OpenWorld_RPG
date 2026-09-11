@@ -1,4 +1,4 @@
-﻿#include "features.h"
+#include "features.h"
 #include "../core/log.h"
 #include <cmath>
 #include <algorithm>

@@ -1,4 +1,4 @@
-﻿#include "audio_engine.h"
+#include "audio_engine.h"
 #include "sound_registry.h"
 #include "../core/log.h"
 

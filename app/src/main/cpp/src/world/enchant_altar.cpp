@@ -1,4 +1,4 @@
-﻿#include "enchant_altar.h"
+#include "enchant_altar.h"
 #include "../ecs/components.h"
 #include "../items/currency.h"
 #include "../items/item_def.h"

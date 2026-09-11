@@ -1,4 +1,4 @@
-﻿#include "minimap.h"
+#include "minimap.h"
 #include "../world/block.h"
 #include "../core/log.h"
 #include <cmath>

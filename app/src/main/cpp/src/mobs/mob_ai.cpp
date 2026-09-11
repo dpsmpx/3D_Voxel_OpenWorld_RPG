@@ -1,4 +1,4 @@
-﻿#include "mob_ai.h"
+#include "mob_ai.h"
 #include "mob_def.h"
 #include "../ecs/components.h"
 #include "../combat/components.h"

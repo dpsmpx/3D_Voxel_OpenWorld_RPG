@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
 #include "../vk/vk_context.h"
 #include "../vk/vk_texture.h"

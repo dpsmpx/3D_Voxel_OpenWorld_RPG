@@ -1,4 +1,4 @@
-﻿#include "mesh_builder.h"
+#include "mesh_builder.h"
 #include "../world/block.h"
 
 namespace render {

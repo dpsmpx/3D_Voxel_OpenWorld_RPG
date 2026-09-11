@@ -1,4 +1,4 @@
-﻿#include "block_outline.h"
+#include "block_outline.h"
 #include "../core/log.h"
 #include <cstring>
 
@@ -72,7 +72,8 @@ void BlockOutline::render(vk::Context& ctx, VkDescriptorSet uboSet,
                        VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
 
     VkDeviceSize offs[] = { 0 };
-    vkCmdBindVertexBuffers(cmd, 0, 1, &vbo_.handle(), offs);
+    const VkBuffer vb = vbo_.handle();
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offs);
     vkCmdDraw(cmd, 24, 1, 0, 0);
 }
 

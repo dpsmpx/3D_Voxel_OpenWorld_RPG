@@ -1,4 +1,4 @@
-﻿#include "npc_renderer.h"
+#include "npc_renderer.h"
 #include "../npc/npc_def.h"
 #include "../npc/npc_ai.h"
 #include "../ecs/components.h"

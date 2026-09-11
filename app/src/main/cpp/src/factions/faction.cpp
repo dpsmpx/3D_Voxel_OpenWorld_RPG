@@ -1,4 +1,4 @@
-﻿#include "faction.h"
+#include "faction.h"
 
 namespace factions {
 

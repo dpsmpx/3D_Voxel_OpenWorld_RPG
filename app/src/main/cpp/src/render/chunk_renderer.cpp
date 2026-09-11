@@ -1,5 +1,6 @@
-﻿#include "chunk_renderer.h"
+#include "chunk_renderer.h"
 #include "../core/log.h"
+#include <cstring>
 
 namespace render {
 
@@ -30,7 +31,7 @@ void ChunkRenderer::forgetChunk(world::ChunkCoord c) {
 void ChunkRenderer::uploadChunks(vk::Context& ctx, const std::vector<world::Chunk*>& chunks) {
     for (world::Chunk* c : chunks) {
         if (!c) continue;
-        auto& cm = meshes_[c->coord];
+        auto& cm = meshes_[world::ChunkCoord{ c->coord.x, c->coord.z }];
 
         for (u8 lod = 0; lod < 4; ++lod) {
             if (!c->meshes[lod].ready.load(std::memory_order_acquire)) continue;
@@ -144,7 +145,8 @@ void ChunkRenderer::render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout l
         if (!chosen) continue;
 
         VkDeviceSize offsets[] = { 0 };
-        vkCmdBindVertexBuffers(cmd, 0, 1, &chosen->vb.handle(), offsets);
+        const VkBuffer vb = chosen->vb.handle();
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offsets);
         vkCmdBindIndexBuffer(cmd, chosen->ib.handle(), 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, chosen->indexCount, 1, 0, 0, 0);
 

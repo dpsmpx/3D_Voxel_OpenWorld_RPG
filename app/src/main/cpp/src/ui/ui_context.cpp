@@ -1,4 +1,4 @@
-﻿#include "ui_context.h"
+#include "ui_context.h"
 #include "../core/log.h"
 #include <cmath>
 #include <cstring>

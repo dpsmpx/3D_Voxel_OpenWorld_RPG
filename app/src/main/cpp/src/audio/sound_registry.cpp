@@ -1,4 +1,4 @@
-﻿#include "sound_registry.h"
+#include "sound_registry.h"
 #include "../core/log.h"
 #include <cmath>
 #include <cstring>

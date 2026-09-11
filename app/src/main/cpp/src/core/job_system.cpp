@@ -13,7 +13,7 @@ void JobSystem::start(u32 workerCount) {
         u32 hw = std::thread::hardware_concurrency();
         workerCount = hw > 1 ? hw - 1 : 1;
     }
-    LOGI("JobSystem: старт с %u воркерами", workerCount);
+    LOGI("JobSystem: СЃС‚Р°СЂС‚ СЃ %u РІРѕСЂРєРµСЂР°РјРё", workerCount);
     workers_.reserve(workerCount);
     for (u32 i = 0; i < workerCount; ++i) {
         auto w = std::make_unique<Worker>();
@@ -29,7 +29,7 @@ void JobSystem::stop() {
     wakeup_.notify_all();
     for (auto& w : workers_) if (w->thread.joinable()) w->thread.join();
     workers_.clear();
-    LOGI("JobSystem: остановлен");
+    LOGI("JobSystem: РѕСЃС‚Р°РЅРѕРІР»РµРЅ");
 }
 
 u32 JobSystem::currentWorkerId() const { return tlsWorkerId_; }
@@ -65,7 +65,7 @@ void JobSystem::submit(Counter* c, JobFn fn, void* data) {
     wakeup_.notify_one();
 }
 
-// Выполнить одну задачу с корректной обработкой counter
+// Р’С‹РїРѕР»РЅРёС‚СЊ РѕРґРЅСѓ Р·Р°РґР°С‡Сѓ СЃ РєРѕСЂСЂРµРєС‚РЅРѕР№ РѕР±СЂР°Р±РѕС‚РєРѕР№ counter
 static void runJob(const JobSystem::Job& j) {
     j.fn(j.data);
     if (j.counter) j.counter->done();
@@ -95,7 +95,7 @@ bool JobSystem::popJob(Job& out, u32 workerId) {
 bool JobSystem::trySteal(Job& out, u32 myId) {
     u32 n = (u32)workers_.size();
     if (n <= 1) return false;
-    // Начинаем с "соседа", чтобы снизить контеншн
+    // РќР°С‡РёРЅР°РµРј СЃ "СЃРѕСЃРµРґР°", С‡С‚РѕР±С‹ СЃРЅРёР·РёС‚СЊ РєРѕРЅС‚РµРЅС€РЅ
     u32 start = (myId + 1) % n;
     for (u32 i = 0; i < n; ++i) {
         u32 victim = (start + i) % n;
@@ -126,7 +126,7 @@ void JobSystem::workerLoop(u32 workerId) {
             continue;
         }
 
-        // Ждём новую работу
+        // Р–РґС‘Рј РЅРѕРІСѓСЋ СЂР°Р±РѕС‚Сѓ
         std::unique_lock lk(globalMtx_);
         wakeup_.wait_for(lk, std::chrono::milliseconds(2), [this]{
             if (!running_.load(std::memory_order_acquire)) return true;
@@ -138,7 +138,7 @@ void JobSystem::workerLoop(u32 workerId) {
             return false;
         });
         if (!running_.load(std::memory_order_acquire) && globalQueue_.empty()) {
-            // Дать шанс доработать очереди воркеров
+            // Р”Р°С‚СЊ С€Р°РЅСЃ РґРѕСЂР°Р±РѕС‚Р°С‚СЊ РѕС‡РµСЂРµРґРё РІРѕСЂРєРµСЂРѕРІ
             bool anyWork = false;
             for (auto& w : workers_) {
                 std::lock_guard l(w->mtx);
@@ -149,7 +149,7 @@ void JobSystem::workerLoop(u32 workerId) {
     }
 }
 
-// parallelFor: разбиваем диапазон на чанки, каждую задачу прикрепляем к счётчику.
+// parallelFor: СЂР°Р·Р±РёРІР°РµРј РґРёР°РїР°Р·РѕРЅ РЅР° С‡Р°РЅРєРё, РєР°Р¶РґСѓСЋ Р·Р°РґР°С‡Сѓ РїСЂРёРєСЂРµРїР»СЏРµРј Рє СЃС‡С‘С‚С‡РёРєСѓ.
 namespace {
 struct RangeData {
     u32 begin, end;
@@ -168,11 +168,11 @@ void JobSystem::parallelFor(u32 count, u32 minChunk,
     if (minChunk == 0) minChunk = 1;
 
     u32 chunks = (count + minChunk - 1) / minChunk;
-    u32 nWorkers = workerCount() + 1; // +1 — вызывающий поток тоже работает
+    u32 nWorkers = workerCount() + 1; // +1 вЂ” РІС‹Р·С‹РІР°СЋС‰РёР№ РїРѕС‚РѕРє С‚РѕР¶Рµ СЂР°Р±РѕС‚Р°РµС‚
     u32 perJob = std::max(1u, chunks / nWorkers);
     u32 step = perJob * minChunk;
 
-    // Данные задач живут в векторе, чтобы не аллоцировать вручную.
+    // Р”Р°РЅРЅС‹Рµ Р·Р°РґР°С‡ Р¶РёРІСѓС‚ РІ РІРµРєС‚РѕСЂРµ, С‡С‚РѕР±С‹ РЅРµ Р°Р»Р»РѕС†РёСЂРѕРІР°С‚СЊ РІСЂСѓС‡РЅСѓСЋ.
     std::vector<RangeData> ranges;
     for (u32 b = 0; b < count; b += step) {
         u32 e = std::min(count, b + step);
@@ -182,11 +182,11 @@ void JobSystem::parallelFor(u32 count, u32 minChunk,
     Counter c;
     c.add((i32)ranges.size());
 
-    // Кидаем все, кроме последней, в систему.
+    // РљРёРґР°РµРј РІСЃРµ, РєСЂРѕРјРµ РїРѕСЃР»РµРґРЅРµР№, РІ СЃРёСЃС‚РµРјСѓ.
     for (usize i = 0; i + 1 < ranges.size(); ++i) {
         submit(&c, &runRange, &ranges[i]);
     }
-    // Последнюю выполняем сами — не простаиваем.
+    // РџРѕСЃР»РµРґРЅСЋСЋ РІС‹РїРѕР»РЅСЏРµРј СЃР°РјРё вЂ” РЅРµ РїСЂРѕСЃС‚Р°РёРІР°РµРј.
     if (!ranges.empty()) {
         runRange(&ranges.back());
         c.done();

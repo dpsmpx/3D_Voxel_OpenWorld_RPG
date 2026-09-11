@@ -70,7 +70,7 @@ bool Context::createInstance() {
     ci.pApplicationInfo        = &app;
     ci.enabledExtensionCount   = 2;
     ci.ppEnabledExtensionNames = exts;
-    // Без слоёв в релизе; включить для отладки
+    // Р‘РµР· СЃР»РѕС‘РІ РІ СЂРµР»РёР·Рµ; РІРєР»СЋС‡РёС‚СЊ РґР»СЏ РѕС‚Р»Р°РґРєРё
     (void)layers;
 
     VKCHECK(vkCreateInstance(&ci, nullptr, &instance_));
@@ -87,7 +87,7 @@ bool Context::createSurface(ANativeWindow* w) {
 bool Context::pickPhysicalDevice() {
     u32 count = 0;
     vkEnumeratePhysicalDevices(instance_, &count, nullptr);
-    if (!count) { LOGE("Нет Vulkan-устройств"); return false; }
+    if (!count) { LOGE("РќРµС‚ Vulkan-СѓСЃС‚СЂРѕР№СЃС‚РІ"); return false; }
     std::vector<VkPhysicalDevice> devs(count);
     vkEnumeratePhysicalDevices(instance_, &count, devs.data());
 
@@ -99,29 +99,35 @@ bool Context::pickPhysicalDevice() {
         vkGetPhysicalDeviceProperties(d, &props);
         if (props.apiVersion < VK_API_VERSION_1_1) continue;
 
-        // Ищем очередь с графикой и презентацией
+        // РС‰РµРј РѕС‡РµСЂРµРґСЊ СЃ РіСЂР°С„РёРєРѕР№ Рё РїСЂРµР·РµРЅС‚Р°С†РёРµР№
         u32 qCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(d, &qCount, nullptr);
         std::vector<VkQueueFamilyProperties> qs(qCount);
         vkGetPhysicalDeviceQueueFamilyProperties(d, &qCount, qs.data());
 
-        bool hasGfx = false, hasPresent = false;
-        u32 gfxFam = 0, presentFam = 0;
+        // РќСѓР¶РЅРѕ РѕРґРЅРѕ СЃРµРјРµР№СЃС‚РІРѕ, СѓРјРµСЋС‰РµРµ Рё РіСЂР°С„РёРєСѓ, Рё РїСЂРµР·РµРЅС‚Р°С†РёСЋ:
+        // РґРІРёР¶РѕРє РёСЃРїРѕР»СЊР·СѓРµС‚ РѕРґРЅСѓ РѕС‡РµСЂРµРґСЊ, СЂР°Р·РґРµР»СЊРЅС‹Рµ СЃРµРјРµР№СЃС‚РІР°
+        // РїРѕС‚СЂРµР±РѕРІР°Р»Рё Р±С‹ РїРµСЂРµРґР°С‡Рё РІР»Р°РґРµРЅРёСЏ РёР·РѕР±СЂР°Р¶РµРЅРёСЏРјРё swapchain.
+        bool hasUniversal = false;
+        u32  gfxFam = 0;
         for (u32 i = 0; i < qCount; ++i) {
-            if (qs[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { hasGfx = true; gfxFam = i; }
+            if (!(qs[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) continue;
             VkBool32 present = VK_FALSE;
             vkGetPhysicalDeviceSurfaceSupportKHR(d, i, surface_, &present);
-            if (present) { hasPresent = true; presentFam = i; }
+            if (!present) continue;
+            hasUniversal = true;
+            gfxFam = i;
+            break;
         }
-        if (!hasGfx || !hasPresent) continue;
+        if (!hasUniversal) continue;
 
-        // Требуем swapchain extension
+        // РўСЂРµР±СѓРµРј swapchain extension
         u32 extCount = 0;
         vkEnumerateDeviceExtensionProperties(d, nullptr, &extCount, nullptr);
         std::vector<VkExtensionProperties> exts(extCount);
         vkEnumerateDeviceExtensionProperties(d, nullptr, &extCount, exts.data());
         bool hasSwapchain = false;
-        for (auto& e : exts) if (!strcmp(e.extensionName, VK_KHR_swapchain)) { hasSwapchain = true; break; }
+        for (auto& e : exts) if (!strcmp(e.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) { hasSwapchain = true; break; }
         if (!hasSwapchain) continue;
 
         i32 score = 0;
@@ -135,7 +141,7 @@ bool Context::pickPhysicalDevice() {
         }
     }
 
-    if (best == VK_NULL_HANDLE) { LOGE("Нет подходящего GPU"); return false; }
+    if (best == VK_NULL_HANDLE) { LOGE("РќРµС‚ РїРѕРґС…РѕРґСЏС‰РµРіРѕ GPU"); return false; }
     physical_ = best;
     return true;
 }
@@ -228,7 +234,7 @@ bool Context::createImageViews() {
 
 bool Context::createDepthResources() {
     depthFormat_ = findDepthFormat(physical_);
-    if (depthFormat_ == VK_FORMAT_UNDEFINED) { LOGE("Не найден depth format"); return false; }
+    if (depthFormat_ == VK_FORMAT_UNDEFINED) { LOGE("РќРµ РЅР°Р№РґРµРЅ depth format"); return false; }
 
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ici.imageType = VK_IMAGE_TYPE_2D;
@@ -344,7 +350,7 @@ bool Context::createCommandPool() {
 }
 
 bool Context::createCommandBuffers() {
-    cmdBuffers_.resize(MAX_FRAMES_IN_FLIGHT);
+    cmdBuffers_.resize(MAX_FRAMES);
     VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     ai.commandPool        = cmdPool_;
     ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -354,15 +360,15 @@ bool Context::createCommandBuffers() {
 }
 
 bool Context::createSyncObjects() {
-    imgAvailable_.resize(MAX_FRAMES_IN_FLIGHT);
-    renderFinished_.resize(MAX_FRAMES_IN_FLIGHT);
-    inFlight_.resize(MAX_FRAMES_IN_FLIGHT);
+    imgAvailable_.resize(MAX_FRAMES);
+    renderFinished_.resize(MAX_FRAMES);
+    inFlight_.resize(MAX_FRAMES);
 
     VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+    for (u32 i = 0; i < MAX_FRAMES; ++i) {
         VKCHECK(vkCreateSemaphore(device_, &si, nullptr, &imgAvailable_[i]));
         VKCHECK(vkCreateSemaphore(device_, &si, nullptr, &renderFinished_[i]));
         VKCHECK(vkCreateFence    (device_, &fi, nullptr, &inFlight_[i]));
@@ -388,7 +394,7 @@ void Context::onResize(ANativeWindow* /*window*/) {
     if (!createImageViews())   { LOGE("resize: image views"); return; }
     if (!createDepthResources()){ LOGE("resize: depth"); return; }
     if (!createFramebuffers()) { LOGE("resize: framebuffers"); return; }
-    LOGI("Swapchain пересоздан: %ux%u", swapExtent_.width, swapExtent_.height);
+    LOGI("Swapchain РїРµСЂРµСЃРѕР·РґР°РЅ: %ux%u", swapExtent_.width, swapExtent_.height);
 }
 
 bool Context::beginFrame() {
@@ -397,7 +403,7 @@ bool Context::beginFrame() {
     VkResult r = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
                                        imgAvailable_[currentFrame_], VK_NULL_HANDLE, &imgIdx_);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
-        // Пересоздать swapchain — вызовет main loop
+        // РџРµСЂРµСЃРѕР·РґР°С‚СЊ swapchain вЂ” РІС‹Р·РѕРІРµС‚ main loop
         return false;
     }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return false;
@@ -408,7 +414,7 @@ bool Context::beginFrame() {
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     vkBeginCommandBuffer(cmdBuffers_[currentFrame_], &bi);
 
-    // Открываем render pass
+    // РћС‚РєСЂС‹РІР°РµРј render pass
     VkClearValue clears[2];
     clears[0].color = {{ 0.45f, 0.62f, 0.85f, 1.0f }};
     clears[1].depthStencil = { 1.0f, 0 };
@@ -451,14 +457,14 @@ void Context::endFrame() {
     pi.pImageIndices = &imgIdx_;
     vkQueuePresentKHR(gfxQueue_, &pi);
 
-    currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES_IN_FLIGHT;
+    currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES;
     frameStarted_ = false;
 }
 
 void Context::shutdown() {
     if (device_) {
         vkDeviceWaitIdle(device_);
-        for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        for (u32 i = 0; i < MAX_FRAMES; ++i) {
             vkDestroySemaphore(device_, imgAvailable_[i], nullptr);
             vkDestroySemaphore(device_, renderFinished_[i], nullptr);
             vkDestroyFence(device_, inFlight_[i], nullptr);

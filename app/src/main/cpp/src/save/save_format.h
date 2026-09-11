@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
 #include <vector>
 #include <string>
@@ -22,35 +22,37 @@ constexpr u32 SAVE_VERSION = 1;
 
 // ============================================================
 // ByteWriter — аккумулирует байты, пишет всё LE.
+// Имена методов с префиксом write*, чтобы не затенять
+// псевдонимы типов u8/u32/f32 из core/types.h.
 // Varint используется для экономии на больших массивах
 // (block mods, координаты).
 // ============================================================
 class ByteWriter {
 public:
-    void u8(u8 v)   { buf_.push_back(v); }
-    void u16(u16 v) {
+    void writeU8(u8 v)   { buf_.push_back(v); }
+    void writeU16(u16 v) {
         buf_.push_back((u8)v);
         buf_.push_back((u8)(v >> 8));
     }
-    void u32(u32 v) {
+    void writeU32(u32 v) {
         buf_.push_back((u8)v);
         buf_.push_back((u8)(v >> 8));
         buf_.push_back((u8)(v >> 16));
         buf_.push_back((u8)(v >> 24));
     }
-    void u64(u64 v) { u32((u32)v); u32((u32)(v >> 32)); }
-    void i32(i32 v) { u32((u32)v); }
-    void i64(i64 v) { u64((u64)v); }
+    void writeU64(u64 v) { writeU32((u32)v); writeU32((u32)(v >> 32)); }
+    void writeI32(i32 v) { writeU32((u32)v); }
+    void writeI64(i64 v) { writeU64((u64)v); }
 
-    void f32(f32 v) {
+    void writeF32(f32 v) {
         u32 bits;
         std::memcpy(&bits, &v, sizeof(bits));
-        u32(bits);
+        writeU32(bits);
     }
-    void f64(f64 v) {
+    void writeF64(f64 v) {
         u64 bits;
         std::memcpy(&bits, &v, sizeof(bits));
-        u64(bits);
+        writeU64(bits);
     }
 
     // Varint: 7-bit groups, LSB-first, high bit = continue.

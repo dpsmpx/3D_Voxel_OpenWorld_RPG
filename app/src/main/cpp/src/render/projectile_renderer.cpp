@@ -1,4 +1,4 @@
-﻿#include "projectile_renderer.h"
+#include "projectile_renderer.h"
 #include "../combat/projectile.h"
 #include "../ecs/components.h"
 #include "../core/log.h"

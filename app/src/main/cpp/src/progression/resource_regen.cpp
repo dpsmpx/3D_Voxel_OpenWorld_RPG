@@ -1,4 +1,4 @@
-﻿#include "resource_regen.h"
+#include "resource_regen.h"
 #include "progression.h"
 #include "../ecs/components.h"
 #include <algorithm>

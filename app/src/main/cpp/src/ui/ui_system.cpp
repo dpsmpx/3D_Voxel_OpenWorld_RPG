@@ -1,4 +1,4 @@
-﻿#include "ui_system.h"
+#include "ui_system.h"
 #include "slider.h"
 #include "hud_resources.h"
 #include "../combat/weapon.h"

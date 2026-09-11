@@ -1,4 +1,4 @@
-﻿#include "item_use.h"
+#include "item_use.h"
 #include "inventory.h"
 #include "item_pickup.h"
 #include "item_def.h"

@@ -1,5 +1,6 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
+#include "../ecs/registry.h"
 #include "../items/inventory.h"
 #include "../progression/skill_tree.h"
 #include "recipe.h"

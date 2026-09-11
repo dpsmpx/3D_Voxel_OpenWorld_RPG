@@ -1,4 +1,4 @@
-﻿#include "damage.h"
+#include "damage.h"
 #include <cmath>
 #include <random>
 

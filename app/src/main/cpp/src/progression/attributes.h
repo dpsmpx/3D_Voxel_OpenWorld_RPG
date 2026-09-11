@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
 #include "../ecs/components.h"
 #include "skill_tree.h"

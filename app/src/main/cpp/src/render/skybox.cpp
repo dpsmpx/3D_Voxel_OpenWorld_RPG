@@ -1,4 +1,4 @@
-﻿#include "skybox.h"
+#include "skybox.h"
 #include "../core/log.h"
 
 namespace render {

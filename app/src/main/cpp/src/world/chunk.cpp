@@ -1,4 +1,4 @@
-﻿#include "chunk.h"
+#include "chunk.h"
 #include "../core/memory.h"
 #include "../core/log.h"
 #include <cstring>

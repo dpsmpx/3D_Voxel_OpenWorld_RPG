@@ -31,8 +31,8 @@ public:
     static constexpr u32 MAX_FRAMES = 2;
 
     // ---- One-shot submit ----
-    // Выполняет fn(cmd) в отдельном командном буфере, ждёт завершения.
-    // Используется для upload (buffer copy, image layout transition).
+    // Р’С‹РїРѕР»РЅСЏРµС‚ fn(cmd) РІ РѕС‚РґРµР»СЊРЅРѕРј РєРѕРјР°РЅРґРЅРѕРј Р±СѓС„РµСЂРµ, Р¶РґС‘С‚ Р·Р°РІРµСЂС€РµРЅРёСЏ.
+    // РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РґР»СЏ upload (buffer copy, image layout transition).
     void submitOneShot(const std::function<void(VkCommandBuffer)>& fn);
     void waitIdle() const { if (device_) vkDeviceWaitIdle(device_); }
 

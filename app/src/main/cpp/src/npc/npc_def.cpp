@@ -1,4 +1,4 @@
-﻿#include "npc_def.h"
+#include "npc_def.h"
 #include "../core/log.h"
 
 namespace npc {

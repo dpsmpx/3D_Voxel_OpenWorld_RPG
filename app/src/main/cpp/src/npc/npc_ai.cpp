@@ -1,4 +1,4 @@
-﻿#include "npc_ai.h"
+#include "npc_ai.h"
 #include "../ecs/components.h"
 #include "../combat/components.h"
 #include "../combat/status_effects.h"

@@ -1,4 +1,4 @@
-﻿#include "pathfinding.h"
+#include "pathfinding.h"
 #include "../block.h"
 #include <unordered_map>
 #include <queue>

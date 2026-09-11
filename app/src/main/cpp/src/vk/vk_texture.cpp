@@ -1,4 +1,4 @@
-﻿#include "vk_texture.h"
+#include "vk_texture.h"
 #include "../core/log.h"
 #include <cstring>
 #include <algorithm>
@@ -287,8 +287,9 @@ void Texture2D::destroy() {
     if (view_)    vkDestroyImageView(dev_, view_, nullptr);
     if (image_)   vkDestroyImage(dev_, image_, nullptr);
     if (mem_)     vkFreeMemory(dev_, mem_, nullptr);
-    sampler_ = view_ = VK_NULL_HANDLE;
-    image_ = VK_NULL_HANDLE;
+    sampler_ = VK_NULL_HANDLE;
+    view_    = VK_NULL_HANDLE;
+    image_   = VK_NULL_HANDLE;
     mem_ = VK_NULL_HANDLE;
     dev_ = VK_NULL_HANDLE;
 }

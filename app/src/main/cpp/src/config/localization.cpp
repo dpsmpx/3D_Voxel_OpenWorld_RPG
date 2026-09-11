@@ -1,4 +1,4 @@
-﻿#include "localization.h"
+#include "localization.h"
 #include "../core/log.h"
 #include <cstdarg>
 #include <cstdio>

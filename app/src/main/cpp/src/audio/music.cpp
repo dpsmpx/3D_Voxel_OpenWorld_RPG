@@ -1,4 +1,4 @@
-﻿#include "music.h"
+#include "music.h"
 #include "sound_registry.h"
 #include "../core/log.h"
 #include <algorithm>

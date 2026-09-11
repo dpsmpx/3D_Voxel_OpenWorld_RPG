@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
 #include "../vk/vk_pipeline.h"
 #include "../vk/vk_shader.h"

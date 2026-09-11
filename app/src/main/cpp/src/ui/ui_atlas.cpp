@@ -1,4 +1,4 @@
-﻿#include "ui_atlas.h"
+#include "ui_atlas.h"
 #include "font_data.h"
 
 namespace ui {

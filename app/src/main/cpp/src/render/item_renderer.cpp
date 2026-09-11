@@ -1,4 +1,4 @@
-﻿#include "item_renderer.h"
+#include "item_renderer.h"
 #include "../items/item_pickup.h"
 #include "../items/item_def.h"
 #include "../ecs/components.h"

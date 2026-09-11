@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "chunk.h"
 #include "terrain.h"
 #include "features.h"
@@ -40,7 +40,7 @@ public:
 
     // ---- Управление вокселями ----
     void setVoxel(i32 wx, i32 wy, i32 wz, u16 block);
-    u16  getVoxel(i32 wx, i32 wy, i32 wz);
+    u16  getVoxel(i32 wx, i32 wy, i32 wz) const;
 
     // ---- Перехват изменений блоков (Phase 11) ----
     void setBlockModifyCallback(BlockModifyCallback cb) {

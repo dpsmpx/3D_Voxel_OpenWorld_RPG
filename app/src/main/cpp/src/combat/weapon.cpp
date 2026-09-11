@@ -1,4 +1,4 @@
-﻿#include "weapon.h"
+#include "weapon.h"
 #include "../core/log.h"
 
 namespace combat {

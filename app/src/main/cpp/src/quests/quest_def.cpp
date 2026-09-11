@@ -1,4 +1,4 @@
-﻿#include "quest_def.h"
+#include "quest_def.h"
 #include "../core/log.h"
 #include <cstring>
 

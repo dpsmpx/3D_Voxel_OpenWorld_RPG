@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../../core/types.h"
 #include "../chunk_manager.h"
 #include <glm/glm.hpp>

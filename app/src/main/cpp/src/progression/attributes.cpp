@@ -1,4 +1,4 @@
-﻿#include "attributes.h"
+#include "attributes.h"
 #include <algorithm>
 #include <cmath>
 

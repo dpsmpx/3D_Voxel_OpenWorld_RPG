@@ -23,7 +23,7 @@ void main() {
 
     vec3 lit = tex.rgb * vColor.rgb;
 
-    // Атмосферный туман
+    // РђС‚РјРѕСЃС„РµСЂРЅС‹Р№ С‚СѓРјР°РЅ
     float dist = distance(vWorldPos, cam.cameraPos.xyz);
     float fogStart = cam.fogParams.x;
     float fogEnd   = cam.fogParams.y;

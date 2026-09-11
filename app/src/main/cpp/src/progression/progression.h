@@ -1,6 +1,7 @@
-﻿#pragma once
+#pragma once
 #include "../core/types.h"
 #include "../ecs/components.h"
+#include "../ecs/registry.h"
 #include "attributes.h"
 #include "skill_tree.h"
 

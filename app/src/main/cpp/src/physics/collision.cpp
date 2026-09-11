@@ -1,4 +1,4 @@
-﻿#include "collision.h"
+#include "collision.h"
 #include "../world/block.h"
 #include <cmath>
 #include <algorithm>

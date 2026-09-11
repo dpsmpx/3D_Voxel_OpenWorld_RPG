@@ -1,4 +1,4 @@
-﻿#include "progression.h"
+#include "progression.h"
 #include "resource_regen.h"
 #include "../core/log.h"
 #include "../ecs/components.h"

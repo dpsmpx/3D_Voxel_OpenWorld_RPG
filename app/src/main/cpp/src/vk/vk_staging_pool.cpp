@@ -1,4 +1,4 @@
-﻿#include "vk_staging_pool.h"
+#include "vk_staging_pool.h"
 #include "../core/log.h"
 #include <algorithm>
 

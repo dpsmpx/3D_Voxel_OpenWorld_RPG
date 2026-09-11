@@ -1,4 +1,4 @@
-﻿#include "render_system.h"
+#include "render_system.h"
 #include "atlas_builder.h"
 #include "../core/log.h"
 #include "../config/settings.h"
