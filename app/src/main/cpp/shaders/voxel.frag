@@ -15,6 +15,7 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 screenSize;
     vec4 sunDir;
     vec4 fogParams;   // start, end, density, time
+    vec4 skyColor;
 } cam;
 
 layout(set = 0, binding = 1) uniform sampler2D atlas;
@@ -35,13 +36,15 @@ void main() {
 
     vec4 tex = textureGrad(atlas, uv, ddx, ddy);
 
-    vec3 lit = tex.rgb * vColor.rgb;
+    // vColor — запечённое направленное освещение грани;
+    // sunDir.w — текущая яркость неба из world::DayCycle.
+    vec3 lit = tex.rgb * vColor.rgb * max(cam.sunDir.w, 0.12);
 
     float dist     = distance(vWorldPos, cam.cameraPos.xyz);
     float fogStart = cam.fogParams.x;
     float fogEnd   = cam.fogParams.y;
     float fogAmt   = clamp((dist - fogStart) / max(fogEnd - fogStart, 0.001), 0.0, 1.0);
 
-    vec3 fogColor = vec3(0.55, 0.72, 0.92);
+    vec3 fogColor = cam.skyColor.rgb;
     outColor = vec4(mix(lit, fogColor, fogAmt), 1.0);
 }

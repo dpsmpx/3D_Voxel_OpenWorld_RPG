@@ -631,6 +631,28 @@ void stampAltar(Chunk& c, const FeatureContext& ctx, const structs::Layout& L) {
 
 } // namespace
 
+// ============================================================
+// Публичный запрос подземелий: та же детерминированная раскладка,
+// что использует applyStructures, но без генерации вокселей.
+// ============================================================
+DungeonSite dungeonAt(i32 superX, i32 superZ, u64 worldSeed) {
+    DungeonSite site;
+    const structs::Layout L = structs::layoutFor(superX, superZ, worldSeed);
+    if (L.kind != structs::Dungeon) return site;
+
+    site.exists = true;
+    site.seed   = L.seed;
+    // Зал босса — на дне первой комнаты коридора, там же, где
+    // stampDungeon вырезает пол.
+    const i32 y0 = 10 + (i32)(L.seed % 8);
+    site.center = {
+        (L.minBlock.x + L.maxBlock.x) / 2,
+        y0,
+        (L.minBlock.z + L.maxBlock.z) / 2,
+    };
+    return site;
+}
+
 void applyStructures(Chunk& chunk, const FeatureContext& ctx) {
     // Чанк → диапазон super-chunk'ов
     i32 cx = chunk.coord.x, cz = chunk.coord.z;

@@ -10,6 +10,7 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 screenSize;
     vec4 sunDir;
     vec4 fogParams;
+    vec4 skyColor;
 } cam;
 
 layout(location = 0) out vec4 outColor;
@@ -17,11 +18,11 @@ layout(location = 0) out vec4 outColor;
 void main() {
     float ndl = max(dot(vNormal, cam.sunDir.xyz), 0.0);
     float light = 0.35 + 0.75 * ndl;
-    vec3 lit = vColor.rgb * light;
+    vec3 lit = vColor.rgb * light * max(cam.sunDir.w, 0.15);
 
     float dist = distance(vWorldPos, cam.cameraPos.xyz);
     float fogAmt = clamp((dist - cam.fogParams.x) / max(cam.fogParams.y - cam.fogParams.x, 0.001), 0.0, 1.0);
-    vec3 fogColor = vec3(0.55, 0.72, 0.92);
+    vec3 fogColor = cam.skyColor.rgb;
 
     outColor = vec4(mix(lit, fogColor, fogAmt), vColor.a);
 }

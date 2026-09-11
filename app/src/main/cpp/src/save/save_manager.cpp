@@ -37,13 +37,19 @@ SaveStatus SaveManager::save(const SaveSlot& slot,
                              ecs::Entity playerEntity,
                              const WorldDeltaStore& deltas,
                              u64 worldSeed,
-                             u32 playtimeSec)
+                             u32 playtimeSec,
+                             const world::DayCycle& day)
 {
     if (!initialized_) return SaveStatus::WriteError;
     (void)world;
 
     ByteWriter body;
     body.reserve(256 * 1024);
+
+    // Время суток идёт первым: короткое поле фиксированного размера,
+    // его удобно читать, не разбирая остальное тело.
+    body.writeF32(day.rawTime());
+    body.writeU32(day.day());
 
     serializePlayer(body, registry, playerEntity);
     deltas.write(body);
@@ -116,7 +122,8 @@ SaveStatus SaveManager::load(const SaveSlot& slot,
                              ecs::Entity playerEntity,
                              WorldDeltaStore& deltas,
                              u64* outSeed,
-                             u32* outPlaytimeSec)
+                             u32* outPlaytimeSec,
+                             world::DayCycle* outDay)
 {
     if (!initialized_) return SaveStatus::ReadError;
 
@@ -187,6 +194,14 @@ SaveStatus SaveManager::load(const SaveSlot& slot,
     }
 
     ByteReader br(body);
+
+    // Время суток — в том же порядке, что и при записи.
+    f32 timeOfDay = 0.3f;
+    u32 dayNumber = 0;
+    if (!br.f32v(timeOfDay) || !br.u32v(dayNumber)) {
+        return SaveStatus::CorruptedData;
+    }
+    if (outDay) outDay->setRaw(timeOfDay, dayNumber);
 
     if (!deserializePlayer(br, registry, playerEntity)) {
         LOGE("Save: player deserialize failed");

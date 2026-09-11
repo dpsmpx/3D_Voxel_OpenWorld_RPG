@@ -16,6 +16,7 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 screenSize;
     vec4 sunDir;
     vec4 fogParams;
+    vec4 skyColor;
 } cam;
 
 layout(location = 0) out vec2 vUv;

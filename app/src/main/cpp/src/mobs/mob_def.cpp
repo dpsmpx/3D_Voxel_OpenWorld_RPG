@@ -223,6 +223,84 @@ MobRegistry::MobRegistry() {
         defs_[MOB_SLIME] = d;
     }
 
+    // -------------------- БОСС: КАМЕННЫЙ СТРАЖ --------------------
+    // Три фазы: обычные удары, затем добавляется удар по площади,
+    // на последней трети здоровья — ускорение и усиленный урон.
+    {
+        MobDef d{};
+        d.name = "Stone Warden";
+        d.category = MobCategory::Hostile;
+        d.maxHealth = 600.f;
+        d.walkSpeed = 1.6f;
+        d.chaseSpeed = 3.4f;
+        d.attackDamage = 18.f;
+        d.attackRange = 3.2f;
+        d.aggroRange = 26.f;
+        d.bodyRadius = 1.3f;
+        d.bodyHeight = 3.4f;
+        d.eyeHeight = 2.9f;
+        d.hostile = true;
+        d.canSwim = false;
+        d.spawnWeight = 0.f;      // обычным спавном не появляется
+        d.spawnsInLight = true;   // подземелье тёмное, но босс стоит всегда
+        d.dropBlock = 0;
+        d.dropMin = 0; d.dropMax = 0;
+        d.xpReward = 4000;
+
+        d.isBoss     = true;
+        d.phaseCount = 3;
+        d.enrageMult = 1.7f;
+        d.slamRadius = 5.0f;
+        d.slamDamage = 26.f;
+
+        d.partCount = 7;
+        d.parts[Part_Body]  = { {0, 1.7f, 0},        {1.9f, 2.0f, 1.3f}, rgb(96,102,112),  PartAnim::None };
+        d.parts[Part_Head]  = { {0, 3.0f, 0},        {1.1f, 0.9f, 1.1f}, rgb(120,126,138), PartAnim::Head };
+        d.parts[Part_ArmR]  = { {1.35f, 1.9f, 0},    {0.7f, 1.9f, 0.7f}, rgb(84,90,100),   PartAnim::Arm };
+        d.parts[Part_ArmL]  = { {-1.35f, 1.9f, 0},   {0.7f, 1.9f, 0.7f}, rgb(84,90,100),   PartAnim::ArmOpp };
+        d.parts[Part_LegFR] = { {0.55f, 0.4f, 0},    {0.8f, 1.6f, 0.8f}, rgb(72,78,88),    PartAnim::Leg };
+        d.parts[Part_LegFL] = { {-0.55f, 0.4f, 0},   {0.8f, 1.6f, 0.8f}, rgb(72,78,88),    PartAnim::LegOpp };
+        d.parts[Part_Tail]  = { {0, 3.7f, 0},        {0.5f, 0.5f, 0.5f}, rgb(190,140,60),  PartAnim::None };
+        defs_[MOB_BOSS_WARDEN] = d;
+    }
+
+    // -------------------- БОСС: ПОЛЫЙ ВЛАДЫКА --------------------
+    // Две фазы: во второй резко ускоряется и бьёт сериями.
+    {
+        MobDef d{};
+        d.name = "Hollow Lord";
+        d.category = MobCategory::Hostile;
+        d.maxHealth = 420.f;
+        d.walkSpeed = 2.4f;
+        d.chaseSpeed = 5.2f;
+        d.attackDamage = 14.f;
+        d.attackRange = 2.4f;
+        d.aggroRange = 24.f;
+        d.bodyRadius = 0.8f;
+        d.bodyHeight = 2.6f;
+        d.eyeHeight = 2.3f;
+        d.hostile = true;
+        d.canSwim = false;
+        d.spawnWeight = 0.f;
+        d.spawnsInLight = true;
+        d.xpReward = 2800;
+
+        d.isBoss     = true;
+        d.phaseCount = 2;
+        d.enrageMult = 2.0f;
+        d.slamRadius = 0.f;       // без АоЕ: берёт скоростью
+        d.slamDamage = 0.f;
+
+        d.partCount = 6;
+        d.parts[Part_Body]  = { {0, 1.3f, 0},      {1.0f, 1.4f, 0.7f}, rgb(48,44,66),    PartAnim::None };
+        d.parts[Part_Head]  = { {0, 2.25f, 0},     {0.8f, 0.8f, 0.8f}, rgb(214,208,190), PartAnim::Head };
+        d.parts[Part_ArmR]  = { {0.75f, 1.4f, 0},  {0.4f, 1.4f, 0.4f}, rgb(40,36,56),    PartAnim::Arm };
+        d.parts[Part_ArmL]  = { {-0.75f, 1.4f, 0}, {0.4f, 1.4f, 0.4f}, rgb(40,36,56),    PartAnim::ArmOpp };
+        d.parts[Part_LegFR] = { {0.3f, 0.3f, 0},   {0.4f, 1.2f, 0.4f}, rgb(34,30,48),    PartAnim::Leg };
+        d.parts[Part_LegFL] = { {-0.3f, 0.3f, 0},  {0.4f, 1.2f, 0.4f}, rgb(34,30,48),    PartAnim::LegOpp };
+        defs_[MOB_BOSS_HOLLOW] = d;
+    }
+
     LOGI("MobRegistry: зарегистрировано %d мобов", (int)MOB_COUNT - 1);
 }
 

@@ -47,9 +47,19 @@ bool findSpawnSpot(world::ChunkManager& world,
 
 } // namespace
 
-bool Spawner::isNight(f32 timeSec) const {
-    f32 t = std::fmod(timeSec, 600.f) / 600.f;
-    return (t > 0.5f);
+f32 Spawner::lightAt(world::ChunkManager& world, const world::DayCycle& day,
+                     i32 x, i32 y, i32 z)
+{
+    // Небесный свет доходит до точки, если над ней нет непрозрачных
+    // блоков. Полноценное запекание света чанк пока не считает,
+    // поэтому проверяем колонку напрямую — дёшево и достаточно.
+    for (i32 yy = y + 1; yy < world::CHUNK_SIZE_Y; ++yy) {
+        const u16 b = world.getVoxel(x, yy, z);
+        if (b == world::AIR) continue;
+        if (world::blocks().isTransparent(b)) continue;
+        return 0.05f;   // под перекрытием — пещерная темнота
+    }
+    return day.skyLight();
 }
 
 u16 Spawner::pickMobId(world::TerrainGenerator& gen,
@@ -140,12 +150,60 @@ ecs::Entity Spawner::spawnMob(world::ChunkManager& /*world*/,
     return e;
 }
 
+void Spawner::updateBosses(world::ChunkManager& world, ecs::Registry& reg,
+                           const glm::vec3& playerPos, u64 worldSeed, f32 dt)
+{
+    bossTimer_ += dt;
+    if (bossTimer_ < 3.0f) return;
+    bossTimer_ = 0.f;
+
+    // Супер-чанк игрока и восемь соседних: подземелье большое,
+    // его центр может лежать в соседней ячейке.
+    const i32 sx = (i32)std::floor(playerPos.x / (f32)world::SUPER_CHUNK_BLOCKS);
+    const i32 sz = (i32)std::floor(playerPos.z / (f32)world::SUPER_CHUNK_BLOCKS);
+
+    for (i32 dz = -1; dz <= 1; ++dz) {
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            const i32 cx = sx + dx, cz = sz + dz;
+            const u64 key = ((u64)(u32)cx << 32) | (u32)cz;
+            if (bossPlaced_.count(key)) continue;
+
+            const world::DungeonSite site = world::dungeonAt(cx, cz, worldSeed);
+            if (!site.exists) continue;
+
+            // Ждём, пока чанк с залом действительно загрузится:
+            // иначе босс провалится сквозь несуществующий пол.
+            const glm::vec3 pos{ (f32)site.center.x + 0.5f,
+                                 (f32)site.center.y + 1.f,
+                                 (f32)site.center.z + 0.5f };
+            const f32 ddx = pos.x - playerPos.x, ddz = pos.z - playerPos.z;
+            if (ddx * ddx + ddz * ddz > 160.f * 160.f) continue;
+            if (!world.findChunk(site.center.x >> 5, site.center.z >> 5)) continue;
+
+            // Пол под залом должен быть твёрдым.
+            if (world.getVoxel(site.center.x, site.center.y - 1, site.center.z)
+                == world::AIR) continue;
+
+            const u16 bossId = (site.seed & 1) ? MOB_BOSS_WARDEN : MOB_BOSS_HOLLOW;
+            if (spawnMob(world, reg, bossId, pos).valid()) {
+                bossPlaced_.insert(key);
+                ++mobCount_;
+                LOGI("Босс %s размещён в подземелье (%d, %d)",
+                     mobRegistry().get(bossId).name, site.center.x, site.center.z);
+            }
+        }
+    }
+}
+
 void Spawner::update(world::ChunkManager& world,
                      ecs::Registry& reg,
                      const glm::vec3& playerPos,
-                     f32 timeSec,
+                     const world::DayCycle& day,
+                     u64 worldSeed,
                      f32 dt)
 {
+    updateBosses(world, reg, playerPos, worldSeed, dt);
+
     mobCount_ = (u32)reg.pool<MobTag>().size();
 
     const i32 pcx = (i32)std::floor(playerPos.x / world::CHUNK_SIZE);
@@ -154,7 +212,7 @@ void Spawner::update(world::ChunkManager& world,
     spawnTimer_ += dt;
     if (spawnTimer_ >= 0.5f && mobCount_ < MAX_MOBS_TOTAL) {
         spawnTimer_ = 0.f;
-        const bool night = isNight(timeSec);
+        const bool night = day.isNight();
 
         for (int attempt = 0; attempt < 6; ++attempt) {
             const i32 dx = (i32)(urand() % 7) - 3;
@@ -173,11 +231,20 @@ void Spawner::update(world::ChunkManager& world,
             const f32 dd  = std::sqrt(ddx * ddx + ddz * ddz);
             if (dd < SPAWN_RADIUS_MIN || dd > SPAWN_RADIUS) continue;
 
+            // Освещённость точки: при ярком свете враждебные мобы
+            // не появляются даже ночью в закрытом помещении наоборот.
+            const f32 light = lightAt(world, day, sx, sy, sz);
+            const bool dark = light < 0.35f;
+
             const u32 rv = urand();
             const u16 id = pickMobId(
                 const_cast<world::TerrainGenerator&>(world.generator()),
-                sx, sz, night, rv);
+                sx, sz, night || dark, rv);
             if (id == MOB_NONE) continue;
+
+            const MobDef& def = mobRegistry().get(id);
+            if (def.isBoss) continue;   // боссов ставит только updateBosses
+            if (def.hostile && !dark && !night) continue;
 
             const glm::vec3 pos { (f32)sx + 0.5f, (f32)sy, (f32)sz + 0.5f };
             if (spawnMob(world, reg, id, pos).valid()) {
@@ -194,6 +261,8 @@ void Spawner::update(world::ChunkManager& world,
 
         std::vector<ecs::Entity> toRemove;
         auto& pool = reg.pool<MobAI>();
+        // Босс живёт в своём подземелье независимо от того, где игрок:
+        // уходить и возвращаться, чтобы сбросить бой, нельзя.
         for (usize i = 0; i < pool.size(); ++i) {
             const ecs::Entity e = pool.entityAt((u32)i);
             auto* tf = reg.get<ecs::Transform>(e);

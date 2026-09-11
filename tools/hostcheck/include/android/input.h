@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <android/keycodes.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -17,6 +18,40 @@ enum {
     AMOTION_EVENT_ACTION_POINTER_UP = 6
 };
 int32_t AInputEvent_getType(const AInputEvent* e);
+int32_t AInputEvent_getSource(const AInputEvent* e);
+
+/* Классы и источники ввода */
+enum {
+    AINPUT_SOURCE_CLASS_MASK     = 0x000000ff,
+    AINPUT_SOURCE_CLASS_BUTTON   = 0x00000001,
+    AINPUT_SOURCE_CLASS_POINTER  = 0x00000002,
+    AINPUT_SOURCE_CLASS_NAVIGATION = 0x00000004,
+    AINPUT_SOURCE_CLASS_POSITION = 0x00000008,
+    AINPUT_SOURCE_CLASS_JOYSTICK = 0x00000010,
+};
+enum {
+    AINPUT_SOURCE_KEYBOARD  = 0x00000101,
+    AINPUT_SOURCE_DPAD      = 0x00000201,
+    AINPUT_SOURCE_GAMEPAD   = 0x00000401,
+    AINPUT_SOURCE_TOUCHSCREEN = 0x00001002,
+    AINPUT_SOURCE_JOYSTICK  = 0x01000010,
+};
+
+/* Оси motion-события */
+enum {
+    AMOTION_EVENT_AXIS_X = 0,
+    AMOTION_EVENT_AXIS_Y = 1,
+    AMOTION_EVENT_AXIS_Z = 11,
+    AMOTION_EVENT_AXIS_RZ = 14,
+    AMOTION_EVENT_AXIS_HAT_X = 15,
+    AMOTION_EVENT_AXIS_HAT_Y = 16,
+    AMOTION_EVENT_AXIS_LTRIGGER = 17,
+    AMOTION_EVENT_AXIS_RTRIGGER = 18,
+};
+float AMotionEvent_getAxisValue(const AInputEvent* e, int32_t axis, size_t idx);
+
+int32_t AKeyEvent_getAction(const AInputEvent* e);
+int32_t AKeyEvent_getKeyCode(const AInputEvent* e);
 int32_t AMotionEvent_getAction(const AInputEvent* e);
 size_t  AMotionEvent_getPointerCount(const AInputEvent* e);
 int32_t AMotionEvent_getPointerId(const AInputEvent* e, size_t idx);

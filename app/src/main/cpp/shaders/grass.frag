@@ -11,6 +11,7 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 screenSize;
     vec4 sunDir;
     vec4 fogParams;
+    vec4 skyColor;
 } cam;
 
 layout(set = 0, binding = 1) uniform sampler2D atlas;
@@ -21,11 +22,11 @@ void main() {
     vec4 tex = texture(atlas, vUv);
     if (tex.a < 0.4) discard;
 
-    vec3 lit = tex.rgb * vColor.rgb;
+    vec3 lit = tex.rgb * vColor.rgb * max(cam.sunDir.w, 0.12);
 
     float dist = distance(vWorldPos, cam.cameraPos.xyz);
     float fogAmt = clamp((dist - cam.fogParams.x) / max(cam.fogParams.y - cam.fogParams.x, 0.001), 0.0, 1.0);
-    vec3 fogColor = vec3(0.55, 0.72, 0.92);
+    vec3 fogColor = cam.skyColor.rgb;
 
     outColor = vec4(mix(lit, fogColor, fogAmt), tex.a * vColor.a);
 }

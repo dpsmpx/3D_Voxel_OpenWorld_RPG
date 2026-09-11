@@ -10,13 +10,15 @@
 
 namespace render {
 
+// Раскладка обязана совпадать с блоком CameraUbo во всех шейдерах.
 struct CameraUbo {
     glm::mat4 viewProj;
     glm::mat4 invViewProj;
     glm::vec4 cameraPos;
     glm::vec4 screenSize;
-    glm::vec4 sunDir;
-    glm::vec4 fogParams;
+    glm::vec4 sunDir;      ///< xyz — направление на солнце, w — освещённость неба
+    glm::vec4 fogParams;   ///< start, end, время суток [0,1), время в секундах
+    glm::vec4 skyColor;    ///< цвет неба и тумана текущего времени суток
 };
 
 class Camera {
@@ -25,6 +27,15 @@ public:
     void setViewport(u32 w, u32 h)        { screenW_ = w; screenH_ = h; }
     void setSunDir(const glm::vec3& d)    { sunDir_ = glm::normalize(d); }
     void setFog(f32 start, f32 end)       { fogStart_ = start; fogEnd_ = end; }
+
+    /// Параметры суток: цвет неба, сила небесного света и фаза дня.
+    /// Задаются раз в кадр из world::DayCycle.
+    void setSky(const glm::vec3& color, f32 light, f32 timeOfDay) {
+        skyColor_  = color;
+        skyLight_  = light;
+        timeOfDay_ = timeOfDay;
+    }
+    const glm::vec3& skyColor() const { return skyColor_; }
 
     void setYawPitch(f32 y, f32 p)        { yaw_ = y; pitch_ = glm::clamp(p, -1.5f, 1.5f); }
     f32  yaw()   const { return yaw_; }
@@ -89,8 +100,9 @@ public:
         u.invViewProj = glm::inverse(u.viewProj);
         u.cameraPos   = glm::vec4(position_, 1.f);
         u.screenSize  = glm::vec4((f32)screenW_, (f32)screenH_, 0.f, 0.f);
-        u.sunDir      = glm::vec4(sunDir_, 0.f);
-        u.fogParams   = glm::vec4(fogStart_, fogEnd_, 0.f, timeSec);
+        u.sunDir      = glm::vec4(sunDir_, skyLight_);
+        u.fogParams   = glm::vec4(fogStart_, fogEnd_, timeOfDay_, timeSec);
+        u.skyColor    = glm::vec4(skyColor_, 1.f);
         return u;
     }
 
@@ -111,6 +123,9 @@ private:
     f32 near_ = 0.05f, far_ = 500.f;
     u32 screenW_ = 1080, screenH_ = 1920;
     f32 fogStart_ = 150.f, fogEnd_ = 400.f;
+    glm::vec3 skyColor_{0.55f, 0.72f, 0.92f};
+    f32 skyLight_  = 1.f;
+    f32 timeOfDay_ = 0.3f;
 
     bool firstPerson_ = false;
     f32  firstEyeH_   = 1.62f;

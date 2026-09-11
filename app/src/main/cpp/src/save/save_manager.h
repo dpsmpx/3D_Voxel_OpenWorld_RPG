@@ -2,6 +2,7 @@
 #include "../core/types.h"
 #include "../ecs/registry.h"
 #include "../world/chunk_manager.h"
+#include "../world/day_cycle.h"
 #include "save_format.h"
 #include "save_slot.h"
 #include "world_delta.h"
@@ -40,13 +41,16 @@ public:
     const SaveSlotManager& slots() const { return slotMgr_; }
 
     // Сохранить всё состояние в слот.
+    /// day — игровые сутки: сохраняются, чтобы загруженный мир
+    /// продолжился в то же время суток, а не с рассвета.
     SaveStatus save(const SaveSlot& slot,
                     world::ChunkManager& world,
                     ecs::Registry& registry,
                     ecs::Entity playerEntity,
                     const WorldDeltaStore& deltas,
                     u64 worldSeed,
-                    u32 playtimeSec);
+                    u32 playtimeSec,
+                    const world::DayCycle& day);
 
     // Загрузить состояние. world должен быть уже создан с тем же seed.
     SaveStatus load(const SaveSlot& slot,
@@ -55,7 +59,8 @@ public:
                     ecs::Entity playerEntity,
                     WorldDeltaStore& deltas,
                     u64* outSeed,
-                    u32* outPlaytimeSec);
+                    u32* outPlaytimeSec,
+                    world::DayCycle* outDay);
 
     // ---- Автосейв — в служебный слот (profile=2, slot=2). ----
     static constexpr u32 AUTOSAVE_PROFILE = 2;

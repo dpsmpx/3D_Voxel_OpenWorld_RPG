@@ -378,11 +378,49 @@ void updateMobs(world::ChunkManager& world,
                 if (ai->attackAnim > 0.f)
                     ai->attackAnim = std::max(0.f, ai->attackAnim - dt * 3.f);
 
-                if (ai->attackCooldown <= 0.f) {
-                    if (distToPlayer < def.attackRange + 0.4f) {
-                        mobAttackPlayer(reg, playerEntity, def.attackDamage);
+                // ---- Босс: смена фазы по порогу здоровья ----
+                f32 dmgMult   = 1.f;
+                f32 cooldown  = 1.2f;
+                if (def.isBoss) {
+                    const u8 phase = bossPhaseFor(hp->current / def.maxHealth,
+                                                  def.phaseCount);
+                    if (phase > ai->bossPhase) {
+                        ai->bossPhase = phase;
+                        ai->phaseRoarTimer = 1.2f;   // пауза на переход
+                        ai->attackAnim = 1.0f;
+                        LOGI("Босс %s переходит в фазу %u", def.name, (u32)phase + 1);
                     }
-                    ai->attackCooldown = 1.2f;
+                    // На последней фазе — ярость: быстрее и больнее.
+                    if (ai->bossPhase + 1 >= def.phaseCount) {
+                        dmgMult  = def.enrageMult;
+                        cooldown = 1.2f / def.enrageMult;
+                    }
+                }
+
+                if (ai->phaseRoarTimer > 0.f) {
+                    ai->phaseRoarTimer -= dt;
+                    break;   // во время перехода босс не бьёт
+                }
+
+                if (ai->attackCooldown <= 0.f) {
+                    // Со второй фазы каждый третий удар — по площади.
+                    const bool canSlam = def.isBoss && def.slamRadius > 0.f
+                                      && ai->bossPhase >= 1
+                                      && ai->slamCounter >= 2;
+                    if (canSlam) {
+                        ai->slamCounter = 0;
+                        if (distToPlayer < def.slamRadius) {
+                            mobAttackPlayer(reg, playerEntity,
+                                            def.slamDamage * dmgMult);
+                        }
+                        ai->attackAnim = 1.0f;
+                        cooldown *= 1.6f;   // мощная атака дольше откатывается
+                    } else if (distToPlayer < def.attackRange + 0.4f) {
+                        mobAttackPlayer(reg, playerEntity,
+                                        def.attackDamage * dmgMult);
+                        if (def.isBoss) ++ai->slamCounter;
+                    }
+                    ai->attackCooldown = cooldown;
                     ai->attackAnim = 1.0f;
                 }
 

@@ -125,6 +125,37 @@ public:
 
     bool dialogueOpen() const { return screen == Screen::Dialogue; }
 
+    /// Аппаратная кнопка «Назад»: закрывает текущий экран, а не игру.
+    /// Из HUD открывает паузу — так же, как это делают все Android-игры.
+    void onBackPressed() {
+        switch (screen) {
+            case Screen::Hud:
+                screen = Screen::PauseMenu;
+                break;
+            case Screen::PauseMenu:
+                screen = Screen::Hud;
+                break;
+            case Screen::Dialogue:
+                // Диалог закрывается своим обработчиком, чтобы NPC
+                // вышел из состояния Talk.
+                if (onCloseDialogue) onCloseDialogue();
+                screen = Screen::Hud;
+                break;
+            default:
+                // Любой вложенный экран возвращает в паузу.
+                screen = Screen::PauseMenu;
+                break;
+        }
+    }
+
+    /// Кнопка Start на геймпаде.
+    void togglePause() {
+        screen = (screen == Screen::Hud) ? Screen::PauseMenu : Screen::Hud;
+    }
+
+    /// Вызывается, когда «Назад» закрывает диалог.
+    std::function<void()> onCloseDialogue;
+
     std::function<void()> onSave;
     std::function<void()> onQuit;
 

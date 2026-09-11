@@ -4,6 +4,7 @@
 
 #include <android_native_app_glue.h>
 #include <android/input.h>
+#include <android/keycodes.h>
 #include <android/native_window.h>
 
 #include <chrono>
@@ -28,6 +29,7 @@
 
 #include "world/chunk_manager.h"
 #include "world/enchant_altar.h"
+#include "world/day_cycle.h"
 
 #include "render/render_system.h"
 
@@ -105,6 +107,11 @@ struct Engine {
     combat::SpatialHash                    spatialHash;
 
     u64  worldSeed      = DEFAULT_SEED;
+
+    /// Игровые сутки: спавн мобов, солнце, цвет неба, ассортимент
+    /// торговцев. Сохраняются вместе с миром.
+    world::DayCycle                        dayCycle;
+
     cfg::PlaytimeTracker playtime;
     f32  autosaveTimer  = 0.f;
 
@@ -126,6 +133,9 @@ struct Engine {
     u32 btnFinisher_= 0;
     u32 btnInteract_= 0;
     u32 btnUseItem_ = 0;
+
+    /// id кнопок по слотам настроек — для применения раскладки.
+    u32 buttonIds_[cfg::Settings::BUTTON_SLOTS] = {};
 
     bool evJump_    = false;
     bool evBreak_   = false;
@@ -167,13 +177,8 @@ struct Engine {
 
         touch.setViewport(ww, wh);
 
-        {
-            auto& s = cfg::settings();
-            touch.setCameraSensitivity(s.cameraSensitivity);
-            touch.invertY(s.invertY);
-            touch.setJoystickLeftHanded(s.joystickLeftHanded);
-            touch.setJoystickRadius(s.joystickRadius);
-        }
+        // Кнопки ещё не созданы — настройки ввода применятся в
+        // setupButtons(), вместе с их раскладкой.
 
         world = std::make_unique<world::ChunkManager>(
             worldSeed, cfg::settingsConst().viewDistance);
@@ -189,8 +194,10 @@ struct Engine {
         }
         render->camera().setAspect((f32)ww / (f32)wh);
         render->camera().setViewport((u32)ww, (u32)wh);
-        render->camera().setSunDir({ 0.4f, 0.75f, 0.3f });
         render->camera().setFog(140.f, 380.f);
+        render->camera().setSunDir(dayCycle.sunDirection());
+        render->camera().setSky(dayCycle.skyColor(), dayCycle.skyLight(),
+                                dayCycle.timeOfDay());
 
         ui = std::make_unique<ui::UiSystem>();
         if (!ui->init(vk, app->activity->assetManager)) {
@@ -213,14 +220,16 @@ struct Engine {
             ui->setStatus(cfg::T(cfg::StrKey::Notif_Deleted));
         };
 
+        ui->onCloseDialogue = [this]() {
+            if (!player) return;
+            npc::endDialogue(registry, (u32)player->entity());
+        };
+
         ui->onSettingsChanged = [this]() {
             auto& s = cfg::settings();
             s.clamp();
 
-            touch.setCameraSensitivity(s.cameraSensitivity);
-            touch.invertY(s.invertY);
-            touch.setJoystickLeftHanded(s.joystickLeftHanded);
-            touch.setJoystickRadius(s.joystickRadius);
+            applyInputSettings();
 
             if (ui) ui->showFps = s.showFps;
             if (world) world->setViewDistance(s.viewDistance);
@@ -416,7 +425,7 @@ struct Engine {
 
         auto st = saveMgr.save(sl, *world, registry,
                                player->entity(), worldDelta,
-                               worldSeed, playtime.seconds());
+                               worldSeed, playtime.seconds(), dayCycle);
 
         if (st == save::SaveStatus::Ok) {
             lastSaveProfile = profile;
@@ -442,7 +451,8 @@ struct Engine {
         u32 loadedPlaytime = 0;
 
         auto st = saveMgr.load(sl, *world, registry, player->entity(),
-                               worldDelta, &loadedSeed, &loadedPlaytime);
+                               worldDelta, &loadedSeed, &loadedPlaytime,
+                               &dayCycle);
 
         if (st == save::SaveStatus::Ok) {
             worldSeed = loadedSeed;
@@ -467,26 +477,34 @@ struct Engine {
         }
     }
 
+    // ============================================================
+    // Экранные кнопки. Координаты — NDC с Y вверх: (-1,-1) — левый
+    // нижний угол экрана. Порядок регистрации обязан совпадать с
+    // config::ButtonSlot, иначе сохранённые сдвиги уедут не туда.
+    // ============================================================
     void setupButtons() {
-        btnAttack_ = touch.addButton({ 0.72f, -0.55f }, 100.f,
+        // Правый низ: атака и всё, что рядом с большим пальцем.
+        btnAttack_ = touch.addButton({ 0.72f, -0.62f }, 100.f,
             [this](u32) { evAttack_ = true; }, nullptr);
 
         btnFinisher_ = touch.addButton({ 0.90f, -0.30f }, 60.f,
             [this](u32) { evFinish_ = true; }, nullptr);
 
-        btnPlace_ = touch.addButton({ 0.42f, -0.75f }, 80.f,
-            [this](u32) { evPlace_ = true; }, nullptr);
+        btnJump_ = touch.addButton({ 0.88f, -0.72f }, 85.f, nullptr, nullptr);
 
-        btnBreak_ = touch.addButton({ 0.55f, -0.40f }, 70.f,
+        // Левая половина: движение и контекстные действия.
+        btnSprint_ = touch.addButton({ -0.88f, -0.20f }, 70.f, nullptr, nullptr);
+
+        btnBreak_ = touch.addButton({ 0.52f, -0.30f }, 70.f,
             [this](u32) { evBreak_ = true; }, nullptr);
 
-        btnJump_ = touch.addButton({ 0.82f, -0.15f }, 85.f, nullptr, nullptr);
-        btnSprint_ = touch.addButton({ 0.42f, -0.15f }, 70.f, nullptr, nullptr);
+        btnPlace_ = touch.addButton({ 0.36f, -0.62f }, 80.f,
+            [this](u32) { evPlace_ = true; }, nullptr);
 
-        btnInteract_ = touch.addButton({ 0.12f, -0.55f }, 70.f,
+        btnInteract_ = touch.addButton({ -0.52f, -0.62f }, 70.f,
             [this](u32) { evInteract_ = true; }, nullptr);
 
-        btnUseItem_ = touch.addButton({ 0.12f, -0.75f }, 55.f,
+        btnUseItem_ = touch.addButton({ -0.36f, -0.86f }, 55.f,
             [this](u32) { evUseItem_ = true; }, nullptr);
 
         btnCamera_ = touch.addButton({ 0.92f, 0.62f }, 55.f,
@@ -497,12 +515,75 @@ struct Engine {
                         ? player::CameraMode::ThirdPerson
                         : player::CameraMode::FirstPerson;
             }, nullptr);
+
+        buttonIds_[cfg::Btn_Attack]   = btnAttack_;
+        buttonIds_[cfg::Btn_Finisher] = btnFinisher_;
+        buttonIds_[cfg::Btn_Jump]     = btnJump_;
+        buttonIds_[cfg::Btn_Sprint]   = btnSprint_;
+        buttonIds_[cfg::Btn_Break]    = btnBreak_;
+        buttonIds_[cfg::Btn_Place]    = btnPlace_;
+        buttonIds_[cfg::Btn_Interact] = btnInteract_;
+        buttonIds_[cfg::Btn_UseItem]  = btnUseItem_;
+        buttonIds_[cfg::Btn_Camera]   = btnCamera_;
+
+        applyInputSettings();
+    }
+
+    /// Переносит настройки управления в TouchInput. Вызывается при
+    /// старте и после каждого изменения в меню.
+    void applyInputSettings() {
+        const auto& s = cfg::settingsConst();
+        touch.setCameraSensitivity(s.cameraSensitivity);
+        touch.invertX(s.invertX);
+        touch.invertY(s.invertY);
+        touch.setJoystickLeftHanded(s.joystickLeftHanded);
+        touch.setJoystickRadius(s.joystickRadius);
+        touch.setJoystickDeadzone(s.joystickDeadzone);
+        touch.setJoystickOpacity(s.joystickOpacity);
+        touch.setButtonScale(s.buttonScale);
+
+        // ТЗ 5.2: свободное перемещение кнопок по экрану.
+        for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i) {
+            if (!buttonIds_[i]) continue;
+            touch.setButtonOffset(buttonIds_[i],
+                                  { s.buttonOffsetX[i], s.buttonOffsetY[i] });
+        }
+    }
+
+    /// Рядом ли идёт бой: есть ли враждебный моб, который нас
+    /// преследует или атакует. Нужен музыкальному директору.
+    bool combatNearby() const {
+        if (!player) return false;
+        const glm::vec3 ppos = player->controller.state().position;
+        auto& reg = const_cast<ecs::Registry&>(registry);
+        auto& pool = reg.pool<ecs::AIAgent>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            const auto& agent = pool.at((u32)i);
+            if (agent.state != ecs::AIAgent::Chase &&
+                agent.state != ecs::AIAgent::Attack) continue;
+            const ecs::Entity e = pool.entityAt((u32)i);
+            if (!reg.has<mobs::MobTag>(e)) continue;
+            auto* tf = reg.get<ecs::Transform>(e);
+            if (!tf) continue;
+            const glm::vec3 d = tf->position - ppos;
+            if (glm::dot(d, d) < 32.f * 32.f) return true;
+        }
+        return false;
     }
 
     void update(f32 dt, f32 timeSec) {
         if (!player || !world || !render) return;
 
         playtime.tick(dt);
+        dayCycle.tick(dt);
+
+        // ТЗ 4.4: торговец обновляет ассортимент раз в игровой день.
+        if (dayCycle.dayJustChanged()) {
+            auto& shops = registry.pool<trade::TradeInventory>();
+            for (usize i = 0; i < shops.size(); ++i) shops.at((u32)i).restock();
+            LOGI("Новый игровой день: %u, ассортимент торговцев обновлён",
+                 dayCycle.day());
+        }
 
         const auto& s = cfg::settingsConst();
         if (s.autosaveEnabled) {
@@ -655,12 +736,14 @@ struct Engine {
         cam.setThirdPersonHeight(player->thirdPersonHeight);
         cam.setHeadBob(player->bobPhase, player->bobAmount);
         cam.setYawPitch(cameraYawPitch.x, cameraYawPitch.y);
+        cam.setSunDir(dayCycle.sunDirection());
+        cam.setSky(dayCycle.skyColor(), dayCycle.skyLight(), dayCycle.timeOfDay());
         cam.followTarget(*world, player->aimDir());
 
         // Мир
         if (spawner && player) {
             const glm::vec3 ppos = player->controller.state().position;
-            spawner->update(*world, registry, ppos, timeSec, dt);
+            spawner->update(*world, registry, ppos, dayCycle, worldSeed, dt);
             mobs::updateMobs(*world, registry, player->entity(), ppos, dt);
         }
         if (npcSpawner && player) {
@@ -713,8 +796,9 @@ struct Engine {
             audio::engine().update(dt, listener);
 
             musicCtx.paused = ui ? ui->paused() : false;
-            musicCtx.inCombat = false;
-            musicCtx.inVillage = false;
+            // В бою — если рядом есть враждебный моб в состоянии Chase/Attack.
+            musicCtx.inCombat = combatNearby();
+            musicCtx.inVillage = ui && ui->nearbyStation != crafting::StationType::None;
             musicDirector.update(dt, musicCtx);
         }
 
@@ -768,7 +852,27 @@ static int32_t handleInput(android_app* app, AInputEvent* e) {
     auto* eng = static_cast<Engine*>(app->userData);
     if (!eng || !eng->initialized) return 0;
 
-    if (AInputEvent_getType(e) == AINPUT_EVENT_TYPE_MOTION) {
+    const i32 type   = AInputEvent_getType(e);
+    const i32 source = AInputEvent_getSource(e);
+
+    // ---- Стики геймпада (ТЗ 5.2, опционально) ----
+    if (type == AINPUT_EVENT_TYPE_MOTION &&
+        (source & AINPUT_SOURCE_CLASS_JOYSTICK)) {
+        auto dead = [](f32 v) { return std::fabs(v) < 0.18f ? 0.f : v; };
+        const f32 lx = dead(AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_X, 0));
+        const f32 ly = dead(AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Y, 0));
+        const f32 rx = dead(AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Z, 0));
+        const f32 ry = dead(AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RZ, 0));
+
+        eng->touch.injectGamepadMove({ lx, -ly });   // экранный Y вниз
+        // Правый стик масштабируем так, чтобы чувствительность совпадала
+        // со свайпом: свайп нормирован на высоту экрана.
+        eng->touch.injectGamepadLook({ rx * 0.02f, ry * 0.02f });
+        return 1;
+    }
+
+    // ---- Касания ----
+    if (type == AINPUT_EVENT_TYPE_MOTION) {
         const i32 action  = AMotionEvent_getAction(e);
         const usize count = AMotionEvent_getPointerCount(e);
         const f32 t = (f32)AMotionEvent_getEventTime(e) / 1e9f;
@@ -780,6 +884,47 @@ static int32_t handleInput(android_app* app, AInputEvent* e) {
             eng->touch.onTouch(action, (i32)i, pid, x, y, t);
         }
         return 1;
+    }
+
+    // ---- Клавиши: кнопка «Назад» и кнопки геймпада ----
+    if (type == AINPUT_EVENT_TYPE_KEY) {
+        const i32 action = AKeyEvent_getAction(e);
+        const i32 key    = AKeyEvent_getKeyCode(e);
+        const bool down  = (action == AKEY_EVENT_ACTION_DOWN);
+
+        switch (key) {
+            case AKEYCODE_BACK:
+                // Назад закрывает открытый экран, а не приложение.
+                if (down && eng->ui) eng->ui->onBackPressed();
+                return 1;
+
+            case AKEYCODE_BUTTON_A:
+                eng->touch.injectGamepadButton(eng->btnJump_, down);
+                return 1;
+            case AKEYCODE_BUTTON_X:
+                eng->touch.injectGamepadButton(eng->btnAttack_, down);
+                return 1;
+            case AKEYCODE_BUTTON_Y:
+                eng->touch.injectGamepadButton(eng->btnInteract_, down);
+                return 1;
+            case AKEYCODE_BUTTON_B:
+                eng->touch.injectGamepadButton(eng->btnUseItem_, down);
+                return 1;
+            case AKEYCODE_BUTTON_L1:
+                eng->touch.injectGamepadButton(eng->btnBreak_, down);
+                return 1;
+            case AKEYCODE_BUTTON_R1:
+                eng->touch.injectGamepadButton(eng->btnPlace_, down);
+                return 1;
+            case AKEYCODE_BUTTON_THUMBL:
+                eng->touch.injectGamepadButton(eng->btnSprint_, down);
+                return 1;
+            case AKEYCODE_BUTTON_START:
+                if (down && eng->ui) eng->ui->togglePause();
+                return 1;
+            default:
+                break;
+        }
     }
     return 0;
 }
