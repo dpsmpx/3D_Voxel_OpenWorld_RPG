@@ -23,11 +23,25 @@ u32 Texture2D::mipCount(u32 w, u32 h) {
     return n;
 }
 
+bool Texture2D::isCompressedFormat(VkFormat fmt) {
+    // Диапазоны из спецификации Vulkan: BC, ETC2/EAC и ASTC LDR.
+    return (fmt >= VK_FORMAT_BC1_RGB_UNORM_BLOCK &&
+            fmt <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK);
+}
+
 bool Texture2D::create(VkDevice dev, VkPhysicalDevice phys, VkQueue queue, u32 queueFamily,
                        u32 w, u32 h, VkFormat fmt, const void* pixels, u64 bytes,
                        VkFilter filter, VkSamplerAddressMode addr, bool mipGen)
 {
     dev_ = dev; width_ = w; height_ = h; format_ = fmt;
+
+    // Мип-цепочка строится через vkCmdBlitImage, а он не работает
+    // со сжатыми форматами. Для ASTC уровень один; мипы, если нужны,
+    // должен сгенерировать astcenc на этапе сборки.
+    if (mipGen && isCompressedFormat(fmt)) {
+        mipGen = false;
+        LOGI("Texture2D: формат сжатый, мипы не генерируются на устройстве");
+    }
     mipLevels_ = mipGen ? mipCount(w, h) : 1;
 
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};

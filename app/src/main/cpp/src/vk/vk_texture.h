@@ -31,6 +31,11 @@ public:
     u32         width()      const { return width_; }
     u32         height()     const { return height_; }
     u32         mipLevels()  const { return mipLevels_; }
+    VkFormat    format()     const { return format_; }
+
+    /// Сжатый ли формат (BC, ETC2, ASTC). Для таких нельзя строить
+    /// мипы на устройстве и нельзя считать размер как width*height*bpp.
+    static bool isCompressedFormat(VkFormat fmt);
 
 private:
     static u32 findMemoryType(VkPhysicalDevice phys, u32 bits, VkMemoryPropertyFlags p);

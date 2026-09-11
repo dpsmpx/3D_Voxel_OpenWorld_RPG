@@ -40,3 +40,4 @@ deploy.sh
 .env
 build/hostcheck/
 build/docs/
+app/src/main/assets/textures/*.astc
