@@ -17,6 +17,7 @@ add_compile_definitions(
     GLM_FORCE_DEPTH_ZERO_TO_ONE   # Vulkan: глубина в [0,1], а не [-1,1]
     GLM_FORCE_RADIANS
     VK_USE_PLATFORM_ANDROID_KHR   # открывает vkCreateAndroidSurfaceKHR
+    ENTT_NO_ETO                   # EnTT хранит и пустые компоненты-теги
 )
 
 # ============================================================
@@ -172,13 +173,23 @@ add_library(native-lib SHARED
 
 target_include_directories(native-lib PRIVATE src)
 
-# GLM — заголовочная библиотека, клонируется build.sh в third_party/glm.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/glm/glm")
-    target_include_directories(native-lib PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/glm")
+# Заголовочные зависимости: GLM и EnTT. Обе клонируются build.sh
+# в third_party/ и в репозиторий не коммитятся.
+set(TP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party")
+
+if(EXISTS "${TP_DIR}/glm/glm")
+    target_include_directories(native-lib PRIVATE "${TP_DIR}/glm")
 else()
     message(FATAL_ERROR
         "GLM не найден в third_party/glm. Запустите build.sh — он её клонирует.")
+endif()
+
+# EnTT — ECS из ТЗ 3.2. Собирается без исключений и RTTI.
+if(EXISTS "${TP_DIR}/entt/include/entt/entt.hpp")
+    target_include_directories(native-lib PRIVATE "${TP_DIR}/entt/include")
+else()
+    message(FATAL_ERROR
+        "EnTT не найден в third_party/entt. Запустите build.sh — он её клонирует.")
 endif()
 
 target_compile_options(native-lib PRIVATE

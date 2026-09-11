@@ -192,6 +192,19 @@ void testRegistry() {
     check(visited == 1, "View пересекает наборы компонентов");
 
     // Долгий цикл создания и удаления не должен течь.
+    // Хранилище — именно EnTT (требование ТЗ 3.2), а не своя реализация.
+    {
+        ecs::Registry e;
+        const ecs::Entity x = e.create();
+        e.add<Pos>(x, Pos{9.f, 9.f});
+        auto& raw = e.raw();
+        check(raw.valid(x.toEntt()), "сущность видна напрямую в entt::registry");
+        check(raw.all_of<Pos>(x.toEntt()), "компонент лежит в хранилище EnTT");
+        check(raw.storage<Pos>().size() == 1, "размер совпадает с storage EnTT");
+        check(&raw.get<Pos>(x.toEntt()) == e.get<Pos>(x),
+              "обёртка и EnTT указывают на один объект");
+    }
+
     ecs::Registry churn;
     for (int i = 0; i < 5000; ++i) {
         const ecs::Entity e = churn.create();

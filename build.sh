@@ -100,12 +100,26 @@ else
     USE_GRADLE=0
 fi
 
-# ---- GLM ----
-if [ ! -d "$PROJ/third_party/glm" ]; then
+# ---- Заголовочные зависимости ----
+mkdir -p "$PROJ/third_party"
+
+if [ ! -d "$PROJ/third_party/glm/glm" ]; then
     log "Клонирую GLM..."
-    mkdir -p "$PROJ/third_party"
     git clone --depth=1 https://github.com/g-truc/glm.git "$PROJ/third_party/glm"
     ok "GLM готов"
+fi
+
+# EnTT — ECS из ТЗ 3.2. Нужен только single-header.
+if [ ! -f "$PROJ/third_party/entt/include/entt/entt.hpp" ]; then
+    log "Клонирую EnTT..."
+    rm -rf "$PROJ/third_party/entt-src"
+    git clone --depth=1 --branch v3.13.2 \
+        https://github.com/skypjack/entt.git "$PROJ/third_party/entt-src"
+    mkdir -p "$PROJ/third_party/entt/include/entt"
+    cp "$PROJ/third_party/entt-src/single_include/entt/entt.hpp" \
+       "$PROJ/third_party/entt/include/entt/"
+    rm -rf "$PROJ/third_party/entt-src"
+    ok "EnTT готов"
 fi
 
 # ---- Компиляция шейдеров ----
