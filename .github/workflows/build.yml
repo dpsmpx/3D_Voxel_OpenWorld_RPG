@@ -1,0 +1,106 @@
+name: Сборка и проверки
+
+# Нативный код проверяется на каждом коммите. Раньше CI не было
+# вовсе — из-за этого в репозиторий попал код, который не собирался.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  hostcheck:
+    name: Компиляция, линковка, тесты
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установка clang
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang zlib1g-dev
+
+      - name: Кэш зависимостей
+        uses: actions/cache@v4
+        with:
+          path: third_party
+          key: third-party-${{ hashFiles('tools/hostcheck/run.sh') }}
+
+      # Компилирует все исходники, линкует libnative-lib.so с
+      # -Wl,--no-undefined и прогоняет тесты логики.
+      - name: hostcheck
+        run: ./tools/hostcheck/run.sh
+
+      - name: Лог компиляции при провале
+        if: failure()
+        run: cat build/hostcheck/compile.log || true
+
+  shaders:
+    name: Компиляция шейдеров
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установка glslc
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq glslc
+
+      # Ошибка в шейдере не видна ни компилятору C++, ни тестам:
+      # она всплыла бы только на устройстве чёрным экраном.
+      - name: glslc
+        run: |
+          set -e
+          mkdir -p build/shaders
+          for f in app/src/main/cpp/shaders/*.vert app/src/main/cpp/shaders/*.frag; do
+              [ -f "$f" ] || continue
+              echo "  $(basename "$f")"
+              glslc -O "$f" -o "build/shaders/$(basename "$f").spv"
+          done
+          echo "Скомпилировано: $(ls build/shaders | wc -l)"
+
+  apk:
+    name: Сборка APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Установка NDK
+        run: sdkmanager --install "ndk;26.1.10909125" > /dev/null
+
+      - name: Зависимости
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq glslc
+          mkdir -p third_party
+          git clone --depth=1 -q https://github.com/g-truc/glm.git third_party/glm
+          git clone --depth=1 -q --branch v3.13.2 \
+              https://github.com/skypjack/entt.git third_party/entt-src
+          mkdir -p third_party/entt/include/entt
+          cp third_party/entt-src/single_include/entt/entt.hpp \
+             third_party/entt/include/entt/
+
+      - name: Компиляция шейдеров
+        run: |
+          set -e
+          mkdir -p app/src/main/assets/shaders
+          for f in app/src/main/cpp/shaders/*.vert app/src/main/cpp/shaders/*.frag; do
+              glslc -O "$f" -o "app/src/main/assets/shaders/$(basename "$f").spv"
+          done
+
+      - name: gradle assembleDebug
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Выгрузка APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoxelRPG-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
