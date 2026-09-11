@@ -29,14 +29,36 @@ struct ChunkCoordHash {
 // ============================================================
 using BlockModifyCallback = std::function<void(i32 wx, i32 wy, i32 wz, u16 newId)>;
 
+// ============================================================
+// Соседи чанка, удерживаемые владеющими ссылками: пока объект жив,
+// ни один из чанков не может быть выгружен из-под задачи меширования.
+// ============================================================
+struct NeighborLease {
+    std::shared_ptr<Chunk> nx, px, nz, pz;
+    ChunkNeighbors view() const {
+        ChunkNeighbors n;
+        n.nx = nx.get(); n.px = px.get();
+        n.nz = nz.get(); n.pz = pz.get();
+        return n;
+    }
+};
+
 class ChunkManager {
 public:
     explicit ChunkManager(u64 seed, i32 viewDistance = 8);
     ~ChunkManager();
 
-    Chunk* getChunk(i32 cx, i32 cz);
-    void   update(const glm::vec3& playerPos);
-    std::vector<Chunk*> pollMeshesReady();
+    /// Возвращает чанк, при необходимости ставя его в очередь генерации.
+    /// Владеющий указатель: чанк переживёт выгрузку, пока держат ссылку.
+    std::shared_ptr<Chunk> getChunk(i32 cx, i32 cz);
+
+    /// Чанк только если он уже загружен; генерацию не запускает.
+    std::shared_ptr<Chunk> findChunk(i32 cx, i32 cz) const;
+
+    void update(const glm::vec3& playerPos);
+
+    /// Забирает чанки, у которых появились новые меши для выгрузки на GPU.
+    std::vector<std::shared_ptr<Chunk>> pollMeshesReady();
 
     // ---- Управление вокселями ----
     void setVoxel(i32 wx, i32 wy, i32 wz, u16 block);
@@ -59,36 +81,38 @@ public:
     const TerrainGenerator& generator() const { return gen_; }
 
     usize loadedChunks() const;
-    usize pendingGeneration() const { return meshesInFlight_.load(); }
+    usize pendingJobs() const { return jobsInFlight_.load(std::memory_order_relaxed); }
 
 private:
+    // Контекст задачи владеет чанком: задача не может застать его
+    // уничтоженным, даже если игрок ушёл и чанк выгружен.
     struct JobCtx {
-        ChunkManager* mgr;
-        ChunkCoord    coord;
-        u64           version;
+        ChunkManager*          mgr = nullptr;
+        std::shared_ptr<Chunk> chunk;
+        ChunkCoord             coord{};
+        u64                    version = 0;
     };
 
     void enqueueGenerate(ChunkCoord coord);
     void enqueueMesh(ChunkCoord coord);
-    ChunkNeighbors gatherNeighbors(i32 cx, i32 cz);
+    NeighborLease gatherNeighbors(i32 cx, i32 cz) const;
 
     static void jobGenerate(void* data);
     static void jobMesh(void* data);
-
-    JobCtx* acquireCtx(ChunkManager* mgr, ChunkCoord c, u64 v);
-    void    releaseCtx(JobCtx* ctx);
 
     u64 seed_;
     i32 viewDistance_;
     TerrainGenerator gen_;
 
-    std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash> chunks_;
+    std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash> chunks_;
     mutable std::shared_mutex chunksMtx_;
 
-    std::mutex                readyMtx_;
-    std::vector<Chunk*>       meshesReady_;
+    std::mutex                                readyMtx_;
+    std::vector<std::shared_ptr<Chunk>>       meshesReady_;
 
-    std::atomic<u32>          meshesInFlight_{0};
+    /// Задачи генерации и меширования вместе: деструктор ждёт их все,
+    /// иначе воркер обратится к уничтоженному ChunkManager.
+    std::atomic<u32>          jobsInFlight_{0};
 
     std::unordered_map<ChunkCoord, u64, ChunkCoordHash> lastAccess_;
     u64                       frameCounter_ = 0;
@@ -98,8 +122,6 @@ private:
     BlockModifyCallback       blockModifyCb_;
     mutable std::mutex        callbackMtx_;
 
-    std::vector<std::unique_ptr<JobCtx>> jobCtxPool_;
-    std::mutex                          jobCtxPoolMtx_;
 };
 
 } // namespace world

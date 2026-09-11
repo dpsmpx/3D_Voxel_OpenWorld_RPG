@@ -6,6 +6,15 @@
 
 namespace render {
 
+// Вершинный формат террейна — см. VoxelVertex в mesh_builder.h.
+static const vk::VertexBinding kVoxelBindings[1] = { { sizeof(VoxelVertex), false } };
+static const vk::VertexAttr kVoxelAttrs[4] = {
+    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // inPos
+    { 1, 0, VK_FORMAT_R32G32_SFLOAT,    12 },   // inUv (в тайлах)
+    { 2, 0, VK_FORMAT_R32G32_SFLOAT,    20 },   // inTileOrigin
+    { 3, 0, VK_FORMAT_R8G8B8A8_UNORM,   28 },   // inColor
+};
+
 bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
     dev_ = ctx.device();
     shaders_.init(dev_, mgr);
@@ -47,6 +56,10 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
         d.depthTest   = true;
         d.depthWrite  = true;
         d.blend       = false;
+        d.bindings     = kVoxelBindings;
+        d.bindingCount = 1;
+        d.attrs        = kVoxelAttrs;
+        d.attrCount    = 4;
         if (!voxelPipeline_.create(dev_, shaders_, d)) return false;
     }
 
@@ -91,8 +104,8 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     currentFps_    = fps;
     lastHit_       = targetHit;
 
-    auto ready = world.pollMeshesReady();
-    if (!ready.empty()) chunkRenderer_.uploadChunks(ctx, ready);
+    const auto ready = world.pollMeshesReady();
+    chunkRenderer_.uploadChunks(ctx, ready, camera_.position());
 
     mobRenderer_.rebuild(registry);
     mobRenderer_.upload(ctx);

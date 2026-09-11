@@ -1,5 +1,6 @@
 #include "chunk_renderer.h"
 #include "../core/log.h"
+#include <algorithm>
 #include <cstring>
 
 namespace render {
@@ -9,6 +10,7 @@ bool ChunkRenderer::init(VkDevice dev, VkPhysicalDevice phys) {
     staging_.init(dev, phys);
     scratchVerts_.reserve(65536);
     scratchIndices_.reserve(98304);
+    scratchQuads_.reserve(16384);
     return true;
 }
 
@@ -17,6 +19,7 @@ void ChunkRenderer::shutdown() {
         for (auto& g : m.lod)
             if (g.valid) { g.vb.destroy(); g.ib.destroy(); }
     meshes_.clear();
+    lodRequests_.clear();
     staging_.destroy();
 }
 
@@ -26,71 +29,141 @@ void ChunkRenderer::forgetChunk(world::ChunkCoord c) {
     for (auto& g : it->second.lod)
         if (g.valid) { g.vb.destroy(); g.ib.destroy(); }
     meshes_.erase(it);
+
+    lodRequests_.erase(
+        std::remove_if(lodRequests_.begin(), lodRequests_.end(),
+                       [&](const LodRequest& r) { return r.coord == c; }),
+        lodRequests_.end());
 }
 
-void ChunkRenderer::uploadChunks(vk::Context& ctx, const std::vector<world::Chunk*>& chunks) {
-    for (world::Chunk* c : chunks) {
-        if (!c) continue;
-        auto& cm = meshes_[world::ChunkCoord{ c->coord.x, c->coord.z }];
+// ============================================================
+// Загрузка одного уровня детализации в открытый пакет передачи.
+// ============================================================
+bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
+                              ChunkGpu& gpu, world::Chunk& chunk, u8 lod)
+{
+    // Копируем квады под замком: задача меширования может как раз
+    // перезаписывать этот же LOD.
+    {
+        std::lock_guard lk(chunk.meshMutex);
+        if (!chunk.meshes[lod].built) return false;
+        scratchQuads_ = chunk.meshes[lod].quads;
+        chunk.meshes[lod].ready.store(false, std::memory_order_release);
+    }
 
-        for (u8 lod = 0; lod < 4; ++lod) {
-            if (!c->meshes[lod].ready.load(std::memory_order_acquire)) continue;
+    buildChunkVertices(chunk, scratchQuads_, scratchVerts_, scratchIndices_);
 
-            buildChunkVertices(*c, (world::Lod)lod, scratchVerts_, scratchIndices_);
-            if (scratchIndices_.empty()) {
-                c->meshes[lod].ready.store(false, std::memory_order_release);
-                continue;
-            }
+    auto& gm = gpu.lod[lod];
+    if (scratchIndices_.empty()) {
+        // Чанк целиком пустой (небо или толща камня внутри) — рисовать нечего.
+        gm.indexCount = 0;
+        return true;
+    }
 
-            u64 vbBytes = scratchVerts_.size() * sizeof(VoxelVertex);
-            u64 ibBytes = scratchIndices_.size() * sizeof(u32);
+    const u64 vbBytes = scratchVerts_.size()   * sizeof(VoxelVertex);
+    const u64 ibBytes = scratchIndices_.size() * sizeof(u32);
 
-            auto& gm = cm.lod[lod];
+    if (gm.valid && (gm.vb.size() < vbBytes || gm.ib.size() < ibBytes)) {
+        gm.vb.destroy(); gm.ib.destroy(); gm.valid = false;
+    }
+    if (!gm.valid) {
+        // С запасом 25%, чтобы мелкие правки блоков не пересоздавали буфер.
+        const u64 vbCap = vbBytes + vbBytes / 4;
+        const u64 ibCap = ibBytes + ibBytes / 4;
+        if (!gm.vb.create(dev_, phys_, vbCap, vk::BufferUsage::Vertex, false)) return false;
+        if (!gm.ib.create(dev_, phys_, ibCap, vk::BufferUsage::Index, false)) {
+            gm.vb.destroy();
+            return false;
+        }
+        gm.valid = true;
+    }
 
-            // Пересоздать, если старые буферы малы
-            if (gm.valid && (gm.vb.size() < vbBytes || gm.ib.size() < ibBytes)) {
-                gm.vb.destroy(); gm.ib.destroy(); gm.valid = false;
-            }
-            if (!gm.valid) {
-                if (!gm.vb.create(dev_, phys_, vbBytes, vk::BufferUsage::Vertex, false)) continue;
-                if (!gm.ib.create(dev_, phys_, ibBytes, vk::BufferUsage::Index, false)) {
-                    gm.vb.destroy(); continue;
-                }
-                gm.valid = true;
-            }
+    auto* sVb = staging_.acquire(vbBytes);
+    if (!sVb) return false;
+    auto* sIb = staging_.acquire(ibBytes);
+    if (!sIb) { staging_.release(sVb); return false; }
 
-            // Пул staging
-            auto* sVb = staging_.acquire(vbBytes);
-            auto* sIb = staging_.acquire(ibBytes);
-            if (!sVb || !sIb) continue;
-            std::memcpy(sVb->mapped, scratchVerts_.data(), vbBytes);
-            std::memcpy(sIb->mapped, scratchIndices_.data(), ibBytes);
+    std::memcpy(sVb->mapped, scratchVerts_.data(),   vbBytes);
+    std::memcpy(sIb->mapped, scratchIndices_.data(), ibBytes);
 
-            ctx.submitOneShot([&](VkCommandBuffer cmd) {
-                VkBufferCopy c1{0, 0, vbBytes};
-                vkCmdCopyBuffer(cmd, sVb->buffer, gm.vb.handle(), 1, &c1);
-                VkBufferCopy c2{0, 0, ibBytes};
-                vkCmdCopyBuffer(cmd, sIb->buffer, gm.ib.handle(), 1, &c2);
+    VkBufferCopy c1{0, 0, vbBytes};
+    vkCmdCopyBuffer(cmd, sVb->buffer, gm.vb.handle(), 1, &c1);
+    VkBufferCopy c2{0, 0, ibBytes};
+    vkCmdCopyBuffer(cmd, sIb->buffer, gm.ib.handle(), 1, &c2);
 
-                VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-                mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                mb.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
-                vkCmdPipelineBarrier(cmd,
-                    VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-                    0, 1, &mb, 0, nullptr, 0, nullptr);
-            });
+    // Staging освобождается вызывающим после endTransferBatch():
+    // до этого GPU ещё читает из него.
+    pendingStaging_.push_back(sVb);
+    pendingStaging_.push_back(sIb);
 
-            // submitOneShot гарантировал завершение GPU
-            staging_.release(sVb);
-            staging_.release(sIb);
+    gm.indexCount = (u32)scratchIndices_.size();
+    return true;
+}
 
-            gm.indexCount = (u32)scratchIndices_.size();
-            c->meshes[lod].ready.store(false, std::memory_order_release);
+// ============================================================
+// Кадровая загрузка. Раньше каждая пара буферов уходила отдельным
+// submitOneShot с ожиданием fence — восемь полных остановок GPU на
+// чанк. Теперь все копии кадра идут одним пакетом.
+// ============================================================
+void ChunkRenderer::uploadChunks(vk::Context& ctx,
+                                 const std::vector<std::shared_ptr<world::Chunk>>& chunks,
+                                 const glm::vec3& cameraPos)
+{
+    if (chunks.empty() && lodRequests_.empty()) return;
+
+    VkCommandBuffer cmd = ctx.beginTransferBatch();
+    if (cmd == VK_NULL_HANDLE) return;
+
+    constexpr f32 CH = (f32)world::CHUNK_SIZE;
+    constexpr f32 CY = (f32)world::CHUNK_SIZE_Y;
+
+    // 1. Свежепостроенные чанки: грузим только тот LOD, который
+    //    понадобится с текущей дистанции, а не все четыре.
+    for (const auto& sp : chunks) {
+        if (!sp) continue;
+        world::Chunk& c = *sp;
+        const world::ChunkCoord key{ c.coord.x, c.coord.z };
+
+        auto& gpu = meshes_[key];
+        gpu.chunk = sp;   // держим данные: пригодятся для смены LOD
+
+        const glm::vec3 center{ (f32)key.x * CH + CH * 0.5f,
+                                CY * 0.5f,
+                                (f32)key.z * CH + CH * 0.5f };
+        const glm::vec3 d = center - cameraPos;
+        const u8 want = lodForDistanceSq(glm::dot(d, d));
+
+        // Остальные уровни помечаем недействительными: их содержимое
+        // устарело вместе с перестроенным мешем.
+        for (u8 l = 0; l < 4; ++l) {
+            if (l != want && gpu.lod[l].valid) gpu.lod[l].indexCount = 0;
+        }
+        if (uploadLod(ctx, cmd, gpu, c, want)) gpu.residentLod = want;
+    }
+
+    // 2. Отложенные запросы смены детализации от render().
+    u32 served = 0;
+    for (const auto& req : lodRequests_) {
+        if (served >= MAX_LOD_UPLOADS_PER_FRAME) break;
+        auto it = meshes_.find(req.coord);
+        if (it == meshes_.end() || !it->second.chunk) continue;
+        if (it->second.chunk->removed.load(std::memory_order_acquire)) continue;
+        if (uploadLod(ctx, cmd, it->second, *it->second.chunk, req.lod)) {
+            it->second.residentLod = req.lod;
+            ++served;
         }
     }
+    lodRequests_.clear();
+
+    ctx.endTransferBatch();
+
+    for (auto* s : pendingStaging_) staging_.release(s);
+    pendingStaging_.clear();
 }
 
+// ============================================================
+// Отрисовка: frustum culling + выбор LOD по дистанции.
+// ============================================================
 void ChunkRenderer::render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout layout,
                            VkDescriptorSet set, const math::Frustum& frustum,
                            const glm::vec3& cameraPos)
@@ -111,7 +184,7 @@ void ChunkRenderer::render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout l
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
                             0, 1, &set, 0, nullptr);
 
-    lastDrawnChunks_ = 0;
+    lastDrawnChunks_  = 0;
     lastDrawnIndices_ = 0;
     for (auto& l : lodCounts_) l = 0;
 
@@ -119,40 +192,44 @@ void ChunkRenderer::render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout l
     constexpr f32 CY = (f32)world::CHUNK_SIZE_Y;
 
     for (auto& [coord, cm] : meshes_) {
-        // AABB чанка
-        glm::vec3 cmin{ (f32)coord.x * CH, 0.f, (f32)coord.z * CH };
-        glm::vec3 cmax{ cmin.x + CH, CY, cmin.z + CH };
+        const glm::vec3 cmin{ (f32)coord.x * CH, 0.f, (f32)coord.z * CH };
+        const glm::vec3 cmax{ cmin.x + CH, CY, cmin.z + CH };
 
         math::AABB aabb; aabb.min = cmin; aabb.max = cmax;
         if (!frustum.intersectsAABB(aabb)) continue;
 
-        // Выбор LOD
-        glm::vec3 center = (cmin + cmax) * 0.5f;
-        glm::vec3 d = center - cameraPos;
-        f32 distSq = glm::dot(d, d);
+        const glm::vec3 center = (cmin + cmax) * 0.5f;
+        const glm::vec3 d = center - cameraPos;
+        const u8 want = lodForDistanceSq(glm::dot(d, d));
 
-        u8 lod;
-        if (distSq < LOD0_SQ) lod = 0;
-        else if (distSq < LOD1_SQ) lod = 1;
-        else if (distSq < LOD2_SQ) lod = 2;
-        else lod = 3;
-
-        // Пробуем желаемый LOD, fallback на более детальный
+        // Нужного уровня нет в видеопамяти — рисуем тем, что есть,
+        // и заказываем догрузку на следующий кадр.
         GpuMesh* chosen = nullptr;
-        for (i32 i = (i32)lod; i >= 0; --i) {
-            if (cm.lod[i].valid && cm.lod[i].indexCount > 0) { chosen = &cm.lod[i]; lod = (u8)i; break; }
+        u8 usedLod = want;
+        if (cm.lod[want].valid && cm.lod[want].indexCount > 0) {
+            chosen = &cm.lod[want];
+        } else {
+            if (cm.residentLod != want && lodRequests_.size() < 256)
+                lodRequests_.push_back({ coord, want });
+            for (u8 i = 0; i < 4; ++i) {
+                if (cm.lod[i].valid && cm.lod[i].indexCount > 0) {
+                    chosen = &cm.lod[i];
+                    usedLod = i;
+                    break;
+                }
+            }
         }
         if (!chosen) continue;
 
-        VkDeviceSize offsets[] = { 0 };
         const VkBuffer vb = chosen->vb.handle();
+        VkDeviceSize offsets[] = { 0 };
         vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offsets);
         vkCmdBindIndexBuffer(cmd, chosen->ib.handle(), 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, chosen->indexCount, 1, 0, 0, 0);
 
         ++lastDrawnChunks_;
         lastDrawnIndices_ += chosen->indexCount;
-        ++lodCounts_[lod];
+        ++lodCounts_[usedLod];
     }
 }
 

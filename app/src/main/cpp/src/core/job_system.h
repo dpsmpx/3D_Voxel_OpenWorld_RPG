@@ -58,8 +58,7 @@ public:
     u32 workerCount() const { return (u32)workers_.size(); }
     u32 currentWorkerId() const;   // UINT32_MAX для внешних потоков
 
-private:
-    public:
+public:
     struct Job {
         JobFn fn;
         void* data;

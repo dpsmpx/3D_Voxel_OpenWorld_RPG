@@ -48,12 +48,15 @@ struct Frustum {
         // Gribb-Hartmann извлечение плоскостей
         auto row = [&](int i){ return glm::vec4(vp[0][i], vp[1][i], vp[2][i], vp[3][i]); };
         glm::vec4 r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+        // Vulkan: глубина клипа в [0, 1] (GLM_FORCE_DEPTH_ZERO_TO_ONE),
+        // поэтому ближняя плоскость — это просто строка r2, а не r3 + r2
+        // как в OpenGL-соглашении с диапазоном [-1, 1].
         glm::vec4 planes[6] = {
             r3 + r0, // left
             r3 - r0, // right
             r3 + r1, // bottom
             r3 - r1, // top
-            r3 + r2, // near (для Vulkan Z∈[0,1] — не совсем верно, скорректируем)
+            r2,      // near
             r3 - r2, // far
         };
         for (int i = 0; i < 6; ++i) {

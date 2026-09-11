@@ -6,6 +6,20 @@
 
 namespace render {
 
+// Вершинный формат: квад биллборда + инстанс GrassInstance.
+static const vk::VertexBinding kBindings[2] = {
+    { 20,                      false },   // vec3 pos + vec2 uv
+    { sizeof(GrassInstance),   true  },
+};
+static const vk::VertexAttr kAttrs[6] = {
+    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // inPos
+    { 1, 0, VK_FORMAT_R32G32_SFLOAT,    12 },   // inUv
+    { 3, 1, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // iPos
+    { 4, 1, VK_FORMAT_R32_SFLOAT,       12 },   // iScale
+    { 5, 1, VK_FORMAT_R32G32_SFLOAT,    16 },   // iUvOrigin
+    { 6, 1, VK_FORMAT_R8G8B8A8_UNORM,   24 },   // iColor
+};
+
 namespace {
 
 // Cross-quad: две перпендикулярные плоскости, origin снизу.
@@ -46,7 +60,10 @@ bool InstancedRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorS
     d.depthTest   = true;
     d.depthWrite  = true;
     d.blend       = true;                // альфа-текстура травы
-    d.instanced   = true;
+    d.bindings     = kBindings;
+    d.bindingCount = 2;
+    d.attrs        = kAttrs;
+    d.attrCount    = 6;
     if (!pipeline_.create(dev_, shaders_, d)) return false;
 
     // VBO

@@ -464,6 +464,14 @@ void Context::endFrame() {
 void Context::shutdown() {
     if (device_) {
         vkDeviceWaitIdle(device_);
+        if (transferCmd_ != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(device_, cmdPool_, 1, &transferCmd_);
+            transferCmd_ = VK_NULL_HANDLE;
+        }
+        if (transferFence_ != VK_NULL_HANDLE) {
+            vkDestroyFence(device_, transferFence_, nullptr);
+            transferFence_ = VK_NULL_HANDLE;
+        }
         for (u32 i = 0; i < MAX_FRAMES; ++i) {
             vkDestroySemaphore(device_, imgAvailable_[i], nullptr);
             vkDestroySemaphore(device_, renderFinished_[i], nullptr);
@@ -479,6 +487,68 @@ void Context::shutdown() {
     instance_ = VK_NULL_HANDLE;
     device_   = VK_NULL_HANDLE;
     surface_  = VK_NULL_HANDLE;
+}
+
+// ============================================================
+// Пакетная передача: один командный буфер и один забор на весь
+// кадр загрузки. Заменяет схему «submit + wait на каждую копию»,
+// из-за которой загрузка чанка стоила восьми остановок GPU.
+// ============================================================
+VkCommandBuffer Context::beginTransferBatch() {
+    if (transferCmd_ != VK_NULL_HANDLE) {
+        LOGE("beginTransferBatch: пакет уже открыт");
+        return VK_NULL_HANDLE;
+    }
+
+    if (transferFence_ == VK_NULL_HANDLE) {
+        VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        if (vkCreateFence(device_, &fi, nullptr, &transferFence_) != VK_SUCCESS) {
+            LOGE("beginTransferBatch: не создан fence");
+            return VK_NULL_HANDLE;
+        }
+    }
+
+    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    ai.commandPool        = cmdPool_;
+    ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(device_, &ai, &transferCmd_) != VK_SUCCESS) {
+        transferCmd_ = VK_NULL_HANDLE;
+        LOGE("beginTransferBatch: не выделен командный буфер");
+        return VK_NULL_HANDLE;
+    }
+
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(transferCmd_, &bi);
+    return transferCmd_;
+}
+
+void Context::endTransferBatch() {
+    if (transferCmd_ == VK_NULL_HANDLE) return;
+
+    // Один барьер на весь пакет: дальше вершинный ввод читает всё,
+    // что мы только что скопировали.
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+    vkCmdPipelineBarrier(transferCmd_,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                         0, 1, &mb, 0, nullptr, 0, nullptr);
+
+    vkEndCommandBuffer(transferCmd_);
+
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers    = &transferCmd_;
+
+    vkResetFences(device_, 1, &transferFence_);
+    vkQueueSubmit(gfxQueue_, 1, &si, transferFence_);
+    vkWaitForFences(device_, 1, &transferFence_, VK_TRUE, UINT64_MAX);
+
+    vkFreeCommandBuffers(device_, cmdPool_, 1, &transferCmd_);
+    transferCmd_ = VK_NULL_HANDLE;
 }
 
 void Context::submitOneShot(const std::function<void(VkCommandBuffer)>& fn) {

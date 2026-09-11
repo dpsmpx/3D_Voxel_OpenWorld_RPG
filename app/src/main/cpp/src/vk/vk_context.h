@@ -30,10 +30,25 @@ public:
     u32              frameInFlight() const { return currentFrame_; }
     static constexpr u32 MAX_FRAMES = 2;
 
-    // ---- One-shot submit ----
-    // Выполняет fn(cmd) в отдельном командном буфере, ждёт завершения.
-    // Используется для upload (buffer copy, image layout transition).
+    // ---- Одиночная передача ----
+    /// Выполняет fn(cmd) в отдельном командном буфере и ждёт завершения.
+    /// Полная остановка конвейера, поэтому годится только для редких
+    /// операций на старте (layout-переходы текстур). Для потоковой
+    /// загрузки чанков используйте пакет beginTransferBatch/end.
     void submitOneShot(const std::function<void(VkCommandBuffer)>& fn);
+
+    // ---- Пакетная передача ----
+    /// Открывает командный буфер, куда можно сложить произвольное
+    /// число копий. Возвращает VK_NULL_HANDLE при ошибке.
+    /// Вложенные вызовы запрещены.
+    VkCommandBuffer beginTransferBatch();
+
+    /// Отправляет накопленный пакет и ждёт его завершения — один
+    /// vkQueueSubmit и одно ожидание на любое количество копий.
+    void endTransferBatch();
+
+    bool transferBatchOpen() const { return transferCmd_ != VK_NULL_HANDLE; }
+
     void waitIdle() const { if (device_) vkDeviceWaitIdle(device_); }
 
 private:
@@ -81,6 +96,10 @@ private:
     u32                      currentFrame_ = 0;
     u32                      imgIdx_ = 0;
     bool                     frameStarted_ = false;
+
+    // Пакет передач: буфер и забор переиспользуются между кадрами.
+    VkCommandBuffer          transferCmd_   = VK_NULL_HANDLE;
+    VkFence                  transferFence_ = VK_NULL_HANDLE;
 };
 
 } // namespace vk

@@ -4,6 +4,13 @@
 
 namespace render {
 
+// Вершинный формат контура: позиция + цвет, без UV.
+static const vk::VertexBinding kBindings[1] = { { 28, false } };
+static const vk::VertexAttr kAttrs[2] = {
+    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    0  },   // inPos
+    { 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 12 },   // inColor
+};
+
 struct OutlineVertex {
     glm::vec3 pos;
     glm::vec4 color;
@@ -46,6 +53,10 @@ bool BlockOutline::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLay
     d.depthTest   = true;
     d.depthWrite  = false;
     d.blend       = true;
+    d.bindings     = kBindings;
+    d.bindingCount = 1;
+    d.attrs        = kAttrs;
+    d.attrCount    = 2;
     d.pushConstantSize  = sizeof(BlockOutlinePush);
     d.pushConstantStage = VK_SHADER_STAGE_VERTEX_BIT;
     if (!pipeline_.create(dev_, shaders_, d)) return false;

@@ -843,7 +843,8 @@ extern "C" void android_main(android_app* app) {
     app->onAppCmd     = handleCmd;
     app->onInputEvent = handleInput;
 
-    auto lastTime = std::chrono::steady_clock::now();
+    const auto startTime = std::chrono::steady_clock::now();
+    auto lastTime = startTime;
 
     while (true) {
         int events = 0;
@@ -875,8 +876,10 @@ extern "C" void android_main(android_app* app) {
             if (dt > 0.1f) dt = 0.1f;
             if (dt < 0.f)  dt = 0.f;
 
-            const f32 timeSec =
-                std::chrono::duration<f32>(now.time_since_epoch()).count();
+            // Время отсчитывается от старта приложения: секунды от
+            // эпохи (~1.75e9) во float дают шаг дискретизации ~128 с,
+            // из-за чего ломался цикл дня и ночи и анимация в шейдерах.
+            const f32 timeSec = std::chrono::duration<f32>(now - startTime).count();
 
             eng.update(dt, timeSec);
             eng.prepareFrame(timeSec);

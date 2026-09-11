@@ -62,7 +62,7 @@ static inline f32 remap(f32 v, f32 inMin, f32 inMax, f32 outMin, f32 outMax) {
     return outMin + t * (outMax - outMin);
 }
 
-BiomeField::Sample BiomeField::sample(i32 x, i32 z, i32 surfaceY) const {
+BiomeField::Sample BiomeField::fields(i32 x, i32 z) const {
     const f32 fx = (f32)x;
     const f32 fz = (f32)z;
 
@@ -78,31 +78,39 @@ BiomeField::Sample BiomeField::sample(i32 x, i32 z, i32 surfaceY) const {
     // Пики
     s.peaks = std::max(0.f, impl_->peaks.fbm3D(fx * 0.0030f, 0.f, fz * 0.0030f, 3));
 
+    // Модификатор высоты: континент + горы, океаны глубже суши
+    const f32 continentH = s.continent > 0.f ? s.continent * 45.f
+                                             : s.continent * 70.f;
+    const f32 mountainH  = s.peaks * (1.f - s.erosion) * 55.f;
+    s.heightMod = continentH + mountainH;
+
+    s.biome = Plains;   // уточняется в classify()
+    return s;
+}
+
+void BiomeField::classify(Sample& s, i32 surfaceY) const {
     // Падение температуры с высотой (lapse rate)
-    f32 tempAdjusted = s.temperature - (f32)std::max(0, surfaceY - 40) * 0.008f;
+    const f32 tempAdjusted = s.temperature - (f32)std::max(0, surfaceY - 40) * 0.008f;
 
-    // Модификатор высоты: континент * 40 + пики * (1-erosion) * 60
-    f32 continentH = s.continent > 0.f
-        ? s.continent * 45.f
-        : s.continent * 70.f;  // океаны глубже
-    f32 mountainH  = s.peaks * (1.f - s.erosion) * 55.f;
-    s.heightMod    = continentH + mountainH;
-
-    // Классификация биома
     BiomeId b;
-    if (surfaceY < 24 && s.continent < -0.05f)          b = Ocean;
-    else if (surfaceY < 28 && s.continent < 0.05f)      b = Beach;
-    else if (surfaceY > 82)                             b = Mountains;
-    else if (s.continent > 0.55f && tempAdjusted > 0.3f) b = Volcanic;
+    if (surfaceY < 24 && s.continent < -0.05f)            b = Ocean;
+    else if (surfaceY < 28 && s.continent < 0.05f)        b = Beach;
+    else if (surfaceY > 82)                               b = Mountains;
+    else if (s.continent > 0.55f && tempAdjusted > 0.3f)  b = Volcanic;
     else if (s.humidity < -0.35f && tempAdjusted > 0.25f) b = Desert;
     else if (s.humidity < -0.10f && tempAdjusted > 0.15f) b = Savanna;
-    else if (tempAdjusted < -0.45f)                      b = Tundra;
-    else if (tempAdjusted < -0.10f && s.humidity > 0.0f) b = Taiga;
+    else if (tempAdjusted < -0.45f)                       b = Tundra;
+    else if (tempAdjusted < -0.10f && s.humidity > 0.0f)  b = Taiga;
     else if (s.humidity > 0.35f && tempAdjusted > 0.0f && s.erosion > 0.5f) b = Swamp;
-    else if (s.humidity > 0.05f)                         b = Forest;
-    else                                                 b = Plains;
+    else if (s.humidity > 0.05f)                          b = Forest;
+    else                                                  b = Plains;
 
     s.biome = b;
+}
+
+BiomeField::Sample BiomeField::sample(i32 x, i32 z, i32 surfaceY) const {
+    Sample s = fields(x, z);
+    classify(s, surfaceY);
     return s;
 }
 

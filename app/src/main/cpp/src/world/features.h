@@ -14,6 +14,20 @@ namespace world {
 struct FeatureContext {
     const TerrainGenerator* terrain;
     u64 seed;
+
+    /// Готовые колонки чанка, CHUNK_SIZE x CHUNK_SIZE, индекс
+    /// x * CHUNK_SIZE + z. Заполняется один раз при генерации:
+    /// без неё каждая фича пересчитывала высоту и климат заново,
+    /// и один чанк стоил четырёх полных проходов по шуму.
+    /// nullptr допустим — тогда данные считаются на лету.
+    const TerrainGenerator::Column* columns = nullptr;
+
+    /// Колонка по локальным координатам чанка.
+    TerrainGenerator::Column columnAt(i32 lx, i32 lz, i32 wx, i32 wz) const {
+        if (columns && (u32)lx < (u32)CHUNK_SIZE && (u32)lz < (u32)CHUNK_SIZE)
+            return columns[lx * CHUNK_SIZE + lz];
+        return terrain->column(wx, wz);
+    }
 };
 
 // ============================================================

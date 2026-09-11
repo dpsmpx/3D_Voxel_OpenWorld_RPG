@@ -6,9 +6,24 @@
 
 namespace render {
 
+// Вершинный формат: единичный куб (vec3) + инстанс
+// pos/size/color/yaw, ровно как в MobInstance.
+static const vk::VertexBinding kBindings[2] = {
+    { 12,                      false },   // CubeVertex: glm::vec3
+    { sizeof(MobInstance),     true  },
+};
+static const vk::VertexAttr kAttrs[5] = {
+    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // inPos
+    { 1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // iPos
+    { 2, 1, VK_FORMAT_R32G32B32_SFLOAT, 12 },   // iSize
+    { 3, 1, VK_FORMAT_R8G8B8A8_UNORM,   24 },   // iColor
+    { 4, 1, VK_FORMAT_R32_SFLOAT,       28 },   // iYaw
+};
+
 namespace {
 
 struct CubeVertex { glm::vec3 pos; };
+static_assert(sizeof(CubeVertex) == 12, "kBindings рассчитан на 12 байт");
 constexpr CubeVertex CUBE_V[24] = {
     {{-0.5f,-0.5f,-0.5f}},{{ 0.5f,-0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{-0.5f, 0.5f,-0.5f}},
     {{-0.5f,-0.5f, 0.5f}},{{ 0.5f,-0.5f, 0.5f}},{{ 0.5f, 0.5f, 0.5f}},{{-0.5f, 0.5f, 0.5f}},
@@ -69,7 +84,10 @@ bool ProjectileRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptor
     d.depthTest   = true;
     d.depthWrite  = false;
     d.blend       = true;
-    d.instanced   = true;
+    d.bindings     = kBindings;
+    d.bindingCount = 2;
+    d.attrs        = kAttrs;
+    d.attrCount    = 5;
     if (!pipeline_.create(dev_, shaders_, d)) return false;
 
     cpu_.reserve(256);

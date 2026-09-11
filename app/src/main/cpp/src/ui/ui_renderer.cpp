@@ -5,6 +5,14 @@
 
 namespace ui {
 
+// Вершинный формат UI: позиция уже в NDC, поэтому vec2, а не vec3.
+static const vk::VertexBinding kBindings[1] = { { sizeof(UiVertex), false } };
+static const vk::VertexAttr kAttrs[3] = {
+    { 0, 0, VK_FORMAT_R32G32_SFLOAT,  0  },   // inPos
+    { 1, 0, VK_FORMAT_R32G32_SFLOAT,  8  },   // inUv
+    { 2, 0, VK_FORMAT_R8G8B8A8_UNORM, 16 },   // inColor
+};
+
 bool UiRenderer::init(vk::Context& ctx, AAssetManager* mgr) {
     dev_ = ctx.device();
     shaders_.init(dev_, mgr);
@@ -73,6 +81,10 @@ bool UiRenderer::init(vk::Context& ctx, AAssetManager* mgr) {
     pd.depthTest   = false;
     pd.depthWrite  = false;
     pd.blend       = true;
+    pd.bindings     = kBindings;
+    pd.bindingCount = 1;
+    pd.attrs        = kAttrs;
+    pd.attrCount    = 3;
     if (!pipeline_.create(dev_, shaders_, pd)) return false;
 
     verts_[0].reserve(8192);

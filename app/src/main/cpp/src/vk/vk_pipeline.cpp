@@ -21,26 +21,27 @@ bool GraphicsPipeline::create(VkDevice dev, ShaderCache& shaders, const Pipeline
     // ------------------------------------------------------------
     // Vertex input
     // ------------------------------------------------------------
-    VkVertexInputBindingDescription vib[2] = {};
-    vib[0].binding = 0; vib[0].stride = 24; vib[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    // Формат приходит из PipelineDesc: каждый рендерер знает свой.
+    constexpr u32 MAX_BINDINGS = 4;
+    constexpr u32 MAX_ATTRS    = 12;
+    VkVertexInputBindingDescription   vib[MAX_BINDINGS] = {};
+    VkVertexInputAttributeDescription via[MAX_ATTRS]    = {};
 
-    VkVertexInputAttributeDescription via[8] = {};
-    via[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0  };
-    via[1] = { 1, 0, VK_FORMAT_R32G32_SFLOAT,     12 };
-    via[2] = { 2, 0, VK_FORMAT_R8G8B8A8_UNORM,   20 };
+    const u32 bindCount = d.bindingCount < MAX_BINDINGS ? d.bindingCount : MAX_BINDINGS;
+    const u32 attrCount = d.attrCount    < MAX_ATTRS    ? d.attrCount    : MAX_ATTRS;
 
-    u32 bindCount = 1, attrCount = 3;
-
-    if (d.instanced) {
-        // Instance layout: pos(vec3) + size(vec3) + color(u8x4) + yaw(f32) = 32 байта
-        vib[1].binding = 1; vib[1].stride = 32; vib[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
-        via[3] = { 3, 1, VK_FORMAT_R32G32B32_SFLOAT, 0  };
-        via[4] = { 4, 1, VK_FORMAT_R32G32B32_SFLOAT, 12 };
-        via[5] = { 5, 1, VK_FORMAT_R8G8B8A8_UNORM,   24 };
-        via[6] = { 6, 1, VK_FORMAT_R32_SFLOAT,       28 };
-        via[7] = { 7, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 };  // зарезервировано, не используется
-        bindCount = 2;
-        attrCount = 7;
+    for (u32 i = 0; i < bindCount; ++i) {
+        vib[i].binding   = i;
+        vib[i].stride    = d.bindings[i].stride;
+        vib[i].inputRate = d.bindings[i].perInstance
+                         ? VK_VERTEX_INPUT_RATE_INSTANCE
+                         : VK_VERTEX_INPUT_RATE_VERTEX;
+    }
+    for (u32 i = 0; i < attrCount; ++i) {
+        via[i].location = d.attrs[i].location;
+        via[i].binding  = d.attrs[i].binding;
+        via[i].format   = d.attrs[i].format;
+        via[i].offset   = d.attrs[i].offset;
     }
 
     VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -139,7 +140,7 @@ bool GraphicsPipeline::create(VkDevice dev, ShaderCache& shaders, const Pipeline
     }
 
     LOGI("Pipeline создан: %s/%s%s",
-         d.vertName, d.fragName, d.instanced ? " [instanced]" : "");
+         d.vertName, d.fragName, d.bindingCount > 1 ? " [instanced]" : "");
     return true;
 }
 

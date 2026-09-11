@@ -179,15 +179,15 @@ void JobSystem::parallelFor(u32 count, u32 minChunk,
         ranges.push_back({b, e, &fn});
     }
 
+    // Счётчик увеличивает сам submit(Counter*, ...), поэтому здесь
+    // add() делается только для диапазона, который выполняет
+    // вызывающий поток.
     Counter c;
-    c.add((i32)ranges.size());
-
-    // Кидаем все, кроме последней, в систему.
     for (usize i = 0; i + 1 < ranges.size(); ++i) {
         submit(&c, &runRange, &ranges[i]);
     }
-    // Последнюю выполняем сами — не простаиваем.
     if (!ranges.empty()) {
+        c.add(1);
         runRange(&ranges.back());
         c.done();
     }
