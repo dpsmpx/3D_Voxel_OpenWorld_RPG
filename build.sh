@@ -2,9 +2,16 @@
 # ============================================================
 # VoxelRPG: скрипт сборки APK в Termux.
 #
-# Требования:
-#   pkg install termux-ndk cmake ninja git clang shaderc
-#   pkg install openjdk-17 aapt2 apksigner d8
+# Подготовка окружения — один раз:
+#   ./tools/termux-setup.sh
+#   source ~/.voxelrpg-env
+#
+# Проверить, чего не хватает:
+#   ./tools/termux-doctor.sh
+#
+# Внимание: пакета termux-ndk в Termux НЕ существует, а имя пакета
+# Java менялось (openjdk-17 -> openjdk-21). Поэтому установка вынесена
+# в termux-setup.sh, который определяет доступные имена сам.
 #
 # Использование:
 #   ./build.sh              — release APK
@@ -81,14 +88,41 @@ done
 # ---- Проверка окружения ----
 log "Проверка окружения..."
 
+# Подхватываем переменные, записанные termux-setup.sh, если текущая
+# оболочка их ещё не видит.
+if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -f "$HOME/.voxelrpg-env" ]; then
+    . "$HOME/.voxelrpg-env"
+    NDK_HOME="${ANDROID_NDK_HOME:-$NDK_HOME}"
+    TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-aarch64"
+    SYSROOT="$TOOLCHAIN/sysroot"
+fi
+
 if [ ! -d "$NDK_HOME" ]; then
-    err "NDK не найден: $NDK_HOME"
-    err "Установи: pkg install termux-ndk"
+    err "Android NDK не найден: $NDK_HOME"
+    err ""
+    err "Пакета termux-ndk в Termux нет — официальный NDK собран под"
+    err "x86_64 и на телефоне не запустится. Нужна сборка под aarch64."
+    err ""
+    err "Установить всё разом:"
+    err "    ./tools/termux-setup.sh && source ~/.voxelrpg-env"
+    err ""
+    err "Посмотреть, чего именно не хватает:"
+    err "    ./tools/termux-doctor.sh"
     exit 1
 fi
 
 if [ ! -d "$TOOLCHAIN" ]; then
-    err "Toolchain не найден: $TOOLCHAIN"
+    err "Toolchain под aarch64 не найден: $TOOLCHAIN"
+    err "Похоже, распакован NDK под другую архитектуру."
+    err "Проверьте: ./tools/termux-doctor.sh"
+    exit 1
+fi
+
+# glue из NDK — без него не соберётся точка входа.
+if [ ! -f "$NDK_HOME/sources/android/native_app_glue/android_native_app_glue.c" ]; then
+    err "В NDK нет native_app_glue:"
+    err "    $NDK_HOME/sources/android/native_app_glue/"
+    err "NDK распакован не полностью. Проверьте: ./tools/termux-doctor.sh"
     exit 1
 fi
 
@@ -127,7 +161,9 @@ log "Компиляция шейдеров..."
 mkdir -p "$ASSETS_DIR"
 
 if ! command -v glslc >/dev/null 2>&1; then
-    err "glslc не найден — установи: pkg install shaderc"
+    err "glslc не найден. Обычно он в пакете shaderc:"
+    err "    pkg install shaderc"
+    err "Если пакета нет — посмотрите, как он называется: pkg search glsl"
     exit 1
 fi
 
@@ -335,7 +371,8 @@ if [ "$SKIP_DEBUG_SIGN" -eq 0 ] && [ ! -f "$DEBUG_KEYSTORE" ]; then
         -validity 10000 \
         -dname "CN=Android Debug, O=Android, C=US" 2>/dev/null || {
             warn "keytool не найден — APK не подписан"
-            warn "Установи: pkg install openjdk-17"
+            warn "Установи JDK: pkg install openjdk-21"
+            warn "(если такого пакета нет: pkg search openjdk)"
             mv base.apk "$APK_OUT_DIR/${GAME_NAME}.apk"
             exit 0
         }
