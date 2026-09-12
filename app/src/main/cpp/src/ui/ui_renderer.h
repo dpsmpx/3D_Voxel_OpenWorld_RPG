@@ -63,6 +63,14 @@ public:
     u32 lastVertices() const { return lastVerts_; }
     u32 lastDrawn()    const { return lastDrawn_; }
 
+    /// Вершины, накопленные за текущий кадр, по атласам (0 — шрифт,
+    /// 1 — внешний). Интерфейс целиком строится на процессоре, так
+    /// что по этому потоку его можно проверить без устройства —
+    /// этим занимается tools/hostcheck.
+    const std::vector<UiVertex>& pendingVertices(int slot) const {
+        return verts_[slot == 1 ? 1 : 0];
+    }
+
     float whiteU() const { return whiteU_; }
     float whiteV() const { return whiteV_; }
     VkDescriptorSetLayout descriptorLayout() const { return descSet_.layout(); }

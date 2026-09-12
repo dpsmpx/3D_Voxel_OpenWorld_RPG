@@ -20,6 +20,7 @@
 #include "world/day_cycle.h"
 #include "mobs/mob_ai.h"
 #include "mobs/mob_def.h"
+#include "ui/ui_context.h"
 
 #include <atomic>
 #include <cmath>
@@ -759,6 +760,130 @@ void testWorldQueries() {
           "незагруженный чанк считается твёрдым");
 }
 
+
+// ------------------------------------------------------------
+// Геометрия интерфейса.
+//
+// Интерфейс строится целиком на процессоре: пиксели экрана он сам
+// переводит в координаты отсечения и сам раскладывает прямоугольники
+// на треугольники. Обе эти операции уже были сломаны — сначала
+// перевёрнутой осью Y (весь HUD уезжал за верхний край), потом
+// десятью вершинами на прямоугольник вместо шести (поток вершин
+// разъезжался, и интерфейса не было видно вовсе). Ни то, ни другое
+// компилятор поймать не может, а на устройстве оба выглядят
+// одинаково — «интерфейса нет». Поэтому проверяем здесь.
+// ------------------------------------------------------------
+void testUiGeometry() {
+    group("ui: геометрия интерфейса");
+
+    // Типичный экран: телефон в альбомной ориентации.
+    const int W = 2306, H = 1080;
+    ui::UiRenderer r;
+    ui::UiContext  ui;
+    ui.init(&r, W, H);
+
+    auto verts = [&r]() -> const std::vector<ui::UiVertex>& {
+        return r.pendingVertices(0);
+    };
+
+    // --- один прямоугольник = шесть вершин ---
+    ui.beginFrame();
+    ui.rect(100.f, 100.f, 50.f, 40.f, ui::COL_WHITE);
+    check(verts().size() == 6, "прямоугольник даёт ровно шесть вершин");
+
+    ui.beginFrame();
+    ui.rect(0.f, 0.f, 10.f, 10.f, ui::COL_WHITE);
+    ui.rect(20.f, 20.f, 10.f, 10.f, ui::COL_WHITE);
+    ui.rectOutline(40.f, 40.f, 30.f, 30.f, 2.f, ui::COL_WHITE);
+    check(verts().size() % 3 == 0,
+          "поток вершин делится на треугольники без остатка");
+    check(verts().size() == 6 * 6, "рамка — это четыре прямоугольника");
+
+    // --- ось Y смотрит вниз, как принято в Vulkan ---
+    ui.beginFrame();
+    ui.rect(0.f, 0.f, 4.f, 4.f, ui::COL_WHITE);       // левый верхний угол
+    const float topY = verts()[0].pos.y;
+    ui.beginFrame();
+    ui.rect(0.f, (float)H - 4.f, 4.f, 4.f, ui::COL_WHITE);  // левый нижний
+    const float bottomY = verts()[0].pos.y;
+    check(topY < 0.f,  "верх экрана — отрицательный Y в координатах отсечения");
+    check(bottomY > 0.f, "низ экрана — положительный Y");
+    check(topY < bottomY, "низ экрана ниже верха, а не наоборот");
+
+    // --- всё нарисованное в пределах экрана остаётся в пределах экрана ---
+    ui.beginFrame();
+    ui.rect(0.f, 0.f, (float)W, (float)H, ui::COL_WHITE);
+    bool inRange = true;
+    for (const auto& v : verts())
+        if (v.pos.x < -1.001f || v.pos.x > 1.001f ||
+            v.pos.y < -1.001f || v.pos.y > 1.001f) inRange = false;
+    check(inRange, "прямоугольник во весь экран не выходит за [-1, 1]");
+
+    // --- сплошная заливка не трогает атлас, буквы трогают ---
+    ui.beginFrame();
+    ui.rect(10.f, 10.f, 10.f, 10.f, ui::COL_WHITE);
+    check(verts()[0].uv.x < 0.f, "заливка помечена как «без текстуры»");
+
+    ui.beginFrame();
+    ui.text("AB", 10.f, 10.f, 2.f, ui::COL_WHITE);
+    bool textUv = !verts().empty();
+    for (const auto& v : verts())
+        if (v.uv.x < 0.f || v.uv.x > 1.f || v.uv.y < 0.f || v.uv.y > 1.f) textUv = false;
+    check(verts().size() == 12, "две буквы — два прямоугольника");
+    check(textUv, "у букв координаты атласа лежат в [0, 1]");
+
+    // --- круг и кольцо действительно что-то строят ---
+    ui.beginFrame();
+    ui.circle(100.f, 100.f, 40.f, ui::COL_WHITE, 16);
+    check(verts().size() == 16 * 3, "круг из N сегментов — N треугольников");
+    ui.beginFrame();
+    ui.ring(100.f, 100.f, 30.f, 40.f, ui::COL_WHITE, 16);
+    check(verts().size() == 16 * 6, "кольцо — по два треугольника на сегмент");
+
+    // --- доворот экрана: чистый поворот, без растяжения и без сноса ---
+    ui.beginFrame();
+    ui.rect(0.f, 0.f, 4.f, 4.f, ui::COL_WHITE);
+    const glm::vec2 base = verts()[0].pos;
+
+    r.setSurfaceRotation(90);
+    ui.beginFrame();
+    ui.rect(0.f, 0.f, 4.f, 4.f, ui::COL_WHITE);
+    const glm::vec2 rot90 = verts()[0].pos;
+
+    r.setSurfaceRotation(180);
+    ui.beginFrame();
+    ui.rect(0.f, 0.f, 4.f, 4.f, ui::COL_WHITE);
+    const glm::vec2 rot180 = verts()[0].pos;
+
+    r.setSurfaceRotation(0);
+
+    auto len = [](glm::vec2 p) { return std::sqrt(p.x * p.x + p.y * p.y); };
+    check(std::fabs(len(base) - len(rot90)) < 1e-4f,
+          "доворот на 90° не меняет длину вектора");
+    check(std::fabs(rot180.x + base.x) < 1e-4f &&
+          std::fabs(rot180.y + base.y) < 1e-4f,
+          "доворот на 180° — это смена знака обеих координат");
+    check(std::fabs(rot90.x + base.y) < 1e-4f &&
+          std::fabs(rot90.y - base.x) < 1e-4f,
+          "доворот на 90° переставляет координаты по часовой стрелке");
+
+    // --- нулевой поворот ничего не трогает ---
+    ui.beginFrame();
+    ui.rect(0.f, 0.f, 4.f, 4.f, ui::COL_WHITE);
+    check(std::fabs(verts()[0].pos.x - base.x) < 1e-6f &&
+          std::fabs(verts()[0].pos.y - base.y) < 1e-6f,
+          "без поворота координаты остаются прежними");
+
+    // --- кнопки экранного управления попадают туда, куда по ним жмут ---
+    // Прямоугольник интерактивной области задаётся в пикселях, а
+    // рисуется в координатах отсечения: если эти два перевода
+    // разойдутся, нажимать придётся мимо.
+    const ui::Rect btn{ 100.f, (float)H - 200.f, 120.f, 120.f };
+    check(btn.contains(btn.x + 1.f, btn.y + 1.f), "точка внутри кнопки — внутри");
+    check(!btn.contains(btn.x - 1.f, btn.y + 1.f), "точка слева от кнопки — снаружи");
+    check(!btn.contains(btn.x + 1.f, btn.y + btn.h), "нижняя граница не включается");
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -773,6 +898,7 @@ int main() {
     testBossPhases();
 
     testVulkanGuards();
+    testUiGeometry();
     testWorldQueries();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);

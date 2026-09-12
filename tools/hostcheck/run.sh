@@ -134,8 +134,13 @@ for f in "${DISK[@]}"; do
     [ -s "$err" ] && { echo "########## $f"; cat "$err"; } >> "$LOG"
 done
 
-ERRORS=$(grep -c "error:" "$LOG" 2>/dev/null || echo 0)
-WARNS=$(grep -c "warning:" "$LOG" 2>/dev/null || echo 0)
+# grep -c печатает «0» и выходит с кодом 1, когда совпадений нет.
+# Связка «|| echo 0» дописывала к этому нулю ещё один, счётчик
+# становился двухстрочным, и сравнение ниже падало с «integer
+# expression expected» — то есть проверка предупреждений молча не
+# работала. «|| true» оставляет ровно то, что напечатал grep.
+ERRORS=$( { grep -c "error:" "$LOG" || true; } 2>/dev/null )
+WARNS=$( { grep -c "warning:" "$LOG" || true; } 2>/dev/null )
 if [ -s "$OUT/failed.txt" ]; then
     BADN=$(sort -u "$OUT/failed.txt" | wc -l)
     echo "✗ Не скомпилировалось файлов: $BADN из ${#DISK[@]}, ошибок: $ERRORS"
@@ -265,6 +270,14 @@ TEST_SRCS=(
     "$SRC_DIR/mobs/mob_def.cpp"
     "$SRC_DIR/vk/vk_buffer.cpp"
     "$SRC_DIR/vk/vk_texture.cpp"
+    "$SRC_DIR/vk/vk_shader.cpp"
+    "$SRC_DIR/vk/vk_pipeline.cpp"
+    "$SRC_DIR/vk/vk_descriptors.cpp"
+    "$SRC_DIR/ui/ui_renderer.cpp"
+    "$SRC_DIR/ui/ui_context.cpp"
+    "$SRC_DIR/ui/ui_atlas.cpp"
+    "$SRC_DIR/config/localization.cpp"
+    "$SRC_DIR/config/settings.cpp"
 )
 if ! "$CXX" -std=c++20 -O1 -g0 \
         -D__ANDROID__ -DVK_USE_PLATFORM_ANDROID_KHR \

@@ -217,7 +217,17 @@ bool Context::createSwapchain() {
     } else {
         surfaceTransform_ = caps.currentTransform;
     }
+    displayTransform_ = caps.currentTransform;
     const VkSurfaceTransformFlagBitsKHR displayTransform = caps.currentTransform;
+
+    // Осознанное расхождение: мы просим одно, экран живёт в другом.
+    // Драйвер обязан отвечать на каждый показ VK_SUBOPTIMAL_KHR — это
+    // не поломка, а буквальный ответ «можно было бы и лучше». Пока мы
+    // помним, что расхождение наше собственное, этот ответ надо
+    // молча пропускать: пересоздание цепочки его не лечит, потому что
+    // после пересоздания расхождение ровно то же.
+    presentMayBeSuboptimal_ = (surfaceTransform_ != caps.currentTransform);
+    suboptimalPresents_ = 0;
 
     swapExtent_ = caps.currentExtent;
     if (swapExtent_.width == UINT32_MAX) {
@@ -433,6 +443,18 @@ void Context::destroySwapchain() {
     vkDestroySwapchainKHR(device_, swapchain_, nullptr); swapchain_ = VK_NULL_HANDLE;
 }
 
+// Дешёвая проверка «окно действительно стало другим». Один запрос к
+// драйверу; вызывается только когда показ пожаловался.
+bool Context::surfaceExtentChanged() const {
+    VkSurfaceCapabilitiesKHR caps{};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_, surface_, &caps) != VK_SUCCESS)
+        return false;
+    if (caps.currentExtent.width == UINT32_MAX) return false;   // размер задаём мы
+    if (caps.currentExtent.width == 0 || caps.currentExtent.height == 0) return false;
+    return caps.currentExtent.width  != swapExtent_.width ||
+           caps.currentExtent.height != swapExtent_.height;
+}
+
 void Context::onResize(ANativeWindow* /*window*/) {
     destroySwapchain();
     if (!createSwapchain())    { LOGE("resize: swapchain"); return; }
@@ -511,9 +533,34 @@ void Context::endFrame() {
     pi.pImageIndices = &imgIdx_;
     const VkResult pres = vkQueuePresentKHR(gfxQueue_, &pi);
     lastPresent_ = pres;
-    if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR) {
+    if (pres == VK_ERROR_OUT_OF_DATE_KHR) {
         needsResize_ = true;
-    } else if (pres == VK_SUCCESS) {
+    } else if (pres == VK_SUCCESS || pres == VK_SUBOPTIMAL_KHR) {
+        // «Suboptimal» — это не «устарело»: кадр показан. Пока мы сами
+        // просим preTransform, отличный от поворота экрана, драйвер
+        // обязан возвращать этот ответ на КАЖДОМ кадре. Прежний код
+        // принимал его за приказ пересоздать цепочку — и цепочка
+        // пересоздавалась шестьдесят раз в секунду, каждый раз с
+        // vkDeviceWaitIdle и с полностью пропущенным следующим кадром.
+        // Мир при этом не успевал нарисоваться ни разу.
+        if (pres == VK_SUBOPTIMAL_KHR) {
+            if (!presentMayBeSuboptimal_) {
+                // Расхождения мы не просили — значит оно настоящее.
+                needsResize_ = true;
+            } else {
+                // Поворот мы отдали композитору осознанно, а вот
+                // изменившийся размер окна — настоящая причина
+                // пересоздать. Спрашиваем драйвер редко: ответ
+                // SUBOPTIMAL приходит каждый кадр, а окно так часто
+                // не меняется.
+                if (suboptimalPresents_ == 0)
+                    LOGI("показ отвечает SUBOPTIMAL — это ожидаемо: поворот "
+                         "отдан композитору; следим только за размером окна");
+                if ((suboptimalPresents_++ % SUBOPTIMAL_RECHECK) == 0 &&
+                    surfaceExtentChanged())
+                    needsResize_ = true;
+            }
+        }
         // Первый показанный кадр — важная веха: до него «чёрный экран»
         // и «кадры не доходят до экрана» выглядят одинаково.
         if (framesPresented_ == 0) LOGI("первый кадр показан на экране");
