@@ -32,6 +32,12 @@ public:
     u32              gfxFamily()     const { return gfxFamily_; }
     u32              imageIndex()    const { return imgIdx_; }
     u32              frameInFlight() const { return currentFrame_; }
+
+    /// Сколько кадров реально ушло на экран. Ноль при работающем цикле
+    /// означает, что показывать нечего или показ отвергается.
+    u64              framesPresented() const { return framesPresented_; }
+    /// Последняя ошибка vkQueuePresentKHR (VK_SUCCESS, если её не было).
+    VkResult         lastPresentResult() const { return lastPresent_; }
     static constexpr u32 MAX_FRAMES = 2;
 
     // ---- Одиночная передача ----
@@ -109,6 +115,9 @@ private:
     std::vector<VkSemaphore> renderFinished_;
     std::vector<VkFence>     inFlight_;
     u32                      currentFrame_ = 0;
+    u64                      framesPresented_ = 0;
+    VkResult                 lastPresent_ = VK_SUCCESS;
+    bool                     needsResize_ = false;
     u32                      imgIdx_ = 0;
     bool                     frameStarted_ = false;
 

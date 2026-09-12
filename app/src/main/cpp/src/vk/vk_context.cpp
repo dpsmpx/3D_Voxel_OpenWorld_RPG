@@ -404,6 +404,14 @@ void Context::onResize(ANativeWindow* /*window*/) {
 }
 
 bool Context::beginFrame() {
+    // Показ предыдущего кадра сообщил, что swapchain устарел. Раньше
+    // этот ответ игнорировался: кадры продолжали уходить в устаревшую
+    // цепочку, и на экране не менялось ничего.
+    if (needsResize_) {
+        needsResize_ = false;
+        return false;
+    }
+
     vkWaitForFences(device_, 1, &inFlight_[currentFrame_], VK_TRUE, UINT64_MAX);
 
     VkResult r = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
@@ -453,7 +461,8 @@ void Context::endFrame() {
     si.pCommandBuffers = &cmdBuffers_[currentFrame_];
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = sigSem;
-    vkQueueSubmit(gfxQueue_, 1, &si, inFlight_[currentFrame_]);
+    const VkResult sub = vkQueueSubmit(gfxQueue_, 1, &si, inFlight_[currentFrame_]);
+    if (sub != VK_SUCCESS) LOGE("vkQueueSubmit: %d", (int)sub);
 
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.waitSemaphoreCount = 1;
@@ -461,7 +470,21 @@ void Context::endFrame() {
     pi.swapchainCount = 1;
     pi.pSwapchains = &swapchain_;
     pi.pImageIndices = &imgIdx_;
-    vkQueuePresentKHR(gfxQueue_, &pi);
+    const VkResult pres = vkQueuePresentKHR(gfxQueue_, &pi);
+    lastPresent_ = pres;
+    if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR) {
+        needsResize_ = true;
+    } else if (pres == VK_SUCCESS) {
+        ++framesPresented_;
+    } else {
+        // Об ошибке показа надо знать: без неё «чёрный экран» неотличим
+        // от «кадры рисуются, но не доходят».
+        static VkResult reported = VK_SUCCESS;
+        if (pres != reported) {
+            reported = pres;
+            LOGE("vkQueuePresentKHR: %d", (int)pres);
+        }
+    }
 
     currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES;
     frameStarted_ = false;

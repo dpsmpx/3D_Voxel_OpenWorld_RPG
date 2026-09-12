@@ -149,6 +149,25 @@ struct Engine {
 
     bool running     = false;
     bool initialized = false;
+
+    /// Окно готово и приложение на переднем плане — можно рисовать.
+    /// Два состояния держим раздельно: Android присылает фокус раньше,
+    /// чем создаёт поверхность, и одного события мало, чтобы понять,
+    /// можно ли рисовать.
+    ///
+    /// Начальное значение true: событие GAINED_FOCUS до инициализации
+    /// окна пропадало впустую, второго не приходило, и цикл кадров не
+    /// запускался вовсе — звук играл, экран оставался пустым.
+    bool hasFocus = true;
+
+    void updateRunning() {
+        const bool want = initialized && hasFocus;
+        if (want != running) {
+            LOGI("цикл кадров: %s (окно=%d, фокус=%d)",
+                 want ? "запущен" : "остановлен", (int)initialized, (int)hasFocus);
+        }
+        running = want;
+    }
     bool wantQuit    = false;
 
     f32 unloadTimer = 0.f;
@@ -393,6 +412,7 @@ struct Engine {
 
         crash::step("инициализация завершена");
         initialized = true;
+        updateRunning();
         running     = true;
         LOGI("=== VoxelRPG готов (Phase 15). Spawn y=%.1f ===", playerSpawn.y);
     }
@@ -409,7 +429,9 @@ struct Engine {
 
         cfg::settings().save(settingsPath);
 
-        running = false;
+        // Окна больше нет — рисовать нельзя, чем бы ни был фокус.
+        initialized = false;
+        updateRunning();
 
         if (render) {
             render->setUiSystem(nullptr);
@@ -425,7 +447,6 @@ struct Engine {
         world.reset();
 
         vk.shutdown();
-        initialized = false;
     }
 
     void doSave(u32 profile, u32 slot) {
@@ -1028,14 +1049,16 @@ static void handleCmd(android_app* app, int32_t cmd) {
             break;
         }
         case APP_CMD_GAINED_FOCUS:
-            eng->running = eng->initialized;
+            eng->hasFocus = true;
+            eng->updateRunning();
             break;
         case APP_CMD_LOST_FOCUS:
             if (eng->initialized && eng->player && eng->world) {
                 eng->doSave(save::SaveManager::AUTOSAVE_PROFILE,
                             save::SaveManager::AUTOSAVE_SLOT);
             }
-            eng->running = false;
+            eng->hasFocus = false;
+            eng->updateRunning();
             break;
         case APP_CMD_LOW_MEMORY:
             LOGW("APP_CMD_LOW_MEMORY");
@@ -1071,6 +1094,8 @@ extern "C" void android_main(android_app* app) {
 
     const auto startTime = std::chrono::steady_clock::now();
     auto lastTime = startTime;
+    f32 statTimer = 0.f;
+    u64 lastPresented = 0;
 
     while (true) {
         const int timeoutMs = eng.running ? 0 : -1;
@@ -1123,6 +1148,32 @@ extern "C" void android_main(android_app* app) {
             } else {
                 if (eng.render) eng.render->render(eng.vk);
                 eng.vk.endFrame();
+            }
+
+            // Сводка раз в три секунды. Без неё «чёрный экран» не
+            // отличить от «кадры идут, но в них нечего показать»:
+            // по числу показанных кадров, положению камеры и числу
+            // нарисованных чанков видно, какая именно это беда.
+            statTimer += dt;
+            if (statTimer >= 3.f) {
+                const u64 presented = eng.vk.framesPresented();
+                const f32 fps = (f32)(presented - lastPresented) / statTimer;
+                lastPresented = presented;
+                statTimer = 0.f;
+                const glm::vec3 cam = eng.render ? eng.render->camera().position()
+                                                 : glm::vec3(0.f);
+                LOGI("кадры: показано %llu (%.1f/с), показ=%d | камера %.1f %.1f %.1f "
+                     "| чанки: загружено %zu, нарисовано %u, индексов %u "
+                     "| трава %u, мобы %u, NPC %u",
+                     (unsigned long long)presented, (double)fps,
+                     (int)eng.vk.lastPresentResult(),
+                     (double)cam.x, (double)cam.y, (double)cam.z,
+                     eng.world ? eng.world->loadedChunks() : (usize)0,
+                     eng.render ? eng.render->drawnChunks() : 0u,
+                     eng.render ? eng.render->drawnIndices() : 0u,
+                     eng.render ? eng.render->grassCount() : 0u,
+                     eng.render ? eng.render->mobInstances() : 0u,
+                     eng.render ? eng.render->npcInstances() : 0u);
             }
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
