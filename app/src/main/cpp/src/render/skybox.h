@@ -18,7 +18,11 @@ class Skybox {
 public:
     bool init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout);
     void destroy();
-    void render(vk::Context& ctx);
+    /// set привязывается своим layout'ом. Небо рисуется первым в
+    /// кадре, и до этой правки оно не привязывало дескрипторы вовсе:
+    /// шейдер читал матрицы из набора, оставшегося от интерфейса
+    /// прошлого кадра, с несовместимым layout'ом.
+    void render(vk::Context& ctx, VkDescriptorSet set);
 
 private:
     VkDevice              dev_ = VK_NULL_HANDLE;

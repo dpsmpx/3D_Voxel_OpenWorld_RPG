@@ -148,7 +148,7 @@ void RenderSystem::render(vk::Context& ctx) {
     VkDescriptorSet ds = descriptors_.set(frame);
     math::Frustum fr = camera_.frustum();
 
-    skybox_.render(ctx);
+    skybox_.render(ctx, ds);
 
     chunkRenderer_.render(ctx, voxelPipeline_.handle(),
                           voxelBlendPipeline_.handle(), voxelPipeline_.layout(),
