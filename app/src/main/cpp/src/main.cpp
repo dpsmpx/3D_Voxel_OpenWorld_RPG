@@ -153,6 +153,10 @@ struct Engine {
     /// Мир под игроком ещё генерируется — физику держим выключенной.
     bool waitingForGround = false;
 
+    /// Последний известный размер окна. В нём приходят касания и в
+    /// нём же интерфейс считает свои прямоугольники.
+    i32 winW_ = 0, winH_ = 0;
+
     /// Окно готово и приложение на переднем плане — можно рисовать.
     /// Два состояния держим раздельно: Android присылает фокус раньше,
     /// чем создаёт поверхность, и одного события мало, чтобы понять,
@@ -198,6 +202,7 @@ struct Engine {
 
         const i32 ww = ANativeWindow_getWidth(w);
         const i32 wh = ANativeWindow_getHeight(w);
+        winW_ = ww; winH_ = wh;
 
         crash::step("менеджер сохранений");
         saveMgr.init(internalDataPath.c_str());
@@ -666,6 +671,16 @@ struct Engine {
         const f32 fw = (f32)fb.width, fh = (f32)fb.height;
         const f32 logicalAspect = vk.surfaceSwapsAxes() ? fh / fw : fw / fh;
 
+        // Отдельной строкой, потому что различить эти три числа на
+        // глаз невозможно, а от их соотношения зависит, растянут ли
+        // интерфейс. Если окно и буфер повёрнуты по-разному, окно
+        // живёт в логических координатах; если одинаково — в
+        // координатах буфера, и раскладка интерфейса окажется в
+        // портретной коробке, растянутой на альбомный экран.
+        LOGI("Поверхность: окно %dx%d, буфер %ux%u, поворот %u, соотношение %.3f",
+             winW_, winH_, fb.width, fb.height, vk.surfaceRotationDegrees(),
+             (double)logicalAspect);
+
         auto& cam = render->camera();
         cam.setAspect(logicalAspect);
         cam.setViewport(fb.width, fb.height);
@@ -1124,6 +1139,7 @@ static void handleCmd(android_app* app, int32_t cmd) {
             if (!app->window || !eng->initialized) break;
             const i32 ww = ANativeWindow_getWidth(app->window);
             const i32 wh = ANativeWindow_getHeight(app->window);
+            eng->winW_ = ww; eng->winH_ = wh;
             eng->vk.onResize(app->window);
             eng->touch.setViewport(ww, wh);
             if (eng->ui) eng->ui->setScreenSize(ww, wh);
