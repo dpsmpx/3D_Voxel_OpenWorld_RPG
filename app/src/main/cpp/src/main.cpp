@@ -1099,8 +1099,6 @@ extern "C" void android_main(android_app* app) {
     u32 statReports = 0;
 
     while (true) {
-        const int timeoutMs = eng.running ? 0 : -1;
-
         // ALooper_pollAll помечен недоступным начиная с NDK r27: он мог
         // проглотить пробуждение. У ALooper_pollOnce есть отличие,
         // которое нельзя терять при замене: он возвращает
@@ -1108,6 +1106,15 @@ extern "C" void android_main(android_app* app) {
         // Это не конец очереди — опрос надо продолжать, а source при
         // этом не заполняется.
         for (;;) {
+            // Таймаут пересчитывается на каждый опрос, и это существенно.
+            // Пока рисовать нечего, ждём события бесконечно. Но готовность
+            // окна наступает внутри обработки команды — прямо в этом цикле.
+            // Со значением, вычисленным до цикла, следующий опрос снова
+            // ждал бы бесконечно, и поток не доходил бы до отрисовки:
+            // приложение запускалось, звучало и показывало пустой экран,
+            // просыпаясь только на команды системы.
+            const int timeoutMs = (eng.running && eng.initialized) ? 0 : -1;
+
             int events = 0;
             android_poll_source* source = nullptr;
             const int res = ALooper_pollOnce(timeoutMs, nullptr, &events,
