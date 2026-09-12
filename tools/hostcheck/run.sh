@@ -217,6 +217,14 @@ if ! python3 "$PROJ/tools/hostcheck/check_shaders.py"; then
     exit 1
 fi
 
+# ---- включай то, что используешь ----
+# Транзитивные включения стандартной библиотеки различаются между её
+# версиями: std::clamp без <algorithm> собирался здесь и валил CI.
+echo "==> Недостающие #include..."
+if ! python3 "$PROJ/tools/hostcheck/check_includes.py"; then
+    exit 1
+fi
+
 # ---- уровни Android API ----
 # Хост компилирует с заглушками, атрибутов доступности из настоящих
 # заголовков NDK здесь нет. Без этой проверки «появился в API 26» и
@@ -236,6 +244,7 @@ TEST_SRCS=(
     "$SRC_DIR/world/block.cpp"
     "$SRC_DIR/world/chunk.cpp"
     "$SRC_DIR/world/features.cpp"
+    "$SRC_DIR/core/crashlog.cpp"
     "$SRC_DIR/core/job_system.cpp"
     "$SRC_DIR/mobs/mob_def.cpp"
     "$SRC_DIR/render/astc.cpp"
@@ -244,7 +253,7 @@ if ! "$CXX" -std=c++20 -O1 -g0 \
         -D__ANDROID__ -DGLM_FORCE_DEPTH_ZERO_TO_ONE -DGLM_ENABLE_EXPERIMENTAL -DENTT_NO_ETO -DHOSTCHECK=1 \
         -I "$SRC_DIR" -I "$PROJ/tools/hostcheck/include" \
         -isystem "$TP/glm" -isystem "$TP/entt/include" -isystem "$TP/Vulkan-Headers/include" \
-        -o "$OUT/tests" "${TEST_SRCS[@]}" "$OUT/obj/_stubs.o" -lpthread \
+        -o "$OUT/tests" "${TEST_SRCS[@]}" "$OUT/obj/_stubs.o" -lpthread -ldl \
         2> "$OUT/tests-build.err"; then
     echo "✗ Тесты не собрались:"
     head -30 "$OUT/tests-build.err" | sed 's/^/    /'

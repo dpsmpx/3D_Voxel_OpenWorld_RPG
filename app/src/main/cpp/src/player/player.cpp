@@ -15,6 +15,7 @@
 #include "../audio/audio_events.h"
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 namespace player {
 

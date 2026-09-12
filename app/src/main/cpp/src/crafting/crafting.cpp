@@ -8,6 +8,8 @@
 #include "../ecs/registry.h"
 #include "../core/log.h"
 
+#include <vector>
+
 namespace crafting {
 
 using namespace items;

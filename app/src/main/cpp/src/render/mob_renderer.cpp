@@ -9,6 +9,7 @@
 #include "../core/log.h"
 #include <cstring>
 #include <cmath>
+#include <algorithm>
 
 namespace render {
 

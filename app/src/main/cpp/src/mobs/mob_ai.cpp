@@ -14,6 +14,9 @@
 #include "../core/log.h"
 #include <cmath>
 #include <random>
+#include <algorithm>
+#include <utility>
+#include <vector>
 
 namespace mobs {
 

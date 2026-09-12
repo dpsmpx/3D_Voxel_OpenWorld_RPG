@@ -7,6 +7,7 @@
 #include "../ecs/components.h"
 #include "../core/log.h"
 #include <cstring>
+#include <algorithm>
 
 namespace render {
 

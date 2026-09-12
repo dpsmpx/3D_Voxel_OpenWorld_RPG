@@ -11,6 +11,7 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <memory>
 
 namespace jobs {
 

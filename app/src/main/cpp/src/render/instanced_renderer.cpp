@@ -7,6 +7,7 @@
 #include "../world/block.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <random>
+#include <cmath>
 
 namespace render {
 

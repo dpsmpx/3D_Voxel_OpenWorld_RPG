@@ -19,6 +19,7 @@
 #include <android/asset_manager.h>
 #include <functional>
 #include <array>
+#include <string>
 
 namespace ui {
 

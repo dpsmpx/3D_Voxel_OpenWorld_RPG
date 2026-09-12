@@ -9,6 +9,13 @@
 #include <array>
 #include <cmath>
 #include <thread>
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <memory_resource>
+#include <mutex>
+#include <shared_mutex>
+#include <vector>
 
 namespace world {
 

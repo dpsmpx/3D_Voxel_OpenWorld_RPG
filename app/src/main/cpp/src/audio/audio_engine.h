@@ -8,6 +8,7 @@
 #include "sound.h"
 #include <atomic>
 #include <glm/glm.hpp>
+#include <algorithm>
 
 struct AAudioStreamStruct;
 typedef struct AAudioStreamStruct AAudioStream;

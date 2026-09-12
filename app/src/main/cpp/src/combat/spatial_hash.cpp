@@ -6,6 +6,7 @@
 #include "../ecs/components.h"
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 namespace combat {
 

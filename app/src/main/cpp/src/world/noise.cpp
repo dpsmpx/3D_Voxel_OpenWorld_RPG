@@ -4,6 +4,7 @@
  */
 #include "noise.h"
 #include <algorithm>
+#include <cmath>
 
 namespace world {
 

@@ -6,6 +6,10 @@
 #include "../core/log.h"
 #include <algorithm>
 #include <cstring>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <vector>
 
 namespace render {
 

@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <string>
+#include <vector>
 
 namespace save {
 

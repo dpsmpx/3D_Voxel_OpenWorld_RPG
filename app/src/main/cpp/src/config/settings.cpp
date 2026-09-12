@@ -8,6 +8,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <algorithm>
+#include <string>
+#include <vector>
 
 namespace config {
 

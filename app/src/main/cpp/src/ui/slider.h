@@ -5,6 +5,7 @@
 #pragma once
 #include "ui_context.h"
 #include <functional>
+#include <string>
 
 namespace ui {
 

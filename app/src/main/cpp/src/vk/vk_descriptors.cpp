@@ -5,6 +5,8 @@
 #include "vk_descriptors.h"
 #include "../core/log.h"
 
+#include <vector>
+
 namespace vk {
 
 bool DescriptorSet::create(VkDevice dev, u32 framesInFlight) {

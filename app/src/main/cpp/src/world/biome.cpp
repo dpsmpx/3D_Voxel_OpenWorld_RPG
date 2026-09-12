@@ -7,6 +7,7 @@
 #include "block.h"
 #include <cmath>
 #include <array>
+#include <algorithm>
 
 namespace world {
 

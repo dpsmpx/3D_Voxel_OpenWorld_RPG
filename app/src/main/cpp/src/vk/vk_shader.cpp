@@ -6,6 +6,8 @@
 #include "../core/log.h"
 #include <cstdio>
 #include <vector>
+#include <memory>
+#include <utility>
 
 namespace vk {
 

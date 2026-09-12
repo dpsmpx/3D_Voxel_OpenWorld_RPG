@@ -303,16 +303,25 @@ if [ "${MEM_MB:-0}" -gt 0 ]; then
     JOBS_BY_MEM=$(( MEM_MB / 1024 ))
     [ "$JOBS_BY_MEM" -lt 1 ] && JOBS_BY_MEM=1
     [ "$JOBS_BY_MEM" -lt "$BUILD_JOBS" ] && BUILD_JOBS="$JOBS_BY_MEM"
-    if [ "$MEM_MB" -lt 3072 ]; then
-        USE_LTO=OFF
-        warn "Свободно ${MEM_MB} МБ — LTO выключена, иначе линковку убьёт ядро."
-        warn "Включить принудительно: VOXEL_LTO=ON ./build.sh"
-    fi
 fi
-# Явное пожелание пользователя важнее оценки.
+
+# Явное пожелание пользователя решает: автоматика вступает в дело,
+# только если VOXEL_LTO не задана. Иначе выходило странно — скрипт
+# сообщал «LTO выключена», а собирал с LTO.
 case "${VOXEL_LTO:-}" in
-    ON|on|1)  USE_LTO=ON ;;
+    ON|on|1)   USE_LTO=ON ;;
     OFF|off|0) USE_LTO=OFF ;;
+    "")
+        if [ "${MEM_MB:-0}" -gt 0 ] && [ "$MEM_MB" -lt 3072 ]; then
+            USE_LTO=OFF
+            warn "Свободно ${MEM_MB} МБ — LTO выключена, иначе линковку убьёт ядро."
+            warn "Включить принудительно: VOXEL_LTO=ON ./build.sh"
+        fi
+        ;;
+    *)
+        err "VOXEL_LTO=$VOXEL_LTO не понято. Допустимо: ON, OFF, 1, 0."
+        exit 1
+        ;;
 esac
 [ -n "${BUILD_JOBS_OVERRIDE:-}" ] && BUILD_JOBS="$BUILD_JOBS_OVERRIDE"
 
@@ -438,10 +447,41 @@ if [ ! -f "$MANIFEST" ]; then
     exit 1
 fi
 
+# aapt2 требует атрибут package в манифесте, а AGP 8 его там запрещает:
+# для gradle имя пакета задаётся через namespace в build.gradle. Чтобы
+# работали оба пути, для ручной сборки делаем копию манифеста с
+# подставленным package — сам файл в репозитории остаётся пригодным
+# для gradle.
+APP_ID="$(sed -n 's/.*applicationId[[:space:]]*["'"'"']\([^"'"'"']*\).*/\1/p' \
+          "$APP_DIR/build.gradle" | head -1)"
+if [ -z "$APP_ID" ]; then
+    APP_ID="$(sed -n 's/.*namespace[[:space:]]*["'"'"']\([^"'"'"']*\).*/\1/p' \
+              "$APP_DIR/build.gradle" | head -1)"
+fi
+if [ -z "$APP_ID" ]; then
+    err "Не удалось определить applicationId из $APP_DIR/build.gradle"
+    err "aapt2 без имени пакета собрать APK не может."
+    exit 1
+fi
+
+if grep -q 'package=' "$MANIFEST"; then
+    # Манифест уже содержит package (например, поправлен вручную) —
+    # берём как есть, чтобы не подставить второй атрибут.
+    GEN_MANIFEST="$MANIFEST"
+else
+    GEN_MANIFEST="$APK_OUT_DIR/AndroidManifest.xml"
+    sed "s|<manifest |<manifest package=\"$APP_ID\" |" "$MANIFEST" > "$GEN_MANIFEST"
+    if ! grep -q "package=\"$APP_ID\"" "$GEN_MANIFEST"; then
+        err "Не удалось подставить package в манифест"
+        exit 1
+    fi
+fi
+log "Пакет: $APP_ID"
+
 "$AAPT2" link \
     -o base.apk \
     -I "$ANDROID_JAR" \
-    --manifest "$MANIFEST" \
+    --manifest "$GEN_MANIFEST" \
     --min-sdk-version "$API" \
     --target-sdk-version 34 \
     --version-code 1 \

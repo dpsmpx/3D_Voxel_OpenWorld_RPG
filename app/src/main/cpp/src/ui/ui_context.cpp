@@ -6,6 +6,9 @@
 #include "../core/log.h"
 #include <cmath>
 #include <cstring>
+#include <functional>
+#include <string>
+#include <utility>
 
 namespace ui {
 

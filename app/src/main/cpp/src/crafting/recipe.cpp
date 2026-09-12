@@ -6,6 +6,9 @@
 #include "../core/log.h"
 #include "../items/item_def.h"
 
+#include <utility>
+#include <vector>
+
 namespace crafting {
 
 using namespace items;

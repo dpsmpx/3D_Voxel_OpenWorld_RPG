@@ -8,6 +8,9 @@
 #include "../npc/npc_def.h"
 #include "../npc/npc_ai.h"
 
+#include <cmath>
+#include <vector>
+
 namespace save {
 
 using namespace ecs;

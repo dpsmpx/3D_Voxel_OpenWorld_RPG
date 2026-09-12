@@ -6,6 +6,7 @@
 #include <android/input.h>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace input {
 

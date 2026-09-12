@@ -7,6 +7,8 @@
 #include "../combat/components.h"
 #include "../core/log.h"
 
+#include <vector>
+
 namespace save {
 
 using namespace ecs;
