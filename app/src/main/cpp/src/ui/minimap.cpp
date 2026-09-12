@@ -48,7 +48,7 @@ bool Minimap::init(vk::Context& ctx, u32 px) {
 
     dev_ = ctx.device();
     size_ = px;
-    pixels_.assign(size_ * size_ * 4, 0);
+    pixels_.assign((usize)size_ * size_ * 4, 0);
 
     if (!tex_.create(ctx.device(), ctx.physicalDevice(),
                      ctx.gfxQueue(), ctx.gfxFamily(),

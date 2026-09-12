@@ -78,7 +78,7 @@ bool StagingPool::resize(StagingBuffer* s, u64 newCap) {
 /// нескольких десятках живых буферов это десятки мегабайт под данные,
 /// которым хватает пары.
 static u64 capacityFor(u64 minSize) {
-    u64 cap = 64u * 1024u;
+    u64 cap = 64ull * 1024;
     while (cap < minSize) cap *= 2;
     return cap;
 }

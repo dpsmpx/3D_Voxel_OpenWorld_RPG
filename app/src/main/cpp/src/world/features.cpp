@@ -195,7 +195,7 @@ void applyCaves(Chunk& chunk, const FeatureContext& ctx) {
     constexpr i32 GZ   = CHUNK_SIZE   / STEP + 1;   // 9
 
     static thread_local std::vector<TerrainGenerator::CaveDensity> grid;
-    grid.resize(GX * GY * GZ);
+    grid.resize((usize)GX * GY * GZ);
 
     for (i32 gx = 0; gx < GX; ++gx)
         for (i32 gy = 0; gy < GY; ++gy)
