@@ -98,6 +98,17 @@ bool Buffer::create(VkDevice dev, VkPhysicalDevice phys,
     return true;
 }
 
+Buffer::Handles Buffer::release() {
+    if (mapped_) { vkUnmapMemory(dev_, mem_); mapped_ = nullptr; }
+    Handles h{ dev_, buf_, mem_ };
+    dev_ = VK_NULL_HANDLE;
+    buf_ = VK_NULL_HANDLE;
+    mem_ = VK_NULL_HANDLE;
+    size_ = 0;
+    hostVisible_ = false;
+    return h;
+}
+
 void Buffer::destroy() {
     if (!dev_) return;
     if (mapped_) { vkUnmapMemory(dev_, mem_); mapped_ = nullptr; }

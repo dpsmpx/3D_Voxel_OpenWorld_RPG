@@ -89,7 +89,10 @@ private:
         u32 capacity = 0;
     };
     static constexpr u32 MAX_FRAMES = vk::Context::MAX_FRAMES;
-    FrameBuf frames_[MAX_FRAMES];
+    /// По буферу на кадр в работе и на атлас. Раньше индексом был
+    /// только атлас: пока GPU читал вершины прошлого кадра, процессор
+    /// переписывал их для следующего — интерфейс мигал и рвался.
+    FrameBuf frames_[MAX_FRAMES][2];
 
     /// CPU-side буферы
     std::vector<UiVertex> verts_[2];  // по атласу

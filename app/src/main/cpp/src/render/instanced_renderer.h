@@ -6,6 +6,7 @@
 #include "../core/types.h"
 #include "../core/math.h"
 #include "../vk/vk_buffer.h"
+#include "instance_ring.h"
 #include "../vk/vk_pipeline.h"
 #include "../vk/vk_shader.h"
 #include "../vk/vk_context.h"
@@ -59,8 +60,7 @@ private:
     vk::GraphicsPipeline  pipeline_;
     vk::Buffer            vbo_;
     vk::Buffer            ibo_;
-    vk::Buffer            instanceGpu_;
-    u64                   instanceCapacityBytes_ = 0;
+    InstanceRing         instances_;
 
     std::vector<GrassInstance> cpuInstances_;
     u32                   instanceCount_ = 0;

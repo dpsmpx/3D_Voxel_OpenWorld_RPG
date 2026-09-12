@@ -197,11 +197,12 @@ void UiRenderer::flush(vk::Context& ctx) {
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
 
+    const u32 frame = ctx.frameInFlight() % MAX_FRAMES;
     for (int slot = 0; slot < 2; ++slot) {
         auto& V = verts_[slot];
         if (V.empty()) continue;
 
-        FrameBuf& fb = frames_[slot];
+        FrameBuf& fb = frames_[frame][slot];
         if (!ensureCapacity(fb, (u32)V.size())) continue;
 
         void* m = fb.vb.map();
@@ -223,7 +224,8 @@ void UiRenderer::flush(vk::Context& ctx) {
 }
 
 void UiRenderer::destroy() {
-    for (auto& f : frames_) f.vb.destroy();
+    for (auto& row : frames_)
+        for (auto& f : row) f.vb.destroy();
     pipeline_.destroy();
     shaders_.destroyAll();
     fontAtlas_.destroy();
