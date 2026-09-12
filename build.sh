@@ -603,8 +603,57 @@ else
     mv base.apk "$APK_OUT_DIR/${GAME_NAME}.apk"
 fi
 
-# ---- Итог ----
+# ---- Проверка готового APK ----
+#
+# APK, который собрался, но не запускается, выглядит как успех. Здесь
+# проверяется ровно то, из-за чего приложение падает сразу при старте:
+# нет библиотеки, нет шейдеров, .so упакованы со сжатием (при
+# extractNativeLibs="false" система такие не грузит).
+verify_apk() {                    # путь к apk
+    local apk="$1" bad size
+    command -v unzip >/dev/null 2>&1 || {
+        warn "unzip не найден — содержимое APK не проверено"
+        return 0
+    }
+
+    local needed="lib/$ABI/libnative-lib.so lib/$ABI/libc++_shared.so \
+                  assets/shaders/voxel.vert.spv assets/shaders/voxel.frag.spv \
+                  AndroidManifest.xml"
+    local entry
+    for entry in $needed; do
+        unzip -l "$apk" | grep -q "$entry" || {
+            err "в APK нет $entry"
+            return 1
+        }
+    done
+
+    bad="$(unzip -v "$apk" | awk -v abi="$ABI" \
+           '$NF ~ "lib/" abi "/.*\\.so$" && $2 != "Stored" {print $NF}')"
+    if [ -n "$bad" ]; then
+        err "эти .so упакованы со сжатием — система их не загрузит:"
+        printf '%s\n' "$bad" | sed 's/^/      /' >&2
+        return 1
+    fi
+
+    size="$(unzip -l "$apk" | awk '/libnative-lib.so$/ {print $1}' | head -1)"
+    if [ "${size:-0}" -lt 500000 ]; then
+        err "libnative-lib.so внутри APK всего ${size:-0} байт — сборка не отработала"
+        return 1
+    fi
+
+    ok "APK проверен: библиотека ${size} Б, шейдеры на месте, .so без сжатия"
+    return 0
+}
+
 FINAL_APK="$APK_OUT_DIR/${GAME_NAME}.apk"
+if [ -f "$FINAL_APK" ]; then
+    if ! verify_apk "$FINAL_APK"; then
+        err "APK собран, но к запуску непригоден — см. выше."
+        exit 1
+    fi
+fi
+
+# ---- Итог ----
 if [ -f "$FINAL_APK" ]; then
     FINAL_SIZE=$(du -h "$FINAL_APK" | cut -f1)
     echo ""
