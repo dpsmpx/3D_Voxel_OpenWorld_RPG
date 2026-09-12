@@ -177,6 +177,23 @@
 
 ---
 
+## Готовый APK без сборки
+
+Каждый успешный прогон CI выкладывает отладочный APK в релиз
+`latest-apk` — у него постоянный прямой адрес:
+
+```bash
+curl -L -o VoxelRPG.apk https://github.com/dpsmpx/3D_Voxel_OpenWorld_RPG/releases/download/latest-apk/VoxelRPG-debug.apk
+termux-open VoxelRPG.apk
+```
+
+Рядом лежит `libnative-lib-unstripped.so.gz` — по ней `tools/symbolize.sh`
+расшифровывает адреса из отчёта о падении.
+
+Этот APK собран gradle с NDK 26 и без ASTC-атласа: атлас строится
+процедурно при старте. Сборка в Termux нужна, если хочется ASTC, LTO
+или собственные правки.
+
 ## Сборка
 
 ### Подготовка окружения (один раз)
