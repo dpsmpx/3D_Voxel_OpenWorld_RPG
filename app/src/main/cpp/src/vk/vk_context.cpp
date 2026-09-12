@@ -58,11 +58,8 @@ bool Context::init(ANativeWindow* window) {
     if (!createCommandPool()) return false;
     if (!createCommandBuffers()) return false;
     if (!createSyncObjects()) return false;
-    LOGI("Vulkan: %ux%u, depth=%d, поворот экрана=%s",
-         swapExtent_.width, swapExtent_.height, (int)depthFormat_,
-         surfaceRotationDegrees() == 0   ? "нет"   :
-         surfaceRotationDegrees() == 90  ? "90"    :
-         surfaceRotationDegrees() == 180 ? "180"   : "270");
+    LOGI("Vulkan: %ux%u, depth=%d", swapExtent_.width, swapExtent_.height,
+         (int)depthFormat_);
     return true;
 }
 
@@ -197,13 +194,30 @@ bool Context::createSwapchain() {
     }
     swapFormat_ = chosen.format;
 
-    // Как повёрнут экран относительно родной ориентации панели.
-    // На Android она почти всегда портретная, и в альбомном режиме
-    // сюда приходит ROTATE_90 или ROTATE_270. Мы обязаны либо
-    // повернуть картинку сами, либо попросить композитор — иначе он
-    // поверит preTransform на слово и покажет мир лежащим на боку,
-    // что ровно и происходило.
-    surfaceTransform_ = caps.currentTransform;
+    // Поворот экрана.
+    //
+    // Раньше здесь стояло preTransform = currentTransform — обещание
+    // композитору, что содержимое уже повёрнуто нами. Обещание никто
+    // не выполнял, и мир лежал на боку. Попытка выполнить его,
+    // довернув проекцию, дала мир вверх ногами: знак поворота в
+    // координатах отсечения противоположен тому, что кажется
+    // очевидным, а размеры буфера здесь приходят уже в ориентации
+    // ОКНА — то есть переворачивать их не надо вовсе.
+    //
+    // Просим IDENTITY: композитор доворачивает сам, и ни проекции, ни
+    // интерфейсу знать о повороте не нужно. Это стоит одного
+    // полноэкранного прохода композиции — на современных телефонах его
+    // делает аппаратный композитор, то есть почти даром, — зато
+    // снимает целый класс ошибок, на который уже ушло два круга.
+    //
+    // Если устройство IDENTITY не поддерживает, доворачиваем сами; в
+    // этом случае surfaceRotationDegrees() вернёт ненулевой угол.
+    if (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+        surfaceTransform_ = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    } else {
+        surfaceTransform_ = caps.currentTransform;
+    }
+    const VkSurfaceTransformFlagBitsKHR displayTransform = caps.currentTransform;
 
     swapExtent_ = caps.currentExtent;
     if (swapExtent_.width == UINT32_MAX) {
@@ -223,12 +237,23 @@ bool Context::createSwapchain() {
     ci.imageArrayLayers = 1;
     ci.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    // Поворот делаем сами, в проекции: композитору он обошёлся бы в
-    // лишний полноэкранный проход на каждом кадре.
     ci.preTransform     = surfaceTransform_;
     ci.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     ci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
     ci.clipped          = VK_TRUE;
+
+    auto transformName = [](VkSurfaceTransformFlagBitsKHR t) {
+        switch (t) {
+            case VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR:  return "90";
+            case VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR: return "180";
+            case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR: return "270";
+            case VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR:   return "нет";
+            default: return "иной";
+        }
+    };
+    LOGI("Свопчейн: %ux%u, экран повёрнут на %s, просим preTransform %s",
+         swapExtent_.width, swapExtent_.height,
+         transformName(displayTransform), transformName(surfaceTransform_));
 
     VKCHECK(vkCreateSwapchainKHR(device_, &ci, nullptr, &swapchain_));
     vkGetSwapchainImagesKHR(device_, swapchain_, &imgCount, nullptr);

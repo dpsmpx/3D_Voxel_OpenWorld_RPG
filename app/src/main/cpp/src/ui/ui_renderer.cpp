@@ -124,12 +124,12 @@ void UiRenderer::attachExternalAtlas(VkImageView view, VkSampler sampler) {
 }
 
 void UiRenderer::setSurfaceRotation(u32 degrees) {
-    // Тот же угол, что в Camera::projection: композитор довернёт до
-    // нуля. x' = x*cos - y*sin, y' = x*sin + y*cos.
+    // Тот же угол и тот же знак, что в Camera::projection — знак там
+    // выверен устройством. x' = x*cos - y*sin, y' = x*sin + y*cos.
     switch (degrees) {
-        case 90:  rotC_ =  0.f; rotS_ = -1.f; break;   // -90
+        case 90:  rotC_ =  0.f; rotS_ =  1.f; break;   // +90
         case 180: rotC_ = -1.f; rotS_ =  0.f; break;
-        case 270: rotC_ =  0.f; rotS_ =  1.f; break;   // +90
+        case 270: rotC_ =  0.f; rotS_ = -1.f; break;   // -90
         default:  rotC_ =  1.f; rotS_ =  0.f; break;
     }
 }

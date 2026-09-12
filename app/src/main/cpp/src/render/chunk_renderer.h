@@ -159,6 +159,8 @@ private:
     std::vector<u16>          scratchIndices16_;
     std::vector<world::Quad>  scratchQuads_;
     std::vector<LodRequest>   lodRequests_;
+    /// Из них те, чей меш уже построен и правда грузится.
+    std::vector<LodRequest>   servable_;
     std::vector<Visible>      visible_;
 
     /// Буферы, отправленные на покой: номер кадра и дескрипторы.

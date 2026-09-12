@@ -171,7 +171,39 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx, world::ChunkManager& world,
 {
     frameNo_ = ctx.framesPresented();
     collectRetired();
-    if (chunks.empty() && lodRequests_.empty()) return;
+
+    // Пакет передачи заканчивается ожиданием на заборе — это полная
+    // остановка GPU. Открывать его «на всякий случай» нельзя: рендер
+    // заказывает смену уровня детализации каждый кадр, пока меш не
+    // приехал, и очередь запросов почти никогда не пуста. Из-за этого
+    // остановка случалась ежекадрово и съедала пятнадцать миллисекунд
+    // из шестнадцати.
+    //
+    // Поэтому сначала выясняем, есть ли что грузить на самом деле:
+    // готовый меш нужного уровня. Если нет — только просим мир его
+    // построить и уходим, ничего не открывая.
+    servable_.clear();
+    for (const auto& req : lodRequests_) {
+        auto it = meshes_.find(req.coord);
+        if (it == meshes_.end() || !it->second.chunk) continue;
+        world::Chunk& c = *it->second.chunk;
+        if (c.removed.load(std::memory_order_acquire)) continue;
+
+        bool have = false;
+        {
+            std::lock_guard lk(c.meshMutex);
+            have = c.meshes[req.lod].built;
+        }
+        if (have) {
+            if (servable_.size() < MAX_LOD_UPLOADS_PER_FRAME) servable_.push_back(req);
+        } else if (it->second.requestedLod != req.lod) {
+            world.requestLod(req.coord, req.lod);
+            it->second.requestedLod = req.lod;
+        }
+    }
+    lodRequests_.clear();
+
+    if (chunks.empty() && servable_.empty()) return;
 
     VkCommandBuffer cmd = ctx.beginTransferBatch();
     if (cmd == VK_NULL_HANDLE) return;
@@ -219,37 +251,17 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx, world::ChunkManager& world,
             lodRequests_.push_back({ key, want });
     }
 
-    // 2. Отложенные запросы смены детализации от render().
-    //    Если меша нужного уровня ещё нет — просим мир построить его
-    //    в фоне; до тех пор рисуем тем, что есть.
-    u32 served = 0;
-    for (const auto& req : lodRequests_) {
+    // 2. Уровни, меш которых уже построен.
+    for (const auto& req : servable_) {
         auto it = meshes_.find(req.coord);
         if (it == meshes_.end() || !it->second.chunk) continue;
         world::Chunk& c = *it->second.chunk;
-        if (c.removed.load(std::memory_order_acquire)) continue;
-
-        bool have = false;
-        {
-            std::lock_guard lk(c.meshMutex);
-            have = c.meshes[req.lod].built;
-        }
-        if (!have) {
-            if (it->second.requestedLod != req.lod) {
-                world.requestLod(req.coord, req.lod);
-                it->second.requestedLod = req.lod;
-            }
-            continue;
-        }
-        if (served >= MAX_LOD_UPLOADS_PER_FRAME) continue;
         if (uploadLod(ctx, cmd, it->second, c, req.lod)) {
             it->second.residentLod  = req.lod;
             it->second.requestedLod = 0xFF;
             releaseQuads(c, req.lod);
-            ++served;
         }
     }
-    lodRequests_.clear();
 
     ctx.endTransferBatch();
 
