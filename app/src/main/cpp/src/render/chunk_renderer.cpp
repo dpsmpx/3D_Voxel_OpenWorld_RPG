@@ -125,12 +125,19 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
     return true;
 }
 
+/// Освобождает список квадов уровня: он уже в видеопамяти.
+static void releaseQuads(world::Chunk& chunk, u8 lod) {
+    std::lock_guard lk(chunk.meshMutex);
+    chunk.meshes[lod].built = false;
+    std::vector<world::Quad>().swap(chunk.meshes[lod].quads);
+}
+
 // ============================================================
 // Кадровая загрузка. Раньше каждая пара буферов уходила отдельным
 // submitOneShot с ожиданием fence — восемь полных остановок GPU на
 // чанк. Теперь все копии кадра идут одним пакетом.
 // ============================================================
-void ChunkRenderer::uploadChunks(vk::Context& ctx,
+void ChunkRenderer::uploadChunks(vk::Context& ctx, world::ChunkManager& world,
                                  const std::vector<std::shared_ptr<world::Chunk>>& chunks,
                                  const glm::vec3& cameraPos)
 {
@@ -158,23 +165,57 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx,
         const glm::vec3 d = center - cameraPos;
         const u8 want = lodForDistanceSq(glm::dot(d, d), gpu.residentLod);
 
+        // Мешер строит один уровень, и это мог быть не тот, который
+        // нужен сейчас: игрок успел отойти. Берём то, что построено,
+        // — пустой чанк выглядит дырой в мире, — и заказываем нужный.
+        u8 have = want;
+        {
+            std::lock_guard lk(c.meshMutex);
+            if (!c.meshes[want].built)
+                have = c.lodWanted.load(std::memory_order_acquire) & 3;
+        }
+
         // Остальные уровни помечаем недействительными: их содержимое
         // устарело вместе с перестроенным мешем.
         for (u8 l = 0; l < 4; ++l) {
-            if (l != want && gpu.lod[l].valid) gpu.lod[l].totalIndices = 0;
+            if (l != have && gpu.lod[l].valid) gpu.lod[l].totalIndices = 0;
         }
-        if (uploadLod(ctx, cmd, gpu, c, want)) gpu.residentLod = want;
+        if (uploadLod(ctx, cmd, gpu, c, have)) {
+            gpu.residentLod  = have;
+            gpu.requestedLod = 0xFF;
+            releaseQuads(c, have);
+        }
+        if (have != want && lodRequests_.size() < 256)
+            lodRequests_.push_back({ key, want });
     }
 
     // 2. Отложенные запросы смены детализации от render().
+    //    Если меша нужного уровня ещё нет — просим мир построить его
+    //    в фоне; до тех пор рисуем тем, что есть.
     u32 served = 0;
     for (const auto& req : lodRequests_) {
-        if (served >= MAX_LOD_UPLOADS_PER_FRAME) break;
         auto it = meshes_.find(req.coord);
         if (it == meshes_.end() || !it->second.chunk) continue;
-        if (it->second.chunk->removed.load(std::memory_order_acquire)) continue;
-        if (uploadLod(ctx, cmd, it->second, *it->second.chunk, req.lod)) {
-            it->second.residentLod = req.lod;
+        world::Chunk& c = *it->second.chunk;
+        if (c.removed.load(std::memory_order_acquire)) continue;
+
+        bool have = false;
+        {
+            std::lock_guard lk(c.meshMutex);
+            have = c.meshes[req.lod].built;
+        }
+        if (!have) {
+            if (it->second.requestedLod != req.lod) {
+                world.requestLod(req.coord, req.lod);
+                it->second.requestedLod = req.lod;
+            }
+            continue;
+        }
+        if (served >= MAX_LOD_UPLOADS_PER_FRAME) continue;
+        if (uploadLod(ctx, cmd, it->second, c, req.lod)) {
+            it->second.residentLod  = req.lod;
+            it->second.requestedLod = 0xFF;
+            releaseQuads(c, req.lod);
             ++served;
         }
     }
@@ -193,8 +234,7 @@ void ChunkRenderer::render(vk::Context& ctx,
                            VkPipeline opaquePipe, VkPipeline blendPipe,
                            VkPipelineLayout layout,
                            VkDescriptorSet set, const math::Frustum& frustum,
-                           const glm::vec3& cameraPos,
-                           OcclusionCuller* occlusion)
+                           const glm::vec3& cameraPos)
 {
     VkCommandBuffer cmd = ctx.currentCmd();
 
@@ -211,7 +251,6 @@ void ChunkRenderer::render(vk::Context& ctx,
     lastDrawnChunks_  = 0;
     lastDrawnIndices_ = 0;
     for (auto& l : lodCounts_) l = 0;
-    if (occlusion) occlusion->resetStats();
 
     constexpr f32 CH = (f32)world::CHUNK_SIZE;
     constexpr f32 CY = (f32)world::CHUNK_SIZE_Y;
@@ -224,13 +263,6 @@ void ChunkRenderer::render(vk::Context& ctx,
 
         math::AABB aabb; aabb.min = cmin; aabb.max = cmax;
         if (!frustum.intersectsAABB(aabb)) continue;
-
-        // Отсечение перекрытых чанков: дешевле, чем отправить их
-        // на растеризацию и получить полный overdraw.
-        if (occlusion && occlusion->isOccluded(coord, cameraPos)) {
-            occlusion->countCulled();
-            continue;
-        }
 
         const glm::vec3 center = (cmin + cmax) * 0.5f;
         const glm::vec3 d = center - cameraPos;

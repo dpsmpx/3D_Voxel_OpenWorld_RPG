@@ -90,7 +90,6 @@ add_library(native-lib SHARED
     src/render/instanced_renderer.cpp
     src/render/item_renderer.cpp
     src/render/mesh_builder.cpp
-    src/render/occlusion.cpp
     src/render/mob_renderer.cpp
     src/render/npc_renderer.cpp
     src/render/projectile_renderer.cpp

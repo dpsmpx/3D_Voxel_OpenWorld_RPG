@@ -16,7 +16,6 @@
 #include "../world/chunk_manager.h"
 #include "camera.h"
 #include "chunk_renderer.h"
-#include "occlusion.h"
 #include "skybox.h"
 #include "instanced_renderer.h"
 #include "block_outline.h"
@@ -57,7 +56,6 @@ public:
     Camera& camera() { return camera_; }
 
     u32 drawnChunks()   const { return chunkRenderer_.lastDrawnChunks(); }
-    u32 occludedChunks()const { return occlusion_.lastCulled(); }
     u32 drawnIndices()  const { return chunkRenderer_.lastDrawnIndices(); }
     u32 lodCount(u32 l) const { return chunkRenderer_.lastLodCounts((int)l); }
     u32 grassCount()    const { return grass_.instanceCount(); }
@@ -76,8 +74,6 @@ private:
     vk::Buffer            uboBuffers_[vk::Context::MAX_FRAMES];
 
     ChunkRenderer         chunkRenderer_;
-    OcclusionCuller       occlusion_;
-    f32                   occlusionTimer_ = 0.f;
     Skybox                skybox_;
     InstancedRenderer     grass_;
     BlockOutline          blockOutline_;

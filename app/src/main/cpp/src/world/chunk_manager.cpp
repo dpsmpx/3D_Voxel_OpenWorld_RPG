@@ -160,6 +160,12 @@ void ChunkManager::jobGenerate(void* data) {
     mgr->jobsInFlight_.fetch_sub(1, std::memory_order_acq_rel);
 
     // Соседи рисуют свои граничные грани по нашим вокселям — перестроим их.
+    // Сразу выбираем детализацию по расстоянию: иначе дальний чанк
+    // сперва мешируется в полном разрешении, а через кадр
+    // перестраивается в грубом — двойная работа на каждом новом чанке
+    // у края мира, а их там больше всего.
+    c->lodWanted.store(mgr->lodForChunk(ctx->coord), std::memory_order_release);
+
     mgr->enqueueMesh(ctx->coord);
     mgr->enqueueMesh({ ctx->coord.x - 1, ctx->coord.z });
     mgr->enqueueMesh({ ctx->coord.x + 1, ctx->coord.z });
@@ -219,16 +225,26 @@ void ChunkManager::jobMesh(void* data) {
         meshArena.reset();
         std::pmr::vector<Quad> quads{ &meshRes };
 
-        for (u8 lod = 0; lod < 4; ++lod) {
-            quads.clear();
-            buildGreedyMesh(*c, nb, quads, (Lod)lod);
+        // Строим один уровень — тот, который нужен рендеру. Четыре
+        // уровня разом стоили вчетверо больше работы и хранились
+        // целиком, хотя чанк почти всегда рисуется одним.
+        const u8 lod = c->lodWanted.load(std::memory_order_acquire) & 3;
+        buildGreedyMesh(*c, nb, quads, (Lod)lod);
 
-            std::lock_guard mlk(c->meshMutex);
-            // Копия в обычный vector: меш переживает арену воркера.
-            c->meshes[lod].quads.assign(quads.begin(), quads.end());
-            c->meshes[lod].revision = ctx->version;
-            c->meshes[lod].built    = true;
-            c->meshes[lod].ready.store(true, std::memory_order_release);
+        std::lock_guard mlk(c->meshMutex);
+        // Копия в обычный vector: меш переживает арену воркера.
+        c->meshes[lod].quads.assign(quads.begin(), quads.end());
+        c->meshes[lod].revision = ctx->version;
+        c->meshes[lod].built    = true;
+        c->meshes[lod].ready.store(true, std::memory_order_release);
+
+        // Остальные уровни устарели вместе с вокселями: их данные
+        // больше не годятся, и держать их незачем.
+        for (u8 other = 0; other < 4; ++other) {
+            if (other == lod) continue;
+            c->meshes[other].built = false;
+            c->meshes[other].ready.store(false, std::memory_order_release);
+            std::vector<Quad>().swap(c->meshes[other].quads);
         }
     }
 
@@ -269,10 +285,24 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::pollMeshesReady() {
 // Потоковая загрузка вокруг игрока
 // ============================================================
 
+u8 ChunkManager::lodForChunk(ChunkCoord c) const {
+    const f32 dx = (f32)(c.x - playerChunkX_.load(std::memory_order_relaxed))
+                 * (f32)CHUNK_SIZE;
+    const f32 dz = (f32)(c.z - playerChunkZ_.load(std::memory_order_relaxed))
+                 * (f32)CHUNK_SIZE;
+    const f32 d2 = dx * dx + dz * dz;
+    if (d2 < lodBand0_ * lodBand0_) return 0;
+    if (d2 < lodBand1_ * lodBand1_) return 1;
+    if (d2 < lodBand2_ * lodBand2_) return 2;
+    return 3;
+}
+
 void ChunkManager::update(const glm::vec3& playerPos) {
     ++frameCounter_;
     const i32 pcx = (i32)std::floor(playerPos.x / (f32)CHUNK_SIZE);
     const i32 pcz = (i32)std::floor(playerPos.z / (f32)CHUNK_SIZE);
+    playerChunkX_.store(pcx, std::memory_order_relaxed);
+    playerChunkZ_.store(pcz, std::memory_order_relaxed);
 
     for (i32 dz = -viewDistance_; dz <= viewDistance_; ++dz) {
         for (i32 dx = -viewDistance_; dx <= viewDistance_; ++dx) {
@@ -402,6 +432,19 @@ bool ChunkManager::isReadyAt(i32 wx, i32 wz) const {
     auto it = chunks_.find(ChunkCoord{cx, cz});
     if (it == chunks_.end()) return false;
     return it->second->generated.load(std::memory_order_acquire);
+}
+
+void ChunkManager::requestLod(ChunkCoord coord, u8 lod) {
+    auto chunk = findChunk(coord.x, coord.z);
+    if (!chunk) return;
+    if (!chunk->generated.load(std::memory_order_acquire)) return;
+    const u8 want = lod & 3;
+    chunk->lodWanted.store(want, std::memory_order_release);
+    {
+        std::lock_guard lk(chunk->meshMutex);
+        if (chunk->meshes[want].built) return;   // уже построен, ждёт выгрузки
+    }
+    enqueueMesh(coord);
 }
 
 usize ChunkManager::loadedChunks() const {

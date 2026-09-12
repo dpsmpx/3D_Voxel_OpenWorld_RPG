@@ -10,7 +10,6 @@
 #include "../vk/vk_staging_pool.h"
 #include "../world/chunk_manager.h"
 #include "mesh_builder.h"
-#include "occlusion.h"
 #include <cmath>
 #include <memory>
 #include <unordered_map>
@@ -26,7 +25,7 @@ public:
     /// Загружает на GPU меши только что перестроенных чанков и
     /// обслуживает отложенные запросы LOD от render(). Все копии
     /// собираются в один пакет передачи — одна остановка GPU на кадр.
-    void uploadChunks(vk::Context& ctx,
+    void uploadChunks(vk::Context& ctx, world::ChunkManager& world,
                       const std::vector<std::shared_ptr<world::Chunk>>& chunks,
                       const glm::vec3& cameraPos);
 
@@ -52,15 +51,15 @@ public:
     /// хэш-таблицы, как было раньше, отдавал эту экономию даром.
     /// А смешивание, наоборот, требует обратного порядка, иначе
     /// вода поверх воды складывается неправильно.
-    ///
-    /// occlusion может быть nullptr — тогда работает только
-    /// отсечение по пирамиде видимости.
     void render(vk::Context& ctx,
                 VkPipeline opaquePipe, VkPipeline blendPipe,
                 VkPipelineLayout layout,
                 VkDescriptorSet set, const math::Frustum& frustum,
-                const glm::vec3& cameraPos,
-                OcclusionCuller* occlusion = nullptr);
+                const glm::vec3& cameraPos);
+
+    /// Границы уровней детализации в блоках — их же берёт мир,
+    /// чтобы мешировать новый чанк сразу в нужном разрешении.
+    f32 lodBand(int i) const { return bound((u8)i); }
 
     /// Метрики
     u32 lastDrawnChunks() const { return lastDrawnChunks_; }
@@ -84,6 +83,10 @@ private:
         GpuMesh                        lod[4];
         std::shared_ptr<world::Chunk>  chunk;      ///< держим данные для догрузки LOD
         u8                             residentLod = 0xFF;
+        /// Какой уровень уже заказан у мира. Без этого рендер просит
+        /// один и тот же уровень каждый кадр, пока задача считается,
+        /// и очередь забивается дублями.
+        u8                             requestedLod = 0xFF;
     };
 
     /// Отложенный запрос детализации: render() обнаружил, что нужного

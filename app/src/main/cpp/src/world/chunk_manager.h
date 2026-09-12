@@ -82,6 +82,21 @@ public:
 
     const TerrainGenerator& generator() const { return gen_; }
 
+    /// Границы уровней детализации в блоках, приходят из рендера.
+    /// Миру они нужны ровно затем, чтобы только что сгенерированный
+    /// чанк сразу мешировался под ту детализацию, с которой его
+    /// увидят, а не строился сперва в полном разрешении и тут же
+    /// перестраивался.
+    void setLodBands(f32 lod0, f32 lod1, f32 lod2) {
+        lodBand0_ = lod0; lodBand1_ = lod1; lodBand2_ = lod2;
+    }
+    u8 lodForChunk(ChunkCoord c) const;
+
+    /// Просит перестроить чанк под нужный уровень детализации.
+    /// Вызывает рендер, когда обнаружил, что готового меша для
+    /// текущей дистанции нет. Работа уходит в фон.
+    void requestLod(ChunkCoord coord, u8 lod);
+
     usize loadedChunks() const;
 
     /// Сгенерирован ли чанк, накрывающий точку. Пока нет, мир о ней
@@ -108,6 +123,11 @@ private:
 
     u64 seed_;
     i32 viewDistance_;
+    f32 lodBand0_ = 64.f, lodBand1_ = 160.f, lodBand2_ = 320.f;
+    /// Последняя известная позиция игрока — по ней задача генерации
+    /// решает, какой уровень детализации строить.
+    std::atomic<i32> playerChunkX_{0};
+    std::atomic<i32> playerChunkZ_{0};
     TerrainGenerator gen_;
 
     std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash> chunks_;

@@ -103,18 +103,7 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     lastHit_       = targetHit;
 
     const auto ready = world.pollMeshesReady();
-    chunkRenderer_.uploadChunks(ctx, ready, camera_.position());
-
-    // Карта перекрытий обновляется раз в полсекунды: мир меняется
-    // медленнее, а полный обход чанков недёшев.
-    // Раньше здесь стояла константа 1/60, и на просадках карта
-    // перекрытий обновлялась втрое реже, чем задумано, — ровно тогда,
-    // когда она нужнее всего.
-    occlusionTimer_ += dt;
-    if (occlusionTimer_ >= 0.5f) {
-        occlusionTimer_ = 0.f;
-        occlusion_.rebuild(world, camera_.position(), world.viewDistance() + 1);
-    }
+    chunkRenderer_.uploadChunks(ctx, world, ready, camera_.position());
 
     mobRenderer_.rebuild(registry);
     mobRenderer_.upload(ctx);
@@ -146,6 +135,8 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     const f32 vdBlocks = (f32)vd * (f32)world::CHUNK_SIZE;
     camera_.setFog(vdBlocks * 0.55f, vdBlocks * 0.94f);
     chunkRenderer_.setViewDistanceBlocks(vdBlocks);
+    world.setLodBands(chunkRenderer_.lodBand(0), chunkRenderer_.lodBand(1),
+                      chunkRenderer_.lodBand(2));
 
     const u32 frame = ctx.frameInFlight();
     CameraUbo ubo = camera_.toUbo(timeSec);
@@ -161,7 +152,7 @@ void RenderSystem::render(vk::Context& ctx) {
 
     chunkRenderer_.render(ctx, voxelPipeline_.handle(),
                           voxelBlendPipeline_.handle(), voxelPipeline_.layout(),
-                          ds, fr, camera_.position(), &occlusion_);
+                          ds, fr, camera_.position());
 
     npcRenderer_.render(ctx, ds);
     mobRenderer_.render(ctx, ds, fr);
