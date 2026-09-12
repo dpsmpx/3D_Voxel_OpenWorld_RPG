@@ -13,20 +13,6 @@ namespace trade {
 
 using namespace items;
 
-namespace {
-std::mt19937& rng() {
-    static std::mt19937 g(0xCAFE);
-    return g;
-}
-
-u32 urand() { return rng()(); }
-
-i32 irand(i32 lo, i32 hi) {
-    if (hi <= lo) return lo;
-    return std::uniform_int_distribution<i32>(lo, hi)(rng());
-}
-}
-
 // ============================================================
 // TradeInventory
 // ============================================================

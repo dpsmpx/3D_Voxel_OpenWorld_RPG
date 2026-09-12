@@ -81,7 +81,6 @@ private:
     /// CPU-side буферы
     std::vector<UiVertex> verts_[2];  // по атласу
     int activeSlot_ = 0;
-    u32 currentFrame_ = 0;
 
     float whiteU_ = 0.f, whiteV_ = 0.f;
 

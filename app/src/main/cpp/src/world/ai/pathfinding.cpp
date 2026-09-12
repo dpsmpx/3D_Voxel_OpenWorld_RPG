@@ -267,7 +267,6 @@ void smoothPath(world::ChunkManager& world,
     out.push_back(path.front());
     usize i = 0;
     while (i + 2 < path.size()) {
-        usize j = path.size() - 1;
         // Ищем самый дальний видимый узел
         bool found = false;
         for (usize k = path.size() - 1; k > i + 1; --k) {

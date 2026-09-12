@@ -246,9 +246,6 @@ private:
     i32        screenH_ = 1920;
     VkDevice   dev_ = VK_NULL_HANDLE;
 
-    /// Drag-and-drop тач
-    i32        dragTouchId_ = -1;
-
     /// Скролл
     Scroll craftScroll;
     Scroll questScroll;
@@ -261,7 +258,6 @@ private:
     f32 cachedHpPct = 1.f;
     f32 cachedMpPct = 1.f;
     f32 cachedSpPct = 1.f;
-    f32 minimapTimer = 0.f;
 };
 
 } // namespace ui

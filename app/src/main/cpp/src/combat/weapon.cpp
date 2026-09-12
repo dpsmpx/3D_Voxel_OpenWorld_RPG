@@ -11,7 +11,6 @@ namespace {
 constexpr DamageType PHYS   = DamageType::Physical;
 constexpr DamageType FIRE   = DamageType::Fire;
 constexpr DamageType FROST  = DamageType::Frost;
-constexpr DamageType SHOCK  = DamageType::Shock;
 constexpr DamageType ARCANE = DamageType::Arcane;
 }
 

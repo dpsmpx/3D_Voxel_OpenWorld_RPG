@@ -37,15 +37,18 @@ APK_OUT_DIR="$BUILD_DIR/apk"
 ABI="arm64-v8a"
 API=24
 
+. "$PROJ/tools/ndk-common.sh"
+
 NDK_HOME="${ANDROID_NDK_HOME:-$PREFIX/lib/android-ndk}"
 TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-aarch64"
 SYSROOT="$TOOLCHAIN/sysroot"
 
-# Android SDK для aapt2 / apksigner / d8
-ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
-BUILD_TOOLS_VERSION="${BUILD_TOOLS_VERSION:-34.0.0}"
-BUILD_TOOLS="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
-ANDROID_JAR="$ANDROID_HOME/platforms/android-34/android.jar"
+# Android SDK нужен ровно ради android.jar (aapt2 link -I).
+# aapt2/apksigner/zipalign берутся из PATH — в Termux они из pkg.
+# Путь и версия не зашиты: SDK ставится в разные места, а подойдёт
+# любая платформа не ниже compileSdk.
+ANDROID_HOME="${ANDROID_HOME:-$HOME/android/android-sdk}"
+ANDROID_JAR=""
 
 # Ключ для подписи debug
 DEBUG_KEYSTORE="$APP_DIR/debug.keystore"
@@ -101,10 +104,12 @@ if [ ! -d "$NDK_HOME" ] && [ -d "$HOME/android/android-ndk" ]; then
     NDK_HOME="$HOME/android/android-ndk"
 fi
 
-# Каталог prebuilt называется по-разному в разных сборках NDK.
-for _pb in "$NDK_HOME"/toolchains/llvm/prebuilt/*; do
-    [ -x "$_pb/bin/clang" ] && { TOOLCHAIN="$_pb"; break; }
-done
+# Берём тот каталог prebuilt, чей clang реально запускается на этой
+# машине: имя каталога ничего не гарантирует, а NDK под x86_64
+# распакован ровно так же и отличается только тем, что не работает.
+if _tc="$(ndk_toolchain "$NDK_HOME")"; then
+    TOOLCHAIN="$_tc"
+fi
 SYSROOT="$TOOLCHAIN/sysroot"
 
 if [ ! -d "$NDK_HOME" ]; then
@@ -125,11 +130,38 @@ if [ ! -d "$NDK_HOME" ]; then
     exit 1
 fi
 
-if [ ! -d "$TOOLCHAIN" ]; then
-    err "Toolchain под aarch64 не найден: $TOOLCHAIN"
-    err "Похоже, распакован NDK под другую архитектуру."
-    err "Проверьте: ./tools/termux-doctor.sh"
+if ! ndk_toolchain "$NDK_HOME" >/dev/null; then
+    err "В NDK нет работоспособного clang. Что нашлось в $NDK_HOME:"
+    ndk_toolchain_report "$NDK_HOME" >&2
+    err ""
+    err "Если архитектура выше не aarch64 — это NDK под x86_64."
+    err "На телефоне он не запускается: системный загрузчик Android"
+    err "отвергает такой файл с сообщением про unexpected e_type."
+    err "Нужна сборка под linux-aarch64:"
+    err "    https://github.com/lzhiyong/termux-ndk/releases"
+    err "    ./tools/termux-setup.sh --ndk <скачанный архив>"
     exit 1
+fi
+
+# Официальный android.toolchain.cmake знает только хост linux-x86_64.
+# На телефоне из-за этого CMake зовёт компилятор не из того каталога
+# и падает с «unexpected e_type: 2» — ошибкой, по которой причина не
+# читается совсем. Чиним не здесь (это не дело сборки), но говорим,
+# что именно запустить.
+if ! ndk_cmake_host_ok "$NDK_HOME"; then
+    err "android.toolchain.cmake в этом NDK не знает про хост aarch64:"
+    err "    $NDK_HOME/build/cmake/android.toolchain.cmake"
+    err "CMake будет искать компилятор в prebuilt/linux-x86_64 и упадёт"
+    err "с сообщением про unexpected e_type. Почините одной командой:"
+    err "    ./tools/termux-setup.sh --fix-ndk"
+    exit 1
+fi
+
+_foreign="$(ndk_foreign_toolchains "$NDK_HOME" || true)"
+if [ -n "$_foreign" ]; then
+    warn "В NDK есть toolchain, который здесь не запускается:"
+    printf '%s\n' "$_foreign" | sed 's/^/      /'
+    warn "Он занимает место и путает CMake. Убрать: ./tools/termux-setup.sh --fix-ndk"
 fi
 
 # glue из NDK — без него не соберётся точка входа.
@@ -140,8 +172,12 @@ if [ ! -f "$NDK_HOME/sources/android/native_app_glue/android_native_app_glue.c" 
     exit 1
 fi
 
-if [ ! -f "$ANDROID_JAR" ]; then
-    warn "android.jar не найден ($ANDROID_JAR) — ручная сборка APK пропущена"
+ANDROID_JAR="$(find_android_jar "$ANDROID_HOME" || true)"
+if [ -z "$ANDROID_JAR" ]; then
+    warn "android.jar не найден — ручная сборка APK пропущена"
+    warn "Искали в: \$ANDROID_HOME, ~/android/android-sdk, ~/android-sdk,"
+    warn "          \$PREFIX/share/android-sdk (platforms/android-*/android.jar)"
+    warn "Поставить: ./tools/termux-setup.sh --skip-packages --sdk <архив SDK>"
     warn "Установи SDK или используй gradle."
     USE_GRADLE=1
 else
@@ -153,7 +189,7 @@ mkdir -p "$PROJ/third_party"
 
 if [ ! -d "$PROJ/third_party/glm/glm" ]; then
     log "Клонирую GLM..."
-    git clone --depth=1 https://github.com/g-truc/glm.git "$PROJ/third_party/glm"
+    git -c advice.detachedHead=false clone --depth=1 https://github.com/g-truc/glm.git "$PROJ/third_party/glm"
     ok "GLM готов"
 fi
 
@@ -161,7 +197,7 @@ fi
 if [ ! -f "$PROJ/third_party/entt/include/entt/entt.hpp" ]; then
     log "Клонирую EnTT..."
     rm -rf "$PROJ/third_party/entt-src"
-    git clone --depth=1 --branch v3.13.2 \
+    git -c advice.detachedHead=false clone --depth=1 --branch v3.13.2 \
         https://github.com/skypjack/entt.git "$PROJ/third_party/entt-src"
     mkdir -p "$PROJ/third_party/entt/include/entt"
     cp "$PROJ/third_party/entt-src/single_include/entt/entt.hpp" \

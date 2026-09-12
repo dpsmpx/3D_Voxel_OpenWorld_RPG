@@ -30,20 +30,6 @@ f32 frand(f32 lo, f32 hi) {
 constexpr f32 IDLE_MIN = 2.0f;
 constexpr f32 IDLE_MAX = 5.0f;
 constexpr f32 WANDER_RADIUS = 6.f;
-constexpr f32 INTERACT_DIST = 2.5f;
-
-bool groundedAt(world::ChunkManager& world, const glm::vec3& p, f32 halfW) {
-    i32 y = (i32)std::floor(p.y - 0.02f);
-    auto& reg = world::blocks();
-    for (i32 dx = -1; dx <= 1; ++dx)
-        for (i32 dz = -1; dz <= 1; ++dz) {
-            i32 x = (i32)std::floor(p.x + dx * halfW * 0.8f);
-            i32 z = (i32)std::floor(p.z + dz * halfW * 0.8f);
-            if (reg.isSolid(world.getVoxel(x, y, z))) return true;
-        }
-    return false;
-}
-
 glm::vec3 moveNpc(world::ChunkManager& world,
                   const glm::vec3& pos,
                   const glm::vec3& vel,

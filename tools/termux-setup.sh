@@ -6,7 +6,9 @@
 #   ./tools/termux-setup.sh --ndk ~/android-ndk.zip  # NDK из скачанного архива
 #   ./tools/termux-setup.sh --ndk https://...zip     # NDK по прямой ссылке
 #   ./tools/termux-setup.sh --ndk ~/android-ndk-r27  # NDK уже распакован
+#   ./tools/termux-setup.sh --sdk ~/android-sdk.zip  # SDK (нужен android.jar)
 #   ./tools/termux-setup.sh --skip-packages          # только NDK/SDK
+#   ./tools/termux-setup.sh --fix-ndk                # починить уже стоящий NDK
 #
 # Что делает:
 #   1. Ставит из pkg то, что там действительно есть.
@@ -32,6 +34,8 @@ ENV_FILE="$HOME_DIR/.voxelrpg-env"
 TOOLS_DIR="$HOME_DIR/android"
 NDK_REPO="lzhiyong/termux-ndk"
 
+. "$PROJ/tools/ndk-common.sh"
+
 C_G='\033[0;32m'; C_Y='\033[1;33m'; C_R='\033[0;31m'; C_B='\033[0;34m'; C_0='\033[0m'
 log()  { printf "${C_B}==>${C_0} %s\n" "$*"; }
 ok()   { printf "${C_G}✓${C_0}  %s\n" "$*"; }
@@ -39,13 +43,18 @@ warn() { printf "${C_Y}!${C_0}  %s\n" "$*"; }
 err()  { printf "${C_R}✗${C_0}  %s\n" "$*" >&2; }
 
 NDK_SOURCE=""
+SDK_SOURCE=""
 SKIP_PACKAGES=0
+FIX_NDK=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --ndk)  NDK_SOURCE="${2:-}"; shift 2 || true ;;
         --ndk=*) NDK_SOURCE="${1#--ndk=}"; shift ;;
+        --sdk)  SDK_SOURCE="${2:-}"; shift 2 || true ;;
+        --sdk=*) SDK_SOURCE="${1#--sdk=}"; shift ;;
+        --fix-ndk) FIX_NDK=1; SKIP_PACKAGES=1; shift ;;
         --skip-packages) SKIP_PACKAGES=1; shift ;;
-        -h|--help) sed -n '2,26p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        -h|--help) sed -n '3,25p' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) err "неизвестный аргумент: $1"; exit 2 ;;
     esac
 done
@@ -193,12 +202,12 @@ select_by_name() {                # regex; url читаются со stdin
 # распаковаться частично, а без toolchain.cmake и native_app_glue
 # сборка упадёт уже на конфигурации CMake.
 ndk_is_complete() {               # dir
-    local d="$1" p clang=""
+    local d="$1"
     [ -d "$d" ] || return 1
-    for p in "$d"/toolchains/llvm/prebuilt/*/bin/clang; do
-        [ -x "$p" ] && { clang="$p"; break; }
-    done
-    [ -n "$clang" ] || return 1
+    # Именно запуск, а не наличие файла: NDK под x86_64 распакуется
+    # без ошибок, но его clang на телефоне не стартует, и вместо
+    # понятного сообщения CMake выдаёт «unexpected e_type: 2».
+    ndk_toolchain "$d" >/dev/null || return 1
     [ -f "$d/build/cmake/android.toolchain.cmake" ] || return 1
     [ -f "$d/sources/android/native_app_glue/android_native_app_glue.c" ] || return 1
     return 0
@@ -230,6 +239,42 @@ find_ndk_root() {                 # unpackdir
     return 1
 }
 
+# Убирает две беды разом.
+#
+# Первая: рядом с рабочим toolchain лежит нерабочий (обычно
+# linux-x86_64 из официального NDK) — лишний гигабайт на телефоне.
+#
+# Вторая: в официальном android.toolchain.cmake хост-тег зашит как
+# linux-x86_64, про хост aarch64 файл не знает. На телефоне CMake
+# из-за этого зовёт компилятор из несуществующего (или чужого)
+# каталога и падает с «unexpected e_type: 2». Симлинк с ожидаемым
+# именем на реальный toolchain снимает вопрос, ничего не ломая.
+ndk_repair() {                    # каталог NDK
+    local d="$1" tc pb n=0 host
+    tc="$(ndk_toolchain "$d")" || return 1
+    host="$(basename "$tc")"
+
+    while IFS= read -r pb; do
+        [ -n "$pb" ] || continue
+        warn "Удаляю неработающий toolchain: $(basename "$pb")"
+        rm -rf "$pb"
+        n=$((n + 1))
+    done <<EOT
+$(ndk_foreign_toolchains "$d")
+EOT
+    [ "$n" -gt 0 ] && ok "Убрано лишних toolchain: $n"
+
+    if ! ndk_cmake_host_ok "$d" && [ "$host" != "linux-x86_64" ]; then
+        local pbdir="$d/toolchains/llvm/prebuilt"
+        if [ ! -e "$pbdir/linux-x86_64" ]; then
+            ln -s "$host" "$pbdir/linux-x86_64"
+            ok "android.toolchain.cmake не знает про aarch64 — добавлен"
+            ok "симлинк linux-x86_64 -> $host"
+        fi
+    fi
+    return 0
+}
+
 install_ndk_archive() {           # archive
     local arc="$1"
     local unpack="$TOOLS_DIR/.ndk-unpack"
@@ -245,11 +290,20 @@ install_ndk_archive() {           # archive
     mv "$root" "$NDK_DIR"
     rm -rf "$unpack"
     ndk_is_complete "$NDK_DIR" || {
-        err "распакованный NDK неполный: нет clang, android.toolchain.cmake или native_app_glue"
+        err "NDK непригоден к работе. Что нашлось:"
+        ndk_toolchain_report "$NDK_DIR"
+        [ -f "$NDK_DIR/build/cmake/android.toolchain.cmake" ] \
+            || echo "    нет build/cmake/android.toolchain.cmake"
+        [ -f "$NDK_DIR/sources/android/native_app_glue/android_native_app_glue.c" ] \
+            || echo "    нет sources/android/native_app_glue/"
+        echo ""
+        echo "    Если архитектура выше не aarch64 — скачан NDK под x86_64."
+        echo "    На телефоне он не запустится: нужна сборка под linux-aarch64"
+        echo "    со страницы https://github.com/$NDK_REPO/releases"
         echo "    Каталог оставлен для разбора: $NDK_DIR"
-        echo "    Если архив скачался не полностью — удалите его и скачайте заново."
         return 1
     }
+    ndk_repair "$NDK_DIR"
     return 0
 }
 
@@ -267,7 +321,24 @@ ndk_manual_hint() {
     echo ""
 }
 
-if ndk_is_complete "$NDK_DIR" && [ -z "$NDK_SOURCE" ]; then
+if [ "$FIX_NDK" -eq 1 ]; then
+    log "Чиню установленный NDK: $NDK_DIR"
+    if ndk_repair "$NDK_DIR"; then
+        if ndk_is_complete "$NDK_DIR"; then
+            ok "NDK в порядке: $NDK_DIR"
+            NDK_OK=1
+        else
+            err "NDK всё ещё неполный:"
+            ndk_toolchain_report "$NDK_DIR"
+            FAILED=1
+        fi
+    else
+        err "В $NDK_DIR нет ни одного запускающегося clang — чинить нечего."
+        ndk_toolchain_report "$NDK_DIR"
+        echo "    Переустановите: rm -rf $NDK_DIR && ./tools/termux-setup.sh"
+        FAILED=1
+    fi
+elif ndk_is_complete "$NDK_DIR" && [ -z "$NDK_SOURCE" ]; then
     ok "NDK уже установлен: $NDK_DIR"
     NDK_OK=1
 elif [ -n "$NDK_SOURCE" ]; then
@@ -293,9 +364,12 @@ elif [ -n "$NDK_SOURCE" ]; then
                     ok "Использую готовый NDK: $NDK_DIR"
                     NDK_OK=1
                 else
-                    err "$NDK_SOURCE не похож на распакованный NDK"
-                    echo "    Ожидались toolchains/llvm/prebuilt/*/bin/clang,"
-                    echo "    build/cmake/android.toolchain.cmake и sources/android/native_app_glue/"
+                    err "$NDK_SOURCE не годится как NDK. Что нашлось:"
+                    ndk_toolchain_report "$NDK_SOURCE"
+                    [ -f "$NDK_SOURCE/build/cmake/android.toolchain.cmake" ] \
+                        || echo "    нет build/cmake/android.toolchain.cmake"
+                    [ -f "$NDK_SOURCE/sources/android/native_app_glue/android_native_app_glue.c" ] \
+                        || echo "    нет sources/android/native_app_glue/"
                 fi
             elif [ -f "$NDK_SOURCE" ]; then
                 install_ndk_archive "$NDK_SOURCE" && NDK_OK=1
@@ -355,36 +429,89 @@ fi
 # уже есть aapt2/apksigner, этого достаточно и SDK можно пропустить.
 # ------------------------------------------------------------
 SDK_DIR="$TOOLS_DIR/android-sdk"
-if command -v aapt2 >/dev/null 2>&1 && command -v apksigner >/dev/null 2>&1; then
-    ok "aapt2 и apksigner есть в PATH, отдельный SDK не нужен"
-elif [ -d "$SDK_DIR/build-tools" ]; then
-    ok "SDK уже установлен: $SDK_DIR"
+SDK_ROOT=""
+
+# Из всего SDK нужен ровно один файл — android.jar: его требует
+# aapt2 link. Сами aapt2/apksigner/zipalign берутся из pkg, поэтому
+# раньше шаг пропускался целиком, и APK не собирался из-за
+# отсутствующего android.jar.
+set_sdk_from_jar() {              # путь к android.jar
+    SDK_ROOT="${1%/platforms/*}"
     SDK_OK=1
+    ok "android.jar: $1"
+}
+
+install_sdk_archive() {           # archive
+    local arc="$1" unpack="$TOOLS_DIR/.sdk-unpack" root jar
+    rm -rf "$unpack"
+    log "Распаковка $(basename "$arc")..."
+    extract_archive "$arc" "$unpack" || { rm -rf "$unpack"; return 1; }
+    # Корень SDK — каталог, внутри которого лежит platforms/.
+    root=""
+    [ -d "$unpack/platforms" ] && root="$unpack"
+    if [ -z "$root" ]; then
+        for c in "$unpack"/*; do
+            [ -d "$c/platforms" ] && { root="$c"; break; }
+        done
+    fi
+    if [ -z "$root" ]; then
+        err "в архиве нет каталога platforms/ — android.jar там отсутствует"
+        rm -rf "$unpack"; return 1
+    fi
+    rm -rf "$SDK_DIR"
+    mv "$root" "$SDK_DIR"
+    rm -rf "$unpack"
+    jar="$(find_android_jar "$SDK_DIR")" || {
+        err "после распаковки android.jar всё равно не найден"
+        return 1
+    }
+    set_sdk_from_jar "$jar"
+    return 0
+}
+
+if JAR="$(find_android_jar "$SDK_DIR")"; then
+    set_sdk_from_jar "$JAR"
+elif [ -n "$SDK_SOURCE" ]; then
+    case "$SDK_SOURCE" in
+        http://*|https://*)
+            log "Скачиваю SDK по ссылке..."
+            name="${SDK_SOURCE##*/}"
+            if http_download "$SDK_SOURCE" "$TOOLS_DIR/$name"; then
+                install_sdk_archive "$TOOLS_DIR/$name" || true
+                rm -f "$TOOLS_DIR/$name"
+            else
+                err "не удалось скачать $SDK_SOURCE"
+            fi
+            ;;
+        *)
+            if [ -d "$SDK_SOURCE" ]; then
+                if JAR="$(find_android_jar "$SDK_SOURCE")"; then
+                    set_sdk_from_jar "$JAR"
+                else
+                    err "в $SDK_SOURCE нет platforms/android-*/android.jar"
+                fi
+            elif [ -f "$SDK_SOURCE" ]; then
+                install_sdk_archive "$SDK_SOURCE" || true
+            else
+                err "путь не найден: $SDK_SOURCE"
+            fi
+            ;;
+    esac
 else
-    log "Ищу Android SDK build-tools для aarch64..."
+    log "Ищу Android SDK (нужен android.jar)..."
     SDK_URL="$(release_assets "$NDK_REPO" 2>/dev/null \
         | select_by_name 'sdk.*\.(zip|tar\.xz|tar\.gz)$' | head -1)"
     if [ -z "$SDK_URL" ]; then
-        warn "SDK автоматически не найден — см. https://github.com/$NDK_REPO/releases"
-        warn "Без него доступна только сборка .so; APK придётся паковать иначе"
+        warn "SDK автоматически не найден."
+        warn "Без android.jar ./build.sh соберёт только .so, APK не упакует."
+        warn "Скачайте android-sdk-*.zip со страницы"
+        warn "    https://github.com/$NDK_REPO/releases"
+        warn "и укажите: ./tools/termux-setup.sh --skip-packages --sdk <архив>"
     else
         SDK_ARC="$TOOLS_DIR/$(basename "$SDK_URL")"
         log "Скачиваю $(basename "$SDK_URL")..."
         if http_download "$SDK_URL" "$SDK_ARC"; then
-            rm -rf "$TOOLS_DIR/.sdk-unpack"
-            if extract_archive "$SDK_ARC" "$TOOLS_DIR/.sdk-unpack"; then
-                rm -rf "$SDK_DIR"
-                SDK_ROOT="$(find "$TOOLS_DIR/.sdk-unpack" -maxdepth 2 -type d -name 'build-tools' \
-                            | head -1)"
-                if [ -n "$SDK_ROOT" ]; then
-                    mv "$(dirname "$SDK_ROOT")" "$SDK_DIR"
-                    SDK_OK=1
-                    ok "SDK установлен: $SDK_DIR"
-                else
-                    warn "в архиве SDK нет каталога build-tools — пропускаю"
-                fi
-            fi
-            rm -rf "$TOOLS_DIR/.sdk-unpack"
+            install_sdk_archive "$SDK_ARC" || true
             rm -f "$SDK_ARC"
         else
             warn "SDK не скачался — продолжаю без него"
@@ -405,17 +532,18 @@ log "Пишу $ENV_FILE..."
     if [ "$NDK_OK" -eq 1 ]; then
         echo "export ANDROID_NDK_HOME=\"$NDK_DIR\""
         echo "export ANDROID_NDK=\"\$ANDROID_NDK_HOME\""
-        for pb in "$NDK_DIR"/toolchains/llvm/prebuilt/*/bin; do
-            [ -d "$pb" ] && { echo "export PATH=\"$pb:\$PATH\""; break; }
-        done
+        # PATH намеренно не трогаем. Кросс-компилятор из NDK, попав в
+        # PATH, подменяет clang самого Termux, и всё, что должно
+        # собираться для телефона (утилита атласа), ломается с
+        # «unexpected e_type». CMake получает компилятор явно, через
+        # android.toolchain.cmake, и в PATH не нуждается.
     else
         echo "# NDK не установлен — ANDROID_NDK_HOME намеренно не задан."
         echo "# Поставьте его: ./tools/termux-setup.sh --ndk <архив или каталог>"
     fi
-    if [ "$SDK_OK" -eq 1 ]; then
-        echo "export ANDROID_HOME=\"$SDK_DIR\""
+    if [ "$SDK_OK" -eq 1 ] && [ -n "$SDK_ROOT" ]; then
+        echo "export ANDROID_HOME=\"$SDK_ROOT\""
         echo "export ANDROID_SDK_ROOT=\"\$ANDROID_HOME\""
-        echo "export PATH=\"\$ANDROID_HOME/build-tools:\$PATH\""
     fi
 } > "$ENV_FILE"
 ok "Переменные записаны"
