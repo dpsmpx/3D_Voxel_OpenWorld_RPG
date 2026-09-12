@@ -87,7 +87,8 @@ public:
         f32 cp = std::cos(pitch_), sp = std::sin(pitch_);
         return { cp * std::sin(yaw_), sp, cp * std::cos(yaw_) };
     }
-    glm::vec3 right() const { return { std::cos(yaw_), 0.f, -std::sin(yaw_) }; }
+    /// cross(forward, up) — то же, что первая строка поворота в lookAt.
+    glm::vec3 right() const { return { -std::cos(yaw_), 0.f, std::sin(yaw_) }; }
 
     glm::mat4 view() const {
         return glm::lookAt(position_, position_ + forward(), glm::vec3(0,1,0));

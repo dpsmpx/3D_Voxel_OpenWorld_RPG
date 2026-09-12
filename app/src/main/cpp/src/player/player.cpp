@@ -243,9 +243,14 @@ void Player::updateImpl(world::ChunkManager& world,
     const f32 cy = std::cos(cameraYaw);
     const f32 sy = std::sin(cameraYaw);
     const glm::vec3 fwd { sy, 0.f, cy };
-    const glm::vec3 right { cy, 0.f, -sy };
+    // Вектор «вправо» — это cross(fwd, up), ровно как его строит lookAt.
+    // Здесь стояло (cos, 0, -sin), то есть ровно противоположное
+    // направление, и шаг вбок уводил не в ту сторону.
+    const glm::vec3 right { -cy, 0.f, sy };
 
-    glm::vec3 wish = right * input.moveAxis.x + fwd * (-input.moveAxis.y);
+    // moveAxis.y уже положителен «вперёд»: экранную ось джойстик
+    // переворачивает у себя. Лишний минус здесь разворачивал ход назад.
+    glm::vec3 wish = right * input.moveAxis.x + fwd * input.moveAxis.y;
     f32 len = glm::length(wish);
     if (len > 1.f) wish /= len;
     if (dialogueOpen) wish = glm::vec3(0);

@@ -150,6 +150,9 @@ struct Engine {
     bool running     = false;
     bool initialized = false;
 
+    /// Мир под игроком ещё генерируется — физику держим выключенной.
+    bool waitingForGround = false;
+
     /// Окно готово и приложение на переднем плане — можно рисовать.
     /// Два состояния держим раздельно: Android присылает фокус раньше,
     /// чем создаёт поверхность, и одного события мало, чтобы понять,
@@ -683,17 +686,34 @@ struct Engine {
             // Phase 15: обновляем spatial hash перед боем
             spatialHash.ensureFresh(registry);
 
-            player->updateWithHash(*world, &spatialHash, pin, dt,
-                                   cameraYawPitch.x, cameraYawPitch.y);
+            // Пока чанк под игроком не сгенерирован, мир о нём ничего
+            // не знает: всё вокруг считается камнем, и столкновения
+            // вытолкнут игрока вверх. Ждём — это доли секунды на старте.
+            const glm::vec3 prePos = player->controller.state().position;
+            const bool groundKnown = world->isReadyAt((i32)std::floor(prePos.x),
+                                                      (i32)std::floor(prePos.z));
+            if (!groundKnown) {
+                if (!waitingForGround) {
+                    waitingForGround = true;
+                    LOGI("Жду генерацию чанка под игроком (%.1f %.1f)",
+                         (double)prePos.x, (double)prePos.z);
+                }
+            } else {
+                if (waitingForGround) {
+                    waitingForGround = false;
+                    LOGI("Чанк под игроком готов, физика включена");
+                }
 
-            // Спасение из-под мира. Провалиться вниз теперь неоткуда —
-            // ниже нулевой отметки мир отвечает камнем, — но сохранение,
-            // сделанное до этой починки, хранит игрока далеко внизу, да и
-            // любая будущая щель в столкновениях не должна означать
-            // бесконечное падение без возврата.
-            {
+                player->updateWithHash(*world, &spatialHash, pin, dt,
+                                       cameraYawPitch.x, cameraYawPitch.y);
+
+                // Спасение из-под мира. Провалиться теперь неоткуда — ниже
+                // нулевой отметки мир отвечает камнем, — но сохранения,
+                // сделанные до этой починки, хранят игрока далеко внизу, да
+                // и любая будущая щель в столкновениях не должна означать
+                // падение без возврата.
                 const glm::vec3 p = player->controller.state().position;
-                if (p.y < 0.f || p.y > (f32)world::CHUNK_SIZE_Y) {
+                if (p.y < 0.f || p.y > (f32)world::CHUNK_SIZE_Y + 16.f) {
                     const i32 surf = world->generator().surfaceHeight(
                         (i32)std::floor(p.x), (i32)std::floor(p.z));
                     const glm::vec3 rescued{ p.x, (f32)surf + 1.5f, p.z };

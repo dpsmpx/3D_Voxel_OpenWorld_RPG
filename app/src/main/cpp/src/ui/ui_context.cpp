@@ -31,10 +31,18 @@ void UiContext::endFrame() {
 }
 
 // --- NDC-конверсия ---
+// Экранные координаты в координаты отсечения.
+//
+// В Vulkan ось Y направлена вниз: верх экрана это -1, низ +1. Здесь был
+// перевод по правилам OpenGL (верх +1), из-за чего весь интерфейс
+// оказывался отражён по вертикали, а всё прижатое к низу — джойстик,
+// кнопки, пояс предметов — уезжало за верхний край экрана. Касания при
+// этом обрабатывались по настоящим пиксельным координатам, и нажимать
+// приходилось туда, где ничего не нарисовано.
 static inline float toNdcX(float px, i32 W) { return (px / (float)W) * 2.f - 1.f; }
-static inline float toNdcY(float py, i32 H) { return 1.f - (py / (float)H) * 2.f; }
+static inline float toNdcY(float py, i32 H) { return (py / (float)H) * 2.f - 1.f; }
 static inline float toNdcW(float w,  i32 W) { return (w / (float)W) * 2.f; }
-static inline float toNdcH(float h,  i32 H) { return -(h / (float)H) * 2.f; }
+static inline float toNdcH(float h,  i32 H) { return (h / (float)H) * 2.f; }
 
 void UiContext::rect(float x, float y, float w, float h, UiColor c) {
     if (!r_) return;
