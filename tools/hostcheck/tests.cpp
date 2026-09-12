@@ -498,14 +498,15 @@ void testVoxelShading() {
     // читает шейдер.
     for (u32 face = 0; face < 6; ++face) {
         const u32 p = render::packVoxelPos(32, 128, 31, face, face % 4,
-                                           (face + 2) % 8, 11);
+                                           (face + 2) % 8, 5, face & 1);
         const bool ok = ( p        & 63u)  == 32
                      && ((p >>  6) & 255u) == 128
                      && ((p >> 14) & 63u)  == 31
                      && ((p >> 20) & 7u)   == face
                      && ((p >> 23) & 3u)   == (face % 4)
                      && ((p >> 25) & 7u)   == ((face + 2) % 8)
-                     && ((p >> 28) & 15u)  == 11;
+                     && ((p >> 28) & 7u)   == 5
+                     && ((p >> 31) & 1u)   == (face & 1);
         if (!ok) { check(false, "упаковка вершины распаковывается обратно"); return; }
     }
     check(true, "упаковка вершины распаковывается обратно");

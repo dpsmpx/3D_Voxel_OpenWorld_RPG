@@ -35,7 +35,8 @@ void main() {
     uint face  = (inPacked >> 20) & 7u;
     uint ao    = (inPacked >> 23) & 3u;
     uint sky   = (inPacked >> 25) & 7u;
-    uint grain = (inPacked >> 28) & 15u;
+    uint grain = (inPacked >> 28) & 7u;
+    uint tint  = (inPacked >> 31) & 1u;
 
     vec3 world = pc.chunkOrigin.xyz + local;
     gl_Position = cam.viewProj * vec4(world, 1.0);
@@ -43,5 +44,5 @@ void main() {
     vColor    = inColor;
     vWorldPos = world;
     vShade    = vec2(float(ao) * (1.0 / 3.0), float(sky) * (1.0 / 7.0));
-    vInfo     = face | (grain << 3);
+    vInfo     = face | (grain << 3) | (tint << 6);
 }

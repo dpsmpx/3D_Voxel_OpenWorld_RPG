@@ -30,6 +30,7 @@ BlockRegistry& blocks() {
             d.hasCollision = solid;
             d.lightLevel = light;
             d.grain = grain;
+            d.biomeTint = (id == GRASS || id == LEAVES);
             d.colorTop = top;
             d.colorSide = side;
             d.colorBottom = bottom;
