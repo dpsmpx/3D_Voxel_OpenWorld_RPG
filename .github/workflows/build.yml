@@ -148,3 +148,65 @@ jobs:
           name: VoxelRPG-symbols
           path: app/build/intermediates/cxx/**/libnative-lib.so
           if-no-files-found: warn
+
+  # Артефакты прогона скачиваются только из веб-интерфейса и только
+  # авторизованным пользователем — с телефона это неудобно. Поэтому тот
+  # же APK кладётся в релиз latest-apk: у него постоянный прямой адрес,
+  # который берётся curl'ом прямо в Termux.
+  release:
+    name: Ссылка на готовый APK
+    needs: apk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: VoxelRPG-debug
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: VoxelRPG-symbols
+          path: symbols
+        continue-on-error: true
+
+      - name: Обновить релиз latest-apk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          mv dist/*.apk VoxelRPG-debug.apk
+          FILES="VoxelRPG-debug.apk"
+          SO="$(find symbols -name 'libnative-lib.so' 2>/dev/null | head -1)"
+          if [ -n "$SO" ]; then
+              cp "$SO" libnative-lib-unstripped.so
+              gzip -f libnative-lib-unstripped.so
+              FILES="$FILES libnative-lib-unstripped.so.gz"
+          fi
+
+          NOTES="Отладочный APK, собранный автоматически.
+
+          Ветка: ${{ github.ref_name }}
+          Коммит: ${{ github.sha }}
+
+          Скачать в Termux:
+
+              curl -L -o VoxelRPG.apk https://github.com/${{ github.repository }}/releases/download/latest-apk/VoxelRPG-debug.apk
+              termux-open VoxelRPG.apk
+
+          Рядом лежит неурезанная библиотека для tools/symbolize.sh."
+
+          if gh release view latest-apk --repo "${{ github.repository }}" >/dev/null 2>&1; then
+              gh release upload latest-apk $FILES --repo "${{ github.repository }}" --clobber
+              gh release edit latest-apk --repo "${{ github.repository }}" --notes "$NOTES"
+          else
+              gh release create latest-apk $FILES \
+                  --repo "${{ github.repository }}" \
+                  --title "Последняя сборка" \
+                  --notes "$NOTES" \
+                  --prerelease
+          fi
+
+          echo "Прямая ссылка:"
+          echo "  https://github.com/${{ github.repository }}/releases/download/latest-apk/VoxelRPG-debug.apk"

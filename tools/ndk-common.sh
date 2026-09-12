@@ -152,9 +152,16 @@ tool_runs() {                     # путь [аргумент проверки]
     local exe="$1" arg="${2:-}" out rc
     [ -n "$exe" ] && [ -x "$exe" ] || return 1
     out="$("$exe" $arg 2>&1)" && rc=0 || rc=$?
+    # Две разные беды, обе не видны по коду выхода:
+    #   — файл не для этой архитектуры (загрузчик про e_type);
+    #   — файл запускается, но не находит свои библиотеки, потому что
+    #     собран под другое окружение. Так выглядит astcenc, собранный
+    #     против NDK: ему нужна libc++_shared.so, которой в Termux нет.
     case "$out" in
         *"unexpected e_type"*|*"Exec format error"*|\
-        *"cannot execute"*|*"not executable"*) return 1 ;;
+        *"cannot execute"*|*"not executable"*|\
+        *"CANNOT LINK EXECUTABLE"*|*"error while loading shared libraries"*|\
+        *"not found: needed by"*) return 1 ;;
     esac
     # 126 и 127 — оболочка не смогла запустить файл.
     [ "$rc" -ge 126 ] && return 1
