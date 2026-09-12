@@ -98,9 +98,53 @@ jobs:
       - name: gradle assembleDebug
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
+      # APK, который собирается, но не запускается, выглядит как успех.
+      # Проверяем то, из-за чего приложение падает сразу при старте:
+      # отсутствие библиотеки, отсутствие шейдеров и сжатые .so — при
+      # extractNativeLibs="false" система такие не загрузит.
+      - name: Проверка содержимого APK
+        run: |
+          set -e
+          APK="$(ls app/build/outputs/apk/debug/*.apk | head -1)"
+          echo "APK: $APK ($(stat -c%s "$APK") байт)"
+          unzip -l "$APK"
+
+          need() {
+              unzip -l "$APK" | grep -q "$1" \
+                  || { echo "✗ в APK нет $1"; exit 1; }
+          }
+          need 'lib/arm64-v8a/libnative-lib.so'
+          need 'lib/arm64-v8a/libc++_shared.so'
+          need 'assets/shaders/voxel.vert.spv'
+          need 'assets/shaders/voxel.frag.spv'
+          need 'AndroidManifest.xml'
+
+          # Метод упаковки для .so обязан быть Stored.
+          BAD="$(unzip -v "$APK" | awk '/lib\/arm64-v8a\/.*\.so$/ && $2 != "Stored" {print $NF}')"
+          if [ -n "$BAD" ]; then
+              echo "✗ .so упакованы со сжатием, система их не загрузит:"
+              echo "$BAD"
+              exit 1
+          fi
+
+          SO_SIZE="$(unzip -l "$APK" | awk '/libnative-lib.so$/ {print $1}')"
+          echo "libnative-lib.so: $SO_SIZE байт"
+          [ "${SO_SIZE:-0}" -gt 500000 ] \
+              || { echo "✗ библиотека подозрительно мала — native-сборка не отработала"; exit 1; }
+          echo "✓ APK содержит библиотеку, шейдеры и несжатые .so"
+
       - name: Выгрузка APK
         uses: actions/upload-artifact@v4
         with:
           name: VoxelRPG-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # Несжатая библиотека нужна, чтобы расшифровать адреса из отчёта
+      # о падении: tools/symbolize.sh работает именно по ней.
+      - name: Выгрузка неурезанной библиотеки
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoxelRPG-symbols
+          path: app/build/intermediates/cxx/**/libnative-lib.so
+          if-no-files-found: warn
