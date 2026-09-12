@@ -277,3 +277,35 @@ extract_archive() {               # file destdir
         *)              err "неизвестный формат архива: $(basename "$f")"; return 1 ;;
     esac
 }
+
+# Экспортирует ли разделяемая библиотека нужный символ.
+#
+# Проверка не теоретическая: NativeActivity ищет ANativeActivity_onCreate
+# через dlsym, и если символа нет, процесс умирает до первой строки
+# нашего кода — без логов, без отчёта, с пустым системным сообщением.
+# Такую .so видно только так.
+so_exports() {                    # файл символ
+    local so="$1" sym="$2" cand tool="" kind=""
+
+    # readelf из NDK понимает всё, что собрал его же clang.
+    if NDK_TC="$(ndk_toolchain "${ANDROID_NDK_HOME:-$HOME/android/android-ndk}" 2>/dev/null)"; then
+        for cand in "$NDK_TC/bin/llvm-readelf" "$NDK_TC/bin/llvm-nm"; do
+            [ -x "$cand" ] && { tool="$cand"; break; }
+        done
+    fi
+    [ -n "$tool" ] || for cand in llvm-readelf readelf llvm-nm nm; do
+        command -v "$cand" >/dev/null 2>&1 && { tool="$(command -v "$cand")"; break; }
+    done
+    [ -n "$tool" ] || return 2    # проверить нечем
+
+    case "$(basename "$tool")" in
+        *readelf) kind=readelf ;;
+        *)        kind=nm ;;
+    esac
+
+    if [ "$kind" = readelf ]; then
+        "$tool" --dyn-syms -W "$so" 2>/dev/null | grep -qw "$sym"
+    else
+        "$tool" -D "$so" 2>/dev/null | grep -qw "$sym"
+    fi
+}

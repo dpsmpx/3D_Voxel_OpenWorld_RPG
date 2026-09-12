@@ -381,6 +381,25 @@ fi
 SO_SIZE=$(du -h "$JNI_DIR/libnative-lib.so" | cut -f1)
 ok "Native собран: libnative-lib.so ($SO_SIZE)"
 
+# Точка входа NativeActivity. Она приходит из android_native_app_glue —
+# статической библиотеки, из которой линковщик берёт только объекты с
+# нужными кому-то символами. На ANativeActivity_onCreate не ссылается
+# никто: его ищет система через dlsym. Без -u ANativeActivity_onCreate
+# glue не попадает в .so, и приложение падает мгновенно, до первой
+# нашей строки — ни логов, ни внятного отчёта.
+so_exports "$JNI_DIR/libnative-lib.so" ANativeActivity_onCreate
+case "$?" in
+    0) ok "Точка входа ANativeActivity_onCreate на месте" ;;
+    2) warn "Нечем проверить экспорт символов (нет readelf/nm) — пропускаю" ;;
+    *) err "В libnative-lib.so нет ANativeActivity_onCreate."
+       err "NativeActivity ищет её через dlsym и, не найдя, убивает процесс"
+       err "до запуска кода: приложение вылетает мгновенно и без следа."
+       err "Причина — glue не вытянут из статической библиотеки."
+       err "В app/src/main/cpp/CMakeLists.txt должно быть:"
+       err "    target_link_options(native-lib PRIVATE -u ANativeActivity_onCreate)"
+       exit 1 ;;
+esac
+
 # ---- Упаковка APK ----
 if [ "$USE_GRADLE" -eq 1 ]; then
     log "android.jar не найден — попытка использовать gradle..."

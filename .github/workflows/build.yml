@@ -131,7 +131,21 @@ jobs:
           echo "libnative-lib.so: $SO_SIZE байт"
           [ "${SO_SIZE:-0}" -gt 500000 ] \
               || { echo "✗ библиотека подозрительно мала — native-сборка не отработала"; exit 1; }
-          echo "✓ APK содержит библиотеку, шейдеры и несжатые .so"
+
+          # Точка входа NativeActivity. Приходит из android_native_app_glue,
+          # а это статическая библиотека: без -u ANativeActivity_onCreate
+          # линковщик не вытягивает из неё ни одного объекта, потому что на
+          # этот символ никто не ссылается — его ищет система через dlsym.
+          # Такой APK устанавливается и падает мгновенно, без логов.
+          rm -rf /tmp/apkso && mkdir -p /tmp/apkso
+          unzip -q -o "$APK" 'lib/arm64-v8a/libnative-lib.so' -d /tmp/apkso
+          if ! readelf --dyn-syms -W /tmp/apkso/lib/arm64-v8a/libnative-lib.so \
+               | grep -qw ANativeActivity_onCreate; then
+              echo "✗ в libnative-lib.so нет ANativeActivity_onCreate:"
+              echo "  NativeActivity не найдёт точку входа и убьёт процесс при старте."
+              exit 1
+          fi
+          echo "✓ APK содержит библиотеку с точкой входа, шейдеры и несжатые .so"
 
       - name: Выгрузка APK
         uses: actions/upload-artifact@v4
