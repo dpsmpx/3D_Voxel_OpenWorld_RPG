@@ -95,10 +95,22 @@ public:
     glm::mat4 view() const {
         return glm::lookAt(position_, position_ + forward(), glm::vec3(0,1,0));
     }
+    /// На сколько градусов композитор повернёт наш кадр при выводе.
+    /// Мы пообещали ему это через preTransform, значит поворачиваем
+    /// содержимое сами — здесь, в проекции.
+    void setSurfaceRotation(u32 degrees) { surfaceRot_ = degrees; }
+
     glm::mat4 projection() const {
         auto p = glm::perspective(glm::radians(fov_), aspect_, near_, far_);
         p[1][1] *= -1.f;
-        return p;
+        if (surfaceRot_ == 0) return p;
+        // Угол противоположен повороту композитора: он довернёт до
+        // нуля. Проверено прямым расчётом — точка над камерой обязана
+        // оказаться в верхней половине экрана при любом из четырёх.
+        const f32 deg = surfaceRot_ == 90  ? -90.f
+                      : surfaceRot_ == 270 ?  90.f : 180.f;
+        return glm::rotate(glm::mat4(1.f), glm::radians(deg),
+                           glm::vec3(0.f, 0.f, 1.f)) * p;
     }
     glm::mat4 viewProj() const { return projection() * view(); }
 
@@ -135,6 +147,7 @@ private:
     // равно не подходит: её не пускают столкновения.
     f32 near_ = 0.1f, far_ = 512.f;
     u32 screenW_ = 1080, screenH_ = 1920;
+    u32 surfaceRot_ = 0;
     f32 fogStart_ = 150.f, fogEnd_ = 400.f;
     glm::vec3 skyColor_{0.55f, 0.72f, 0.92f};
     f32 skyLight_  = 1.f;

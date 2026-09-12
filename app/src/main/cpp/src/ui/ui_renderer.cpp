@@ -123,6 +123,17 @@ void UiRenderer::attachExternalAtlas(VkImageView view, VkSampler sampler) {
     LOGI("UiRenderer: external atlas подключён");
 }
 
+void UiRenderer::setSurfaceRotation(u32 degrees) {
+    // Тот же угол, что в Camera::projection: композитор довернёт до
+    // нуля. x' = x*cos - y*sin, y' = x*sin + y*cos.
+    switch (degrees) {
+        case 90:  rotC_ =  0.f; rotS_ = -1.f; break;   // -90
+        case 180: rotC_ = -1.f; rotS_ =  0.f; break;
+        case 270: rotC_ =  0.f; rotS_ =  1.f; break;   // +90
+        default:  rotC_ =  1.f; rotS_ =  0.f; break;
+    }
+}
+
 void UiRenderer::beginFrame() {
     verts_[0].clear();
     verts_[1].clear();
@@ -137,14 +148,19 @@ void UiRenderer::pushQuad(glm::vec2 pos, glm::vec2 size,
     u8 r = (rgba >> 24) & 0xFF, g = (rgba >> 16) & 0xFF;
     u8 b = (rgba >>  8) & 0xFF, a = (rgba      ) & 0xFF;
     auto& V = verts_[activeSlot_];
-    glm::vec2 p1 = pos + size;
-    V.push_back({ {pos.x, pos.y}, {u0, v0}, r, g, b, a });
-    V.push_back({ {p1.x,  pos.y}, {u1, v0}, r, g, b, a });
-    V.push_back({ {p1.x,  p1.y}, {u1, v1}, r, g, b, a });
-    V.push_back({ {pos.x, p1.y}, {u0, v1}, r, g, b, a });
-    u32 base = (u32)V.size() - 4;
-    V.push_back(V[base + 0]); V.push_back(V[base + 2]); V.push_back(V[base + 3]);
-    V.push_back(V[base + 0]); V.push_back(V[base + 1]); V.push_back(V[base + 2]);
+    const glm::vec2 p1 = pos + size;
+
+    // Ровно шесть вершин: рисуем списком треугольников без индексов.
+    // Раньше сюда клались ещё и четыре угла «для себя», и на квад
+    // выходило десять вершин. Десять не делится на три: треугольники
+    // собирались из вершин разных прямоугольников, весь поток
+    // разъезжался, и интерфейса на экране не было.
+    const UiVertex c0{ rotate({pos.x, pos.y}), {u0, v0}, r, g, b, a };
+    const UiVertex c1{ rotate({p1.x,  pos.y}), {u1, v0}, r, g, b, a };
+    const UiVertex c2{ rotate({p1.x,  p1.y}),  {u1, v1}, r, g, b, a };
+    const UiVertex c3{ rotate({pos.x, p1.y}),  {u0, v1}, r, g, b, a };
+    V.push_back(c0); V.push_back(c1); V.push_back(c2);
+    V.push_back(c0); V.push_back(c2); V.push_back(c3);
 }
 
 void UiRenderer::pushTri(glm::vec2 a, glm::vec2 b, glm::vec2 c, u32 rgba) {
@@ -152,9 +168,9 @@ void UiRenderer::pushTri(glm::vec2 a, glm::vec2 b, glm::vec2 c, u32 rgba) {
     u8 bl = (rgba >>  8) & 0xFF, al = (rgba      ) & 0xFF;
     auto& V = verts_[activeSlot_];
     const float u = whiteU_, v = whiteV_;
-    V.push_back({ a, {u, v}, r, g, bl, al });
-    V.push_back({ b, {u, v}, r, g, bl, al });
-    V.push_back({ c, {u, v}, r, g, bl, al });
+    V.push_back({ rotate(a), {u, v}, r, g, bl, al });
+    V.push_back({ rotate(b), {u, v}, r, g, bl, al });
+    V.push_back({ rotate(c), {u, v}, r, g, bl, al });
 }
 
 bool UiRenderer::ensureCapacity(FrameBuf& b, u32 vertsNeeded) {

@@ -58,8 +58,79 @@ constexpr FaceAxes FACES[6] = {
     {0, 1, 2, -1}, // -Z
 };
 
-// Высота верхнего непрозрачного блока в колонке, -1 если колонка
-// пуста. Считается один раз на чанк, с рамкой в один воксель, чтобы
+// ============================================================
+// Объём для меширования.
+//
+// Уровень детализации — это НЕ «брать каждый N-й воксель». Так было
+// раньше, и так получался мусор: грань решалась по соседу в одном
+// вокселе, а покрывала N, поверхность между точками выборки исчезала
+// целиком, и в воздухе оставались висеть отдельные плиты.
+//
+// Правильно — огрубить сам объём: куб N x N x N вокселей сводится к
+// одной клетке, и дальше всё работает как обычно, с шагом в одну
+// клетку. Затенение углов и открытость неба тоже считаются по
+// огрублённым клеткам, поэтому они остаются осмысленными, а слияние
+// граней не дробится на полоски.
+// ============================================================
+struct MeshVolume {
+    const Chunk*          chunk = nullptr;
+    const ChunkNeighbors* nb    = nullptr;
+    i32 step  = 1;          ///< сколько вокселей в клетке по ребру
+    i32 dimX = CHUNK_SIZE, dimY = CHUNK_SIZE_Y, dimZ = CHUNK_SIZE;
+
+    /// Огрублённый объём с рамкой в одну клетку. Пуст при step == 1.
+    const std::vector<u16>* coarse = nullptr;
+    i32 cw = 0, ch = 0, cd = 0;
+
+    u16 at(i32 x, i32 y, i32 z) const {
+        if (step == 1) return sampleVoxel(*chunk, *nb, x, y, z);
+        const i32 ix = x + 1, iy = y + 1, iz = z + 1;
+        if ((u32)ix >= (u32)cw || (u32)iy >= (u32)ch || (u32)iz >= (u32)cd) return AIR;
+        return (*coarse)[((usize)iy * (usize)cd + (usize)iz) * (usize)cw + (usize)ix];
+    }
+};
+
+/// Сводит куб step^3 вокселей к одной клетке: самый частый твёрдый
+/// блок, если твёрдых в нём хотя бы четверть. Порог важен с двух
+/// сторон: без него редкая листва раздувается в глухие кубы, а со
+/// слишком высоким — в дальнем рельефе появляются дыры.
+u16 collapseCell(const Chunk& c, const ChunkNeighbors& nb,
+                 i32 cx, i32 cy, i32 cz, i32 step)
+{
+    u16 ids[8]; i32 cnt[8]; i32 used = 0, solid = 0;
+    const i32 bx = cx * step, by = cy * step, bz = cz * step;
+    for (i32 y = 0; y < step; ++y)
+        for (i32 z = 0; z < step; ++z)
+            for (i32 x = 0; x < step; ++x) {
+                const u16 v = sampleVoxel(c, nb, bx + x, by + y, bz + z);
+                if (v == AIR) continue;
+                ++solid;
+                i32 k = 0;
+                for (; k < used; ++k) if (ids[k] == v) { ++cnt[k]; break; }
+                if (k == used && used < 8) { ids[used] = v; cnt[used] = 1; ++used; }
+            }
+    const i32 cell = step * step * step;
+    if (used == 0 || solid * 4 < cell) return AIR;
+    i32 best = 0;
+    for (i32 k = 1; k < used; ++k) if (cnt[k] > cnt[best]) best = k;
+    return ids[best];
+}
+
+void buildCoarse(const Chunk& c, const ChunkNeighbors& nb, i32 step,
+                 std::vector<u16>& out, i32& cw, i32& ch, i32& cd)
+{
+    const i32 dx = CHUNK_SIZE / step, dy = CHUNK_SIZE_Y / step, dz = CHUNK_SIZE / step;
+    cw = dx + 2; ch = dy + 2; cd = dz + 2;
+    out.assign((usize)cw * ch * cd, (u16)AIR);
+    for (i32 cy = -1; cy <= dy; ++cy)
+        for (i32 cz = -1; cz <= dz; ++cz)
+            for (i32 cx = -1; cx <= dx; ++cx)
+                out[((usize)(cy + 1) * cd + (cz + 1)) * cw + (cx + 1)] =
+                    collapseCell(c, nb, cx, cy, cz, step);
+}
+
+// Высота верхней непрозрачной клетки в колонке, -1 если колонка
+// пуста. Считается один раз на чанк, с рамкой в одну клетку, чтобы
 // грани на стыке смотрели в соседний чанк, а не в пустоту — иначе на
 // границах пошёл бы шов из светлых пикселей.
 //
@@ -68,29 +139,38 @@ constexpr FaceAxes FACES[6] = {
 // строго вверх, а вертикаль чанка не покидает. Пещеры и навесы он
 // отделяет от открытого склона, а это главное.
 constexpr i32 SKY_BORDER = 1;
-constexpr i32 SKY_DIM    = CHUNK_SIZE + SKY_BORDER * 2;
 
-void buildTopSolid(const Chunk& c, const ChunkNeighbors& nb,
-                   const BlockRegistry& reg, std::vector<i16>& top)
-{
-    top.assign((usize)SKY_DIM * SKY_DIM, (i16)-1);
-    for (i32 z = -SKY_BORDER; z < CHUNK_SIZE + SKY_BORDER; ++z) {
-        for (i32 x = -SKY_BORDER; x < CHUNK_SIZE + SKY_BORDER; ++x) {
-            i32 y = CHUNK_SIZE_Y - 1;
+struct SkyMap {
+    std::vector<i16> top;
+    i32 dim = 0;        ///< ширина с рамкой
+    i32 dimZ = 0;
+
+    i16 at(i32 x, i32 z) const {
+        const i32 ix = x + SKY_BORDER, iz = z + SKY_BORDER;
+        if ((u32)ix >= (u32)dim || (u32)iz >= (u32)dimZ) return -1;
+        return top[(usize)iz * dim + ix];
+    }
+};
+
+void buildTopSolid(const MeshVolume& vol, const BlockRegistry& reg, SkyMap& sky) {
+    sky.dim  = vol.dimX + SKY_BORDER * 2;
+    sky.dimZ = vol.dimZ + SKY_BORDER * 2;
+    sky.top.assign((usize)sky.dim * sky.dimZ, (i16)-1);
+    for (i32 z = -SKY_BORDER; z < vol.dimZ + SKY_BORDER; ++z) {
+        for (i32 x = -SKY_BORDER; x < vol.dimX + SKY_BORDER; ++x) {
+            i32 y = vol.dimY - 1;
             for (; y >= 0; --y)
-                if (blocksLight(reg, sampleVoxel(c, nb, x, y, z))) break;
-            top[(usize)(z + SKY_BORDER) * SKY_DIM + (x + SKY_BORDER)] = (i16)y;
+                if (blocksLight(reg, vol.at(x, y, z))) break;
+            sky.top[(usize)(z + SKY_BORDER) * sky.dim + (x + SKY_BORDER)] = (i16)y;
         }
     }
 }
 
-/// Открытость неба в клетке, 0..7. Над верхним непрозрачным блоком —
-/// полностью открыто; ниже гаснет за пять блоков. Остаток не нулевой:
+/// Открытость неба в клетке, 0..7. Над верхней непрозрачной клеткой —
+/// полностью открыто; ниже гаснет за пять клеток. Остаток не нулевой:
 /// в абсолютной темноте пещера не читается, она просто исчезает.
-inline u8 skyAt(const std::vector<i16>& top, i32 x, i32 y, i32 z) {
-    if ((u32)(x + SKY_BORDER) >= (u32)SKY_DIM ||
-        (u32)(z + SKY_BORDER) >= (u32)SKY_DIM) return 7;
-    const i32 t = top[(usize)(z + SKY_BORDER) * SKY_DIM + (x + SKY_BORDER)];
+inline u8 skyAt(const SkyMap& sky, i32 x, i32 y, i32 z) {
+    const i32 t = sky.at(x, z);
     if (y > t) return 7;
     const i32 depth = t - y + 1;
     const i32 v = 7 - (depth * 7 + 2) / 5;
@@ -99,21 +179,19 @@ inline u8 skyAt(const std::vector<i16>& top, i32 x, i32 y, i32 z) {
 
 // Открытость неба во всех четырёх углах грани, по три бита на угол.
 // Угол видит четыре клетки, сходящиеся в нём: усреднение по ним даёт
-// плавный переход вместо ступеньки в один воксель на входе в пещеру.
-u16 faceSky(const std::vector<i16>& top, const i32 n[3],
-            const FaceAxes& ax, i32 step)
-{
+// плавный переход вместо ступеньки в одну клетку на входе в пещеру.
+u16 faceSky(const SkyMap& sky, const i32 n[3], const FaceAxes& ax) {
     auto at = [&](i32 du, i32 dv) {
         i32 p[3] = { n[0], n[1], n[2] };
         p[ax.u] += du;
         p[ax.v] += dv;
-        return (i32)skyAt(top, p[0], p[1], p[2]);
+        return (i32)skyAt(sky, p[0], p[1], p[2]);
     };
     const i32 c  = at(0, 0);
-    const i32 uM = at(-step, 0), uP = at(step, 0);
-    const i32 vM = at(0, -step), vP = at(0, step);
-    const i32 mm = at(-step, -step), pm = at(step, -step);
-    const i32 pp = at(step, step),   mp = at(-step, step);
+    const i32 uM = at(-1, 0),  uP = at(1, 0);
+    const i32 vM = at(0, -1),  vP = at(0, 1);
+    const i32 mm = at(-1, -1), pm = at(1, -1);
+    const i32 pp = at(1, 1),   mp = at(-1, 1);
 
     auto avg = [](i32 a, i32 b, i32 d, i32 e) {
         return (u16)((a + b + d + e + 2) / 4);
@@ -131,19 +209,19 @@ u16 faceSky(const std::vector<i16>& top, const i32 n[3],
 // n — клетка ПЕРЕД гранью, то есть та, из которой на грань смотрят.
 // Тень даёт то, что стоит рядом с ней в плоскости грани: восемь
 // соседей, из них каждый угол видит два ребра и одну диагональ.
-u8 faceAo(const Chunk& c, const ChunkNeighbors& nb, const BlockRegistry& reg,
-          const i32 n[3], const FaceAxes& ax, i32 step)
+u8 faceAo(const MeshVolume& vol, const BlockRegistry& reg,
+          const i32 n[3], const FaceAxes& ax)
 {
     auto occ = [&](i32 du, i32 dv) {
         i32 p[3] = { n[0], n[1], n[2] };
         p[ax.u] += du;
         p[ax.v] += dv;
-        return blocksLight(reg, sampleVoxel(c, nb, p[0], p[1], p[2]));
+        return blocksLight(reg, vol.at(p[0], p[1], p[2]));
     };
-    const bool uM = occ(-step, 0),     uP = occ(step, 0);
-    const bool vM = occ(0, -step),     vP = occ(0, step);
-    const bool mm = occ(-step, -step), pm = occ(step, -step);
-    const bool pp = occ(step, step),   mp = occ(-step, step);
+    const bool uM = occ(-1, 0),  uP = occ(1, 0);
+    const bool vM = occ(0, -1),  vP = occ(0, 1);
+    const bool mm = occ(-1, -1), pm = occ(1, -1);
+    const bool pp = occ(1, 1),   mp = occ(-1, 1);
 
     return (u8)( cornerAo(uM, vM, mm)
               | (cornerAo(uP, vM, pm) << 2)
@@ -154,69 +232,77 @@ u8 faceAo(const Chunk& c, const ChunkNeighbors& nb, const BlockRegistry& reg,
 } // namespace
 
 // ============================================================
-// Greedy Meshing по 3 осям × 6 граней × слоям.
-// mask[u][v] хранит block id для активной грани на текущем слое.
+// Greedy Meshing по 3 осям x 6 граней x слоям.
+// Всё внутри — в координатах КЛЕТОК выбранного уровня детализации;
+// в блоки они переводятся один раз, при записи квада.
 // ============================================================
 template<typename QuadContainer>
 u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                         QuadContainer& outQuads, Lod lod)
 {
     outQuads.clear();
-    const i32 step  = 1 << (u8)lod;   // шаг по осям: 1, 2, 4, 8
-    const i32 sizeX = CHUNK_SIZE;
-    const i32 sizeY = CHUNK_SIZE_Y;
-    const i32 sizeZ = CHUNK_SIZE;
+    const i32 step = 1 << (u8)lod;   // вокселей в клетке: 1, 2, 4, 8
+
+    static thread_local std::vector<u16> coarse;
+    MeshVolume vol;
+    vol.chunk = &chunk;
+    vol.nb    = &nb;
+    vol.step  = step;
+    vol.dimX  = CHUNK_SIZE   / step;
+    vol.dimY  = CHUNK_SIZE_Y / step;
+    vol.dimZ  = CHUNK_SIZE   / step;
+    if (step > 1) {
+        buildCoarse(chunk, nb, step, coarse, vol.cw, vol.ch, vol.cd);
+        vol.coarse = &coarse;
+    }
 
     // Маска плоскости слоя. Раньше она была фиксированной 256x256 и
     // обнулялась целиком на каждый слой: 384 слоя x 192 КБ давали
     // ~73 МБ memset на один вызов, и это при бюджете 16 мс на чанк.
-    // Теперь размер — под фактическую грань (максимум 128x128 = 32 КБ),
-    // и чистится только использованная часть.
+    // Теперь размер — под фактическую грань, и чистится только
+    // использованная часть.
     static thread_local std::vector<u16> mask;
-    // Затенение углов идёт параллельной маской: слияние требует
-    // совпадения не только блока, но и всех четырёх углов.
-    static thread_local std::vector<u8> aoMask;
-    // Открытость неба — третья маска. Слияние требует совпадения всех
-    // трёх: иначе тень свода растеклась бы по освещённому склону.
+    // Затенение углов и открытость неба идут параллельными масками:
+    // слияние требует совпадения всех трёх, иначе тень свода
+    // растеклась бы по освещённому склону.
+    static thread_local std::vector<u8>  aoMask;
     static thread_local std::vector<u16> skyMask;
-    const i32 maxDim = sizeY > sizeX ? sizeY : sizeX;
-    if ((i32)mask.size() < maxDim * maxDim) mask.assign((usize)maxDim * maxDim, 0);
-    if ((i32)aoMask.size() < maxDim * maxDim) aoMask.assign((usize)maxDim * maxDim, 0);
-    if ((i32)skyMask.size() < maxDim * maxDim) skyMask.assign((usize)maxDim * maxDim, 0);
 
-    static thread_local std::vector<i16> topSolid;
-    buildTopSolid(chunk, nb, blocks(), topSolid);
+    const i32 maxDim = vol.dimY > vol.dimX ? vol.dimY : vol.dimX;
+    const usize need = (usize)maxDim * maxDim;
+    if (mask.size()    < need) mask.assign(need, 0);
+    if (aoMask.size()  < need) aoMask.assign(need, 0);
+    if (skyMask.size() < need) skyMask.assign(need, 0);
 
+    static thread_local SkyMap skyMap;
     auto& reg = blocks();
+    buildTopSolid(vol, reg, skyMap);
 
     for (u8 face = 0; face < 6; ++face) {
         const FaceAxes ax = FACES[face];
-        const i32 dimU = (ax.u == 0) ? sizeX : (ax.u == 1 ? sizeY : sizeZ);
-        const i32 dimV = (ax.v == 0) ? sizeX : (ax.v == 1 ? sizeY : sizeZ);
-        const i32 dimW = (ax.w == 0) ? sizeX : (ax.w == 1 ? sizeY : sizeZ);
+        const i32 dimU = (ax.u == 0) ? vol.dimX : (ax.u == 1 ? vol.dimY : vol.dimZ);
+        const i32 dimV = (ax.v == 0) ? vol.dimX : (ax.v == 1 ? vol.dimY : vol.dimZ);
+        const i32 dimW = (ax.w == 0) ? vol.dimX : (ax.w == 1 ? vol.dimY : vol.dimZ);
         const i32 strideU = dimV;   // строка маски = ось V
 
-        for (i32 slice = 0; slice < dimW; slice += step) {
+        for (i32 slice = 0; slice < dimW; ++slice) {
             bool anyFace = false;
 
-            for (i32 iu = 0; iu < dimU; iu += step) {
+            for (i32 iu = 0; iu < dimU; ++iu) {
                 // Чистим только ту строку, которую сейчас заполняем.
-                std::memset(mask.data() + (usize)iu * strideU, 0,
-                            sizeof(u16) * (usize)dimV);
-                std::memset(aoMask.data() + (usize)iu * strideU, 0,
-                            sizeof(u8) * (usize)dimV);
-                std::memset(skyMask.data() + (usize)iu * strideU, 0,
-                            sizeof(u16) * (usize)dimV);
+                std::memset(mask.data()    + (usize)iu * strideU, 0, sizeof(u16) * (usize)dimV);
+                std::memset(aoMask.data()  + (usize)iu * strideU, 0, sizeof(u8)  * (usize)dimV);
+                std::memset(skyMask.data() + (usize)iu * strideU, 0, sizeof(u16) * (usize)dimV);
 
-                for (i32 iv = 0; iv < dimV; iv += step) {
+                for (i32 iv = 0; iv < dimV; ++iv) {
                     i32 c[3];
                     c[ax.u] = iu; c[ax.v] = iv; c[ax.w] = slice;
-                    const u16 cur = sampleVoxel(chunk, nb, c[0], c[1], c[2]);
+                    const u16 cur = vol.at(c[0], c[1], c[2]);
                     if (cur == AIR) continue;
 
                     i32 n[3] = { c[0], c[1], c[2] };
                     n[ax.w] += ax.sign;
-                    const u16 neighbor = sampleVoxel(chunk, nb, n[0], n[1], n[2]);
+                    const u16 neighbor = vol.at(n[0], n[1], n[2]);
 
                     const BlockDef& cd = reg.get(cur);
                     const BlockDef& nd = reg.get(neighbor);
@@ -239,11 +325,10 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                     }
 
                     if (shouldEmit) {
-                        mask[(usize)iu * strideU + iv] = cur;
-                        aoMask[(usize)iu * strideU + iv] =
-                            faceAo(chunk, nb, reg, n, ax, step);
-                        skyMask[(usize)iu * strideU + iv] =
-                            faceSky(topSolid, n, ax, step);
+                        const usize k = (usize)iu * strideU + iv;
+                        mask[k]    = cur;
+                        aoMask[k]  = faceAo(vol, reg, n, ax);
+                        skyMask[k] = faceSky(skyMap, n, ax);
                         anyFace = true;
                     }
                 }
@@ -252,28 +337,28 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
             if (!anyFace) continue;   // сплошной слой внутри толщи — квадов нет
 
             // Жадное слияние в плоскости (u, v).
-            for (i32 iv = 0; iv < dimV; iv += step) {
+            for (i32 iv = 0; iv < dimV; ++iv) {
                 for (i32 iu = 0; iu < dimU; ) {
-                    const u16 b  = mask[(usize)iu * strideU + iv];
-                    if (!b) { iu += step; continue; }
-                    const u8  ao  = aoMask[(usize)iu * strideU + iv];
-                    const u16 sky = skyMask[(usize)iu * strideU + iv];
+                    const usize k0 = (usize)iu * strideU + iv;
+                    const u16 b = mask[k0];
+                    if (!b) { ++iu; continue; }
+                    const u8  ao  = aoMask[k0];
+                    const u16 sky = skyMask[k0];
 
                     auto same = [&](i32 u2, i32 v2) {
                         const usize k = (usize)u2 * strideU + v2;
                         return mask[k] == b && aoMask[k] == ao && skyMask[k] == sky;
                     };
 
-                    i32 wU = step;
-                    while (iu + wU < dimU && same(iu + wU, iv)) wU += step;
+                    i32 wU = 1;
+                    while (iu + wU < dimU && same(iu + wU, iv)) ++wU;
 
-                    i32 wV = step;
+                    i32 wV = 1;
                     bool ok = true;
                     while (iv + wV < dimV && ok) {
-                        for (i32 k = 0; k < wU; k += step) {
+                        for (i32 k = 0; k < wU; ++k)
                             if (!same(iu + k, iv + wV)) { ok = false; break; }
-                        }
-                        if (ok) wV += step;
+                        if (ok) ++wV;
                     }
 
                     Quad q{};
@@ -281,14 +366,16 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                     q.v0.face   = face;
                     q.v0.normal = face;
 
+                    // Из клеток в блоки — ровно здесь и один раз.
                     glm::vec3 org(0.f);
-                    org[ax.u] = (f32)iu;
-                    org[ax.v] = (f32)iv;
-                    org[ax.w] = (f32)slice + (ax.sign > 0 ? (f32)step : 0.f);
+                    org[ax.u] = (f32)(iu * step);
+                    org[ax.v] = (f32)(iv * step);
+                    org[ax.w] = (f32)((slice + (ax.sign > 0 ? 1 : 0)) * step);
                     q.v0.pos = org;
 
-                    q.du = glm::vec3(0.f); q.du[ax.u] = (f32)wU;
-                    q.dv = glm::vec3(0.f); q.dv[ax.v] = (f32)wV;
+                    q.du = glm::vec3(0.f); q.du[ax.u] = (f32)(wU * step);
+                    q.dv = glm::vec3(0.f); q.dv[ax.v] = (f32)(wV * step);
+
                     q.ao[0] = (u8)( ao       & 3);
                     q.ao[1] = (u8)((ao >> 2) & 3);
                     q.ao[2] = (u8)((ao >> 4) & 3);
@@ -300,12 +387,10 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
 
                     outQuads.push_back(q);
 
-                    for (i32 y = 0; y < wV; y += step)
-                        for (i32 x = 0; x < wU; x += step) {
+                    for (i32 y = 0; y < wV; ++y)
+                        for (i32 x = 0; x < wU; ++x) {
                             const usize k = (usize)(iu + x) * strideU + (iv + y);
-                            mask[k] = 0;
-                            aoMask[k] = 0;
-                            skyMask[k] = 0;
+                            mask[k] = 0; aoMask[k] = 0; skyMask[k] = 0;
                         }
 
                     iu += wU;

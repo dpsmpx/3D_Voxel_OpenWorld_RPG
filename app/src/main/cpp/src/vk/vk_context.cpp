@@ -58,7 +58,11 @@ bool Context::init(ANativeWindow* window) {
     if (!createCommandPool()) return false;
     if (!createCommandBuffers()) return false;
     if (!createSyncObjects()) return false;
-    LOGI("Vulkan: %ux%u, depth=%d", swapExtent_.width, swapExtent_.height, (int)depthFormat_);
+    LOGI("Vulkan: %ux%u, depth=%d, поворот экрана=%s",
+         swapExtent_.width, swapExtent_.height, (int)depthFormat_,
+         surfaceRotationDegrees() == 0   ? "нет"   :
+         surfaceRotationDegrees() == 90  ? "90"    :
+         surfaceRotationDegrees() == 180 ? "180"   : "270");
     return true;
 }
 
@@ -193,6 +197,14 @@ bool Context::createSwapchain() {
     }
     swapFormat_ = chosen.format;
 
+    // Как повёрнут экран относительно родной ориентации панели.
+    // На Android она почти всегда портретная, и в альбомном режиме
+    // сюда приходит ROTATE_90 или ROTATE_270. Мы обязаны либо
+    // повернуть картинку сами, либо попросить композитор — иначе он
+    // поверит preTransform на слово и покажет мир лежащим на боку,
+    // что ровно и происходило.
+    surfaceTransform_ = caps.currentTransform;
+
     swapExtent_ = caps.currentExtent;
     if (swapExtent_.width == UINT32_MAX) {
         swapExtent_.width  = std::clamp(1080u, caps.minImageExtent.width,  caps.maxImageExtent.width);
@@ -211,7 +223,9 @@ bool Context::createSwapchain() {
     ci.imageArrayLayers = 1;
     ci.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    ci.preTransform     = caps.currentTransform;
+    // Поворот делаем сами, в проекции: композитору он обошёлся бы в
+    // лишний полноэкранный проход на каждом кадре.
+    ci.preTransform     = surfaceTransform_;
     ci.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     ci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
     ci.clipped          = VK_TRUE;

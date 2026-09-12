@@ -59,9 +59,29 @@ public:
 
     bool transferBatchOpen() const { return transferCmd_ != VK_NULL_HANDLE; }
 
+    /// Насколько композитор повернёт наш кадр при выводе, в градусах.
+    /// Мы обещали ему это через preTransform, значит обязаны повернуть
+    /// содержимое сами — в проекции камеры и в интерфейсе.
+    u32 surfaceRotationDegrees() const {
+        switch (surfaceTransform_) {
+            case VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR:  return 90;
+            case VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR: return 180;
+            case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR: return 270;
+            default: return 0;
+        }
+    }
+    /// Меняются ли местами ширина и высота при выводе.
+    bool surfaceSwapsAxes() const {
+        const u32 d = surfaceRotationDegrees();
+        return d == 90 || d == 270;
+    }
+
     void waitIdle() const { if (device_) vkDeviceWaitIdle(device_); }
 
 private:
+    VkSurfaceTransformFlagBitsKHR surfaceTransform_ =
+        VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+
     bool createInstance();
     bool createSurface(ANativeWindow* w);
     bool pickPhysicalDevice();

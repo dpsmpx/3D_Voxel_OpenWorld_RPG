@@ -448,6 +448,47 @@ void testGreedyMesh() {
     std::vector<world::Quad> again;
     world::buildGreedyMesh(*chunk, nb, again, world::Lod::Full);
     check(again.size() == q0.size(), "меширование детерминировано");
+
+    // Уровни детализации не должны рождать геометрию в пустоте.
+    //
+    // Так выглядела настоящая поломка: огрубление брало каждый N-й
+    // воксель, поверхность между точками выборки исчезала, а куски
+    // её оставались висеть в воздухе. На экране это была метель из
+    // чёрных плит. Проверяем прямо: ни один квад не уходит выше
+    // поверхности, ни один не висит ниже дна, и верх остаётся сплошным.
+    auto slab = std::make_unique<world::Chunk>();
+    constexpr i32 TOP = 40;
+    for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+            for (i32 y = 0; y < TOP; ++y)
+                slab->voxels[world::chunkIndex(x, y, z)] = world::STONE;
+
+    for (u8 l = 0; l < 4; ++l) {
+        const i32 step = 1 << l;
+        std::vector<world::Quad> lq;
+        world::buildGreedyMesh(*slab, nb, lq, (world::Lod)l);
+
+        f32 maxY = 0.f, topArea = 0.f;
+        bool inside = true;
+        for (const auto& q : lq) {
+            const f32 y0 = q.v0.pos.y;
+            const f32 y1 = y0 + q.du.y + q.dv.y;
+            maxY = std::max(maxY, std::max(y0, y1));
+            if (y0 < 0.f || y1 > (f32)world::CHUNK_SIZE_Y) inside = false;
+            if (q.v0.face == 2)
+                topArea += glm::length(q.du) * glm::length(q.dv);
+        }
+        char what[96];
+        std::snprintf(what, sizeof(what),
+                      "LOD %u: геометрия не выходит за чанк", (unsigned)l);
+        check(inside, what);
+        std::snprintf(what, sizeof(what),
+                      "LOD %u: ничего не висит выше поверхности", (unsigned)l);
+        check(maxY <= (f32)(TOP + step), what);
+        std::snprintf(what, sizeof(what),
+                      "LOD %u: верхняя поверхность сплошная", (unsigned)l);
+        check(topArea >= (f32)(world::CHUNK_SIZE * world::CHUNK_SIZE), what);
+    }
 }
 
 // ------------------------------------------------------------

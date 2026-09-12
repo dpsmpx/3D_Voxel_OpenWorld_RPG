@@ -221,8 +221,7 @@ struct Engine {
             LOGE("RenderSystem init failed");
             return;
         }
-        render->camera().setAspect((f32)ww / (f32)wh);
-        render->camera().setViewport((u32)ww, (u32)wh);
+        applySurfaceGeometry();
         render->camera().setFog(140.f, 380.f);
         render->camera().setSunDir(dayCycle.sunDirection());
         render->camera().setSky(dayCycle.skyColor(), dayCycle.skyLight(),
@@ -236,6 +235,7 @@ struct Engine {
         }
         ui->setScreenSize(ww, wh);
         ui->attachTouch(&touch);
+        ui->setSurfaceRotation(vk.surfaceRotationDegrees());
         ui->showFps = cfg::settingsConst().showFps;
 
         ui->minimap.init(vk, 128);
@@ -642,6 +642,32 @@ struct Engine {
             if (b != world::AIR && !world::blocks().isTransparent(b)) return true;
         }
         return false;
+    }
+
+    /// Переносит геометрию поверхности в камеру и интерфейс.
+    ///
+    /// Три разные вещи, которые легко перепутать:
+    ///  * размер ОКНА (ANativeWindow) — в нём приходят касания и в нём
+    ///    же интерфейс считает свои прямоугольники;
+    ///  * размер БУФЕРА кадра (swapchain) — в нём живёт gl_FragCoord,
+    ///    и именно его ждёт шейдер неба;
+    ///  * поворот при выводе — композитор довернёт кадр, и повернуть
+    ///    содержимое обязаны мы сами.
+    /// Раньше в шейдер уезжал размер окна, а поворот не учитывался
+    /// нигде: мир лежал на боку, а небо строилось по чужой сетке.
+    void applySurfaceGeometry() {
+        if (!render) return;
+        const VkExtent2D fb = vk.extent();
+        if (fb.width == 0 || fb.height == 0) return;
+
+        const f32 fw = (f32)fb.width, fh = (f32)fb.height;
+        const f32 logicalAspect = vk.surfaceSwapsAxes() ? fh / fw : fw / fh;
+
+        auto& cam = render->camera();
+        cam.setAspect(logicalAspect);
+        cam.setViewport(fb.width, fb.height);
+        cam.setSurfaceRotation(vk.surfaceRotationDegrees());
+        if (ui) ui->setSurfaceRotation(vk.surfaceRotationDegrees());
     }
 
     void update(f32 dt, f32 timeSec) {
@@ -1097,11 +1123,8 @@ static void handleCmd(android_app* app, int32_t cmd) {
             const i32 wh = ANativeWindow_getHeight(app->window);
             eng->vk.onResize(app->window);
             eng->touch.setViewport(ww, wh);
-            if (eng->render) {
-                eng->render->camera().setAspect((f32)ww / (f32)wh);
-                eng->render->camera().setViewport((u32)ww, (u32)wh);
-            }
             if (eng->ui) eng->ui->setScreenSize(ww, wh);
+            eng->applySurfaceGeometry();
             break;
         }
         case APP_CMD_GAINED_FOCUS:
