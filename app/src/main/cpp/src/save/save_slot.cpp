@@ -9,6 +9,8 @@
 #include <cstring>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <string>
+#include <vector>
 
 namespace save {
 

@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <functional>
+#include <vector>
 
 #define VKCHECK(x) do { VkResult _r = (x); if (_r != VK_SUCCESS) { \
     LOGE("Vulkan error %d at %s:%d", (int)_r, __FILE__, __LINE__); return false; } } while(0)

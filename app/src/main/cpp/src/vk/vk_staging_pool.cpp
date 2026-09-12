@@ -5,6 +5,7 @@
 #include "vk_staging_pool.h"
 #include "../core/log.h"
 #include <algorithm>
+#include <memory>
 
 namespace vk {
 

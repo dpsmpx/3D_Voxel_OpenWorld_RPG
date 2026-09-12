@@ -13,6 +13,8 @@
 #include <shared_mutex>
 #include <atomic>
 #include <functional>
+#include <utility>
+#include <vector>
 
 namespace world {
 

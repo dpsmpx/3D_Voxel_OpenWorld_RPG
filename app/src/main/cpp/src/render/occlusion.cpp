@@ -6,6 +6,8 @@
 #include "../world/block.h"
 #include <algorithm>
 #include <cmath>
+#include <atomic>
+#include <shared_mutex>
 
 namespace render {
 

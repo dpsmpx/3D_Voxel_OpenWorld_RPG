@@ -8,6 +8,7 @@
 #include <queue>
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 namespace world::ai {
 

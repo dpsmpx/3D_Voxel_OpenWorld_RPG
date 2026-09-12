@@ -5,6 +5,13 @@
 #include "job_system.h"
 #include "log.h"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 namespace jobs {
 

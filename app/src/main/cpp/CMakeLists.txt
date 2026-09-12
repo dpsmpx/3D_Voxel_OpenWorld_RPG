@@ -52,7 +52,8 @@ endif()
 add_library(native-lib SHARED
     src/main.cpp
 
-    # Ядро: планировщик задач, память
+    # Ядро: планировщик задач, память, журнал падений
+    src/core/crashlog.cpp
     src/core/job_system.cpp
 
     # Настройки, локализация, таймер игры

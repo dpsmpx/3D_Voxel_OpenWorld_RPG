@@ -28,6 +28,9 @@
 #include <ctime>
 #include <algorithm>
 #include <glm/glm.hpp>
+#include <functional>
+#include <string>
+#include <vector>
 
 namespace ui {
 

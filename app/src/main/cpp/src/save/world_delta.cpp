@@ -4,6 +4,9 @@
  */
 #include "world_delta.h"
 #include <shared_mutex>
+#include <atomic>
+#include <mutex>
+#include <utility>
 #include "../core/log.h"
 #include "../world/block.h"
 

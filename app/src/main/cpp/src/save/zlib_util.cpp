@@ -6,6 +6,7 @@
 #include "../core/log.h"
 #include <zlib.h>
 #include <cstring>
+#include <vector>
 
 namespace save {
 

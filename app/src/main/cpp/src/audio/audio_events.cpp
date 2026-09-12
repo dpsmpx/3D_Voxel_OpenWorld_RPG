@@ -5,6 +5,7 @@
 #include "audio_events.h"
 #include "../world/block.h"
 #include <algorithm>
+#include <cmath>
 
 namespace audio {
 

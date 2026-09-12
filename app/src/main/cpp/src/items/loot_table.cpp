@@ -7,6 +7,7 @@
 #include "../mobs/mob_def.h"
 #include "../core/log.h"
 #include <random>
+#include <vector>
 
 namespace items {
 

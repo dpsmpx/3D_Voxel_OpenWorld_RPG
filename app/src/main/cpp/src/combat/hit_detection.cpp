@@ -9,6 +9,7 @@
 #include "../world/block.h"
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 namespace combat {
 

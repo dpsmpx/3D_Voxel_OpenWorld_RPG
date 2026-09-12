@@ -14,6 +14,7 @@
 #include "../core/log.h"
 #include <glm/glm.hpp>
 #include <cmath>
+#include <algorithm>
 
 namespace items {
 

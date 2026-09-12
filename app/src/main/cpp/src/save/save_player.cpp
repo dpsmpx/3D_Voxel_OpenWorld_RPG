@@ -13,6 +13,8 @@
 #include "../factions/faction.h"
 #include <glm/glm.hpp>
 #include <algorithm>
+#include <cstdio>
+#include <string>
 
 namespace save {
 

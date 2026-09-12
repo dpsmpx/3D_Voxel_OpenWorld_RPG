@@ -5,6 +5,8 @@
 #include "mesh_builder.h"
 #include "../world/block.h"
 
+#include <vector>
+
 namespace render {
 
 namespace {

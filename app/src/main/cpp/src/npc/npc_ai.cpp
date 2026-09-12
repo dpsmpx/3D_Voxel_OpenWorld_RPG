@@ -11,6 +11,8 @@
 #include "../core/log.h"
 #include <cmath>
 #include <random>
+#include <algorithm>
+#include <vector>
 
 namespace npc {
 

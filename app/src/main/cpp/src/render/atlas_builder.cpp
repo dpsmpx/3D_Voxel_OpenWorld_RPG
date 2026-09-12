@@ -6,6 +6,7 @@
 #include "../world/block.h"
 #include <random>
 #include <cstring>
+#include <algorithm>
 
 namespace render {
 

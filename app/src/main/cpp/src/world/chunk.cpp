@@ -7,6 +7,8 @@
 #include "../core/log.h"
 #include <cstring>
 #include <array>
+#include <memory_resource>
+#include <vector>
 
 namespace world {
 

@@ -9,6 +9,8 @@
 #include "../factions/faction.h"
 #include "../ecs/registry.h"
 
+#include <vector>
+
 namespace trade {
 
 /// Запись ассортимента.

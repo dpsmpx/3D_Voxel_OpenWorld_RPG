@@ -14,6 +14,8 @@
 #include <thread>
 #include <ctime>
 #include <string>
+#include <algorithm>
+#include <atomic>
 
 #include "core/log.h"
 #include "core/job_system.h"
@@ -165,14 +167,17 @@ struct Engine {
                            app->activity->internalDataPath : "/tmp";
         settingsPath = internalDataPath + "/settings.cfg";
 
+        crash::step("чтение настроек");
         cfg::settings().load(settingsPath);
         cfg::L().setLanguage(cfg::settingsConst().language);
 
+        crash::step("Vulkan: создание контекста");
         if (!vk.init(w)) { LOGE("Vulkan init failed"); return; }
 
         const i32 ww = ANativeWindow_getWidth(w);
         const i32 wh = ANativeWindow_getHeight(w);
 
+        crash::step("менеджер сохранений");
         saveMgr.init(internalDataPath.c_str());
 
         touch.setViewport(ww, wh);
@@ -180,6 +185,7 @@ struct Engine {
         // Кнопки ещё не созданы — настройки ввода применятся в
         // setupButtons(), вместе с их раскладкой.
 
+        crash::step("менеджер чанков");
         world = std::make_unique<world::ChunkManager>(
             worldSeed, cfg::settingsConst().viewDistance);
 
@@ -187,6 +193,7 @@ struct Engine {
             worldDelta.recordBlock(wx, wy, wz, newId);
         });
 
+        crash::step("система рендера");
         render = std::make_unique<render::RenderSystem>();
         if (!render->init(vk, app->activity->assetManager)) {
             LOGE("RenderSystem init failed");
@@ -199,6 +206,7 @@ struct Engine {
         render->camera().setSky(dayCycle.skyColor(), dayCycle.skyLight(),
                                 dayCycle.timeOfDay());
 
+        crash::step("интерфейс");
         ui = std::make_unique<ui::UiSystem>();
         if (!ui->init(vk, app->activity->assetManager)) {
             LOGE("UI init failed");
@@ -383,6 +391,7 @@ struct Engine {
 
         fpsTime = std::chrono::steady_clock::now();
 
+        crash::step("инициализация завершена");
         initialized = true;
         running     = true;
         LOGI("=== VoxelRPG готов (Phase 15). Spawn y=%.1f ===", playerSpawn.y);
@@ -1041,10 +1050,18 @@ static void handleCmd(android_app* app, int32_t cmd) {
 // поэтому имя не должно искажаться C++-манглингом.
 // ============================================================
 extern "C" void android_main(android_app* app) {
+    // Первым делом — журнал: всё, что случится раньше, увидеть нельзя.
+    crash::init(app->activity ? app->activity->internalDataPath : nullptr,
+                app->activity ? app->activity->externalDataPath : nullptr);
+
     LOGI("================================================");
     LOGI(" VoxelRPG: android_main (Phase 1-15)");
     LOGI("================================================");
+    if (crash::logPath()[0])       LOGI("журнал: %s", crash::logPath());
+    if (crash::sharedLogPath()[0]) LOGI("журнал (читается из Termux): %s",
+                                        crash::sharedLogPath());
 
+    crash::step("старт планировщика задач");
     jobs::gJobs.start();
 
     Engine eng;

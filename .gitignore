@@ -44,3 +44,5 @@ Thumbs.db
 build/hostcheck/
 build/docs/
 app/src/main/assets/textures/*.astc
+__pycache__/
+*.pyc

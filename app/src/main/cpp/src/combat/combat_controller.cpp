@@ -11,6 +11,7 @@
 #include "../core/log.h"
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 namespace combat {
 
