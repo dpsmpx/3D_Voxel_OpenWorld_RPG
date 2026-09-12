@@ -23,7 +23,29 @@ bool StagingPool::init(VkDevice dev, VkPhysicalDevice phys) {
     return true;
 }
 
+void StagingPool::collect(u32 keep) {
+    keepBatches_ = keep ? keep : 1;
+    ++batchNo_;
+    for (auto& b : buffers_)
+        if (b->inUse && b->freeAtBatch != 0 && batchNo_ >= b->freeAtBatch) {
+            b->inUse = false;
+            b->freeAtBatch = 0;
+        }
+}
+
+void StagingPool::retire(StagingBuffer* s) {
+    if (!s) return;
+    // Освободится не раньше, чем через keepBatches_ пакетов: столько
+    // держится кольцо командных буферов передачи в vk::Context.
+    s->freeAtBatch = batchNo_ + keepBatches_;
+}
+
 bool StagingPool::resize(StagingBuffer* s, u64 newCap) {
+    // Буфер сейчас перестанет существовать. Если пересоздать его не
+    // удастся, ёмкость должна быть нулевой: иначе acquire() потом
+    // выдаст «достаточно большой» буфер с пустым дескриптором, и
+    // копия пойдёт из ниоткуда.
+    s->capacity = 0;
     if (s->mapped) { vkUnmapMemory(dev_, s->memory); s->mapped = nullptr; }
     if (s->buffer) { vkDestroyBuffer(dev_, s->buffer, nullptr); s->buffer = VK_NULL_HANDLE; }
     if (s->memory) { vkFreeMemory(dev_, s->memory, nullptr);   s->memory = VK_NULL_HANDLE; }

@@ -16,20 +16,34 @@ struct StagingBuffer {
     u8*            mapped   = nullptr;
     u64            capacity = 0;
     bool           inUse    = false;
+    /// Номер пакета, начиная с которого буфер снова свободен. GPU
+    /// читает из него уже после того, как процессор ушёл дальше.
+    u64            freeAtBatch = 0;
 };
 
-/// StagingPool — переиспользует staging-буферы между upload'ами.
-/// Аллокация vkAllocateMemory происходит редко (только рост capacity).
-/// Предполагается, что вызывающий код синхронно дожидается завершения
-/// GPU-работы перед release() (в нашем случае — submitOneShot).
+/// StagingPool — переиспользует staging-буферы между загрузками.
+/// vkAllocateMemory случается редко — только когда нужен буфер
+/// больше имеющихся.
+///
+/// Пакет передачи не дожидается GPU на процессоре, поэтому отданный
+/// буфер нельзя занимать сразу: из него ещё читают. retire() помечает
+/// буфер сроком годности в пакетах, collect() на следующем пакете
+/// забирает то, что отлежалось. Без этого содержимое одного чанка
+/// уезжало в вершины другого.
+///
 /// Не потокобезопасен — вызовы только с главного потока.
 class StagingPool {
 public:
     bool init(VkDevice dev, VkPhysicalDevice phys);
     void destroy();
 
+    /// Открывает новый пакет: возвращает в оборот то, что GPU уже
+    /// дочитал. keep — на сколько пакетов буфер остаётся занятым.
+    void collect(u32 keep);
+
     StagingBuffer* acquire(u64 minSize);
-    void release(StagingBuffer* s) { if (s) s->inUse = false; }
+    /// Буфер отдан GPU: освободится через keep пакетов, см. collect().
+    void retire(StagingBuffer* s);
 
     usize count() const { return buffers_.size(); }
     u64 totalBytes() const;
@@ -42,6 +56,8 @@ private:
     VkPhysicalDevice phys_ = VK_NULL_HANDLE;
     std::vector<std::unique_ptr<StagingBuffer>> buffers_;
     u64 nextCapacity_ = 1ull << 20;  // стартовый размер 1 MiB
+    u64 batchNo_ = 0;
+    u32 keepBatches_ = 1;
 };
 
 } // namespace vk

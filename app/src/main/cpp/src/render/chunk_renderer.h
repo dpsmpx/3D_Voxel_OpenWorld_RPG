@@ -19,6 +19,11 @@ namespace render {
 
 class ChunkRenderer {
 public:
+    /// Сколько свежепостроенных мешей берём в один кадр. Каждый стоит
+    /// сборки вершин на процессоре и копии в видеопамять; при загрузке
+    /// мира их приезжает по нескольку десятков разом.
+    static constexpr usize MAX_MESH_UPLOADS_PER_FRAME = 12;
+
     bool init(VkDevice dev, VkPhysicalDevice phys);
     void shutdown();
 
@@ -78,6 +83,12 @@ private:
         /// Вдвое меньше индексного трафика на ровном месте.
         VkIndexType indexType = VK_INDEX_TYPE_UINT16;
         bool valid = false;
+        /// Этот уровень уже побывал в видеопамяти. Отличает «чанк
+        /// пуст — рисовать нечего» от «меш ещё не приехал»: в обоих
+        /// случаях индексов ноль, но заказывать заново надо только
+        /// во втором. Без этого различения пустое небо над головой
+        /// заказывалось бы каждый кадр.
+        bool uploaded = false;
     };
     struct ChunkGpu {
         GpuMesh                        lod[4];

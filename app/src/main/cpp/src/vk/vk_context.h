@@ -40,6 +40,13 @@ public:
     VkResult         lastPresentResult() const { return lastPresent_; }
     static constexpr u32 MAX_FRAMES = 2;
 
+    /// Пакет передачи больше не ждёт GPU на процессоре, поэтому его
+    /// командный буфер нельзя ни освободить, ни перезаписать сразу.
+    /// Кольцо из нескольких слотов: к моменту, когда очередь снова
+    /// доходит до слота, его работа давно закончена. Столько же
+    /// пакетов держатся занятыми staging-буферы, см. vk::StagingPool.
+    static constexpr u32 TRANSFER_SLOTS = MAX_FRAMES + 1;
+
     // ---- Одиночная передача ----
     /// Выполняет fn(cmd) в отдельном командном буфере и ждёт завершения.
     /// Полная остановка конвейера, поэтому годится только для редких
@@ -145,8 +152,15 @@ private:
     bool                     frameStarted_ = false;
 
     /// Пакет передач: буфер и забор переиспользуются между кадрами.
-    VkCommandBuffer          transferCmd_   = VK_NULL_HANDLE;
-    VkFence                  transferFence_ = VK_NULL_HANDLE;
+    struct TransferSlot {
+        VkCommandBuffer cmd   = VK_NULL_HANDLE;
+        VkFence         fence = VK_NULL_HANDLE;
+        bool            submitted = false;
+    };
+    TransferSlot             transfers_[TRANSFER_SLOTS];
+    u32                      transferSlot_    = 0;
+    u64                      transferBatchNo_ = 0;
+    VkCommandBuffer          transferCmd_     = VK_NULL_HANDLE;
 };
 
 } // namespace vk

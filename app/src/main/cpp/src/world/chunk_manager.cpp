@@ -274,10 +274,17 @@ NeighborLease ChunkManager::gatherNeighbors(i32 cx, i32 cz) const {
     return lease;
 }
 
-std::vector<std::shared_ptr<Chunk>> ChunkManager::pollMeshesReady() {
+std::vector<std::shared_ptr<Chunk>> ChunkManager::pollMeshesReady(usize maxCount) {
     std::vector<std::shared_ptr<Chunk>> out;
     std::lock_guard lk(readyMtx_);
-    out.swap(meshesReady_);
+    if (maxCount == 0 || meshesReady_.size() <= maxCount) {
+        out.swap(meshesReady_);
+        return out;
+    }
+    // Берём с начала — то, что готово дольше всех, ближе к игроку по
+    // времени постановки в очередь. Хвост остаётся до следующего кадра.
+    out.assign(meshesReady_.begin(), meshesReady_.begin() + (long)maxCount);
+    meshesReady_.erase(meshesReady_.begin(), meshesReady_.begin() + (long)maxCount);
     return out;
 }
 

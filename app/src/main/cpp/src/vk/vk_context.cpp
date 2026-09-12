@@ -582,13 +582,13 @@ void Context::endFrame() {
 void Context::shutdown() {
     if (device_) {
         vkDeviceWaitIdle(device_);
-        if (transferCmd_ != VK_NULL_HANDLE) {
-            vkFreeCommandBuffers(device_, cmdPool_, 1, &transferCmd_);
-            transferCmd_ = VK_NULL_HANDLE;
-        }
-        if (transferFence_ != VK_NULL_HANDLE) {
-            vkDestroyFence(device_, transferFence_, nullptr);
-            transferFence_ = VK_NULL_HANDLE;
+        transferCmd_ = VK_NULL_HANDLE;
+        for (auto& slot : transfers_) {
+            if (slot.cmd != VK_NULL_HANDLE)
+                vkFreeCommandBuffers(device_, cmdPool_, 1, &slot.cmd);
+            if (slot.fence != VK_NULL_HANDLE)
+                vkDestroyFence(device_, slot.fence, nullptr);
+            slot = TransferSlot{};
         }
         for (u32 i = 0; i < MAX_FRAMES; ++i) {
             vkDestroySemaphore(device_, imgAvailable_[i], nullptr);
@@ -618,42 +618,67 @@ VkCommandBuffer Context::beginTransferBatch() {
         return VK_NULL_HANDLE;
     }
 
-    if (transferFence_ == VK_NULL_HANDLE) {
+    TransferSlot& slot = transfers_[transferSlot_];
+
+    if (slot.fence == VK_NULL_HANDLE) {
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        if (vkCreateFence(device_, &fi, nullptr, &transferFence_) != VK_SUCCESS) {
+        if (vkCreateFence(device_, &fi, nullptr, &slot.fence) != VK_SUCCESS) {
             LOGE("beginTransferBatch: не создан fence");
             return VK_NULL_HANDLE;
         }
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool        = cmdPool_;
+        ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandBufferCount = 1;
+        if (vkAllocateCommandBuffers(device_, &ai, &slot.cmd) != VK_SUCCESS) {
+            slot.cmd = VK_NULL_HANDLE;
+            LOGE("beginTransferBatch: не выделен командный буфер");
+            return VK_NULL_HANDLE;
+        }
+    } else if (slot.submitted) {
+        // Этот слот отдавали GPU TRANSFER_SLOTS пакетов назад — к
+        // этому моменту он давно закончен, и ожидание ничего не стоит.
+        // Оно нужно только чтобы переиспользовать командный буфер.
+        vkWaitForFences(device_, 1, &slot.fence, VK_TRUE, UINT64_MAX);
+        vkResetCommandBuffer(slot.cmd, 0);
     }
-
-    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    ai.commandPool        = cmdPool_;
-    ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ai.commandBufferCount = 1;
-    if (vkAllocateCommandBuffers(device_, &ai, &transferCmd_) != VK_SUCCESS) {
-        transferCmd_ = VK_NULL_HANDLE;
-        LOGE("beginTransferBatch: не выделен командный буфер");
-        return VK_NULL_HANDLE;
-    }
+    vkResetFences(device_, 1, &slot.fence);
+    slot.submitted = false;
 
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(transferCmd_, &bi);
+    vkBeginCommandBuffer(slot.cmd, &bi);
+
+    // Записи идут в буферы, из которых ещё может читать предыдущий
+    // кадр. Область действия барьера — вся очередь: первая половина
+    // захватывает всё, что отправлено раньше, поэтому копии дождутся
+    // чужого чтения вершин без остановки процессора.
+    VkMemoryBarrier before{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    before.srcAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+    before.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(slot.cmd,
+                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 1, &before, 0, nullptr, 0, nullptr);
+
+    transferCmd_ = slot.cmd;
     return transferCmd_;
 }
 
 void Context::endTransferBatch() {
     if (transferCmd_ == VK_NULL_HANDLE) return;
+    TransferSlot& slot = transfers_[transferSlot_];
 
-    // Один барьер на весь пакет: дальше вершинный ввод читает всё,
-    // что мы только что скопировали.
-    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    mb.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+    // Вторая половина барьера: дальше вершинный ввод читает всё, что
+    // мы только что скопировали. Она тоже действует на всю очередь,
+    // то есть и на кадр, который будет отправлен следом.
+    VkMemoryBarrier after{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    after.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    after.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
     vkCmdPipelineBarrier(transferCmd_,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-                         0, 1, &mb, 0, nullptr, 0, nullptr);
+                         0, 1, &after, 0, nullptr, 0, nullptr);
 
     vkEndCommandBuffer(transferCmd_);
 
@@ -661,12 +686,19 @@ void Context::endTransferBatch() {
     si.commandBufferCount = 1;
     si.pCommandBuffers    = &transferCmd_;
 
-    vkResetFences(device_, 1, &transferFence_);
-    vkQueueSubmit(gfxQueue_, 1, &si, transferFence_);
-    vkWaitForFences(device_, 1, &transferFence_, VK_TRUE, UINT64_MAX);
+    // Раньше здесь стояло ожидание на заборе — процессор простаивал,
+    // пока GPU не доделает и копии, и всё, что стояло в очереди до
+    // них, то есть весь предыдущий кадр. На загрузке чанков это
+    // съедало пятнадцать миллисекунд из шестнадцати. Порядок теперь
+    // держат барьеры очереди, а забор нужен лишь для того, чтобы
+    // через TRANSFER_SLOTS пакетов переиспользовать командный буфер.
+    const VkResult r = vkQueueSubmit(gfxQueue_, 1, &si, slot.fence);
+    if (r != VK_SUCCESS) LOGE("endTransferBatch: vkQueueSubmit %d", (int)r);
+    slot.submitted = (r == VK_SUCCESS);
 
-    vkFreeCommandBuffers(device_, cmdPool_, 1, &transferCmd_);
-    transferCmd_ = VK_NULL_HANDLE;
+    transferCmd_  = VK_NULL_HANDLE;
+    transferSlot_ = (transferSlot_ + 1) % TRANSFER_SLOTS;
+    ++transferBatchNo_;
 }
 
 void Context::submitOneShot(const std::function<void(VkCommandBuffer)>& fn) {

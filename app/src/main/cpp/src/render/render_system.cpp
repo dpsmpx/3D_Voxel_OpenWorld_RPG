@@ -102,7 +102,7 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     currentFps_    = fps;
     lastHit_       = targetHit;
 
-    const auto ready = world.pollMeshesReady();
+    const auto ready = world.pollMeshesReady(render::ChunkRenderer::MAX_MESH_UPLOADS_PER_FRAME);
     chunkRenderer_.uploadChunks(ctx, world, ready, camera_.position());
 
     mobRenderer_.rebuild(registry);
