@@ -475,6 +475,9 @@ void Context::endFrame() {
     if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR) {
         needsResize_ = true;
     } else if (pres == VK_SUCCESS) {
+        // Первый показанный кадр — важная веха: до него «чёрный экран»
+        // и «кадры не доходят до экрана» выглядят одинаково.
+        if (framesPresented_ == 0) LOGI("первый кадр показан на экране");
         ++framesPresented_;
     } else {
         // Об ошибке показа надо знать: без неё «чёрный экран» неотличим

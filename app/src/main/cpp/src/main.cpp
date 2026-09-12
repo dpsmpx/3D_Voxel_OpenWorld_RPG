@@ -1096,6 +1096,7 @@ extern "C" void android_main(android_app* app) {
     auto lastTime = startTime;
     f32 statTimer = 0.f;
     u64 lastPresented = 0;
+    u32 statReports = 0;
 
     while (true) {
         const int timeoutMs = eng.running ? 0 : -1;
@@ -1154,8 +1155,11 @@ extern "C" void android_main(android_app* app) {
             // отличить от «кадры идут, но в них нечего показать»:
             // по числу показанных кадров, положению камеры и числу
             // нарисованных чанков видно, какая именно это беда.
+            // Первые отчёты — каждую секунду: приложение могут свернуть
+            // через пару секунд, и редкая сводка ничего не успеет сказать.
             statTimer += dt;
-            if (statTimer >= 3.f) {
+            if (statTimer >= (statReports < 10 ? 1.f : 3.f)) {
+                ++statReports;
                 const u64 presented = eng.vk.framesPresented();
                 const f32 fps = (f32)(presented - lastPresented) / statTimer;
                 lastPresented = presented;
