@@ -368,16 +368,30 @@ void ChunkManager::setVoxel(i32 wx, i32 wy, i32 wz, u16 block) {
 }
 
 u16 ChunkManager::getVoxel(i32 wx, i32 wy, i32 wz) const {
-    if (wy < 0 || wy >= CHUNK_SIZE_Y) return AIR;
+    // Выше мира — воздух, это правда. А вот ниже мира воздуха нет: там
+    // дно. Раньше и туда отвечали воздухом, и провалившийся сквозь пол
+    // падал без конца — ни вернуться, ни на что-то опереться.
+    if (wy >= CHUNK_SIZE_Y) return AIR;
+    if (wy < 0) return BEDROCK;
+
     const i32 cx = wx >> 5, cz = wz >> 5;
 
     std::shared_ptr<Chunk> c;
     {
         std::shared_lock lk(chunksMtx_);
         auto it = chunks_.find(ChunkCoord{cx, cz});
-        if (it == chunks_.end()) return AIR;
+        // Чанка ещё нет — что там, неизвестно. Отвечать воздухом нельзя:
+        // всё, что опирается на мир, шагнёт в пустоту.
+        if (it == chunks_.end()) return BEDROCK;
         c = it->second;
     }
+
+    // Чанк попадает в карту сразу, а генерируется потом, в фоне. До
+    // конца генерации его воксели — нули, то есть воздух. Именно из-за
+    // этого игрок проваливался сквозь мир на старте: под ним ещё ничего
+    // не было сгенерировано, а мир отвечал «здесь пусто».
+    if (!c->generated.load(std::memory_order_acquire)) return BEDROCK;
+
     std::shared_lock vlk(c->voxelMutex);
     return c->at(wx - (cx << 5), wy, wz - (cz << 5));
 }
