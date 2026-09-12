@@ -219,6 +219,18 @@ target_compile_options(native-lib PRIVATE
 
 if(TARGET native_app_glue)
     target_link_libraries(native-lib native_app_glue)
+
+    # Без этой строки приложение падает мгновенно и без следа.
+    #
+    # native_app_glue — статическая библиотека, а из неё линковщик берёт
+    # только те объекты, на чьи символы кто-то ссылается. На
+    # ANativeActivity_onCreate не ссылается никто: его ищет система
+    # через dlsym уже в рантайме. В результате glue не попадает в .so
+    # вовсе, NativeActivity не находит точку входа и убивает процесс
+    # ещё до первой нашей строки — ни логов, ни отчёта о падении.
+    #
+    # -u объявляет символ нужным, и объект вытягивается из архива.
+    target_link_options(native-lib PRIVATE -u ANativeActivity_onCreate)
 endif()
 
 find_library(Z_LIB z)
