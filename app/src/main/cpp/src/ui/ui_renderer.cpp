@@ -180,7 +180,11 @@ bool UiRenderer::ensureCapacity(FrameBuf& b, u32 vertsNeeded) {
     u32 cap = b.capacity ? b.capacity : 4096;
     while (cap < vertsNeeded) cap *= 2;
     u64 bytes = (u64)cap * sizeof(UiVertex);
-    if (!b.vb.create(dev_, phys_, bytes, vk::BufferUsage::Vertex, true)) return false;
+    if (!b.vb.create(dev_, phys_, bytes, vk::BufferUsage::Vertex, true)) {
+        LOGE("интерфейс: не создан вершинный буфер на %llu байт",
+             (unsigned long long)bytes);
+        return false;
+    }
     b.capacity = cap;
     return true;
 }
@@ -200,6 +204,15 @@ void UiRenderer::flush(vk::Context& ctx) {
 
     lastVerts_ = (u32)(verts_[0].size() + verts_[1].size());
     lastDrawn_ = 0;
+
+    // Ругаемся один раз: пустой интерфейс — это не «нечего показать»,
+    // это ошибка, и отличить её от «нарисовали, но не видно» иначе
+    // нельзя.
+    static bool warnedEmpty = false;
+    if (lastVerts_ == 0 && !warnedEmpty) {
+        warnedEmpty = true;
+        LOGW("интерфейс: за кадр не построено ни одной вершины");
+    }
 
     const u32 frame = ctx.frameInFlight() % MAX_FRAMES;
     for (int slot = 0; slot < 2; ++slot) {
