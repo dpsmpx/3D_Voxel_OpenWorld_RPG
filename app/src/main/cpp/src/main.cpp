@@ -686,6 +686,23 @@ struct Engine {
             player->updateWithHash(*world, &spatialHash, pin, dt,
                                    cameraYawPitch.x, cameraYawPitch.y);
 
+            // Спасение из-под мира. Провалиться вниз теперь неоткуда —
+            // ниже нулевой отметки мир отвечает камнем, — но сохранение,
+            // сделанное до этой починки, хранит игрока далеко внизу, да и
+            // любая будущая щель в столкновениях не должна означать
+            // бесконечное падение без возврата.
+            {
+                const glm::vec3 p = player->controller.state().position;
+                if (p.y < 0.f || p.y > (f32)world::CHUNK_SIZE_Y) {
+                    const i32 surf = world->generator().surfaceHeight(
+                        (i32)std::floor(p.x), (i32)std::floor(p.z));
+                    const glm::vec3 rescued{ p.x, (f32)surf + 1.5f, p.z };
+                    LOGW("Игрок вне мира (y=%.1f) — возвращён на поверхность y=%.1f",
+                         (double)p.y, (double)rescued.y);
+                    player->controller.setPosition(rescued);
+                }
+            }
+
             // Phase 14: звук шагов
             if (player->controller.state().onGround) {
                 f32 hs = glm::length(glm::vec2(

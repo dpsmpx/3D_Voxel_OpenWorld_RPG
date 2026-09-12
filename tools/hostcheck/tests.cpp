@@ -11,6 +11,7 @@
 #include "save/save_format.h"
 #include "world/block.h"
 #include "world/chunk.h"
+#include "world/chunk_manager.h"
 #include "render/astc.h"
 #include "vk/vk_buffer.h"
 #include "vk/vk_texture.h"
@@ -607,6 +608,38 @@ void testVulkanGuards() {
           "текстура нулевого размера не создаётся");
 }
 
+// ------------------------------------------------------------
+// Мир отвечает на запрос вокселя честно
+//
+// Чанк попадает в карту сразу, а генерируется в фоне, и до конца
+// генерации его воксели — нули. Если выдавать их за воздух, всё, что
+// опирается на мир, шагает в пустоту: игрок проваливался сквозь землю
+// на старте и падал бесконечно, потому что ниже нулевой отметки тоже
+// был «воздух».
+// ------------------------------------------------------------
+void testWorldQueries() {
+    group("world::ChunkManager::getVoxel");
+
+    world::ChunkManager mgr(12345, 2);
+
+    check(mgr.getVoxel(0, -1, 0) != world::AIR,
+          "ниже мира не воздух — провалиться некуда");
+    check(mgr.getVoxel(0, -500, 0) != world::AIR,
+          "глубоко под миром тоже не воздух");
+    check(mgr.getVoxel(1'000'000, 32, 1'000'000) != world::AIR,
+          "незагруженный чанк не выдаётся за воздух");
+    check(mgr.getVoxel(0, world::CHUNK_SIZE_Y, 0) == world::AIR,
+          "выше мира воздух");
+    check(mgr.getVoxel(0, world::CHUNK_SIZE_Y + 100, 0) == world::AIR,
+          "высоко над миром тоже воздух");
+
+    auto& reg = world::blocks();
+    check(reg.isSolid(mgr.getVoxel(0, -1, 0)),
+          "то, что ниже мира, твёрдое — на нём можно стоять");
+    check(reg.isSolid(mgr.getVoxel(1'000'000, 32, 1'000'000)),
+          "незагруженный чанк считается твёрдым");
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -621,6 +654,7 @@ int main() {
     testAstc();
 
     testVulkanGuards();
+    testWorldQueries();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);
     if (g_failed) {
