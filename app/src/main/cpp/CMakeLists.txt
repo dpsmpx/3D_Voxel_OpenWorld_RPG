@@ -179,7 +179,7 @@ target_include_directories(native-lib PRIVATE src)
 set(TP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party")
 
 if(EXISTS "${TP_DIR}/glm/glm")
-    target_include_directories(native-lib PRIVATE "${TP_DIR}/glm")
+    target_include_directories(native-lib SYSTEM PRIVATE "${TP_DIR}/glm")
 else()
     message(FATAL_ERROR
         "GLM не найден в third_party/glm. Запустите build.sh — он её клонирует.")
@@ -187,7 +187,7 @@ endif()
 
 # EnTT — ECS из ТЗ 3.2. Собирается без исключений и RTTI.
 if(EXISTS "${TP_DIR}/entt/include/entt/entt.hpp")
-    target_include_directories(native-lib PRIVATE "${TP_DIR}/entt/include")
+    target_include_directories(native-lib SYSTEM PRIVATE "${TP_DIR}/entt/include")
 else()
     message(FATAL_ERROR
         "EnTT не найден в third_party/entt. Запустите build.sh — он её клонирует.")
@@ -213,9 +213,13 @@ else()
     target_link_libraries(native-lib z)
 endif()
 
+# libaaudio намеренно НЕ линкуется: она появилась в API 26, а минимум
+# по ТЗ — API 24. Запись DT_NEEDED на неё сделала бы .so незагружаемым
+# на Android 7.0/7.1 — приложение не стартовало бы вообще, вместо того
+# чтобы просто работать без звука. Символы берутся через dlopen в
+# audio_engine.cpp.
 target_link_libraries(native-lib
     android
     log
     vulkan
-    aaudio
 )

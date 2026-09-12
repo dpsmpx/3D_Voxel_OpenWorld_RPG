@@ -1056,12 +1056,20 @@ extern "C" void android_main(android_app* app) {
     auto lastTime = startTime;
 
     while (true) {
-        int events = 0;
-        android_poll_source* source = nullptr;
         const int timeoutMs = eng.running ? 0 : -1;
 
-        while (ALooper_pollAll(timeoutMs, nullptr, &events,
-                               reinterpret_cast<void**>(&source)) >= 0) {
+        // ALooper_pollAll помечен недоступным начиная с NDK r27: он мог
+        // проглотить пробуждение. У ALooper_pollOnce есть отличие,
+        // которое нельзя терять при замене: он возвращает
+        // ALOOPER_POLL_CALLBACK, когда отработал колбэк дескриптора.
+        // Это не конец очереди — опрос надо продолжать, а source при
+        // этом не заполняется.
+        for (;;) {
+            int events = 0;
+            android_poll_source* source = nullptr;
+            const int res = ALooper_pollOnce(timeoutMs, nullptr, &events,
+                                             reinterpret_cast<void**>(&source));
+            if (res < 0 && res != ALOOPER_POLL_CALLBACK) break;
             if (source) source->process(app, source);
             if (app->destroyRequested) {
                 if (eng.initialized) eng.onWindowTerm();

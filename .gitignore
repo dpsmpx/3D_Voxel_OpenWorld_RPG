@@ -35,8 +35,11 @@ Thumbs.db
 *.swp
 *~
 *.log
-run.sh
-deploy.sh
+# Личные скрипты в корне. Без ведущего слэша шаблон ловил бы и
+# tools/hostcheck/run.sh — из-за этого вся хост-проверка не попадала
+# в репозиторий, а задача hostcheck в CI падала на отсутствии файла.
+/run.sh
+/deploy.sh
 .env
 build/hostcheck/
 build/docs/

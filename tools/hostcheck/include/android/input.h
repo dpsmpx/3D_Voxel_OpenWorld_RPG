@@ -61,8 +61,11 @@ int64_t AMotionEvent_getEventTime(const AInputEvent* e);
 typedef struct ALooper ALooper;
 ALooper* ALooper_prepare(int opts);
 int ALooper_pollAll(int timeoutMillis, int* outFd, int* outEvents, void** outData);
+int ALooper_pollOnce(int timeoutMillis, int* outFd, int* outEvents, void** outData);
 int ALooper_addFd(ALooper* looper, int fd, int ident, int events, int (*callback)(int, int, void*), void* data);
-enum { ALOOPER_PREPARE_ALLOW_NON_CALLBACKS = 1, ALOOPER_EVENT_INPUT = 1, ALOOPER_POLL_WAKE = -1 };
+enum { ALOOPER_PREPARE_ALLOW_NON_CALLBACKS = 1, ALOOPER_EVENT_INPUT = 1 };
+enum { ALOOPER_POLL_WAKE = -1, ALOOPER_POLL_CALLBACK = -2,
+       ALOOPER_POLL_TIMEOUT = -3, ALOOPER_POLL_ERROR = -4 };
 #ifdef __cplusplus
 }
 #endif
