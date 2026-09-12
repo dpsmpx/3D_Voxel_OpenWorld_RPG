@@ -48,6 +48,9 @@ public:
     void rect(float x, float y, float w, float h, UiColor c);
     void rectOutline(float x, float y, float w, float h, float thickness, UiColor c);
     void text(const std::string& s, float x, float y, float scale, UiColor c);
+    /// Прямоугольник из внешнего атласа — того, что подключён через
+    /// UiRenderer::attachExternalAtlas. Им рисуется миникарта.
+    void image(float x, float y, float w, float h, UiColor tint = COL_WHITE);
     /// Круг и кольцо в пикселях экрана. Экранные кнопки и джойстик
     /// круглые: из прямоугольников они выглядят как лесенка.
     void circle(float cx, float cy, float r, UiColor c, int segments = 24);

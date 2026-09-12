@@ -239,6 +239,9 @@ struct Engine {
         ui->showFps = cfg::settingsConst().showFps;
 
         ui->minimap.init(vk, 128);
+        // Второй атлас интерфейса — миникарта. Слот под него был
+        // заведён с самого начала и не использовался.
+        ui->attachExternalAtlas(ui->minimap.view(), ui->minimap.sampler());
 
         ui->onQuit = [this]() { wantQuit = true; };
         ui->onSave = [this]() { doSave(lastSaveProfile, lastSaveSlot); };
@@ -1240,7 +1243,13 @@ extern "C" void android_main(android_app* app) {
             const auto tC = std::chrono::steady_clock::now();
 
             if (!eng.vk.beginFrame()) {
-                if (app->window) eng.vk.onResize(app->window);
+                // Цепочка устарела — обычно из-за поворота экрана.
+                // Пересоздали её, значит обязаны заново перенести
+                // размеры и угол в камеру и интерфейс.
+                if (app->window) {
+                    eng.vk.onResize(app->window);
+                    eng.applySurfaceGeometry();
+                }
             } else {
                 if (eng.render) eng.render->render(eng.vk);
                 eng.vk.endFrame();
