@@ -11,11 +11,17 @@ namespace render {
 
 namespace {
 
-// Направленное освещение по индексу грани: +X, -X, +Y, -Y, +Z, -Z.
-// Верх светлее низа — дешёвая замена полноценному GI.
-constexpr f32 FACE_LIGHT[6] = {
-    0.85f, 0.65f, 1.00f, 0.45f, 0.78f, 0.72f,
-};
+// Индекс грани в альфе вершинного цвета. Шейдер достаёт его как
+// int(a * 8) и берёт по нему нормаль: освещение считается по-настоящему
+// от направления на солнце, а не запекается в шесть постоянных яркостей.
+// Раньше здесь стояла таблица FACE_LIGHT, и мир выглядел одинаково в
+// полдень и на закате.
+constexpr u8 faceCode(u8 face) {
+    // (face + 0.5) / 8, в UNORM. Обратно: floor(a * 8) == face.
+    return (u8)(((u32)face * 2 + 1) * 255 / 16);
+}
+static_assert(faceCode(0) * 8 / 255 == 0 && faceCode(5) * 8 / 255 == 5,
+              "альфа должна однозначно кодировать индекс грани");
 
 // Порядок обхода вершин квада для каждой грани, чтобы лицевая
 // сторона была CCW при взгляде снаружи. p0=origin, p1=+du,
@@ -78,14 +84,16 @@ void buildChunkVertices(const world::Chunk& chunk,
             { 0.f,    tilesV },
         };
 
-        const u8  light = (u8)(FACE_LIGHT[q.v0.face] * 255.f);
-        const u32 base  = (u32)outVerts.size();
-        const u8* w     = WINDING[q.v0.face];
+        const u32 base = (u32)outVerts.size();
+        const u8* w    = WINDING[q.v0.face];
+        // rgb остаётся белым: цвет грани целиком за текстурой и
+        // освещением. Канал свободен под запекание затенения углов.
+        const u8 face  = faceCode(q.v0.face);
 
         for (int i = 0; i < 4; ++i) {
             const u8 idx = w[i];
             outVerts.push_back({ corners[idx], tileUV[idx], tileOrigin,
-                                 light, light, light, 255 });
+                                 255, 255, 255, face });
         }
         outIndices.push_back(base + 0);
         outIndices.push_back(base + 1);

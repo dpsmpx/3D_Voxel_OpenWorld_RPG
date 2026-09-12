@@ -396,6 +396,14 @@ u16 ChunkManager::getVoxel(i32 wx, i32 wy, i32 wz) const {
     return c->at(wx - (cx << 5), wy, wz - (cz << 5));
 }
 
+bool ChunkManager::isReadyAt(i32 wx, i32 wz) const {
+    const i32 cx = wx >> 5, cz = wz >> 5;
+    std::shared_lock lk(chunksMtx_);
+    auto it = chunks_.find(ChunkCoord{cx, cz});
+    if (it == chunks_.end()) return false;
+    return it->second->generated.load(std::memory_order_acquire);
+}
+
 usize ChunkManager::loadedChunks() const {
     std::shared_lock lk(chunksMtx_);
     return chunks_.size();

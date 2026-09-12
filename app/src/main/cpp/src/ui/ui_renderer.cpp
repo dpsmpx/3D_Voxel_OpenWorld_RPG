@@ -147,6 +147,16 @@ void UiRenderer::pushQuad(glm::vec2 pos, glm::vec2 size,
     V.push_back(V[base + 0]); V.push_back(V[base + 1]); V.push_back(V[base + 2]);
 }
 
+void UiRenderer::pushTri(glm::vec2 a, glm::vec2 b, glm::vec2 c, u32 rgba) {
+    u8 r = (rgba >> 24) & 0xFF, g = (rgba >> 16) & 0xFF;
+    u8 bl = (rgba >>  8) & 0xFF, al = (rgba      ) & 0xFF;
+    auto& V = verts_[activeSlot_];
+    const float u = whiteU_, v = whiteV_;
+    V.push_back({ a, {u, v}, r, g, bl, al });
+    V.push_back({ b, {u, v}, r, g, bl, al });
+    V.push_back({ c, {u, v}, r, g, bl, al });
+}
+
 bool UiRenderer::ensureCapacity(FrameBuf& b, u32 vertsNeeded) {
     if (b.capacity >= vertsNeeded && b.vb.handle()) return true;
     if (b.vb.handle()) b.vb.destroy();

@@ -39,12 +39,15 @@ constexpr CubeVertex CUBE_V[24] = {
     {{-0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f, 0.5f}},{{-0.5f, 0.5f, 0.5f}},
 };
 constexpr u32 CUBE_I[36] = {
-     0, 1, 2,  0, 2, 3,
-     4, 5, 6,  4, 6, 7,
-     8, 9,10,  8,10,11,
-    12,13,14, 12,14,15,
-    16,17,18, 16,18,19,
-    20,21,22, 20,22,23,
+    // Все грани обходятся против часовой стрелки при взгляде СНАРУЖИ.
+    // Раньше -Z, -X и +Y были намотаны наоборот, и при отсечении
+    // задних граней половина каждого куба просвечивала насквозь.
+     0, 2, 1,   0, 3, 2,     // -Z
+     4, 5, 6,   4, 6, 7,     // +Z
+     8,10, 9,   8,11,10,     // -X
+    12,13,14,  12,14,15,     // +X
+    16,17,18,  16,18,19,     // -Y
+    20,22,21,  20,23,22,     // +Y
 };
 
 // Цвет по редкости предмета
@@ -95,11 +98,13 @@ bool ItemRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLay
     vk::PipelineDesc d{};
     d.renderPass  = ctx.renderPass();
     d.descLayout  = descLayout;
-    d.vertName    = "shaders/projectile.vert.spv";
-    d.fragName    = "shaders/projectile.frag.spv";
+    // Выпавшие предметы — обычные кубы, а не свечение: им нужно то же
+    // освещение, что мобам, иначе они горят ровным цветом даже ночью.
+    d.vertName    = "shaders/mob.vert.spv";
+    d.fragName    = "shaders/mob.frag.spv";
     d.depthFormat = ctx.depthFormat();
     d.cullMode    = VK_CULL_MODE_BACK_BIT;
-    d.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    d.frontFace   = VK_FRONT_FACE_CLOCKWISE;   // см. PipelineDesc: Y-flip проекции
     d.depthTest   = true;
     d.depthWrite  = true;
     d.blend       = false;

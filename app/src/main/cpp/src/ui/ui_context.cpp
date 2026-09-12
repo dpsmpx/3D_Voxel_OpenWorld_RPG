@@ -31,10 +31,18 @@ void UiContext::endFrame() {
 }
 
 // --- NDC-конверсия ---
+// Экранные координаты в координаты отсечения.
+//
+// В Vulkan ось Y направлена вниз: верх экрана это -1, низ +1. Здесь был
+// перевод по правилам OpenGL (верх +1), из-за чего весь интерфейс
+// оказывался отражён по вертикали, а всё прижатое к низу — джойстик,
+// кнопки, пояс предметов — уезжало за верхний край экрана. Касания при
+// этом обрабатывались по настоящим пиксельным координатам, и нажимать
+// приходилось туда, где ничего не нарисовано.
 static inline float toNdcX(float px, i32 W) { return (px / (float)W) * 2.f - 1.f; }
-static inline float toNdcY(float py, i32 H) { return 1.f - (py / (float)H) * 2.f; }
+static inline float toNdcY(float py, i32 H) { return (py / (float)H) * 2.f - 1.f; }
 static inline float toNdcW(float w,  i32 W) { return (w / (float)W) * 2.f; }
-static inline float toNdcH(float h,  i32 H) { return -(h / (float)H) * 2.f; }
+static inline float toNdcH(float h,  i32 H) { return (h / (float)H) * 2.f; }
 
 void UiContext::rect(float x, float y, float w, float h, UiColor c) {
     if (!r_) return;
@@ -83,6 +91,47 @@ void UiContext::text(const std::string& s, float x, float y, float scale, UiColo
         float nh = toNdcH(7.f * scale, screenH_);
         r_->pushQuad({ nx, ny }, { nw, nh }, u0, v0, u1, v1, c);
         cx += cw;
+    }
+}
+
+void UiContext::circle(float cx, float cy, float r, UiColor c, int segments) {
+    if (!r_ || r <= 0.f) return;
+    if (segments < 6) segments = 6;
+    if (segments > 64) segments = 64;
+    r_->setAtlas(0);
+    const glm::vec2 mid{ toNdcX(cx, screenW_), toNdcY(cy, screenH_) };
+    const float rx = toNdcW(r, screenW_);
+    const float ry = toNdcH(r, screenH_);
+    glm::vec2 prev{ mid.x + rx, mid.y };
+    for (int i = 1; i <= segments; ++i) {
+        const float a = 6.28318530718f * (float)i / (float)segments;
+        const glm::vec2 cur{ mid.x + rx * std::cos(a), mid.y + ry * std::sin(a) };
+        r_->pushTri(mid, prev, cur, c);
+        prev = cur;
+    }
+}
+
+void UiContext::ring(float cx, float cy, float rInner, float rOuter,
+                     UiColor c, int segments)
+{
+    if (!r_ || rOuter <= rInner) return;
+    if (segments < 6) segments = 6;
+    if (segments > 64) segments = 64;
+    r_->setAtlas(0);
+    const glm::vec2 mid{ toNdcX(cx, screenW_), toNdcY(cy, screenH_) };
+    const float ix = toNdcW(rInner, screenW_);
+    const float iy = toNdcH(rInner, screenH_);
+    const float ox = toNdcW(rOuter, screenW_);
+    const float oy = toNdcH(rOuter, screenH_);
+    glm::vec2 pi{ mid.x + ix, mid.y }, po{ mid.x + ox, mid.y };
+    for (int i = 1; i <= segments; ++i) {
+        const float a = 6.28318530718f * (float)i / (float)segments;
+        const float ca = std::cos(a), sa = std::sin(a);
+        const glm::vec2 ci{ mid.x + ix * ca, mid.y + iy * sa };
+        const glm::vec2 co{ mid.x + ox * ca, mid.y + oy * sa };
+        r_->pushTri(pi, po, co, c);
+        r_->pushTri(pi, co, ci, c);
+        pi = ci; po = co;
     }
 }
 

@@ -83,6 +83,10 @@ public:
     const TerrainGenerator& generator() const { return gen_; }
 
     usize loadedChunks() const;
+
+    /// Сгенерирован ли чанк, накрывающий точку. Пока нет, мир о ней
+    /// ничего не знает: двигать в нём что-либо бессмысленно и вредно.
+    bool isReadyAt(i32 wx, i32 wz) const;
     usize pendingJobs() const { return jobsInFlight_.load(std::memory_order_relaxed); }
 
 private:

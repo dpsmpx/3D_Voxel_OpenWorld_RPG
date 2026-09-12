@@ -39,6 +39,11 @@ public:
     void pushTexturedQuad(glm::vec2 pos, glm::vec2 size,
                           float u0, float v0, float u1, float v1,
                           u32 rgba) { pushQuad(pos, size, u0, v0, u1, v1, rgba); }
+    /// Произвольный треугольник в NDC. Нужен кругам: экранные
+    /// кнопки и джойстик из одних прямоугольников не складываются.
+    /// Конвейер интерфейса рисует без отсечения, порядок обхода
+    /// значения не имеет.
+    void pushTri(glm::vec2 a, glm::vec2 b, glm::vec2 c, u32 rgba);
     void endFrame();
 
     /// Загружает накопленные вершины в GPU и выпускает команды.
