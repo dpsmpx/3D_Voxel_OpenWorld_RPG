@@ -46,3 +46,6 @@ build/docs/
 app/src/main/assets/textures/*.astc
 __pycache__/
 *.pyc
+
+# Кодировщик ASTC собирается локально (tools/build-astcenc.sh)
+tools/astcenc/

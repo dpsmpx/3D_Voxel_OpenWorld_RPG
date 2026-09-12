@@ -48,7 +48,9 @@ else
     echo "atlas: кодировщик ASTC не найден — атлас останется RGBA8."
     echo "       Это не ошибка: игра соберёт его при старте, просто"
     echo "       текстуры займут вчетверо больше видеопамяти."
-    echo "       Включить сжатие: pkg install astc-encoder"
-    echo "       (или укажите свой: ASTCENC=/путь/к/astcenc ./build.sh)"
+    echo "       В репозиториях Termux кодировщика нет ни под одним"
+    echo "       именем. Собрать его из исходников ARM:"
+    echo "           ./tools/build-astcenc.sh"
+    echo "       (или указать готовый: ASTCENC=/путь/к/astcenc ./build.sh)"
     "$OUT/atlas_tool" "$OUT/blocks.tga"
 fi

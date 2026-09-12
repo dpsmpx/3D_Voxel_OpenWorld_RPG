@@ -200,12 +200,73 @@ tool_report() {                   # имя
 # и на aarch64 имени astcenc-native обычно нет вовсе — из-за жёсткой
 # проверки одного этого имени сжатие не включалось никогда.
 find_astcenc() {                  # -> путь
-    local cand
-    for cand in "${ASTCENC:-}" astcenc astcenc-neon astcenc-native \
+    local cand root
+
+    # 1. Явно указанный путь.
+    if [ -n "${ASTCENC:-}" ] && tool_runs "$ASTCENC" "-help"; then
+        printf '%s' "$ASTCENC"; return 0
+    fi
+
+    # 2. Собранный tools/build-astcenc.sh — рядом с проектом.
+    #    В репозиториях Termux пакета astcenc нет вовсе, поэтому
+    #    собственная сборка это основной путь, а не запасной.
+    for root in "${PROJ:-.}/tools/astcenc" "$HOME/.voxelrpg/astcenc"; do
+        for cand in "$root"/astcenc-*; do
+            if tool_runs "$cand" "-help"; then printf '%s' "$cand"; return 0; fi
+        done
+    done
+
+    # 3. Готовая сборка из распакованных исходников ARM.
+    for cand in "$HOME"/astc-encoder*/build*/Source/astcenc-*; do
+        if tool_runs "$cand" "-help"; then printf '%s' "$cand"; return 0; fi
+    done
+
+    # 4. Что-нибудь из PATH.
+    for cand in astcenc astcenc-neon astcenc-native \
                 astcenc-sse2 astcenc-sse4.1 astcenc-avx2; do
-        [ -n "$cand" ] || continue
         cand="$(command -v "$cand" 2>/dev/null || true)"
         if tool_runs "$cand" "-help"; then printf '%s' "$cand"; return 0; fi
     done
     return 1
+}
+
+# --- сеть -----------------------------------------------------
+# curl и wget взаимозаменяемы; берём тот, который есть.
+http_get() {                      # url -> stdout
+    local url="$1"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 60 -H 'Accept: application/vnd.github+json' "$url" && return 0
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        wget -q -T 60 -O - "$url" && return 0
+    fi
+    return 1
+}
+
+http_download() {                 # url dest
+    local url="$1" dest="$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --progress-bar --retry 3 --retry-delay 2 -o "$dest" "$url" && return 0
+        rm -f "$dest"
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        wget --show-progress -q -T 60 -t 3 -O "$dest" "$url" && return 0
+        rm -f "$dest"
+    fi
+    return 1
+}
+
+extract_archive() {               # file destdir
+    local f="$1" d="$2"
+    mkdir -p "$d"
+    case "$f" in
+        *.zip)          unzip -q -o "$f" -d "$d" ;;
+        *.tar.xz|*.txz) tar -xJf "$f" -C "$d" ;;
+        *.tar.gz|*.tgz) tar -xzf "$f" -C "$d" ;;
+        *.tar.bz2)      tar -xjf "$f" -C "$d" ;;
+        *.7z)           command -v 7z >/dev/null 2>&1 || {
+                            err "для .7z нужен p7zip: pkg install p7zip"; return 1; }
+                        7z x -y -o"$d" "$f" >/dev/null ;;
+        *)              err "неизвестный формат архива: $(basename "$f")"; return 1 ;;
+    esac
 }
