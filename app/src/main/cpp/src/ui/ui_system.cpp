@@ -115,6 +115,7 @@ void UiSystem::render(vk::Context& ctx,
     switch (screen) {
         case Screen::Hud:
             drawHud(ctx, player, world, fps);
+            drawTouchControls();
             if (loading()) drawLoadingOverlay();
             break;
         case Screen::PauseMenu:
@@ -314,6 +315,56 @@ void UiSystem::drawHud(vk::Context& /*ctx*/,
         std::snprintf(dbg, sizeof(dbg), "POS %.1f %.1f %.1f",
                       st.position.x, st.position.y, st.position.z);
         ui_.text(dbg, 12.f, 204.f, 1.5f, COL_WHITE);
+    }
+}
+
+// ============================================================
+// Экранное управление
+// ============================================================
+void UiSystem::drawTouchControls() {
+    if (!touch_) return;
+
+    const auto& s = cfg::settingsConst();
+    const u8 alpha = (u8)std::clamp(s.buttonOpacity * 255.f, 0.f, 255.f);
+
+    // --- кнопки ---
+    for (const auto& b : touch_->buttons()) {
+        if (!b.visible) continue;
+        const glm::vec2 c = touch_->buttonCenterPx(b.id);
+        const float     r = touch_->buttonRadiusPx(b.id);
+        if (r <= 0.f) continue;
+
+        const UiColor fill = b.pressed ? rgba(230, 230, 230, alpha)
+                                       : rgba( 20,  20,  26, (u8)(alpha * 0.7f));
+        ui_.circle(c.x, c.y, r, fill);
+        ui_.ring(c.x, c.y, r - 3.f, r,
+                 b.pressed ? rgba(255, 235, 140, alpha)
+                           : rgba(210, 210, 220, alpha));
+
+        if (b.label) {
+            const float tw = ui_.textWidth(b.label, 2.f);
+            const float th = ui_.textHeight(2.f);
+            ui_.text(b.label, c.x - tw * 0.5f, c.y - th * 0.5f, 2.f,
+                     b.pressed ? COL_BLACK : rgba(235, 235, 245, alpha));
+        }
+    }
+
+    // --- джойстик ---
+    // Он появляется под пальцем, поэтому рисуется только пока активен.
+    const auto& j = touch_->joystick();
+    if (j.active) {
+        const u8 ja = (u8)std::clamp(j.opacity * 255.f, 0.f, 255.f);
+        ui_.ring(j.center.x, j.center.y, j.radius - 4.f, j.radius,
+                 rgba(220, 220, 230, ja));
+        ui_.circle(j.center.x, j.center.y, j.radius * 0.12f,
+                   rgba(220, 220, 230, (u8)(ja * 0.5f)));
+
+        // Ручку держим внутри круга: палец уходит дальше, чем радиус.
+        glm::vec2 d = j.current - j.center;
+        const float len = glm::length(d);
+        if (len > j.radius) d *= j.radius / len;
+        ui_.circle(j.center.x + d.x, j.center.y + d.y,
+                   j.radius * 0.34f, rgba(245, 245, 250, ja));
     }
 }
 

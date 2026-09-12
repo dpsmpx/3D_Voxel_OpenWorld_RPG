@@ -1,7 +1,7 @@
 #version 450
-layout(location = 0) in vec3 inPos;        // unit cube in [-0.5, 0.5]
+layout(location = 0) in vec3 inPos;        // единичный куб в [-0.5, 0.5]
 
-// Instance
+// Инстанс
 layout(location = 1) in vec3 iPos;
 layout(location = 2) in vec3 iSize;
 layout(location = 3) in vec4 iColor;       // packed u8x4 UNORM
@@ -21,21 +21,27 @@ layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec3 vWorldPos;
 
+// Куб задан 24 вершинами — по четыре на грань, в порядке
+// -Z, +Z, -X, +X, -Y, +Y (см. CUBE_V в mob_renderer.cpp). Значит
+// номер грани это просто gl_VertexIndex / 4, и нормаль у неё честная,
+// плоская. Раньше за нормаль брали направление на угол куба, и грани
+// получались скруглёнными, будто это не кубы, а мятые шарики.
+const vec3 CUBE_N[6] = vec3[6](
+    vec3( 0.0,  0.0, -1.0), vec3( 0.0,  0.0,  1.0),
+    vec3(-1.0,  0.0,  0.0), vec3( 1.0,  0.0,  0.0),
+    vec3( 0.0, -1.0,  0.0), vec3( 0.0,  1.0,  0.0));
+
 void main() {
-    // Scale
     vec3 local = inPos * iSize;
 
-    // Yaw around Y
     float c = cos(iYaw), s = sin(iYaw);
     vec3 rotated = vec3(local.x * c + local.z * s, local.y, -local.x * s + local.z * c);
 
     vec3 world = iPos + rotated;
     gl_Position = cam.viewProj * vec4(world, 1.0);
 
-    // Normal approximation from cube face
-    float cN = cos(iYaw), sN = sin(iYaw);
-    vec3 n = vec3(inPos.x * cN + inPos.z * sN, inPos.y, -inPos.x * sN + inPos.z * cN);
-    vNormal = normalize(n);
+    vec3 n = CUBE_N[clamp(gl_VertexIndex >> 2, 0, 5)];
+    vNormal = vec3(n.x * c + n.z * s, n.y, -n.x * s + n.z * c);
 
     vColor = iColor;
     vWorldPos = world;

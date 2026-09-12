@@ -94,6 +94,47 @@ void UiContext::text(const std::string& s, float x, float y, float scale, UiColo
     }
 }
 
+void UiContext::circle(float cx, float cy, float r, UiColor c, int segments) {
+    if (!r_ || r <= 0.f) return;
+    if (segments < 6) segments = 6;
+    if (segments > 64) segments = 64;
+    r_->setAtlas(0);
+    const glm::vec2 mid{ toNdcX(cx, screenW_), toNdcY(cy, screenH_) };
+    const float rx = toNdcW(r, screenW_);
+    const float ry = toNdcH(r, screenH_);
+    glm::vec2 prev{ mid.x + rx, mid.y };
+    for (int i = 1; i <= segments; ++i) {
+        const float a = 6.28318530718f * (float)i / (float)segments;
+        const glm::vec2 cur{ mid.x + rx * std::cos(a), mid.y + ry * std::sin(a) };
+        r_->pushTri(mid, prev, cur, c);
+        prev = cur;
+    }
+}
+
+void UiContext::ring(float cx, float cy, float rInner, float rOuter,
+                     UiColor c, int segments)
+{
+    if (!r_ || rOuter <= rInner) return;
+    if (segments < 6) segments = 6;
+    if (segments > 64) segments = 64;
+    r_->setAtlas(0);
+    const glm::vec2 mid{ toNdcX(cx, screenW_), toNdcY(cy, screenH_) };
+    const float ix = toNdcW(rInner, screenW_);
+    const float iy = toNdcH(rInner, screenH_);
+    const float ox = toNdcW(rOuter, screenW_);
+    const float oy = toNdcH(rOuter, screenH_);
+    glm::vec2 pi{ mid.x + ix, mid.y }, po{ mid.x + ox, mid.y };
+    for (int i = 1; i <= segments; ++i) {
+        const float a = 6.28318530718f * (float)i / (float)segments;
+        const float ca = std::cos(a), sa = std::sin(a);
+        const glm::vec2 ci{ mid.x + ix * ca, mid.y + iy * sa };
+        const glm::vec2 co{ mid.x + ox * ca, mid.y + oy * sa };
+        r_->pushTri(pi, po, co, c);
+        r_->pushTri(pi, co, ci, c);
+        pi = ci; po = co;
+    }
+}
+
 float UiContext::textWidth(const std::string& s, float scale) const {
     return s.size() * 6.f * scale;
 }

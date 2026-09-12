@@ -16,6 +16,7 @@
 #include "../items/inventory.h"
 #include "../crafting/crafting.h"
 #include "../config/settings.h"
+#include "../input/touch.h"
 #include <android/asset_manager.h>
 #include <functional>
 #include <array>
@@ -60,6 +61,11 @@ public:
     void destroy();
 
     void setScreenSize(i32 w, i32 h);
+
+    /// Экранное управление рисуется по состоянию TouchInput: кнопки
+    /// и джойстик заведены там, а до сих пор не рисовались нигде —
+    /// игрок видел пустой экран и искал кнопки наугад.
+    void attachTouch(const input::TouchInput* t) { touch_ = t; }
 
     bool routeTouch(i32 id, float px, float py, int phase);
 
@@ -113,6 +119,9 @@ public:
     /// ---- Утилиты ----
     void setStatus(const std::string& msg);
     void drawLoadingOverlay();
+    /// Джойстик и экранные кнопки. Только поверх чистого HUD: под
+    /// открытым меню управление не работает, рисовать его незачем.
+    void drawTouchControls();
     void tickUi(f32 dt);
 
     bool paused() const {
@@ -208,6 +217,8 @@ public:
     }
 
 private:
+    const input::TouchInput* touch_ = nullptr;
+
     void drawHud(vk::Context& ctx, player::Player& player,
                  world::ChunkManager& world, f32 fps);
     void drawXpBar(player::Player& player);

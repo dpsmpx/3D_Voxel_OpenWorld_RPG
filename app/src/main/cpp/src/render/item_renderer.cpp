@@ -98,8 +98,10 @@ bool ItemRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLay
     vk::PipelineDesc d{};
     d.renderPass  = ctx.renderPass();
     d.descLayout  = descLayout;
-    d.vertName    = "shaders/projectile.vert.spv";
-    d.fragName    = "shaders/projectile.frag.spv";
+    // Выпавшие предметы — обычные кубы, а не свечение: им нужно то же
+    // освещение, что мобам, иначе они горят ровным цветом даже ночью.
+    d.vertName    = "shaders/mob.vert.spv";
+    d.fragName    = "shaders/mob.frag.spv";
     d.depthFormat = ctx.depthFormat();
     d.cullMode    = VK_CULL_MODE_BACK_BIT;
     d.frontFace   = VK_FRONT_FACE_CLOCKWISE;   // см. PipelineDesc: Y-flip проекции

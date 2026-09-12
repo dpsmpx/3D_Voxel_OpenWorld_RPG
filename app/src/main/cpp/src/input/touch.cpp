@@ -117,6 +117,20 @@ glm::vec2 TouchInput::buttonCenter(u32 id) const {
     return ndc;
 }
 
+void TouchInput::setButtonLabel(u32 id, const char* text) {
+    if (Button* b = findButton(id)) b->label = text;
+}
+
+glm::vec2 TouchInput::buttonCenterPx(u32 id) const {
+    const Button* b = findButton(id);
+    return b ? buttonCenterPx(*b) : glm::vec2{0, 0};
+}
+
+f32 TouchInput::buttonRadiusPx(u32 id) const {
+    const Button* b = findButton(id);
+    return b ? buttonRadiusPx(*b) : 0.f;
+}
+
 void TouchInput::setButtonVisible(u32 id, bool v) {
     if (Button* b = findButton(id)) b->visible = v;
 }

@@ -235,6 +235,7 @@ struct Engine {
             return;
         }
         ui->setScreenSize(ww, wh);
+        ui->attachTouch(&touch);
         ui->showFps = cfg::settingsConst().showFps;
 
         ui->minimap.init(vk, 128);
@@ -549,6 +550,18 @@ struct Engine {
                         : player::CameraMode::FirstPerson;
             }, nullptr);
 
+        // Подписи. Шрифт HUD знает только латиницу до 95-го кода,
+        // поэтому коротко и заглавными.
+        touch.setButtonLabel(btnAttack_,   "ATK");
+        touch.setButtonLabel(btnFinisher_, "FIN");
+        touch.setButtonLabel(btnJump_,     "JMP");
+        touch.setButtonLabel(btnSprint_,   "RUN");
+        touch.setButtonLabel(btnBreak_,    "DIG");
+        touch.setButtonLabel(btnPlace_,    "PUT");
+        touch.setButtonLabel(btnInteract_, "USE");
+        touch.setButtonLabel(btnUseItem_,  "ITM");
+        touch.setButtonLabel(btnCamera_,   "CAM");
+
         buttonIds_[cfg::Btn_Attack]   = btnAttack_;
         buttonIds_[cfg::Btn_Finisher] = btnFinisher_;
         buttonIds_[cfg::Btn_Jump]     = btnJump_;
@@ -665,10 +678,16 @@ struct Engine {
         spatialHash.tick();
 
         if (!uiBlockingInput) {
+            // Обзор. Знаки здесь были плюсовые, и получалось «тяну
+            // мир за собой»: палец вправо — камера влево, палец вниз —
+            // взгляд вверх. Привычно наоборот: куда ведёшь палец, туда
+            // и смотришь. Проверяется прямо: рост yaw уводит объекты
+            // вправо по экрану (значит, камера поворачивается влево),
+            // рост pitch — вниз (камера задирается вверх).
             const glm::vec2 camDelta = touch.cameraDelta();
-            cameraYawPitch.x += camDelta.x * 3.0f;
+            cameraYawPitch.x -= camDelta.x * 3.0f;
             cameraYawPitch.y = glm::clamp(
-                cameraYawPitch.y + camDelta.y * 3.0f, -1.5f, 1.5f);
+                cameraYawPitch.y - camDelta.y * 3.0f, -1.5f, 1.5f);
 
             player::PlayerInput pin;
             pin.moveAxis      = touch.moveAxis();
@@ -1134,6 +1153,8 @@ extern "C" void android_main(android_app* app) {
     f32 statTimer = 0.f;
     u64 lastPresented = 0;
     u32 statReports = 0;
+    f32 msUpdate = 0.f, msPrepare = 0.f, msDraw = 0.f;
+    u32 msFrames = 0;
 
     while (true) {
         // ALooper_pollAll помечен недоступным начиная с NDK r27: он мог
@@ -1185,8 +1206,15 @@ extern "C" void android_main(android_app* app) {
             // из-за чего ломался цикл дня и ночи и анимация в шейдерах.
             const f32 timeSec = std::chrono::duration<f32>(now - startTime).count();
 
+            // Покадровая раскладка по этапам. Без неё «15 кадров в
+            // секунду» ничего не говорит: узкое место может быть в
+            // логике, в записи команд или в ожидании GPU, и лечится
+            // оно в каждом случае по-разному.
+            const auto tA = std::chrono::steady_clock::now();
             eng.update(dt, timeSec);
+            const auto tB = std::chrono::steady_clock::now();
             eng.prepareFrame(timeSec);
+            const auto tC = std::chrono::steady_clock::now();
 
             if (!eng.vk.beginFrame()) {
                 if (app->window) eng.vk.onResize(app->window);
@@ -1194,6 +1222,15 @@ extern "C" void android_main(android_app* app) {
                 if (eng.render) eng.render->render(eng.vk);
                 eng.vk.endFrame();
             }
+            const auto tD = std::chrono::steady_clock::now();
+
+            auto ms = [](auto a, auto b) {
+                return std::chrono::duration<f32, std::milli>(b - a).count();
+            };
+            msUpdate  += ms(tA, tB);
+            msPrepare += ms(tB, tC);
+            msDraw    += ms(tC, tD);
+            ++msFrames;
 
             // Сводка раз в три секунды. Без неё «чёрный экран» не
             // отличить от «кадры идут, но в них нечего показать»:
@@ -1210,9 +1247,11 @@ extern "C" void android_main(android_app* app) {
                 statTimer = 0.f;
                 const glm::vec3 cam = eng.render ? eng.render->camera().position()
                                                  : glm::vec3(0.f);
+                const f32 n = msFrames ? (f32)msFrames : 1.f;
                 LOGI("кадры: показано %llu (%.1f/с), показ=%d | камера %.1f %.1f %.1f "
                      "| чанки: загружено %zu, нарисовано %u, индексов %u "
-                     "| трава %u, мобы %u, NPC %u",
+                     "| трава %u, мобы %u, NPC %u "
+                     "| мс: логика %.1f, подготовка %.1f, рисование %.1f",
                      (unsigned long long)presented, (double)fps,
                      (int)eng.vk.lastPresentResult(),
                      (double)cam.x, (double)cam.y, (double)cam.z,
@@ -1221,7 +1260,11 @@ extern "C" void android_main(android_app* app) {
                      eng.render ? eng.render->drawnIndices() : 0u,
                      eng.render ? eng.render->grassCount() : 0u,
                      eng.render ? eng.render->mobInstances() : 0u,
-                     eng.render ? eng.render->npcInstances() : 0u);
+                     eng.render ? eng.render->npcInstances() : 0u,
+                     (double)(msUpdate / n), (double)(msPrepare / n),
+                     (double)(msDraw / n));
+                msUpdate = msPrepare = msDraw = 0.f;
+                msFrames = 0;
             }
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));

@@ -48,6 +48,11 @@ public:
     void rect(float x, float y, float w, float h, UiColor c);
     void rectOutline(float x, float y, float w, float h, float thickness, UiColor c);
     void text(const std::string& s, float x, float y, float scale, UiColor c);
+    /// Круг и кольцо в пикселях экрана. Экранные кнопки и джойстик
+    /// круглые: из прямоугольников они выглядят как лесенка.
+    void circle(float cx, float cy, float r, UiColor c, int segments = 24);
+    void ring(float cx, float cy, float rInner, float rOuter, UiColor c,
+              int segments = 24);
     float textWidth(const std::string& s, float scale) const;
     float textHeight(float scale) const { return 7.f * scale; }
 

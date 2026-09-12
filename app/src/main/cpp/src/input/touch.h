@@ -65,6 +65,9 @@ struct Button {
     bool       pressed = false;
     bool       visible = true;
     i32        touchId = -1;
+    /// Короткая подпись для HUD. Указывает на строковый литерал —
+    /// кнопки заводятся один раз при старте и живут до выхода.
+    const char* label = nullptr;
     std::function<void(u32)> onPress;
     std::function<void(u32)> onRelease;
 };
@@ -106,6 +109,16 @@ public:
                   std::function<void(u32)> onRelease = nullptr);
 
     bool isButtonHeld(u32 id) const;
+    /// Подпись кнопки на экране. Шрифт HUD знает только ASCII до 95,
+    /// так что подписи короткие и латиницей.
+    void setButtonLabel(u32 id, const char* text);
+
+    /// Где и какого размера кнопка на экране, в пикселях. Нужно HUD,
+    /// чтобы нарисовать её ровно там, где она ловит касание: раньше
+    /// кнопки существовали только в обработчике ввода, и игрок тыкал
+    /// в пустой экран наугад.
+    glm::vec2 buttonCenterPx(u32 id) const;
+    f32       buttonRadiusPx(u32 id) const;
 
     // ---- Настройка раскладки (ТЗ 5.2) ----
     /// Сдвиг кнопки относительно штатного места, в NDC.
