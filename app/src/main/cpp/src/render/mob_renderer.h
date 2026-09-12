@@ -37,7 +37,12 @@ public:
     void upload(vk::Context& ctx);
 
     /// Рисует
-    void render(vk::Context& ctx, const math::Frustum& frustum);
+    /// set передаётся явно и привязывается своим layout'ом. Раньше
+    /// дескрипторы брались те, что оставил после себя рендер чанков:
+    /// Vulkan гарантирует их сохранность только при совместимых
+    /// layout'ах, а совместимость ломается от любого расхождения —
+    /// например от push-константы, которой у чанков теперь есть.
+    void render(vk::Context& ctx, VkDescriptorSet set, const math::Frustum& frustum);
 
     u32 instanceCount() const { return instanceCount_; }
 

@@ -25,7 +25,7 @@ PAIRS = [
     ('src/render/mob_renderer.cpp',       'mob.vert'),
     ('src/render/npc_renderer.cpp',       'mob.vert'),
     ('src/render/projectile_renderer.cpp','projectile.vert'),
-    ('src/render/item_renderer.cpp',      'projectile.vert'),
+    ('src/render/item_renderer.cpp',      'mob.vert'),
 ]
 
 # Сколько компонентов несёт формат Vulkan.
@@ -35,8 +35,17 @@ FORMAT_COMPONENTS = {
     'VK_FORMAT_R32G32B32_SFLOAT': 3,
     'VK_FORMAT_R32G32B32A32_SFLOAT': 4,
     'VK_FORMAT_R8G8B8A8_UNORM': 4,
+    'VK_FORMAT_R32_UINT': 1,
 }
-GLSL_COMPONENTS = {'float': 1, 'vec2': 2, 'vec3': 3, 'vec4': 4}
+GLSL_COMPONENTS = {'float': 1, 'vec2': 2, 'vec3': 3, 'vec4': 4,
+                   'uint': 1, 'uvec2': 2, 'uvec3': 3, 'uvec4': 4,
+                   'int': 1, 'ivec2': 2, 'ivec3': 3, 'ivec4': 4}
+# Целочисленному входу шейдера нужен целочисленный формат, и наоборот.
+# Несовпадение здесь Vulkan не прощает: атрибут читается как мусор.
+INT_FORMATS = {'VK_FORMAT_R32_UINT', 'VK_FORMAT_R32G32_UINT',
+               'VK_FORMAT_R32G32B32_UINT', 'VK_FORMAT_R32G32B32A32_UINT',
+               'VK_FORMAT_R32_SINT'}
+INT_GLSL = {'uint', 'uvec2', 'uvec3', 'uvec4', 'int', 'ivec2', 'ivec3', 'ivec4'}
 
 ATTR_RE = re.compile(
     r'\{\s*(\d+)\s*,\s*(\d+)\s*,\s*(VK_FORMAT_\w+)\s*,\s*(\d+)\s*\}')
@@ -85,6 +94,11 @@ def main():
             want = GLSL_COMPONENTS.get(typ)
             got = FORMAT_COMPONENTS.get(attrs[loc])
             if want is None or got is None:
+                continue
+            if (typ in INT_GLSL) != (attrs[loc] in INT_FORMATS):
+                bad.append('location %d: шейдер %s, pipeline %s — '
+                           'целое против вещественного'
+                           % (loc, typ, attrs[loc]))
                 continue
             # R8G8B8A8_UNORM подаётся в vec4 — это нормально.
             if want != got:

@@ -50,26 +50,43 @@ void ChunkRenderer::forgetChunk(world::ChunkCoord c) {
 bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
                               ChunkGpu& gpu, world::Chunk& chunk, u8 lod)
 {
-    // Копируем квады под замком: задача меширования может как раз
-    // перезаписывать этот же LOD.
+    auto& gm = gpu.lod[lod];
+
+    // Вершины строим прямо из хранимых квадов, под замком меша.
+    // Копия всего списка, которая была здесь раньше, ничего не давала:
+    // замок всё равно нужен, а сотня килобайт на чанк переливалась
+    // туда-обратно каждый кадр загрузки.
     {
         std::lock_guard lk(chunk.meshMutex);
         if (!chunk.meshes[lod].built) return false;
-        scratchQuads_ = chunk.meshes[lod].quads;
+        buildChunkVertices(chunk, chunk.meshes[lod].quads,
+                           scratchVerts_, scratchIndices_, gm.opaqueIndices);
         chunk.meshes[lod].ready.store(false, std::memory_order_release);
     }
 
-    buildChunkVertices(chunk, scratchQuads_, scratchVerts_, scratchIndices_);
-
-    auto& gm = gpu.lod[lod];
     if (scratchIndices_.empty()) {
         // Чанк целиком пустой (небо или толща камня внутри) — рисовать нечего.
-        gm.indexCount = 0;
+        gm.totalIndices = 0;
+        gm.opaqueIndices = 0;
         return true;
     }
 
-    const u64 vbBytes = scratchVerts_.size()   * sizeof(VoxelVertex);
-    const u64 ibBytes = scratchIndices_.size() * sizeof(u32);
+    // Индекс в 16 бит, пока вершин меньше 65536. Для чанка 32x128x32
+    // после жадного слияния это практически всегда так, а трафик и
+    // видеопамять под индексы сразу вдвое меньше.
+    const bool narrow = scratchVerts_.size() <= 65535;
+    gm.indexType = narrow ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+
+    const void* ibSrc = scratchIndices_.data();
+    u64 ibBytes = scratchIndices_.size() * sizeof(u32);
+    if (narrow) {
+        scratchIndices16_.resize(scratchIndices_.size());
+        for (usize i = 0; i < scratchIndices_.size(); ++i)
+            scratchIndices16_[i] = (u16)scratchIndices_[i];
+        ibSrc   = scratchIndices16_.data();
+        ibBytes = scratchIndices16_.size() * sizeof(u16);
+    }
+    const u64 vbBytes = scratchVerts_.size() * sizeof(VoxelVertex);
 
     if (gm.valid && (gm.vb.size() < vbBytes || gm.ib.size() < ibBytes)) {
         gm.vb.destroy(); gm.ib.destroy(); gm.valid = false;
@@ -91,8 +108,8 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
     auto* sIb = staging_.acquire(ibBytes);
     if (!sIb) { staging_.release(sVb); return false; }
 
-    std::memcpy(sVb->mapped, scratchVerts_.data(),   vbBytes);
-    std::memcpy(sIb->mapped, scratchIndices_.data(), ibBytes);
+    std::memcpy(sVb->mapped, scratchVerts_.data(), vbBytes);
+    std::memcpy(sIb->mapped, ibSrc, ibBytes);
 
     VkBufferCopy c1{0, 0, vbBytes};
     vkCmdCopyBuffer(cmd, sVb->buffer, gm.vb.handle(), 1, &c1);
@@ -104,8 +121,15 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
     pendingStaging_.push_back(sVb);
     pendingStaging_.push_back(sIb);
 
-    gm.indexCount = (u32)scratchIndices_.size();
+    gm.totalIndices = (u32)scratchIndices_.size();
     return true;
+}
+
+/// Освобождает список квадов уровня: он уже в видеопамяти.
+static void releaseQuads(world::Chunk& chunk, u8 lod) {
+    std::lock_guard lk(chunk.meshMutex);
+    chunk.meshes[lod].built = false;
+    std::vector<world::Quad>().swap(chunk.meshes[lod].quads);
 }
 
 // ============================================================
@@ -113,7 +137,7 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
 // submitOneShot с ожиданием fence — восемь полных остановок GPU на
 // чанк. Теперь все копии кадра идут одним пакетом.
 // ============================================================
-void ChunkRenderer::uploadChunks(vk::Context& ctx,
+void ChunkRenderer::uploadChunks(vk::Context& ctx, world::ChunkManager& world,
                                  const std::vector<std::shared_ptr<world::Chunk>>& chunks,
                                  const glm::vec3& cameraPos)
 {
@@ -139,25 +163,59 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx,
                                 CY * 0.5f,
                                 (f32)key.z * CH + CH * 0.5f };
         const glm::vec3 d = center - cameraPos;
-        const u8 want = lodForDistanceSq(glm::dot(d, d));
+        const u8 want = lodForDistanceSq(glm::dot(d, d), gpu.residentLod);
+
+        // Мешер строит один уровень, и это мог быть не тот, который
+        // нужен сейчас: игрок успел отойти. Берём то, что построено,
+        // — пустой чанк выглядит дырой в мире, — и заказываем нужный.
+        u8 have = want;
+        {
+            std::lock_guard lk(c.meshMutex);
+            if (!c.meshes[want].built)
+                have = c.lodWanted.load(std::memory_order_acquire) & 3;
+        }
 
         // Остальные уровни помечаем недействительными: их содержимое
         // устарело вместе с перестроенным мешем.
         for (u8 l = 0; l < 4; ++l) {
-            if (l != want && gpu.lod[l].valid) gpu.lod[l].indexCount = 0;
+            if (l != have && gpu.lod[l].valid) gpu.lod[l].totalIndices = 0;
         }
-        if (uploadLod(ctx, cmd, gpu, c, want)) gpu.residentLod = want;
+        if (uploadLod(ctx, cmd, gpu, c, have)) {
+            gpu.residentLod  = have;
+            gpu.requestedLod = 0xFF;
+            releaseQuads(c, have);
+        }
+        if (have != want && lodRequests_.size() < 256)
+            lodRequests_.push_back({ key, want });
     }
 
     // 2. Отложенные запросы смены детализации от render().
+    //    Если меша нужного уровня ещё нет — просим мир построить его
+    //    в фоне; до тех пор рисуем тем, что есть.
     u32 served = 0;
     for (const auto& req : lodRequests_) {
-        if (served >= MAX_LOD_UPLOADS_PER_FRAME) break;
         auto it = meshes_.find(req.coord);
         if (it == meshes_.end() || !it->second.chunk) continue;
-        if (it->second.chunk->removed.load(std::memory_order_acquire)) continue;
-        if (uploadLod(ctx, cmd, it->second, *it->second.chunk, req.lod)) {
-            it->second.residentLod = req.lod;
+        world::Chunk& c = *it->second.chunk;
+        if (c.removed.load(std::memory_order_acquire)) continue;
+
+        bool have = false;
+        {
+            std::lock_guard lk(c.meshMutex);
+            have = c.meshes[req.lod].built;
+        }
+        if (!have) {
+            if (it->second.requestedLod != req.lod) {
+                world.requestLod(req.coord, req.lod);
+                it->second.requestedLod = req.lod;
+            }
+            continue;
+        }
+        if (served >= MAX_LOD_UPLOADS_PER_FRAME) continue;
+        if (uploadLod(ctx, cmd, it->second, c, req.lod)) {
+            it->second.residentLod  = req.lod;
+            it->second.requestedLod = 0xFF;
+            releaseQuads(c, req.lod);
             ++served;
         }
     }
@@ -170,12 +228,13 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx,
 }
 
 // ============================================================
-// Отрисовка: frustum culling + выбор LOD по дистанции.
+// Отрисовка: отбор, сортировка, два прохода.
 // ============================================================
-void ChunkRenderer::render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout layout,
+void ChunkRenderer::render(vk::Context& ctx,
+                           VkPipeline opaquePipe, VkPipeline blendPipe,
+                           VkPipelineLayout layout,
                            VkDescriptorSet set, const math::Frustum& frustum,
-                           const glm::vec3& cameraPos,
-                           OcclusionCuller* occlusion)
+                           const glm::vec3& cameraPos)
 {
     VkCommandBuffer cmd = ctx.currentCmd();
 
@@ -189,18 +248,15 @@ void ChunkRenderer::render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout l
     VkRect2D sc{}; sc.extent = ctx.extent();
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
-                            0, 1, &set, 0, nullptr);
-
     lastDrawnChunks_  = 0;
     lastDrawnIndices_ = 0;
     for (auto& l : lodCounts_) l = 0;
-    if (occlusion) occlusion->resetStats();
 
     constexpr f32 CH = (f32)world::CHUNK_SIZE;
     constexpr f32 CY = (f32)world::CHUNK_SIZE_Y;
 
+    // ---- 1. Отбор ----
+    visible_.clear();
     for (auto& [coord, cm] : meshes_) {
         const glm::vec3 cmin{ (f32)coord.x * CH, 0.f, (f32)coord.z * CH };
         const glm::vec3 cmax{ cmin.x + CH, CY, cmin.z + CH };
@@ -208,28 +264,22 @@ void ChunkRenderer::render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout l
         math::AABB aabb; aabb.min = cmin; aabb.max = cmax;
         if (!frustum.intersectsAABB(aabb)) continue;
 
-        // Отсечение перекрытых чанков: дешевле, чем отправить их
-        // на растеризацию и получить полный overdraw.
-        if (occlusion && occlusion->isOccluded(coord, cameraPos)) {
-            occlusion->countCulled();
-            continue;
-        }
-
         const glm::vec3 center = (cmin + cmax) * 0.5f;
         const glm::vec3 d = center - cameraPos;
-        const u8 want = lodForDistanceSq(glm::dot(d, d));
+        const f32 distSq = glm::dot(d, d);
+        const u8 want = lodForDistanceSq(distSq, cm.residentLod);
 
         // Нужного уровня нет в видеопамяти — рисуем тем, что есть,
         // и заказываем догрузку на следующий кадр.
         GpuMesh* chosen = nullptr;
         u8 usedLod = want;
-        if (cm.lod[want].valid && cm.lod[want].indexCount > 0) {
+        if (cm.lod[want].valid && cm.lod[want].totalIndices > 0) {
             chosen = &cm.lod[want];
         } else {
             if (cm.residentLod != want && lodRequests_.size() < 256)
                 lodRequests_.push_back({ coord, want });
             for (u8 i = 0; i < 4; ++i) {
-                if (cm.lod[i].valid && cm.lod[i].indexCount > 0) {
+                if (cm.lod[i].valid && cm.lod[i].totalIndices > 0) {
                     chosen = &cm.lod[i];
                     usedLod = i;
                     break;
@@ -238,15 +288,49 @@ void ChunkRenderer::render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout l
         }
         if (!chosen) continue;
 
-        const VkBuffer vb = chosen->vb.handle();
+        visible_.push_back({ chosen, cmin, distSq });
+        ++lastDrawnChunks_;
+        lastDrawnIndices_ += chosen->totalIndices;
+        ++lodCounts_[usedLod];
+    }
+    if (visible_.empty()) return;
+
+    // ---- 2. Порядок ----
+    std::sort(visible_.begin(), visible_.end(),
+              [](const Visible& a, const Visible& b) { return a.distSq < b.distSq; });
+
+    // ---- 3. Непрозрачное, от ближнего к дальнему ----
+    auto bindAndDraw = [&](const Visible& v, u32 first, u32 count) {
+        if (count == 0) return;
+        const ChunkPush push{ glm::vec4(v.origin, 0.f) };
+        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(push), &push);
+        const VkBuffer vb = v.mesh->vb.handle();
         VkDeviceSize offsets[] = { 0 };
         vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offsets);
-        vkCmdBindIndexBuffer(cmd, chosen->ib.handle(), 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, chosen->indexCount, 1, 0, 0, 0);
+        vkCmdBindIndexBuffer(cmd, v.mesh->ib.handle(), 0, v.mesh->indexType);
+        vkCmdDrawIndexed(cmd, count, 1, first, 0, 0);
+    };
 
-        ++lastDrawnChunks_;
-        lastDrawnIndices_ += chosen->indexCount;
-        ++lodCounts_[usedLod];
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaquePipe);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
+                            0, 1, &set, 0, nullptr);
+    for (const auto& v : visible_) bindAndDraw(v, 0, v.mesh->opaqueIndices);
+
+    // ---- 4. Полупрозрачное, от дальнего к ближнему ----
+    // Обратный порядок — единственный, при котором смешивание даёт
+    // верный результат: дальняя вода должна лечь под ближнюю.
+    bool blendBound = false;
+    for (auto it = visible_.rbegin(); it != visible_.rend(); ++it) {
+        const u32 count = it->mesh->totalIndices - it->mesh->opaqueIndices;
+        if (count == 0) continue;
+        if (!blendBound) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, blendPipe);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
+                                    0, 1, &set, 0, nullptr);
+            blendBound = true;
+        }
+        bindAndDraw(*it, it->mesh->opaqueIndices, count);
     }
 }
 

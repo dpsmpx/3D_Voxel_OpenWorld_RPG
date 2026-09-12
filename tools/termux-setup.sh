@@ -102,9 +102,6 @@ if [ "$SKIP_PACKAGES" -eq 0 ]; then
     install_any "wget"           wget            || FAILED=1
     install_any "zlib"           zlib            || FAILED=1
 
-    # Кодировщик ASTC в репозиториях Termux не публикуется ни под одним
-    # именем, поэтому pkg его не поставит — собирается отдельно.
-
     # Компилятор шейдеров. В Termux он может называться по-разному.
     install_any "компилятор шейдеров" shaderc glslc glslang || {
         warn "glslc не установлен — шейдеры придётся компилировать вручную"
@@ -496,7 +493,7 @@ log "Пишу $ENV_FILE..."
         echo "export ANDROID_NDK=\"\$ANDROID_NDK_HOME\""
         # PATH намеренно не трогаем. Кросс-компилятор из NDK, попав в
         # PATH, подменяет clang самого Termux, и всё, что должно
-        # собираться для телефона (утилита атласа), ломается с
+        # собираться для хоста, ломается с
         # «unexpected e_type». CMake получает компилятор явно, через
         # android.toolchain.cmake, и в PATH не нуждается.
     else

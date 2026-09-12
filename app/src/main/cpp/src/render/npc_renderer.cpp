@@ -249,7 +249,7 @@ void NpcRenderer::upload(vk::Context& ctx) {
     s->destroy(); delete s;
 }
 
-void NpcRenderer::render(vk::Context& ctx) {
+void NpcRenderer::render(vk::Context& ctx, VkDescriptorSet set) {
     if (instanceCount_ == 0 || !instanceGpu_.handle()) return;
     VkCommandBuffer cmd = ctx.currentCmd();
 
@@ -262,6 +262,8 @@ void NpcRenderer::render(vk::Context& ctx) {
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline_.layout(), 0, 1, &set, 0, nullptr);
     VkBuffer vbs[2] = { vbo_.handle(), instanceGpu_.handle() };
     VkDeviceSize offs[2] = { 0, 0 };
     vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offs);

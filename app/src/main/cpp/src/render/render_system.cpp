@@ -3,8 +3,6 @@
  * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
  */
 #include "render_system.h"
-#include "atlas_builder.h"
-#include "astc.h"
 #include "../core/log.h"
 #include "../config/settings.h"
 #include <glm/glm.hpp>
@@ -13,61 +11,14 @@ namespace render {
 
 // Вершинный формат террейна — см. VoxelVertex в mesh_builder.h.
 static const vk::VertexBinding kVoxelBindings[1] = { { sizeof(VoxelVertex), false } };
-static const vk::VertexAttr kVoxelAttrs[4] = {
-    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // inPos
-    { 1, 0, VK_FORMAT_R32G32_SFLOAT,    12 },   // inUv (в тайлах)
-    { 2, 0, VK_FORMAT_R32G32_SFLOAT,    20 },   // inTileOrigin
-    { 3, 0, VK_FORMAT_R8G8B8A8_UNORM,   28 },   // inColor
+static const vk::VertexAttr kVoxelAttrs[2] = {
+    { 0, 0, VK_FORMAT_R32_UINT,       0 },   // inPacked: позиция, грань, AO, зерно
+    { 1, 0, VK_FORMAT_R8G8B8A8_UNORM, 4 },   // inColor: цвет материала грани
 };
 
 bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
     dev_ = ctx.device();
     shaders_.init(dev_, mgr);
-
-    // Атлас блоков. Сжатый ASTC 4x4 (ТЗ 3.3) экономит вчетверо
-    // памяти и пропускной способности, но поддержан не везде и
-    // собирается на этапе сборки утилитой tools/atlas. Если ассета
-    // нет или GPU формат не тянет — собираем процедурный RGBA8.
-    bool atlasReady = false;
-    if (ctx.formatSupportsSampling(VK_FORMAT_ASTC_4x4_UNORM_BLOCK)) {
-        const AstcImage astc = loadAstcAsset(mgr, "textures/blocks.astc");
-        if (astc.valid() && astc.blockX == 4 && astc.blockY == 4) {
-            atlasReady = atlas_.create(
-                ctx.device(), ctx.physicalDevice(),
-                ctx.gfxQueue(), ctx.gfxFamily(),
-                astc.width, astc.height,
-                VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
-                astc.data.data(), astc.data.size(),
-                VK_FILTER_LINEAR,
-                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                false);
-            if (atlasReady)
-                LOGI("Атлас: ASTC 4x4, %zu КБ", astc.data.size() / 1024);
-        }
-    } else {
-        LOGI("Атлас: ASTC 4x4 не поддержан устройством");
-    }
-
-    if (!atlasReady) {
-        const AtlasData atlasData = buildProceduralAtlas();
-        atlasReady = atlas_.create(
-            ctx.device(), ctx.physicalDevice(),
-            ctx.gfxQueue(), ctx.gfxFamily(),
-            atlasData.width, atlasData.height,
-            VK_FORMAT_R8G8B8A8_UNORM,
-            atlasData.pixels.data(), atlasData.pixels.size(),
-            VK_FILTER_NEAREST,
-            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            true);
-        if (atlasReady)
-            LOGI("Атлас: процедурный RGBA8, %zu КБ",
-                 atlasData.pixels.size() / 1024);
-    }
-
-    if (!atlasReady) {
-        LOGE("Атлас не создан");
-        return false;
-    }
 
     if (!descriptors_.create(ctx.device(), vk::Context::MAX_FRAMES)) {
         LOGE("DescriptorSet не создан");
@@ -79,7 +30,6 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
                                    sizeof(CameraUbo),
                                    vk::BufferUsage::Uniform, true)) return false;
         descriptors_.bindUbo(i, uboBuffers_[i].handle(), sizeof(CameraUbo));
-        descriptors_.bindTexture(i, atlas_.view(), atlas_.sampler());
     }
 
     {
@@ -96,8 +46,19 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
         d.bindings     = kVoxelBindings;
         d.bindingCount = 1;
         d.attrs        = kVoxelAttrs;
-        d.attrCount    = 4;
+        d.attrCount    = 2;
+        d.pushConstantSize  = sizeof(ChunkPush);
+        d.pushConstantStage = VK_SHADER_STAGE_VERTEX_BIT;
         if (!voxelPipeline_.create(dev_, shaders_, d)) return false;
+
+        // Полупрозрачный проход. Глубину читаем, но не пишем: две
+        // поверхности воды подряд иначе вырезают друг друга, и в
+        // озере появляются дыры. Грани не отсекаем — на поверхность
+        // воды смотрят и снизу.
+        d.blend      = true;
+        d.depthWrite = false;
+        d.cullMode   = VK_CULL_MODE_NONE;
+        if (!voxelBlendPipeline_.create(dev_, shaders_, d)) return false;
     }
 
     if (!chunkRenderer_.init(dev_, ctx.physicalDevice())) return false;
@@ -130,7 +91,7 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
 void RenderSystem::prepareFrame(vk::Context& ctx,
                                 world::ChunkManager& world,
                                 ecs::Registry& registry,
-                                f32 timeSec,
+                                f32 timeSec, f32 dt,
                                 player::Player* player,
                                 const physics::RayHit& targetHit,
                                 f32 fps)
@@ -142,15 +103,7 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     lastHit_       = targetHit;
 
     const auto ready = world.pollMeshesReady();
-    chunkRenderer_.uploadChunks(ctx, ready, camera_.position());
-
-    // Карта перекрытий обновляется раз в полсекунды: мир меняется
-    // медленнее, а полный обход чанков недёшев.
-    occlusionTimer_ += 1.f / 60.f;
-    if (occlusionTimer_ >= 0.5f) {
-        occlusionTimer_ = 0.f;
-        occlusion_.rebuild(world, camera_.position(), world.viewDistance() + 1);
-    }
+    chunkRenderer_.uploadChunks(ctx, world, ready, camera_.position());
 
     mobRenderer_.rebuild(registry);
     mobRenderer_.upload(ctx);
@@ -165,7 +118,7 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     itemRenderer_.upload(ctx);
 
     static f32 grassTimer = 0.f;
-    grassTimer += (1.f / 60.f);
+    grassTimer += dt;
     if (grass_.instanceCount() == 0 || grassTimer > 0.5f) {
         grassTimer = 0.f;
         grass_.populateGrass(world, camera_.position(), 40.f);
@@ -181,6 +134,9 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     // загруженных чанков виден обрывом на фоне чистого неба.
     const f32 vdBlocks = (f32)vd * (f32)world::CHUNK_SIZE;
     camera_.setFog(vdBlocks * 0.55f, vdBlocks * 0.94f);
+    chunkRenderer_.setViewDistanceBlocks(vdBlocks);
+    world.setLodBands(chunkRenderer_.lodBand(0), chunkRenderer_.lodBand(1),
+                      chunkRenderer_.lodBand(2));
 
     const u32 frame = ctx.frameInFlight();
     CameraUbo ubo = camera_.toUbo(timeSec);
@@ -192,31 +148,17 @@ void RenderSystem::render(vk::Context& ctx) {
     VkDescriptorSet ds = descriptors_.set(frame);
     math::Frustum fr = camera_.frustum();
 
-    VkCommandBuffer cmd = ctx.currentCmd();
-
     skybox_.render(ctx);
 
-    chunkRenderer_.render(ctx, voxelPipeline_.handle(), voxelPipeline_.layout(),
-                          ds, fr, camera_.position(), &occlusion_);
+    chunkRenderer_.render(ctx, voxelPipeline_.handle(),
+                          voxelBlendPipeline_.handle(), voxelPipeline_.layout(),
+                          ds, fr, camera_.position());
 
-    npcRenderer_.render(ctx);
-    mobRenderer_.render(ctx, fr);
-    projRenderer_.render(ctx);
-    itemRenderer_.render(ctx);
-
-    {
-        VkViewport vp{};
-        vp.width  = (f32)ctx.extent().width;
-        vp.height = (f32)ctx.extent().height;
-        vp.minDepth = 0.f; vp.maxDepth = 1.f;
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        VkRect2D sc{}; sc.extent = ctx.extent();
-        vkCmdSetScissor(cmd, 0, 1, &sc);
-
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                voxelPipeline_.layout(), 0, 1, &ds, 0, nullptr);
-        grass_.render(ctx, fr);
-    }
+    npcRenderer_.render(ctx, ds);
+    mobRenderer_.render(ctx, ds, fr);
+    projRenderer_.render(ctx, ds);
+    itemRenderer_.render(ctx, ds);
+    grass_.render(ctx, ds, fr);
 
     blockOutline_.render(ctx, ds, lastHit_.block, lastHit_.hit);
 
@@ -236,7 +178,7 @@ void RenderSystem::shutdown() {
     chunkRenderer_.shutdown();
     for (auto& b : uboBuffers_) b.destroy();
     descriptors_.destroy();
-    atlas_.destroy();
+    voxelBlendPipeline_.destroy();
     voxelPipeline_.destroy();
     shaders_.destroyAll();
     dev_ = VK_NULL_HANDLE;

@@ -65,12 +65,6 @@ check_sdk_tool "aapt2"     aapt2     version
 check_sdk_tool "apksigner" apksigner --version
 check_sdk_tool "zipalign"  zipalign
 
-if ASTC_BIN="$(find_astcenc)"; then
-    printf "${C_G}  ✓${C_0} %-22s %s\n" "astcenc" "$ASTC_BIN"
-else
-    printf "${C_Y}  !${C_0} %-22s нет — атлас останется RGBA8 (необязательно)\n" "astcenc"
-    WARNED=$((WARNED + 1))
-fi
 want "adb"            adb       "pkg install android-tools, для установки на устройство"
 
 echo ""
@@ -161,7 +155,7 @@ else
     WARNED=$((WARNED + 1))
 fi
 
-# Кросс-компилятор в PATH ломает сборку хостовых утилит (атлас).
+# Кросс-компилятор в PATH ломает сборку хостовых утилит.
 # Ошибка при этом выглядит как «unexpected e_type», и связь с PATH
 # по ней не видна — поэтому проверяем отдельно.
 echo ""

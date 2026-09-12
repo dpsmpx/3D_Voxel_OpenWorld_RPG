@@ -23,7 +23,12 @@ public:
 
     void rebuild(ecs::Registry& reg);
     void upload(vk::Context& ctx);
-    void render(vk::Context& ctx);
+    /// set передаётся явно и привязывается своим layout'ом. Раньше
+    /// дескрипторы брались те, что оставил после себя рендер чанков:
+    /// Vulkan гарантирует их сохранность только при совместимых
+    /// layout'ах, а совместимость ломается от любого расхождения —
+    /// например от push-константы, которой у чанков теперь есть.
+    void render(vk::Context& ctx, VkDescriptorSet set);
 
     u32 instanceCount() const { return instanceCount_; }
 

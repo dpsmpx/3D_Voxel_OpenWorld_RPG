@@ -17,14 +17,18 @@
 namespace render {
 
 /// Instance layout должен совпадать с vertex input pipeline.
+///
+/// Координат в атласе тут больше нет: трава, как и весь мир, рисуется
+/// цветом материала, а не текстурой. Форму даёт сама геометрия —
+/// сужающаяся кверху трапеция, — а оттенок приходит инстансом, чтобы
+/// поляна не выглядела покрашенной одной банкой.
 struct GrassInstance {
     glm::vec3 pos;       // offset 0
     f32       scale;     // offset 12
-    glm::vec2 uvOrigin;  // offset 16
-    u8        r, g, b, a;// offset 24 (packed color)
-    f32       yaw;       // offset 28
+    u8        r, g, b, a;// offset 16 (packed color)
+    f32       yaw;       // offset 20
 };
-static_assert(sizeof(GrassInstance) == 32, "GrassInstance должен быть 32 байта");
+static_assert(sizeof(GrassInstance) == 24, "GrassInstance должен быть 24 байта");
 
 /// InstancedRenderer — рисует cross-quad геометрию (биллборд),
 /// один draw-call на все instances.
@@ -40,7 +44,12 @@ public:
     void populateGrass(const world::ChunkManager& world, const glm::vec3& playerPos, f32 radius);
 
     void upload(vk::Context& ctx);
-    void render(vk::Context& ctx, const math::Frustum& frustum);
+    /// set передаётся явно и привязывается своим layout'ом. Раньше
+    /// дескрипторы брались те, что оставил после себя рендер чанков:
+    /// Vulkan гарантирует их сохранность только при совместимых
+    /// layout'ах, а совместимость ломается от любого расхождения —
+    /// например от push-константы, которой у чанков теперь есть.
+    void render(vk::Context& ctx, VkDescriptorSet set, const math::Frustum& frustum);
 
     u32 instanceCount() const { return instanceCount_; }
 

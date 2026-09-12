@@ -12,7 +12,7 @@
 #include "world/block.h"
 #include "world/chunk.h"
 #include "world/chunk_manager.h"
-#include "render/astc.h"
+#include "render/mesh_builder.h"
 #include "vk/vk_buffer.h"
 #include "vk/vk_texture.h"
 #include "world/noise.h"
@@ -400,7 +400,13 @@ void testGreedyMesh() {
     fillFlat(*chunk, 1, world::STONE);
     n = world::buildGreedyMesh(*chunk, nb, quads, world::Lod::Full);
     check(n > 0, "сплошной слой даёт геометрию");
-    check(n <= 6, "грани слиты жадно (не по вокселю на грань)");
+    // 32x32 верхних граней обязаны схлопнуться в одну. Низ у чанка
+    // без соседей дробится: по краю у него «нет свода» над границей,
+    // и открытость неба там другая. В настоящем мире соседи есть.
+    usize topQuads = 0;
+    for (const auto& q : quads) if (q.v0.face == 2) ++topQuads;
+    check(topQuads == 1, "верхняя грань слита в один квад");
+    check(n < 32, "грани слиты жадно (не по вокселю на грань)");
 
     f32 area = 0.f;
     for (const auto& q : quads) area += glm::length(q.du) * glm::length(q.dv);
@@ -442,6 +448,124 @@ void testGreedyMesh() {
     std::vector<world::Quad> again;
     world::buildGreedyMesh(*chunk, nb, again, world::Lod::Full);
     check(again.size() == q0.size(), "меширование детерминировано");
+}
+
+// ------------------------------------------------------------
+// Затенение углов и упаковка вершины
+// ------------------------------------------------------------
+void testVoxelShading() {
+    group("воксельное затенение и упаковка");
+
+    world::blocks();
+    world::ChunkNeighbors nb;
+    std::vector<world::Quad> quads;
+
+    // Ровная площадка без препятствий: все углы всех граней открыты.
+    auto flat = std::make_unique<world::Chunk>();
+    fillFlat(*flat, 1, world::STONE);
+    world::buildGreedyMesh(*flat, nb, quads, world::Lod::Full);
+    bool allOpen = true;
+    for (const auto& q : quads)
+        if (q.v0.face == 2)
+            for (u8 a : q.ao) if (a != 3) allOpen = false;
+    check(allOpen, "на открытой плоскости углы не затенены");
+
+    // Ступенька: у верхней грани нижнего уровня два угла упираются
+    // в стенку — они обязаны потемнеть.
+    auto step = std::make_unique<world::Chunk>();
+    for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+            step->voxels[world::chunkIndex(x, 0, z)] = world::STONE;
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        step->voxels[world::chunkIndex(10, 1, z)] = world::STONE;
+    world::buildGreedyMesh(*step, nb, quads, world::Lod::Full);
+    bool anyShaded = false;
+    for (const auto& q : quads)
+        if (q.v0.face == 2)
+            for (u8 a : q.ao) if (a < 3) anyShaded = true;
+    check(anyShaded, "у стены верхняя грань темнеет в углах");
+
+    // Разное затенение обязано разрывать слияние: иначе тень от стены
+    // растеклась бы по всей плоскости одним квадом.
+    usize flatTop = 0, stepTop = 0;
+    world::buildGreedyMesh(*flat, nb, quads, world::Lod::Full);
+    for (const auto& q : quads) if (q.v0.face == 2) ++flatTop;
+    world::buildGreedyMesh(*step, nb, quads, world::Lod::Full);
+    for (const auto& q : quads) if (q.v0.face == 2) ++stepTop;
+    check(stepTop > flatTop, "разное затенение не склеивается в один квад");
+
+    // Упаковка вершины: всё достаётся обратно ровно так, как её
+    // читает шейдер.
+    for (u32 face = 0; face < 6; ++face) {
+        const u32 p = render::packVoxelPos(32, 128, 31, face, face % 4,
+                                           (face + 2) % 8, 5, face & 1);
+        const bool ok = ( p        & 63u)  == 32
+                     && ((p >>  6) & 255u) == 128
+                     && ((p >> 14) & 63u)  == 31
+                     && ((p >> 20) & 7u)   == face
+                     && ((p >> 23) & 3u)   == (face % 4)
+                     && ((p >> 25) & 7u)   == ((face + 2) % 8)
+                     && ((p >> 28) & 7u)   == 5
+                     && ((p >> 31) & 1u)   == (face & 1);
+        if (!ok) { check(false, "упаковка вершины распаковывается обратно"); return; }
+    }
+    check(true, "упаковка вершины распаковывается обратно");
+    check(sizeof(render::VoxelVertex) == 8, "вершина террейна весит 8 байт");
+
+    // Геометрия из квадов: по четыре вершины и шесть индексов на квад,
+    // и ни один индекс не выходит за пределы буфера.
+    std::vector<render::VoxelVertex> verts;
+    std::vector<u32> idx;
+    world::buildGreedyMesh(*step, nb, quads, world::Lod::Full);
+    u32 opaqueIdx = 0;
+    render::buildChunkVertices(*step, quads, verts, idx, opaqueIdx);
+    check(verts.size() == quads.size() * 4, "на квад приходится четыре вершины");
+    check(idx.size() == quads.size() * 6, "на квад приходится шесть индексов");
+    u32 maxIdx = 0;
+    for (u32 i : idx) if (i > maxIdx) maxIdx = i;
+    check(idx.empty() || maxIdx < verts.size(), "индексы не выходят за буфер");
+
+    // Цвет берётся из материала, а не из текстуры.
+    bool colored = false;
+    for (const auto& v : verts) if (v.r || v.g || v.b) colored = true;
+    check(colored, "вершины несут цвет материала");
+    check(opaqueIdx == idx.size(), "у камня нет полупрозрачной части");
+
+    // Небо: открытый склон освещён полностью, пещера — нет.
+    auto cave = std::make_unique<world::Chunk>();
+    for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+            for (i32 y = 0; y < 40; ++y)
+                cave->voxels[world::chunkIndex(x, y, z)] = world::STONE;
+    // Полость в толще: её пол неба не видит.
+    for (i32 x = 8; x < 24; ++x)
+        for (i32 z = 8; z < 24; ++z)
+            for (i32 y = 20; y < 24; ++y)
+                cave->voxels[world::chunkIndex(x, y, z)] = world::AIR;
+    world::buildGreedyMesh(*cave, nb, quads, world::Lod::Full);
+    bool openLit = false, caveDark = false;
+    for (const auto& q : quads) {
+        if (q.v0.face != 2) continue;
+        const bool surface = q.v0.pos.y > 39.f;
+        for (u8 v : q.sky) {
+            if (surface && v == 7) openLit = true;
+            if (!surface && v < 4) caveDark = true;
+        }
+    }
+    check(openLit, "открытая поверхность видит небо полностью");
+    check(caveDark, "пол пещеры неба почти не видит");
+
+    // Вода уходит в хвост буфера: её рисуют отдельным проходом.
+    auto lake = std::make_unique<world::Chunk>();
+    for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z) {
+            lake->voxels[world::chunkIndex(x, 0, z)] = world::STONE;
+            lake->voxels[world::chunkIndex(x, 1, z)] = world::WATER;
+        }
+    world::buildGreedyMesh(*lake, nb, quads, world::Lod::Full);
+    render::buildChunkVertices(*lake, quads, verts, idx, opaqueIdx);
+    check(opaqueIdx > 0, "непрозрачная часть озера не пуста");
+    check(opaqueIdx < idx.size(), "вода вынесена в отдельный хвост буфера");
 }
 
 // ------------------------------------------------------------
@@ -528,52 +652,6 @@ void testBossPhases() {
     check(hollow.enrageMult > 1.f, "на последней фазе босс усиливается");
 }
 
-// ------------------------------------------------------------
-// Контейнер ASTC
-// ------------------------------------------------------------
-void testAstc() {
-    group("render::parseAstc");
-
-    // Собираем валидный заголовок astcenc: 512x512, блок 4x4.
-    const u32 W = 512, H = 512, BX = 4, BY = 4;
-    const usize blocks = ((W + BX - 1) / BX) * ((H + BY - 1) / BY);
-    std::vector<u8> file(16 + blocks * 16, 0xAB);
-    file[0] = 0x13; file[1] = 0xAB; file[2] = 0xA1; file[3] = 0x5C;
-    file[4] = (u8)BX; file[5] = (u8)BY; file[6] = 1;
-    file[7]  = (u8)(W & 0xFF); file[8]  = (u8)((W >> 8) & 0xFF); file[9]  = 0;
-    file[10] = (u8)(H & 0xFF); file[11] = (u8)((H >> 8) & 0xFF); file[12] = 0;
-    file[13] = 1; file[14] = 0; file[15] = 0;
-
-    const auto img = render::parseAstc(file.data(), file.size());
-    check(img.valid(), "валидный файл разбирается");
-    check(img.width == W && img.height == H, "размеры прочитаны верно");
-    check(img.blockX == BX && img.blockY == BY, "размер блока прочитан верно");
-    check(img.data.size() == blocks * 16, "объём данных равен числу блоков x 16");
-    const usize rgba8 = (usize)W * H * 4;
-    check(img.data.size() * 4 == rgba8,
-          "ASTC 4x4 сжимает RGBA8 ровно вчетверо");
-
-    // Битая сигнатура.
-    auto bad = file;
-    bad[0] = 0;
-    check(!render::parseAstc(bad.data(), bad.size()).valid(),
-          "чужая сигнатура отвергается");
-
-    // Обрезанный файл: данных меньше, чем обещает заголовок.
-    check(!render::parseAstc(file.data(), 16 + 32).valid(),
-          "обрезанный файл отвергается");
-
-    // Короче заголовка.
-    check(!render::parseAstc(file.data(), 8).valid(),
-          "файл короче заголовка отвергается");
-
-    // 3D-блоки не поддерживаются.
-    auto vol = file;
-    vol[6] = 2;
-    check(!render::parseAstc(vol.data(), vol.size()).valid(),
-          "объёмные блоки отвергаются");
-}
-
 } // namespace
 
 // ------------------------------------------------------------
@@ -649,9 +727,9 @@ int main() {
     testJobSystem();
     testSaveFormat();
     testGreedyMesh();
+    testVoxelShading();
     testDayCycle();
     testBossPhases();
-    testAstc();
 
     testVulkanGuards();
     testWorldQueries();

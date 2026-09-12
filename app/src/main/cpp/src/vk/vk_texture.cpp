@@ -48,8 +48,7 @@ bool Texture2D::create(VkDevice dev, VkPhysicalDevice phys, VkQueue queue, u32 q
     dev_ = dev; width_ = w; height_ = h; format_ = fmt;
 
     // Мип-цепочка строится через vkCmdBlitImage, а он не работает
-    // со сжатыми форматами. Для ASTC уровень один; мипы, если нужны,
-    // должен сгенерировать astcenc на этапе сборки.
+    // со сжатыми форматами: у них уровень всегда один.
     if (mipGen && isCompressedFormat(fmt)) {
         mipGen = false;
         LOGI("Texture2D: формат сжатый, мипы не генерируются на устройстве");
