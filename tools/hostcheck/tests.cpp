@@ -12,6 +12,8 @@
 #include "world/block.h"
 #include "world/chunk.h"
 #include "render/astc.h"
+#include "vk/vk_buffer.h"
+#include "vk/vk_texture.h"
 #include "world/noise.h"
 #include "world/terrain.h"
 #include "world/day_cycle.h"
@@ -573,6 +575,38 @@ void testAstc() {
 
 } // namespace
 
+// ------------------------------------------------------------
+// Нулевые дескрипторы Vulkan
+//
+// Драйвер их не проверяет: разыменовывает и роняет процесс внутри
+// libvulkan, где от нашего кода не остаётся ни имени функции, ни
+// строки. Ровно так игра падала при первом кадре — интерфейс дорастил
+// свой буфер, передав нулевое физическое устройство.
+// ------------------------------------------------------------
+void testVulkanGuards() {
+    group("vk: защита от нулевых дескрипторов");
+
+    vk::Buffer buf;
+    check(!buf.create(VK_NULL_HANDLE, VK_NULL_HANDLE, 1024,
+                      vk::BufferUsage::Vertex, true),
+          "буфер без устройства не создаётся");
+    check(!buf.create((VkDevice)0x1, VK_NULL_HANDLE, 1024,
+                      vk::BufferUsage::Vertex, true),
+          "буфер без физического устройства не создаётся");
+    check(!buf.create((VkDevice)0x1, (VkPhysicalDevice)0x2, 0,
+                      vk::BufferUsage::Vertex, true),
+          "буфер нулевого размера не создаётся");
+    vk::Texture2D tex;
+    check(!tex.create(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
+                      4, 4, VK_FORMAT_R8G8B8A8_UNORM, nullptr, 64,
+                      VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, false),
+          "текстура без устройства не создаётся");
+    check(!tex.create((VkDevice)0x1, (VkPhysicalDevice)0x2, (VkQueue)0x3, 0,
+                      0, 0, VK_FORMAT_R8G8B8A8_UNORM, nullptr, 0,
+                      VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, false),
+          "текстура нулевого размера не создаётся");
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -585,6 +619,8 @@ int main() {
     testDayCycle();
     testBossPhases();
     testAstc();
+
+    testVulkanGuards();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);
     if (g_failed) {

@@ -19,6 +19,7 @@ static const vk::VertexAttr kAttrs[3] = {
 
 bool UiRenderer::init(vk::Context& ctx, AAssetManager* mgr) {
     dev_ = ctx.device();
+    phys_ = ctx.physicalDevice();
     shaders_.init(dev_, mgr);
 
     UiAtlasData a = buildUiAtlas();
@@ -152,7 +153,7 @@ bool UiRenderer::ensureCapacity(FrameBuf& b, u32 vertsNeeded) {
     u32 cap = b.capacity ? b.capacity : 4096;
     while (cap < vertsNeeded) cap *= 2;
     u64 bytes = (u64)cap * sizeof(UiVertex);
-    if (!b.vb.create(dev_, VK_NULL_HANDLE, bytes, vk::BufferUsage::Vertex, true)) return false;
+    if (!b.vb.create(dev_, phys_, bytes, vk::BufferUsage::Vertex, true)) return false;
     b.capacity = cap;
     return true;
 }

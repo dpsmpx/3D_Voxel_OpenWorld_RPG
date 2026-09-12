@@ -33,6 +33,18 @@ bool Texture2D::create(VkDevice dev, VkPhysicalDevice phys, VkQueue queue, u32 q
                        u32 w, u32 h, VkFormat fmt, const void* pixels, u64 bytes,
                        VkFilter filter, VkSamplerAddressMode addr, bool mipGen)
 {
+    // Нулевой дескриптор драйвер разыменует и уронит процесс внутри
+    // libvulkan, где ни имени нашей функции, ни строки уже не видно.
+    if (dev == VK_NULL_HANDLE || phys == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) {
+        LOGE("Texture2D::create: устройство=%p, физическое=%p, очередь=%p — текстура не создана",
+             (void*)dev, (void*)phys, (void*)queue);
+        return false;
+    }
+    if (w == 0 || h == 0) {
+        LOGE("Texture2D::create: нулевой размер %ux%u", w, h);
+        return false;
+    }
+
     dev_ = dev; width_ = w; height_ = h; format_ = fmt;
 
     // Мип-цепочка строится через vkCmdBlitImage, а он не работает

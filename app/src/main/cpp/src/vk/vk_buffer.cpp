@@ -11,6 +11,14 @@
 namespace vk {
 
 u32 Buffer::findMemoryType(VkPhysicalDevice phys, u32 typeBits, VkMemoryPropertyFlags props) {
+    // Нулевой дескриптор драйвер не проверяет: он разыменовывает его и
+    // роняет процесс внутри libvulkan, где от нашего кода не остаётся
+    // ни имени функции, ни строки. Отвергаем сами.
+    if (phys == VK_NULL_HANDLE) {
+        LOGE("findMemoryType: физическое устройство не задано");
+        return 0xFFFFFFFFu;
+    }
+
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(phys, &mp);
     for (u32 i = 0; i < mp.memoryTypeCount; ++i) {
@@ -24,6 +32,16 @@ u32 Buffer::findMemoryType(VkPhysicalDevice phys, u32 typeBits, VkMemoryProperty
 bool Buffer::create(VkDevice dev, VkPhysicalDevice phys,
                     u64 size, BufferUsage usage, bool hostVisible)
 {
+    if (dev == VK_NULL_HANDLE || phys == VK_NULL_HANDLE) {
+        LOGE("Buffer::create: устройство=%p, физическое устройство=%p — буфер не создан",
+             (void*)dev, (void*)phys);
+        return false;
+    }
+    if (size == 0) {
+        LOGE("Buffer::create: нулевой размер");
+        return false;
+    }
+
     dev_ = dev;
     size_ = size;
     hostVisible_ = hostVisible;
