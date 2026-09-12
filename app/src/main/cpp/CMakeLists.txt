@@ -85,8 +85,6 @@ add_library(native-lib SHARED
     src/world/terrain.cpp
 
     # Рендер
-    src/render/astc.cpp
-    src/render/atlas_builder.cpp
     src/render/block_outline.cpp
     src/render/chunk_renderer.cpp
     src/render/instanced_renderer.cpp

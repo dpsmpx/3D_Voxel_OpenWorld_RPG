@@ -21,7 +21,6 @@ public:
 
     /// Привязать ресурсы к конкретному сету кадра.
     void bindUbo(u32 frame, VkBuffer ubo, u64 size);
-    void bindTexture(u32 frame, VkImageView view, VkSampler sampler);
 
 private:
     VkDevice             dev_ = VK_NULL_HANDLE;

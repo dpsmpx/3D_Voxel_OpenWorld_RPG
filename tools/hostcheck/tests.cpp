@@ -13,7 +13,6 @@
 #include "world/chunk.h"
 #include "world/chunk_manager.h"
 #include "render/mesh_builder.h"
-#include "render/astc.h"
 #include "vk/vk_buffer.h"
 #include "vk/vk_texture.h"
 #include "world/noise.h"
@@ -620,52 +619,6 @@ void testBossPhases() {
     check(hollow.enrageMult > 1.f, "на последней фазе босс усиливается");
 }
 
-// ------------------------------------------------------------
-// Контейнер ASTC
-// ------------------------------------------------------------
-void testAstc() {
-    group("render::parseAstc");
-
-    // Собираем валидный заголовок astcenc: 512x512, блок 4x4.
-    const u32 W = 512, H = 512, BX = 4, BY = 4;
-    const usize blocks = ((W + BX - 1) / BX) * ((H + BY - 1) / BY);
-    std::vector<u8> file(16 + blocks * 16, 0xAB);
-    file[0] = 0x13; file[1] = 0xAB; file[2] = 0xA1; file[3] = 0x5C;
-    file[4] = (u8)BX; file[5] = (u8)BY; file[6] = 1;
-    file[7]  = (u8)(W & 0xFF); file[8]  = (u8)((W >> 8) & 0xFF); file[9]  = 0;
-    file[10] = (u8)(H & 0xFF); file[11] = (u8)((H >> 8) & 0xFF); file[12] = 0;
-    file[13] = 1; file[14] = 0; file[15] = 0;
-
-    const auto img = render::parseAstc(file.data(), file.size());
-    check(img.valid(), "валидный файл разбирается");
-    check(img.width == W && img.height == H, "размеры прочитаны верно");
-    check(img.blockX == BX && img.blockY == BY, "размер блока прочитан верно");
-    check(img.data.size() == blocks * 16, "объём данных равен числу блоков x 16");
-    const usize rgba8 = (usize)W * H * 4;
-    check(img.data.size() * 4 == rgba8,
-          "ASTC 4x4 сжимает RGBA8 ровно вчетверо");
-
-    // Битая сигнатура.
-    auto bad = file;
-    bad[0] = 0;
-    check(!render::parseAstc(bad.data(), bad.size()).valid(),
-          "чужая сигнатура отвергается");
-
-    // Обрезанный файл: данных меньше, чем обещает заголовок.
-    check(!render::parseAstc(file.data(), 16 + 32).valid(),
-          "обрезанный файл отвергается");
-
-    // Короче заголовка.
-    check(!render::parseAstc(file.data(), 8).valid(),
-          "файл короче заголовка отвергается");
-
-    // 3D-блоки не поддерживаются.
-    auto vol = file;
-    vol[6] = 2;
-    check(!render::parseAstc(vol.data(), vol.size()).valid(),
-          "объёмные блоки отвергаются");
-}
-
 } // namespace
 
 // ------------------------------------------------------------
@@ -744,7 +697,6 @@ int main() {
     testVoxelShading();
     testDayCycle();
     testBossPhases();
-    testAstc();
 
     testVulkanGuards();
     testWorldQueries();

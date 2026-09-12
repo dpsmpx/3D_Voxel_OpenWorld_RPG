@@ -59,17 +59,6 @@ public:
 
     bool transferBatchOpen() const { return transferCmd_ != VK_NULL_HANDLE; }
 
-    /// Поддерживает ли устройство формат для сэмплирования текстуры.
-    /// Нужно для ASTC: на части GPU его нет, и тогда рендер откатывается
-    /// на несжатый атлас.
-    bool formatSupportsSampling(VkFormat fmt) const {
-        if (!physical_) return false;
-        VkFormatProperties props{};
-        vkGetPhysicalDeviceFormatProperties(physical_, fmt, &props);
-        return (props.optimalTilingFeatures &
-                VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
-    }
-
     void waitIdle() const { if (device_) vkDeviceWaitIdle(device_); }
 
 private:

@@ -73,7 +73,6 @@ private:
     /// Тот же формат вершин и те же шейдеры, но со смешиванием и без
     /// записи глубины: вода и лёд идут вторым проходом поверх мира.
     vk::GraphicsPipeline  voxelBlendPipeline_;
-    vk::Texture2D         atlas_;
     vk::Buffer            uboBuffers_[vk::Context::MAX_FRAMES];
 
     ChunkRenderer         chunkRenderer_;

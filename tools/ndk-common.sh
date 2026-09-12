@@ -87,9 +87,9 @@ find_android_jar() {              # [доп. корень SDK] -> путь к an
 }
 
 # Компилятор для утилит, которые должны работать НА ЭТОЙ машине
-# (атлас текстур). Кросс-компилятор из NDK сюда не годится: он
+# (проверки на хосте). Кросс-компилятор из NDK сюда не годится: он
 # соберёт файл под Android, который тут же не запустится. Раньше
-# он попадал сюда через PATH и ронял сборку атласа.
+# он попадал сюда через PATH и ронял сборку хостовых утилит.
 host_cxx() {                      # -> путь к рабочему C++ компилятору
     local cand real tmp out
     tmp="$(mktemp -d 2>/dev/null)" || return 1
@@ -155,7 +155,7 @@ tool_runs() {                     # путь [аргумент проверки]
     # Две разные беды, обе не видны по коду выхода:
     #   — файл не для этой архитектуры (загрузчик про e_type);
     #   — файл запускается, но не находит свои библиотеки, потому что
-    #     собран под другое окружение. Так выглядит astcenc, собранный
+    #     собран под другое окружение. Так выглядит бинарник, собранный
     #     против NDK: ему нужна libc++_shared.so, которой в Termux нет.
     case "$out" in
         *"unexpected e_type"*|*"Exec format error"*|\
@@ -202,40 +202,6 @@ tool_report() {                   # имя
     return 0
 }
 
-# Кодировщик ASTC. Официальные сборки astcenc называются по набору
-# инструкций (astcenc-neon, astcenc-sse2, astcenc-avx2, astcenc-native),
-# и на aarch64 имени astcenc-native обычно нет вовсе — из-за жёсткой
-# проверки одного этого имени сжатие не включалось никогда.
-find_astcenc() {                  # -> путь
-    local cand root
-
-    # 1. Явно указанный путь.
-    if [ -n "${ASTCENC:-}" ] && tool_runs "$ASTCENC" "-help"; then
-        printf '%s' "$ASTCENC"; return 0
-    fi
-
-    # 2. Собранный tools/build-astcenc.sh — рядом с проектом.
-    #    В репозиториях Termux пакета astcenc нет вовсе, поэтому
-    #    собственная сборка это основной путь, а не запасной.
-    for root in "${PROJ:-.}/tools/astcenc" "$HOME/.voxelrpg/astcenc"; do
-        for cand in "$root"/astcenc-*; do
-            if tool_runs "$cand" "-help"; then printf '%s' "$cand"; return 0; fi
-        done
-    done
-
-    # 3. Готовая сборка из распакованных исходников ARM.
-    for cand in "$HOME"/astc-encoder*/build*/Source/astcenc-*; do
-        if tool_runs "$cand" "-help"; then printf '%s' "$cand"; return 0; fi
-    done
-
-    # 4. Что-нибудь из PATH.
-    for cand in astcenc astcenc-neon astcenc-native \
-                astcenc-sse2 astcenc-sse4.1 astcenc-avx2; do
-        cand="$(command -v "$cand" 2>/dev/null || true)"
-        if tool_runs "$cand" "-help"; then printf '%s' "$cand"; return 0; fi
-    done
-    return 1
-}
 
 # --- сеть -----------------------------------------------------
 # curl и wget взаимозаменяемы; берём тот, который есть.

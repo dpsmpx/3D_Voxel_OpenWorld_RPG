@@ -3,8 +3,6 @@
  * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
  */
 #include "render_system.h"
-#include "atlas_builder.h"
-#include "astc.h"
 #include "../core/log.h"
 #include "../config/settings.h"
 #include <glm/glm.hpp>
@@ -22,51 +20,6 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
     dev_ = ctx.device();
     shaders_.init(dev_, mgr);
 
-    // Атлас блоков. Сжатый ASTC 4x4 (ТЗ 3.3) экономит вчетверо
-    // памяти и пропускной способности, но поддержан не везде и
-    // собирается на этапе сборки утилитой tools/atlas. Если ассета
-    // нет или GPU формат не тянет — собираем процедурный RGBA8.
-    bool atlasReady = false;
-    if (ctx.formatSupportsSampling(VK_FORMAT_ASTC_4x4_UNORM_BLOCK)) {
-        const AstcImage astc = loadAstcAsset(mgr, "textures/blocks.astc");
-        if (astc.valid() && astc.blockX == 4 && astc.blockY == 4) {
-            atlasReady = atlas_.create(
-                ctx.device(), ctx.physicalDevice(),
-                ctx.gfxQueue(), ctx.gfxFamily(),
-                astc.width, astc.height,
-                VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
-                astc.data.data(), astc.data.size(),
-                VK_FILTER_LINEAR,
-                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                false);
-            if (atlasReady)
-                LOGI("Атлас: ASTC 4x4, %zu КБ", astc.data.size() / 1024);
-        }
-    } else {
-        LOGI("Атлас: ASTC 4x4 не поддержан устройством");
-    }
-
-    if (!atlasReady) {
-        const AtlasData atlasData = buildProceduralAtlas();
-        atlasReady = atlas_.create(
-            ctx.device(), ctx.physicalDevice(),
-            ctx.gfxQueue(), ctx.gfxFamily(),
-            atlasData.width, atlasData.height,
-            VK_FORMAT_R8G8B8A8_UNORM,
-            atlasData.pixels.data(), atlasData.pixels.size(),
-            VK_FILTER_NEAREST,
-            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            true);
-        if (atlasReady)
-            LOGI("Атлас: процедурный RGBA8, %zu КБ",
-                 atlasData.pixels.size() / 1024);
-    }
-
-    if (!atlasReady) {
-        LOGE("Атлас не создан");
-        return false;
-    }
-
     if (!descriptors_.create(ctx.device(), vk::Context::MAX_FRAMES)) {
         LOGE("DescriptorSet не создан");
         return false;
@@ -77,7 +30,6 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
                                    sizeof(CameraUbo),
                                    vk::BufferUsage::Uniform, true)) return false;
         descriptors_.bindUbo(i, uboBuffers_[i].handle(), sizeof(CameraUbo));
-        descriptors_.bindTexture(i, atlas_.view(), atlas_.sampler());
     }
 
     {
@@ -234,7 +186,6 @@ void RenderSystem::shutdown() {
     chunkRenderer_.shutdown();
     for (auto& b : uboBuffers_) b.destroy();
     descriptors_.destroy();
-    atlas_.destroy();
     voxelBlendPipeline_.destroy();
     voxelPipeline_.destroy();
     shaders_.destroyAll();

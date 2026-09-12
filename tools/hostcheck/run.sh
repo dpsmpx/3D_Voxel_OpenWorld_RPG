@@ -257,7 +257,6 @@ TEST_SRCS=(
     "$SRC_DIR/core/crashlog.cpp"
     "$SRC_DIR/core/job_system.cpp"
     "$SRC_DIR/mobs/mob_def.cpp"
-    "$SRC_DIR/render/astc.cpp"
     "$SRC_DIR/vk/vk_buffer.cpp"
     "$SRC_DIR/vk/vk_texture.cpp"
 )
