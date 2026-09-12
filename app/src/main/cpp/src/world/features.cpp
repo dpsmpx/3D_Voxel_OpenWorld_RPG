@@ -620,4 +620,54 @@ void applyStructures(Chunk& chunk, const FeatureContext& ctx) {
     }
 }
 
+// ============================================================
+// Генерация чанка целиком. Одно место на весь проект: слои рельефа
+// и порядок фич больше нигде не выписаны.
+// ============================================================
+void computeChunkColumns(const TerrainGenerator& terrain, i32 chunkX, i32 chunkZ,
+                         std::vector<TerrainGenerator::Column>& out)
+{
+    out.resize((usize)CHUNK_SIZE * CHUNK_SIZE);
+    const i32 baseX = chunkX * CHUNK_SIZE;
+    const i32 baseZ = chunkZ * CHUNK_SIZE;
+    for (i32 x = 0; x < CHUNK_SIZE; ++x)
+        for (i32 z = 0; z < CHUNK_SIZE; ++z)
+            out[(usize)x * CHUNK_SIZE + z] = terrain.column(baseX + x, baseZ + z);
+}
+
+void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
+                         const TerrainGenerator::Column* columns, u64 seed)
+{
+    for (i32 x = 0; x < CHUNK_SIZE; ++x) {
+        for (i32 z = 0; z < CHUNK_SIZE; ++z) {
+            const auto& col = columns[(usize)x * CHUNK_SIZE + z];
+            const i32 surface = col.surface;
+            const BiomeDef& biome = terrain.field().def(col.climate.biome);
+
+            for (i32 y = 0; y < CHUNK_SIZE_Y; ++y) {
+                u16 id = AIR;
+                if (y == 0) {
+                    id = BEDROCK;
+                } else if (y < surface - 4) {
+                    id = biome.stoneBlock;
+                } else if (y < surface - 1) {
+                    id = biome.subsurfaceBlock;
+                } else if (y < surface) {
+                    id = biome.surfaceBlock;
+                }
+                chunk.voxels[chunkIndex(x, y, z)] = id;
+            }
+        }
+    }
+
+    // Порядок важен: пещеры выгрызают толщу, руды садятся в оставшийся
+    // камень, жидкости заливают пустоты, структуры и деревья — сверху.
+    FeatureContext fctx{ &terrain, seed, columns };
+    applyCaves(chunk, fctx);
+    applyOres(chunk, fctx);
+    applyLiquids(chunk, fctx);
+    applyStructures(chunk, fctx);
+    applyTrees(chunk, fctx);
+}
+
 } // namespace world

@@ -107,51 +107,16 @@ void ChunkManager::jobGenerate(void* data) {
     }
 
     const auto& terrain = mgr->gen_;
-    const i32 baseX = ctx->coord.x * CHUNK_SIZE;
-    const i32 baseZ = ctx->coord.z * CHUNK_SIZE;
-
     // Колонки считаются один раз и переиспользуются фичами: без этого
     // высота и климат пересчитывались по четыре раза на колонку.
     static thread_local std::vector<TerrainGenerator::Column> columns;
-    columns.resize(CHUNK_SIZE * CHUNK_SIZE);
-    for (i32 x = 0; x < CHUNK_SIZE; ++x)
-        for (i32 z = 0; z < CHUNK_SIZE; ++z)
-            columns[x * CHUNK_SIZE + z] = terrain.column(baseX + x, baseZ + z);
+    computeChunkColumns(terrain, ctx->coord.x, ctx->coord.z, columns);
 
     {
         // Пишем весь массив вокселей разом: черновые состояния наружу
         // не видны, читатели ждут на shared-замке.
         std::unique_lock lk(c->voxelMutex);
-
-        for (i32 x = 0; x < CHUNK_SIZE; ++x) {
-            for (i32 z = 0; z < CHUNK_SIZE; ++z) {
-                const auto& col = columns[x * CHUNK_SIZE + z];
-                const i32 surface = col.surface;
-                const BiomeDef& biome = terrain.field().def(col.climate.biome);
-
-                for (i32 y = 0; y < CHUNK_SIZE_Y; ++y) {
-                    u16 id = AIR;
-                    if (y == 0) {
-                        id = BEDROCK;
-                    } else if (y < surface - 4) {
-                        id = biome.stoneBlock;
-                    } else if (y < surface - 1) {
-                        id = biome.subsurfaceBlock;
-                    } else if (y < surface) {
-                        id = biome.surfaceBlock;
-                    }
-                    c->voxels[chunkIndex(x, y, z)] = id;
-                }
-            }
-        }
-
-        // Фичи дописывают тот же массив, замок уже наш.
-        FeatureContext fctx{ &terrain, mgr->seed_, columns.data() };
-        applyCaves(*c, fctx);
-        applyOres(*c, fctx);
-        applyLiquids(*c, fctx);
-        applyStructures(*c, fctx);
-        applyTrees(*c, fctx);
+        generateChunkVoxels(*c, terrain, columns.data(), mgr->seed_);
     }
 
     c->version.fetch_add(1, std::memory_order_release);

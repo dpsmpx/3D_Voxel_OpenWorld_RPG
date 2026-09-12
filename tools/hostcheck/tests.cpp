@@ -21,6 +21,7 @@
 #include "mobs/mob_ai.h"
 #include "mobs/mob_def.h"
 #include "ui/ui_context.h"
+#include "world/features.h"
 
 #include <atomic>
 #include <cmath>
@@ -884,6 +885,56 @@ void testUiGeometry() {
     check(!btn.contains(btn.x + 1.f, btn.y + btn.h), "нижняя граница не включается");
 }
 
+
+// ------------------------------------------------------------
+// Упаковка вершины отводит под координаты 6, 8 и 6 бит. Если
+// меширование когда-нибудь выдаст координату больше, она молча
+// обрежется по модулю — геометрия уедет внутрь чанка, и на экране
+// это будет выглядеть как «кривая отрисовка», а не как ошибка.
+// Проверяем на настоящем рельефе, на всех уровнях детализации.
+// ------------------------------------------------------------
+void testMeshFitsPacking() {
+    group("геометрия влезает в упаковку вершины");
+
+    world::blocks();
+    world::ChunkManager mgr(4242, 1);
+    world::ChunkNeighbors nb;
+    std::vector<world::Quad> quads;
+    std::vector<render::VoxelVertex> verts;
+    std::vector<u32> idx;
+
+    auto chunk = std::make_unique<world::Chunk>();
+    chunk->coord = { 3, 0, -5 };
+    std::vector<world::TerrainGenerator::Column> cols;
+    world::computeChunkColumns(mgr.generator(), 3, -5, cols);
+    world::generateChunkVoxels(*chunk, mgr.generator(), cols.data(), 4242);
+
+    const world::Lod levels[4] = { world::Lod::Full, world::Lod::Half,
+                                   world::Lod::Quarter, world::Lod::Eighth };
+    bool allFit = true, anyGeometry = false;
+    for (u8 l = 0; l < 4; ++l) {
+        world::buildGreedyMesh(*chunk, nb, quads, levels[l]);
+        u32 opaque = 0;
+        render::buildChunkVertices(*chunk, quads, verts, idx, opaque);
+        if (!verts.empty()) anyGeometry = true;
+        for (const auto& v : verts) {
+            const u32 x = v.packed & 63u;
+            const u32 y = (v.packed >> 6) & 255u;
+            const u32 z = (v.packed >> 14) & 63u;
+            if ((i32)x > world::CHUNK_SIZE || (i32)z > world::CHUNK_SIZE ||
+                (i32)y > world::CHUNK_SIZE_Y)
+                allFit = false;
+        }
+    }
+    check(anyGeometry, "на настоящем рельефе геометрия строится");
+    check(allFit, "ни одна координата не выходит за отведённые биты");
+
+    // Сами пределы должны оставаться достижимыми: если чанк вырастет,
+    // эта проверка обязана упасть здесь, а не на устройстве.
+    check(world::CHUNK_SIZE   <= 63,  "сторона чанка влезает в шесть бит");
+    check(world::CHUNK_SIZE_Y <= 255, "высота чанка влезает в восемь бит");
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -899,6 +950,7 @@ int main() {
 
     testVulkanGuards();
     testUiGeometry();
+    testMeshFitsPacking();
     testWorldQueries();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);

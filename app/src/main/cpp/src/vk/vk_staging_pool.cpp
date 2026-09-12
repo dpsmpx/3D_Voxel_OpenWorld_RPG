@@ -71,26 +71,42 @@ bool StagingPool::resize(StagingBuffer* s, u64 newCap) {
     return true;
 }
 
-StagingBuffer* StagingPool::acquire(u64 minSize) {
-    // 1. Свободный и достаточно большой
-    for (auto& b : buffers_)
-        if (!b->inUse && b->capacity >= minSize) { b->inUse = true; return b.get(); }
+/// Размер буфера под запрос: степень двойки, но не меньше порога.
+/// Раньше здесь стояла общая на весь пул «текущая ёмкость», которая
+/// только росла: один большой чанк поднимал её, и дальше КАЖДЫЙ
+/// буфер выделялся по новому размеру. При минимуме в мегабайт и
+/// нескольких десятках живых буферов это десятки мегабайт под данные,
+/// которым хватает пары.
+static u64 capacityFor(u64 minSize) {
+    u64 cap = 64u * 1024u;
+    while (cap < minSize) cap *= 2;
+    return cap;
+}
 
-    // 2. Свободный, но маленький — расширяем
+StagingBuffer* StagingPool::acquire(u64 minSize) {
+    if (minSize == 0) return nullptr;
+
+    // 1. Свободный и достаточно большой — берём наименьший подходящий,
+    //    чтобы четырёхмегабайтный буфер не уходил под сорок килобайт.
+    StagingBuffer* best = nullptr;
     for (auto& b : buffers_) {
-        if (!b->inUse && b->capacity < minSize) {
-            u64 cap = nextCapacity_;
-            while (cap < minSize) cap *= 2;
-            if (resize(b.get(), cap)) { nextCapacity_ = std::max(nextCapacity_, cap); b->inUse = true; return b.get(); }
-        }
+        if (b->inUse || b->capacity < minSize) continue;
+        if (!best || b->capacity < best->capacity) best = b.get();
     }
+    if (best) { best->inUse = true; return best; }
+
+    // 2. Свободный, но маленький — расширяем самый большой из них:
+    //    так растёт один буфер, а не плодятся новые.
+    StagingBuffer* grow = nullptr;
+    for (auto& b : buffers_) {
+        if (b->inUse) continue;
+        if (!grow || b->capacity > grow->capacity) grow = b.get();
+    }
+    if (grow && resize(grow, capacityFor(minSize))) { grow->inUse = true; return grow; }
 
     // 3. Новый
-    u64 cap = nextCapacity_;
-    while (cap < minSize) cap *= 2;
     auto b = std::make_unique<StagingBuffer>();
-    if (!resize(b.get(), cap)) return nullptr;
-    nextCapacity_ = std::max(nextCapacity_, cap);
+    if (!resize(b.get(), capacityFor(minSize))) return nullptr;
     b->inUse = true;
     buffers_.push_back(std::move(b));
     return buffers_.back().get();

@@ -169,27 +169,14 @@ void triangle(const Vtx& a, const Vtx& b, const Vtx& c) {
 std::shared_ptr<Chunk> makeChunk(const TerrainGenerator& gen, u64 seed, i32 cx, i32 cz) {
     auto c = std::make_shared<Chunk>();
     c->coord = { cx, 0, cz };
-    static std::vector<TerrainGenerator::Column> cols(CHUNK_SIZE*CHUNK_SIZE);
-    const i32 bx = cx*CHUNK_SIZE, bz = cz*CHUNK_SIZE;
-    for (i32 x = 0; x < CHUNK_SIZE; ++x)
-        for (i32 z = 0; z < CHUNK_SIZE; ++z)
-            cols[x*CHUNK_SIZE + z] = gen.column(bx+x, bz+z);
-    for (i32 x = 0; x < CHUNK_SIZE; ++x)
-        for (i32 z = 0; z < CHUNK_SIZE; ++z) {
-            const auto& col = cols[x*CHUNK_SIZE + z];
-            const BiomeDef& b = gen.field().def(col.climate.biome);
-            for (i32 y = 0; y < CHUNK_SIZE_Y; ++y) {
-                u16 id = AIR;
-                if (y == 0)                    id = BEDROCK;
-                else if (y < col.surface - 4)  id = b.stoneBlock;
-                else if (y < col.surface - 1)  id = b.subsurfaceBlock;
-                else if (y < col.surface)      id = b.surfaceBlock;
-                c->voxels[chunkIndex(x,y,z)] = id;
-            }
-        }
-    FeatureContext fctx{ &gen, seed, cols.data() };
-    applyCaves(*c, fctx); applyOres(*c, fctx); applyLiquids(*c, fctx);
-    applyStructures(*c, fctx); applyTrees(*c, fctx);
+    // Ровно тот же путь, которым чанки строит игра: раскладка слоёв и
+    // порядок фич живут в world::generateChunkVoxels. Раньше они были
+    // выписаны и здесь тоже, и офлайн-рендер мог показывать не тот
+    // мир, который на устройстве, — то есть ровно тогда врать, когда
+    // он и нужен.
+    static std::vector<TerrainGenerator::Column> cols;
+    computeChunkColumns(gen, cx, cz, cols);
+    generateChunkVoxels(*c, gen, cols.data(), seed);
     c->generated.store(true);
     return c;
 }

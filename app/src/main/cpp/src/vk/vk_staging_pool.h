@@ -55,7 +55,6 @@ private:
     VkDevice         dev_  = VK_NULL_HANDLE;
     VkPhysicalDevice phys_ = VK_NULL_HANDLE;
     std::vector<std::unique_ptr<StagingBuffer>> buffers_;
-    u64 nextCapacity_ = 1ull << 20;  // стартовый размер 1 MiB
     u64 batchNo_ = 0;
     u32 keepBatches_ = 1;
 };
