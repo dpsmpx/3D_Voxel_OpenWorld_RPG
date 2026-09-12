@@ -95,6 +95,27 @@ jobs:
               glslc -O "$f" -o "app/src/main/assets/shaders/$(basename "$f").spv"
           done
 
+      # Атлас в ASTC 4x4 — вчетверо меньше видеопамяти под текстуры,
+      # чем процедурный RGBA8, который игра строит при старте, если
+      # ассета нет. Кодировщик берём готовый: на раннере x86_64 сборка
+      # из исходников заняла бы минуты ради того же результата.
+      - name: Атлас блоков в ASTC
+        run: |
+          set -e
+          VER=5.6.0
+          curl -sSL -o astcenc.zip \
+            "https://github.com/ARM-software/astc-encoder/releases/download/$VER/astcenc-$VER-linux-x64.zip"
+          unzip -q astcenc.zip -d astcenc
+          ASTC_BIN="$PWD/astcenc/bin/astcenc-sse4.1"
+          chmod +x "$ASTC_BIN"
+          ASTCENC="$ASTC_BIN" ./tools/atlas/build.sh
+          ATLAS=app/src/main/assets/textures/blocks.astc
+          [ -s "$ATLAS" ] || { echo "✗ $ATLAS не создан"; exit 1; }
+          ls -l "$ATLAS"
+          # Битый заголовок игра молча отвергнет и построит атлас
+          # процедурно — снаружи это неотличимо от «ASTC не заработал».
+          python3 tools/check_astc.py "$ATLAS"
+
       - name: gradle assembleDebug
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
@@ -117,6 +138,7 @@ jobs:
           need 'lib/arm64-v8a/libc++_shared.so'
           need 'assets/shaders/voxel.vert.spv'
           need 'assets/shaders/voxel.frag.spv'
+          need 'assets/textures/blocks.astc'
           need 'AndroidManifest.xml'
 
           # Метод упаковки для .so обязан быть Stored.
