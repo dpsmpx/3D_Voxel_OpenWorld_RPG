@@ -44,10 +44,33 @@ need "git"            git       "pkg install git"
 need "zip"            zip       "pkg install zip"
 need "java"           java      "pkg install openjdk-21"
 want "glslc"          glslc     "pkg install shaderc"
-want "aapt2"          aapt2     "pkg install aapt2 (может потребоваться pkg install tur-repo)"
-want "apksigner"      apksigner "pkg install apksigner"
-want "zipalign"       zipalign  "входит в build-tools"
-want "astcenc"        astcenc-native "сжатие атласа в ASTC, необязательно"
+# Инструменты упаковки проверяем запуском: пакет aapt2 в Termux бывает
+# собран под x86_64, и тогда наличие файла ничего не значит — сборка
+# APK падает с «unexpected e_type», а по имени пакета это не понять.
+check_sdk_tool() {   # <что> <команда> [аргумент проверки]
+    local label="$1" name="$2" arg="${3:-}" path
+    if path="$(find_sdk_tool "$name" "$arg")"; then
+        printf "${C_G}  ✓${C_0} %-22s %s\n" "$label" "$path"
+        return 0
+    fi
+    printf "${C_Y}  !${C_0} %-22s рабочего нет — APK не упакуется\n" "$label"
+    tool_report "$name"
+    printf "      Сборка build-tools под aarch64:\n"
+    printf "          ./tools/termux-setup.sh --skip-packages --sdk <архив android-sdk>\n"
+    WARNED=$((WARNED + 1))
+    return 1
+}
+
+check_sdk_tool "aapt2"     aapt2     version
+check_sdk_tool "apksigner" apksigner --version
+check_sdk_tool "zipalign"  zipalign
+
+if ASTC_BIN="$(find_astcenc)"; then
+    printf "${C_G}  ✓${C_0} %-22s %s\n" "astcenc" "$ASTC_BIN"
+else
+    printf "${C_Y}  !${C_0} %-22s нет — атлас останется RGBA8 (необязательно)\n" "astcenc"
+    WARNED=$((WARNED + 1))
+fi
 want "adb"            adb       "pkg install android-tools, для установки на устройство"
 
 echo ""

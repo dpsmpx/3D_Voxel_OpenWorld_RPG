@@ -39,10 +39,16 @@ if ! "$CXX" -std=c++20 -O2 -I "$SRC_DIR" \
     exit 1
 fi
 
-if command -v astcenc-native >/dev/null 2>&1; then
-    "$OUT/atlas_tool" "$OUT/blocks.tga" "$ASSETS/textures/blocks.astc"
+if ASTCENC_BIN="$(find_astcenc)"; then
+    echo "atlas: кодировщик ASTC $ASTCENC_BIN"
+    "$OUT/atlas_tool" "$OUT/blocks.tga" "$ASSETS/textures/blocks.astc" "$ASTCENC_BIN"
 else
-    echo "atlas: astcenc-native не найден — ASTC-атлас не собирается."
-    echo "       Установите astc-encoder, чтобы включить сжатие (ТЗ 3.3)."
+    # Это не ошибка сборки: атлас в ASTC — оптимизация памяти (ТЗ 3.3).
+    # Без него игра собирает атлас процедурно при старте и работает.
+    echo "atlas: кодировщик ASTC не найден — атлас останется RGBA8."
+    echo "       Это не ошибка: игра соберёт его при старте, просто"
+    echo "       текстуры займут вчетверо больше видеопамяти."
+    echo "       Включить сжатие: pkg install astc-encoder"
+    echo "       (или укажите свой: ASTCENC=/путь/к/astcenc ./build.sh)"
     "$OUT/atlas_tool" "$OUT/blocks.tga"
 fi
