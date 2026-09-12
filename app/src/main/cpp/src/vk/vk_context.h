@@ -38,6 +38,11 @@ public:
     u64              framesPresented() const { return framesPresented_; }
     /// Последняя ошибка vkQueuePresentKHR (VK_SUCCESS, если её не было).
     VkResult         lastPresentResult() const { return lastPresent_; }
+    /// Сколько раз пересоздавалась цепочка показа. Здоровое число —
+    /// единицы за сеанс: по одному на поворот экрана. Если оно растёт
+    /// вместе с кадрами, значит ответ показа снова принимают за приказ
+    /// пересоздавать, и половина кадров не доходит до экрана.
+    u64              swapchainRebuilds() const { return swapchainRebuilds_; }
     static constexpr u32 MAX_FRAMES = 2;
 
     /// Пакет передачи больше не ждёт GPU на процессоре, поэтому его
@@ -134,6 +139,7 @@ private:
     std::vector<VkFence>     inFlight_;
     u32                      currentFrame_ = 0;
     u64                      framesPresented_ = 0;
+    u64                      swapchainRebuilds_ = 0;
     VkResult                 lastPresent_ = VK_SUCCESS;
     bool                     needsResize_ = false;
     /// Поворот экрана, каким его видит драйвер (в отличие от того,

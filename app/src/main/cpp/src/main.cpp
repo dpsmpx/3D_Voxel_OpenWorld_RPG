@@ -1321,13 +1321,14 @@ extern "C" void android_main(android_app* app) {
                 const glm::vec3 cam = eng.render ? eng.render->camera().position()
                                                  : glm::vec3(0.f);
                 const f32 n = msFrames ? (f32)msFrames : 1.f;
-                LOGI("кадры: показано %llu (%.1f/с), показ=%d | камера %.1f %.1f %.1f "
+                LOGI("кадры: показано %llu (%.1f/с), показ=%d, цепочка %llu | камера %.1f %.1f %.1f "
                      "| чанки: загружено %zu, нарисовано %u, индексов %u "
                      "| трава %u, мобы %u, NPC %u "
                      "| интерфейс: вершин %u, нарисовано %u, экран %d "
                      "| мс: логика %.1f, подготовка %.1f, рисование %.1f",
                      (unsigned long long)presented, (double)fps,
                      (int)eng.vk.lastPresentResult(),
+                     (unsigned long long)eng.vk.swapchainRebuilds(),
                      (double)cam.x, (double)cam.y, (double)cam.z,
                      eng.world ? eng.world->loadedChunks() : (usize)0,
                      eng.render ? eng.render->drawnChunks() : 0u,

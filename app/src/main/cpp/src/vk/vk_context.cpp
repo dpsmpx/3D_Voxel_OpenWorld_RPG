@@ -461,7 +461,10 @@ void Context::onResize(ANativeWindow* /*window*/) {
     if (!createImageViews())   { LOGE("resize: image views"); return; }
     if (!createDepthResources()){ LOGE("resize: depth"); return; }
     if (!createFramebuffers()) { LOGE("resize: framebuffers"); return; }
-    LOGI("Swapchain пересоздан: %ux%u", swapExtent_.width, swapExtent_.height);
+    ++swapchainRebuilds_;
+    LOGI("Swapchain пересоздан (%llu-й раз): %ux%u",
+         (unsigned long long)swapchainRebuilds_,
+         swapExtent_.width, swapExtent_.height);
 }
 
 bool Context::beginFrame() {
