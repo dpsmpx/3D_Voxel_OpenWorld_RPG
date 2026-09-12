@@ -102,11 +102,8 @@ if [ "$SKIP_PACKAGES" -eq 0 ]; then
     install_any "wget"           wget            || FAILED=1
     install_any "zlib"           zlib            || FAILED=1
 
-    # Кодировщик ASTC — необязателен: без него атлас останется RGBA8.
-    install_any "кодировщик ASTC" astc-encoder astcenc astcenc-neon || {
-        warn "astcenc не установлен — атлас текстур останется RGBA8"
-        warn "(игра работает, но текстуры займут вчетверо больше видеопамяти)"
-    }
+    # Кодировщик ASTC в репозиториях Termux не публикуется ни под одним
+    # именем, поэтому pkg его не поставит — собирается отдельно.
 
     # Компилятор шейдеров. В Termux он может называться по-разному.
     install_any "компилятор шейдеров" shaderc glslc glslang || {
@@ -135,32 +132,6 @@ fi
 # ------------------------------------------------------------
 mkdir -p "$TOOLS_DIR"
 NDK_DIR="$TOOLS_DIR/android-ndk"
-
-# --- сеть -----------------------------------------------------
-# curl и wget взаимозаменяемы; берём тот, который есть.
-http_get() {                      # url -> stdout
-    local url="$1"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --max-time 60 -H 'Accept: application/vnd.github+json' "$url" && return 0
-    fi
-    if command -v wget >/dev/null 2>&1; then
-        wget -q -T 60 -O - "$url" && return 0
-    fi
-    return 1
-}
-
-http_download() {                 # url dest
-    local url="$1" dest="$2"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fL --progress-bar --retry 3 --retry-delay 2 -o "$dest" "$url" && return 0
-        rm -f "$dest"
-    fi
-    if command -v wget >/dev/null 2>&1; then
-        wget --show-progress -q -T 60 -t 3 -O "$dest" "$url" && return 0
-        rm -f "$dest"
-    fi
-    return 1
-}
 
 # Возвращает все ссылки на файлы релизов репозитория, свежие сверху.
 # Основной путь — GitHub API. Он часто отвечает 403 «rate limit
@@ -217,21 +188,6 @@ ndk_is_complete() {               # dir
     [ -f "$d/build/cmake/android.toolchain.cmake" ] || return 1
     [ -f "$d/sources/android/native_app_glue/android_native_app_glue.c" ] || return 1
     return 0
-}
-
-extract_archive() {               # file destdir
-    local f="$1" d="$2"
-    mkdir -p "$d"
-    case "$f" in
-        *.zip)          unzip -q -o "$f" -d "$d" ;;
-        *.tar.xz|*.txz) tar -xJf "$f" -C "$d" ;;
-        *.tar.gz|*.tgz) tar -xzf "$f" -C "$d" ;;
-        *.tar.bz2)      tar -xjf "$f" -C "$d" ;;
-        *.7z)           command -v 7z >/dev/null 2>&1 || {
-                            err "для .7z нужен p7zip: pkg install p7zip"; return 1; }
-                        7z x -y -o"$d" "$f" >/dev/null ;;
-        *)              err "неизвестный формат архива: $(basename "$f")"; return 1 ;;
-    esac
 }
 
 # Каталог внутри архива называется по-разному (android-ndk-r27,
