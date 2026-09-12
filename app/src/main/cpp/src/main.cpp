@@ -1308,6 +1308,7 @@ extern "C" void android_main(android_app* app) {
                 LOGI("кадры: показано %llu (%.1f/с), показ=%d | камера %.1f %.1f %.1f "
                      "| чанки: загружено %zu, нарисовано %u, индексов %u "
                      "| трава %u, мобы %u, NPC %u "
+                     "| интерфейс: вершин %u, нарисовано %u, экран %d "
                      "| мс: логика %.1f, подготовка %.1f, рисование %.1f",
                      (unsigned long long)presented, (double)fps,
                      (int)eng.vk.lastPresentResult(),
@@ -1318,6 +1319,9 @@ extern "C" void android_main(android_app* app) {
                      eng.render ? eng.render->grassCount() : 0u,
                      eng.render ? eng.render->mobInstances() : 0u,
                      eng.render ? eng.render->npcInstances() : 0u,
+                     eng.ui ? eng.ui->lastVertices() : 0u,
+                     eng.ui ? eng.ui->lastDrawn() : 0u,
+                     eng.ui ? (int)eng.ui->screen : -1,
                      (double)(msUpdate / n), (double)(msPrepare / n),
                      (double)(msDraw / n));
                 msUpdate = msPrepare = msDraw = 0.f;

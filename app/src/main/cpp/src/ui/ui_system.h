@@ -65,6 +65,9 @@ public:
     /// Поворот вывода — тот же, что у камеры.
     void setSurfaceRotation(u32 degrees) { renderer_.setSurfaceRotation(degrees); }
 
+    u32 lastVertices() const { return renderer_.lastVertices(); }
+    u32 lastDrawn()    const { return renderer_.lastDrawn(); }
+
     /// Экранное управление рисуется по состоянию TouchInput: кнопки
     /// и джойстик заведены там, а до сих пор не рисовались нигде —
     /// игрок видел пустой экран и искал кнопки наугад.

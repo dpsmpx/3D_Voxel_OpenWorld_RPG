@@ -167,10 +167,11 @@ void UiRenderer::pushTri(glm::vec2 a, glm::vec2 b, glm::vec2 c, u32 rgba) {
     u8 r = (rgba >> 24) & 0xFF, g = (rgba >> 16) & 0xFF;
     u8 bl = (rgba >>  8) & 0xFF, al = (rgba      ) & 0xFF;
     auto& V = verts_[activeSlot_];
-    const float u = whiteU_, v = whiteV_;
-    V.push_back({ rotate(a), {u, v}, r, g, bl, al });
-    V.push_back({ rotate(b), {u, v}, r, g, bl, al });
-    V.push_back({ rotate(c), {u, v}, r, g, bl, al });
+    // -1 — признак сплошной заливки, см. shaders/ui.frag.
+    const glm::vec2 uv{ -1.f, -1.f };
+    V.push_back({ rotate(a), uv, r, g, bl, al });
+    V.push_back({ rotate(b), uv, r, g, bl, al });
+    V.push_back({ rotate(c), uv, r, g, bl, al });
 }
 
 bool UiRenderer::ensureCapacity(FrameBuf& b, u32 vertsNeeded) {
@@ -197,6 +198,9 @@ void UiRenderer::flush(vk::Context& ctx) {
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
 
+    lastVerts_ = (u32)(verts_[0].size() + verts_[1].size());
+    lastDrawn_ = 0;
+
     const u32 frame = ctx.frameInFlight() % MAX_FRAMES;
     for (int slot = 0; slot < 2; ++slot) {
         auto& V = verts_[slot];
@@ -220,6 +224,7 @@ void UiRenderer::flush(vk::Context& ctx) {
         const VkBuffer vb = fb.vb.handle();
         vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offs);
         vkCmdDraw(cmd, fb.vertexCount, 1, 0, 0);
+        lastDrawn_ += fb.vertexCount;
     }
 }
 

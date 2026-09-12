@@ -51,8 +51,9 @@ void UiContext::rect(float x, float y, float w, float h, UiColor c) {
     float nw = toNdcW(w, screenW_);
     float nh = toNdcH(h, screenH_);
     r_->setAtlas(0);
-    r_->pushQuad({ nx, ny }, { nw, nh },
-                 r_->whiteU(), r_->whiteV(), r_->whiteU(), r_->whiteV(), c);
+    // -1 — признак сплошной заливки, см. shaders/ui.frag: текстура
+    // для неё не нужна вовсе.
+    r_->pushQuad({ nx, ny }, { nw, nh }, -1.f, -1.f, -1.f, -1.f, c);
 }
 
 void UiContext::image(float x, float y, float w, float h, UiColor tint) {
