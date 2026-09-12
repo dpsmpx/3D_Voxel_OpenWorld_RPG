@@ -12,6 +12,7 @@
 #include "world/block.h"
 #include "world/chunk.h"
 #include "world/chunk_manager.h"
+#include "render/mesh_builder.h"
 #include "render/astc.h"
 #include "vk/vk_buffer.h"
 #include "vk/vk_texture.h"
@@ -445,6 +446,83 @@ void testGreedyMesh() {
 }
 
 // ------------------------------------------------------------
+// Затенение углов и упаковка вершины
+// ------------------------------------------------------------
+void testVoxelShading() {
+    group("воксельное затенение и упаковка");
+
+    world::blocks();
+    world::ChunkNeighbors nb;
+    std::vector<world::Quad> quads;
+
+    // Ровная площадка без препятствий: все углы всех граней открыты.
+    auto flat = std::make_unique<world::Chunk>();
+    fillFlat(*flat, 1, world::STONE);
+    world::buildGreedyMesh(*flat, nb, quads, world::Lod::Full);
+    bool allOpen = true;
+    for (const auto& q : quads)
+        if (q.v0.face == 2)
+            for (u8 a : q.ao) if (a != 3) allOpen = false;
+    check(allOpen, "на открытой плоскости углы не затенены");
+
+    // Ступенька: у верхней грани нижнего уровня два угла упираются
+    // в стенку — они обязаны потемнеть.
+    auto step = std::make_unique<world::Chunk>();
+    for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+            step->voxels[world::chunkIndex(x, 0, z)] = world::STONE;
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        step->voxels[world::chunkIndex(10, 1, z)] = world::STONE;
+    world::buildGreedyMesh(*step, nb, quads, world::Lod::Full);
+    bool anyShaded = false;
+    for (const auto& q : quads)
+        if (q.v0.face == 2)
+            for (u8 a : q.ao) if (a < 3) anyShaded = true;
+    check(anyShaded, "у стены верхняя грань темнеет в углах");
+
+    // Разное затенение обязано разрывать слияние: иначе тень от стены
+    // растеклась бы по всей плоскости одним квадом.
+    usize flatTop = 0, stepTop = 0;
+    world::buildGreedyMesh(*flat, nb, quads, world::Lod::Full);
+    for (const auto& q : quads) if (q.v0.face == 2) ++flatTop;
+    world::buildGreedyMesh(*step, nb, quads, world::Lod::Full);
+    for (const auto& q : quads) if (q.v0.face == 2) ++stepTop;
+    check(stepTop > flatTop, "разное затенение не склеивается в один квад");
+
+    // Упаковка вершины: всё достаётся обратно ровно так, как её
+    // читает шейдер.
+    for (u32 face = 0; face < 6; ++face) {
+        const u32 p = render::packVoxelPos(32, 128, 31, face, face % 4, 100);
+        const bool ok = ( p        & 63u)  == 32
+                     && ((p >>  6) & 255u) == 128
+                     && ((p >> 14) & 63u)  == 31
+                     && ((p >> 20) & 7u)   == face
+                     && ((p >> 23) & 3u)   == (face % 4)
+                     && ((p >> 25) & 127u) == 100;
+        if (!ok) { check(false, "упаковка вершины распаковывается обратно"); return; }
+    }
+    check(true, "упаковка вершины распаковывается обратно");
+    check(sizeof(render::VoxelVertex) == 8, "вершина террейна весит 8 байт");
+
+    // Геометрия из квадов: по четыре вершины и шесть индексов на квад,
+    // и ни один индекс не выходит за пределы буфера.
+    std::vector<render::VoxelVertex> verts;
+    std::vector<u32> idx;
+    world::buildGreedyMesh(*step, nb, quads, world::Lod::Full);
+    render::buildChunkVertices(*step, quads, verts, idx);
+    check(verts.size() == quads.size() * 4, "на квад приходится четыре вершины");
+    check(idx.size() == quads.size() * 6, "на квад приходится шесть индексов");
+    u32 maxIdx = 0;
+    for (u32 i : idx) if (i > maxIdx) maxIdx = i;
+    check(idx.empty() || maxIdx < verts.size(), "индексы не выходят за буфер");
+
+    // Цвет берётся из материала, а не из текстуры.
+    bool colored = false;
+    for (const auto& v : verts) if (v.r || v.g || v.b) colored = true;
+    check(colored, "вершины несут цвет материала");
+}
+
+// ------------------------------------------------------------
 // Игровые сутки
 // ------------------------------------------------------------
 void testDayCycle() {
@@ -649,6 +727,7 @@ int main() {
     testJobSystem();
     testSaveFormat();
     testGreedyMesh();
+    testVoxelShading();
     testDayCycle();
     testBossPhases();
     testAstc();

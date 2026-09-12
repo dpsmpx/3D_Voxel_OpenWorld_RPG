@@ -9,6 +9,20 @@
 
 namespace world {
 
+/// Цвет грани в формате 0xRRGGBBAA.
+///
+/// Мир воксельный: у блока нет текстуры, у него есть материал. Цвет —
+/// его единственное графическое свойство, остальное делают геометрия,
+/// освещение и затенение углов. Разные цвета у верха, боков и низа
+/// нужны не для «рисунка», а чтобы подчеркнуть форму: у травы зелёная
+/// макушка на земляном боку, у дерева спил светлее коры.
+using BlockColor = u32;
+
+constexpr BlockColor bcolor(u8 r, u8 g, u8 b, u8 a = 255) {
+    return ((BlockColor)r << 24) | ((BlockColor)g << 16) |
+           ((BlockColor)b << 8)  |  (BlockColor)a;
+}
+
 /// Свойства блока — компилируются один раз, читаются из рендера/физики
 struct BlockDef {
     const char* name;
@@ -20,11 +34,21 @@ struct BlockDef {
     u8  hasCollision  : 1;
     u8  _pad          : 2;
     u8  lightLevel;      // 0..15 если emissive
-    u8  atlasTop;        // индекс тайла в атласе
-    u8  atlasSide;
-    u8  atlasBottom;
+    /// Насколько заметна поверхностная крапчатость, 0..255. Ровный
+    /// цвет без единого текселя выглядит пластиком, поэтому шейдер
+    /// подмешивает шум с шагом в один воксель — и его размах задаётся
+    /// здесь: камню много, снегу почти ничего.
+    u8  grain;
+    BlockColor colorTop;
+    BlockColor colorSide;
+    BlockColor colorBottom;
     f32 hardness;        // время добычи в секундах
     u32 toolFlags;       // какие инструменты эффективны
+
+    /// Цвет грани по её индексу: 0..5 это +X, -X, +Y, -Y, +Z, -Z.
+    BlockColor faceColor(u8 face) const {
+        return face == 2 ? colorTop : (face == 3 ? colorBottom : colorSide);
+    }
 };
 
 /// Реестр блоков — заполняется на старте

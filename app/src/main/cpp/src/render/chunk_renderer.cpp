@@ -238,6 +238,10 @@ void ChunkRenderer::render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout l
         }
         if (!chosen) continue;
 
+        const ChunkPush push{ glm::vec4(cmin, 0.f) };
+        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(push), &push);
+
         const VkBuffer vb = chosen->vb.handle();
         VkDeviceSize offsets[] = { 0 };
         vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offsets);

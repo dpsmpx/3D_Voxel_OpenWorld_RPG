@@ -1,15 +1,13 @@
 #version 450
-// Мобильный GPU: mediump достаточно для цвета и тумана, оставляем
-// highp только координатам, где точность действительно нужна.
+// Мобильный GPU: mediump хватает цвету и освещению, highp оставляем
+// мировым координатам — по ним считается и клетка вокселя, и туман.
 precision mediump float;
-// int по умолчанию тоже задаём явно: иначе glslang предупреждает,
-// что часть точностей осталась highp по умолчанию.
 precision mediump int;
 
-layout(location = 0) in highp vec2 vUv;
-layout(location = 1) in       vec4 vColor;
-layout(location = 2) in highp vec3 vWorldPos;
-layout(location = 3) in flat  vec2 vTileOrigin;
+layout(location = 0) in       vec4  vColor;
+layout(location = 1) in highp vec3  vWorldPos;
+layout(location = 2) in       float vAo;
+layout(location = 3) in flat  uint  vInfo;
 
 layout(set = 0, binding = 0) uniform CameraUbo {
     mat4 viewProj;
@@ -17,67 +15,100 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 cameraPos;
     vec4 screenSize;
     vec4 sunDir;
-    vec4 fogParams;   // start, end, density, time
+    vec4 fogParams;   // start, end, timeOfDay, time
     vec4 skyColor;
 } cam;
 
-layout(set = 0, binding = 1) uniform sampler2D atlas;
-
 layout(location = 0) out vec4 outColor;
 
-const float TILE = 1.0 / 16.0;   // атлас 16x16
-const float INSET = 0.5 / 512.0; // половина тексела: гасит просачивание соседей
-
 // Нормали граней в порядке world::FACES: +X, -X, +Y, -Y, +Z, -Z.
-// Индекс грани приезжает в альфе вершинного цвета — см. mesh_builder.
 const vec3 FACE_N[6] = vec3[6](
     vec3( 1.0,  0.0,  0.0), vec3(-1.0,  0.0,  0.0),
     vec3( 0.0,  1.0,  0.0), vec3( 0.0, -1.0,  0.0),
     vec3( 0.0,  0.0,  1.0), vec3( 0.0,  0.0, -1.0));
 
+// Свет считаем в линейном пространстве, а материалы и небо заданы в
+// sRGB. Без этого перевода умножение на освещённость съедает
+// полутона, и мир выглядит грязным. Приближение гаммой 2.0 вместо
+// 2.2 стоит одного умножения и одного корня.
+vec3 toLinear(vec3 c) { return c * c; }
+vec3 toSrgb(vec3 c)   { return sqrt(max(c, vec3(0.0))); }
+
+// Плечо только для пересветов: до 0.75 не трогаем ничего, выше —
+// мягко подводим к единице по самому яркому каналу, чтобы солнце на
+// снегу не выбивало цвет в белое пятно.
+vec3 shoulder(vec3 c) {
+    float m = max(max(c.r, c.g), c.b);
+    if (m <= 0.75) return c;
+    float o = m - 0.75;
+    return c * ((0.75 + o / (1.0 + o * 2.0)) / m);
+}
+
+highp float hash13(highp vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+
 void main() {
-    // Греди-меширование объединяет соседние грани в один квад, поэтому
-    // vUv растёт до размера квада в блоках. fract() повторяет тайл;
-    // производные берём от неразрывной vUv, иначе на швах ломается mip.
-    highp vec2 tiled = fract(vUv);
-    highp vec2 uv    = vTileOrigin + clamp(tiled, INSET, 1.0 - INSET) * TILE;
-    highp vec2 ddx   = dFdx(vUv) * TILE;
-    highp vec2 ddy   = dFdy(vUv) * TILE;
+    int  face  = int(vInfo & 7u);
+    vec3 N     = FACE_N[face];
+    float grain = float((vInfo >> 3) & 127u) * (2.0 / 255.0);
 
-    vec4 tex = textureGrad(atlas, uv, ddx, ddy);
+    // ---- крапчатость по клеткам ----
+    // Текстур нет, и ровная заливка читается как пластик. Шум с шагом
+    // ровно в один воксель возвращает поверхности материальность и,
+    // что важнее, делает видимой саму воксельную сетку — даже там,
+    // где жадное слияние собрало полсотни граней в один квад.
+    highp vec3 cell = floor(vWorldPos - N * 0.5);
+    float n = hash13(cell) - 0.5;
 
-    vec3 N = FACE_N[clamp(int(vColor.a * 8.0), 0, 5)];
+    // ---- фаска по краям вокселя ----
+    // Тонкое затемнение у рёбер клетки: объём читается сразу, куб
+    // перестаёт быть плоским пятном. Пропадает, когда воксель мельче
+    // пикселя, иначе на дальних склонах пошла бы рябь.
+    highp vec2 fp = abs(N.x) > 0.5 ? vWorldPos.zy
+                  : (abs(N.y) > 0.5 ? vWorldPos.xz : vWorldPos.xy);
+    highp vec2 f  = abs(fract(fp) - 0.5);
+    highp float d = 0.5 - max(f.x, f.y);
+    float w = fwidth(d) * 1.5 + 1e-4;
+    float bevel = mix(1.0, mix(0.84, 1.0, smoothstep(0.0, max(w, 0.02), d)),
+                      clamp(1.0 - w * 2.5, 0.0, 1.0));
 
-    // Яркость неба из world::DayCycle: 0.12 ночью, 1.0 днём.
-    float day = clamp(cam.sunDir.w, 0.0, 1.0);
-    // Солнце у горизонта светит тёплым, в зените — почти белым.
-    vec3 sunTint = mix(vec3(1.00, 0.52, 0.26), vec3(1.00, 0.97, 0.92),
-                       smoothstep(0.0, 0.30, cam.sunDir.y));
-    // Ниже горизонта солнце не светит вовсе, но гаснет не мгновенно.
-    float above = smoothstep(-0.10, 0.06, cam.sunDir.y);
+    vec3 albedo = toLinear(vColor.rgb) * (1.0 + grain * n) * bevel;
 
-    // Небо светит сверху: грань тем светлее, чем больше купола видит.
+    // ---- освещение ----
+    vec3  skyLin  = toLinear(cam.skyColor.rgb);
+    float day     = clamp(cam.sunDir.w, 0.0, 1.0);
+    float above   = smoothstep(-0.10, 0.06, cam.sunDir.y);
+    vec3  sunTint = toLinear(mix(vec3(1.00, 0.52, 0.26), vec3(1.00, 0.97, 0.92),
+                                 smoothstep(0.0, 0.30, cam.sunDir.y)));
+
+    // Затенение углов запечено в геометрию мешером. Небо им гасится
+    // полностью — оно приходит со всех сторон и в щель не попадает;
+    // прямое солнце гасится частично, иначе освещённые склоны теряют
+    // контраст и мир становится плоским.
+    float ao    = 0.42 + 0.58 * vAo;
+    float aoSun = mix(1.0, ao, 0.6);
+
     float skyVis = 0.5 + 0.5 * N.y;
+    float ndl    = max(dot(N, cam.sunDir.xyz), 0.0);
 
-    vec3 ambient = cam.skyColor.rgb * (0.12 + 0.26 * skyVis) * (0.25 + 0.75 * day);
-    vec3 sun     = sunTint * (max(dot(N, cam.sunDir.xyz), 0.0) * 0.68 * day * above);
-    // Ночью светит луна: холодно и слабо, но мир остаётся читаемым.
-    vec3 moon    = vec3(0.20, 0.24, 0.36) * (1.0 - day) * (0.30 + 0.35 * skyVis);
+    vec3 ambient = skyLin * (0.16 + 0.34 * skyVis) * (0.25 + 0.75 * day) * ao;
+    vec3 sun     = sunTint * (ndl * 0.85 * day * above) * aoSun;
+    vec3 moon    = vec3(0.04, 0.055, 0.11) * (1.0 - day) * (0.30 + 0.35 * skyVis) * ao;
 
-    vec3 lit = tex.rgb * vColor.rgb * (ambient + sun + moon + 0.04);
+    vec3 lit = shoulder(albedo * (ambient + sun + moon + 0.02));
 
-    // Туман. У солнца он подсвечивается: закат тогда виден не только
-    // на небе, но и в дымке над землёй.
+    // ---- туман ----
     highp vec3 toFrag = vWorldPos - cam.cameraPos.xyz;
-    float dist     = length(toFrag);
-    float fogStart = cam.fogParams.x;
-    float fogEnd   = cam.fogParams.y;
-    float fogAmt   = clamp((dist - fogStart) / max(fogEnd - fogStart, 0.001), 0.0, 1.0);
-    fogAmt = fogAmt * fogAmt * (3.0 - 2.0 * fogAmt);   // smoothstep
+    float dist   = length(toFrag);
+    float fogAmt = clamp((dist - cam.fogParams.x) /
+                         max(cam.fogParams.y - cam.fogParams.x, 0.001), 0.0, 1.0);
+    fogAmt = fogAmt * fogAmt * (3.0 - 2.0 * fogAmt);
 
-    float sunAmt  = max(dot(normalize(toFrag), cam.sunDir.xyz), 0.0);
-    vec3  fogColor = mix(cam.skyColor.rgb, sunTint,
-                         pow(sunAmt, 6.0) * 0.45 * above);
+    float sunAmt   = max(dot(normalize(toFrag), cam.sunDir.xyz), 0.0);
+    vec3  fogColor = mix(skyLin, sunTint, pow(sunAmt, 6.0) * 0.45 * above);
 
-    outColor = vec4(mix(lit, fogColor, fogAmt), 1.0);
+    outColor = vec4(toSrgb(mix(lit, fogColor, fogAmt)), 1.0);
 }

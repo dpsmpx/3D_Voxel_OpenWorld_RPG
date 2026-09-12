@@ -13,11 +13,9 @@ namespace render {
 
 // Вершинный формат террейна — см. VoxelVertex в mesh_builder.h.
 static const vk::VertexBinding kVoxelBindings[1] = { { sizeof(VoxelVertex), false } };
-static const vk::VertexAttr kVoxelAttrs[4] = {
-    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // inPos
-    { 1, 0, VK_FORMAT_R32G32_SFLOAT,    12 },   // inUv (в тайлах)
-    { 2, 0, VK_FORMAT_R32G32_SFLOAT,    20 },   // inTileOrigin
-    { 3, 0, VK_FORMAT_R8G8B8A8_UNORM,   28 },   // inColor
+static const vk::VertexAttr kVoxelAttrs[2] = {
+    { 0, 0, VK_FORMAT_R32_UINT,       0 },   // inPacked: позиция, грань, AO, зерно
+    { 1, 0, VK_FORMAT_R8G8B8A8_UNORM, 4 },   // inColor: цвет материала грани
 };
 
 bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
@@ -96,7 +94,9 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
         d.bindings     = kVoxelBindings;
         d.bindingCount = 1;
         d.attrs        = kVoxelAttrs;
-        d.attrCount    = 4;
+        d.attrCount    = 2;
+        d.pushConstantSize  = sizeof(ChunkPush);
+        d.pushConstantStage = VK_SHADER_STAGE_VERTEX_BIT;
         if (!voxelPipeline_.create(dev_, shaders_, d)) return false;
     }
 
@@ -192,31 +192,16 @@ void RenderSystem::render(vk::Context& ctx) {
     VkDescriptorSet ds = descriptors_.set(frame);
     math::Frustum fr = camera_.frustum();
 
-    VkCommandBuffer cmd = ctx.currentCmd();
-
     skybox_.render(ctx);
 
     chunkRenderer_.render(ctx, voxelPipeline_.handle(), voxelPipeline_.layout(),
                           ds, fr, camera_.position(), &occlusion_);
 
-    npcRenderer_.render(ctx);
-    mobRenderer_.render(ctx, fr);
-    projRenderer_.render(ctx);
-    itemRenderer_.render(ctx);
-
-    {
-        VkViewport vp{};
-        vp.width  = (f32)ctx.extent().width;
-        vp.height = (f32)ctx.extent().height;
-        vp.minDepth = 0.f; vp.maxDepth = 1.f;
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        VkRect2D sc{}; sc.extent = ctx.extent();
-        vkCmdSetScissor(cmd, 0, 1, &sc);
-
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                voxelPipeline_.layout(), 0, 1, &ds, 0, nullptr);
-        grass_.render(ctx, fr);
-    }
+    npcRenderer_.render(ctx, ds);
+    mobRenderer_.render(ctx, ds, fr);
+    projRenderer_.render(ctx, ds);
+    itemRenderer_.render(ctx, ds);
+    grass_.render(ctx, ds, fr);
 
     blockOutline_.render(ctx, ds, lastHit_.block, lastHit_.hit);
 

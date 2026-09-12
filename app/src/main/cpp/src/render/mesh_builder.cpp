@@ -11,18 +11,6 @@ namespace render {
 
 namespace {
 
-// Индекс грани в альфе вершинного цвета. Шейдер достаёт его как
-// int(a * 8) и берёт по нему нормаль: освещение считается по-настоящему
-// от направления на солнце, а не запекается в шесть постоянных яркостей.
-// Раньше здесь стояла таблица FACE_LIGHT, и мир выглядел одинаково в
-// полдень и на закате.
-constexpr u8 faceCode(u8 face) {
-    // (face + 0.5) / 8, в UNORM. Обратно: floor(a * 8) == face.
-    return (u8)(((u32)face * 2 + 1) * 255 / 16);
-}
-static_assert(faceCode(0) * 8 / 255 == 0 && faceCode(5) * 8 / 255 == 5,
-              "альфа должна однозначно кодировать индекс грани");
-
 // Порядок обхода вершин квада для каждой грани, чтобы лицевая
 // сторона была CCW при взгляде снаружи. p0=origin, p1=+du,
 // p2=+du+dv, p3=+dv.
@@ -35,8 +23,6 @@ constexpr u8 WINDING[6][4] = {
     {3, 2, 1, 0},  // -Z
 };
 
-constexpr u32 ATLAS_COLS = 16;
-
 } // namespace
 
 void buildChunkVertices(const world::Chunk& chunk,
@@ -44,63 +30,61 @@ void buildChunkVertices(const world::Chunk& chunk,
                         std::vector<VoxelVertex>& outVerts,
                         std::vector<u32>& outIndices)
 {
+    (void)chunk;   // позиции локальные: смещение чанка добавляет шейдер
     outVerts.clear();
     outIndices.clear();
     outVerts.reserve(quads.size() * 4);
     outIndices.reserve(quads.size() * 6);
 
     auto& reg = world::blocks();
-    const glm::vec3 chunkOrigin = glm::vec3(
-        (f32)(chunk.coord.x * world::CHUNK_SIZE),
-        0.f,
-        (f32)(chunk.coord.z * world::CHUNK_SIZE));
 
     for (const auto& q : quads) {
         const world::BlockDef& def = reg.get(q.v0.block);
-        const u8 tileIdx = (q.v0.face == 2) ? def.atlasTop
-                         : (q.v0.face == 3) ? def.atlasBottom
-                                            : def.atlasSide;
-
-        const glm::vec2 tileOrigin{
-            (f32)(tileIdx % ATLAS_COLS) * ATLAS_TILE_UV,
-            (f32)(tileIdx / ATLAS_COLS) * ATLAS_TILE_UV,
-        };
-
-        // Размер квада в блоках: du и dv лежат вдоль осей, поэтому
-        // длина вектора и есть число тайлов по соответствующей оси.
-        const f32 tilesU = glm::length(q.du);
-        const f32 tilesV = glm::length(q.dv);
+        const u32 rgba = def.faceColor(q.v0.face);
+        const u8 cr = (u8)(rgba >> 24), cg = (u8)(rgba >> 16);
+        const u8 cb = (u8)(rgba >>  8), ca = (u8)(rgba);
+        const u32 grain = (u32)def.grain >> 1;   // 0..127
 
         const glm::vec3 corners[4] = {
-            chunkOrigin + q.v0.pos,
-            chunkOrigin + q.v0.pos + q.du,
-            chunkOrigin + q.v0.pos + q.du + q.dv,
-            chunkOrigin + q.v0.pos + q.dv,
-        };
-        const glm::vec2 tileUV[4] = {
-            { 0.f,    0.f    },
-            { tilesU, 0.f    },
-            { tilesU, tilesV },
-            { 0.f,    tilesV },
+            q.v0.pos,
+            q.v0.pos + q.du,
+            q.v0.pos + q.du + q.dv,
+            q.v0.pos + q.dv,
         };
 
         const u32 base = (u32)outVerts.size();
         const u8* w    = WINDING[q.v0.face];
-        // rgb остаётся белым: цвет грани целиком за текстурой и
-        // освещением. Канал свободен под запекание затенения углов.
-        const u8 face  = faceCode(q.v0.face);
 
+        u8 ao[4];
         for (int i = 0; i < 4; ++i) {
             const u8 idx = w[i];
-            outVerts.push_back({ corners[idx], tileUV[idx], tileOrigin,
-                                 255, 255, 255, face });
+            const glm::vec3& p = corners[idx];
+            ao[i] = q.ao[idx];
+            outVerts.push_back({
+                packVoxelPos((u32)p.x, (u32)p.y, (u32)p.z,
+                             q.v0.face, ao[i], grain),
+                cr, cg, cb, ca });
         }
-        outIndices.push_back(base + 0);
-        outIndices.push_back(base + 1);
-        outIndices.push_back(base + 2);
-        outIndices.push_back(base + 0);
-        outIndices.push_back(base + 2);
-        outIndices.push_back(base + 3);
+
+        // Разрез квада по диагонали. Если затенение углов несимметрично,
+        // разрез обязан идти через два ТЁМНЫХ угла: иначе интерполяция
+        // размажет тень поперёк квада, и на ровной стене проступит
+        // характерная «складка» из двух треугольников.
+        if (ao[0] + ao[2] > ao[1] + ao[3]) {
+            outIndices.push_back(base + 0);
+            outIndices.push_back(base + 1);
+            outIndices.push_back(base + 2);
+            outIndices.push_back(base + 0);
+            outIndices.push_back(base + 2);
+            outIndices.push_back(base + 3);
+        } else {
+            outIndices.push_back(base + 1);
+            outIndices.push_back(base + 2);
+            outIndices.push_back(base + 3);
+            outIndices.push_back(base + 1);
+            outIndices.push_back(base + 3);
+            outIndices.push_back(base + 0);
+        }
     }
 }
 
