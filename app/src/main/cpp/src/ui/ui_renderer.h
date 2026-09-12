@@ -73,7 +73,10 @@ public:
 
     float whiteU() const { return whiteU_; }
     float whiteV() const { return whiteV_; }
-    VkDescriptorSetLayout descriptorLayout() const { return descSet_.layout(); }
+    /// Раскладка дескрипторов интерфейса. Раньше здесь возвращалась
+    /// раскладка поля descSet_, которое init() не заполняет вовсе,
+    /// то есть всегда нулевой дескриптор.
+    VkDescriptorSetLayout descriptorLayout() const { return descLayout_; }
 
 private:
     VkDevice dev_ = VK_NULL_HANDLE;
@@ -85,7 +88,6 @@ private:
     // Шейдер и пайплайн
     vk::ShaderCache      shaders_;
     vk::GraphicsPipeline pipeline_;
-    vk::DescriptorSet    descSet_;      // layout = 1 sampler2D
 
     // Атлас шрифта
     vk::Texture2D fontAtlas_;

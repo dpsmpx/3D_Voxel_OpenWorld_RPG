@@ -67,6 +67,10 @@ bool Minimap::init(vk::Context& ctx, u32 px) {
 }
 
 void Minimap::destroy() {
+    if (pool_ != VK_NULL_HANDLE && dev_ != VK_NULL_HANDLE) {
+        vkDestroyCommandPool(dev_, pool_, nullptr);
+        pool_ = VK_NULL_HANDLE;
+    }
     tex_.destroy();
     pixels_.clear();
     dev_ = VK_NULL_HANDLE;
@@ -123,50 +127,24 @@ void Minimap::flushUpload(vk::Context& ctx) {
     if (!dirty_) return;
     if (!tex_.view()) return;
 
-    // Создаём временный command pool для upload.
-    // Используем ctx.submitOneShot, но там свой pool — а нам нужен
-    // доступ к pool для передачи в Texture2D::upload.
-    // Простейший путь: вызываем upload через submitOneShot с ручным
-    // созданием command buffer'а внутри Texture2D::upload с pool,
-    // полученным из ctx через getter. Здесь — используем стандартный
-    // путь: у vk::Context нет публичного pool для Texture2D.
-    //
-    // Компромисс: для каждой загрузки миникарты используем один
-    // одноразовый пул внутри Texture2D::upload. Это допустимо,
-    // потому что загрузка происходит редко (раз в 1 сек).
-
-    // vk::Texture2D::upload требует pool+queue. Чтобы не менять сигнатуру
-    // vk::Context, создаём локальный пул здесь.
-    // Проще всего: положиться на то, что миникарта обновляется редко,
-    // и upload сделает всё синхронно.
-
-    // Пул уже не нужен: Texture2D::upload получит его через
-    // встроенный в ctx.gfxFamily(). Однако у нас нет доступа к
-    // gfxFamily()-pool'у без публичного API. Используем
-    // submitOneShot для простоты.
-
-    // Финальный вариант: пересоздаём текстуру раз в update,
-    // но так как это дорого, делаем upload только если dirty.
-
-    // Реализация upload через submitOneShot невозможна без доступа к
-    // внутреннему буферу. Поэтому используем Texture2D::upload
-    // с локальным pool.
-
-    VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    pci.queueFamilyIndex = ctx.gfxFamily();
-    pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-
-    VkCommandPool localPool = VK_NULL_HANDLE;
-    if (vkCreateCommandPool(ctx.device(), &pci, nullptr, &localPool) != VK_SUCCESS) {
-        dirty_ = false;
-        return;
+    // vk::Texture2D::upload принимает пул команд, а у vk::Context
+    // своего публичного пула нет. Держим один собственный: раньше он
+    // создавался и уничтожался на каждой заливке, то есть раз в
+    // секунду на ровном месте.
+    if (pool_ == VK_NULL_HANDLE) {
+        VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        pci.queueFamilyIndex = ctx.gfxFamily();
+        pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        if (vkCreateCommandPool(ctx.device(), &pci, nullptr, &pool_) != VK_SUCCESS) {
+            LOGE("миникарта: не создан пул команд");
+            dirty_ = false;
+            return;
+        }
     }
 
     tex_.upload(ctx.device(), ctx.physicalDevice(),
-                localPool, ctx.gfxQueue(),
+                pool_, ctx.gfxQueue(),
                 pixels_.data(), pixels_.size());
-
-    vkDestroyCommandPool(ctx.device(), localPool, nullptr);
     dirty_ = false;
 }
 

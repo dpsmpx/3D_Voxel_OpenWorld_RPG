@@ -36,6 +36,10 @@ public:
 
 private:
     VkDevice          dev_ = VK_NULL_HANDLE;
+    /// Собственный пул команд для заливки текстуры: у vk::Context
+    /// публичного пула нет, а создавать свой на каждую заливку —
+    /// лишняя работа драйверу раз в секунду.
+    VkCommandPool     pool_ = VK_NULL_HANDLE;
     vk::Texture2D     tex_;
     std::vector<u8>   pixels_;
     u32               size_ = 128;

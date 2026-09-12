@@ -390,79 +390,12 @@ void cylinder(Chunk& c, i32 cx, i32 cz, i32 y, i32 radius, u16 block, bool overw
 
 // --- Простые структуры ---
 
-void buildWell(Chunk& c, i32 wx, i32 wz, i32 wy) {
-    // 5x5 каменный колодец с водой в центре
-    for (i32 dx = -2; dx <= 2; ++dx)
-        for (i32 dz = -2; dz <= 2; ++dz) {
-            bool ring = (std::abs(dx) == 2 || std::abs(dz) == 2);
-            for (i32 dy = -1; dy <= 2; ++dy) {
-                putWorld(c, wx + dx, wy + dy, wz + dz, ring ? STONE : AIR, true);
-            }
-        }
-    // Вода в центре
-    for (i32 dy = -1; dy <= 0; ++dy)
-        putWorld(c, wx, wy + dy, wz, WATER, true);
-    // Крыша (4 столбика + балка)
-    for (i32 k = 0; k < 4; ++k) {
-        i32 dx = (k & 1) ? 2 : -2;
-        i32 dz = (k & 2) ? 2 : -2;
-        putWorld(c, wx + dx, wy + 3, wz + dz, WOOD, true);
-    }
-    for (i32 dx = -2; dx <= 2; ++dx)
-        for (i32 dz = -2; dz <= 2; ++dz)
-            putWorld(c, wx + dx, wy + 4, wz + dz, WOOD, true);
-}
-
-void buildHouse(Chunk& c, i32 wx, i32 wz, i32 wy, i32 w, i32 d, u32 rng) {
-    // Пол
-    for (i32 dx = 0; dx < w; ++dx)
-        for (i32 dz = 0; dz < d; ++dz)
-            putWorld(c, wx + dx, wy - 1, wz + dz, WOOD, true);
-
-    // Стены + проём двери
-    i32 doorX = wx + 1 + (rng % (w - 2));
-    for (i32 y = 0; y < 4; ++y)
-        for (i32 dx = 0; dx < w; ++dx)
-            for (i32 dz = 0; dz < d; ++dz) {
-                bool edge = (dx == 0 || dx == w-1 || dz == 0 || dz == d-1);
-                if (!edge) continue;
-                if (y <= 2 && dz == 0 && wx + dx == doorX) continue;  // дверь
-                putWorld(c, wx + dx, wy + y, wz + dz, WOOD, true);
-            }
-
-    // Крыша: пирамида
-    for (i32 level = 0; level < 2; ++level) {
-        i32 x0 = wx - level, x1 = wx + w - 1 + level;
-        i32 z0 = wz - level, z1 = wz + d - 1 + level;
-        for (i32 dx = x0; dx <= x1; ++dx)
-            for (i32 dz = z0; dz <= z1; ++dz) {
-                bool edge = (dx == x0 || dx == x1 || dz == z0 || dz == z1);
-                if (level == 0 || edge)
-                    putWorld(c, dx, wy + 4 + level, dz, LEAVES, true);
-            }
-    }
-    // Полный верх
-    for (i32 dx = wx - 1; dx <= wx + w; ++dx)
-        for (i32 dz = wz - 1; dz <= wz + d; ++dz)
-            putWorld(c, dx, wy + 5, dz, LEAVES, true);
-}
-
-void buildVillage(Chunk& c, const Layout& L) {
-    i32 cx = (L.minBlock.x + L.maxBlock.x) / 2;
-    i32 cz = (L.minBlock.z + L.maxBlock.z) / 2;
-    i32 wy = 0;
-    // Поверхность в центре
-    // (используем terrain; но в этой функции доступа нет — упрощаем:
-    //  в реальном коде передавали бы ctx)
-    // Заглушка: ищем поверхность через world. В этой фазе — допустим wy=surf.
-    // Ниже вызов переопределён; см. stampStructure.
-    (void)wy;
-
-    // Колодец
-    // ...
-    // (см. ниже — правильная версия в stampStructure)
-    (void)cx; (void)cz;
-}
+// Здесь жили buildWell(), buildHouse() и buildVillage() — остатки
+// более раннего подхода к деревням. Их никто не вызывал: настоящая
+// расстановка идёт через stampStructure(). buildVillage() состоял из
+// одних заглушек и (void)-приведений, а buildHouse() считал позицию
+// двери как rng % (w - 2) — при ширине дома в два блока это деление
+// на ноль, то есть падение генератора мира на живом устройстве.
 
 } // namespace structs
 

@@ -101,7 +101,15 @@ public:
     void setSurfaceRotation(u32 degrees) { surfaceRot_ = degrees; }
 
     glm::mat4 projection() const {
-        auto p = glm::perspective(glm::radians(fov_), aspect_, near_, far_);
+        // При довороте на 90 или 270 стороны кадра меняются местами:
+        // соотношение, посчитанное по буферу, надо перевернуть вместе
+        // с картинкой. Раньше это знание жило в вызывающем коде, и
+        // одно из двух мест про него забывало — мир выходил сплющен
+        // поперёк (0.468 вместо 2.135). Теперь поворот и соотношение
+        // считаются в одном месте и разойтись не могут.
+        const bool swaps = (surfaceRot_ == 90 || surfaceRot_ == 270);
+        const f32 a = (swaps && aspect_ > 0.f) ? 1.f / aspect_ : aspect_;
+        auto p = glm::perspective(glm::radians(fov_), a, near_, far_);
         p[1][1] *= -1.f;
         if (surfaceRot_ == 0) return p;
         // Знак проверен устройством, а не рассуждением. Без доворота
