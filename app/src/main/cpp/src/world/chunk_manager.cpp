@@ -250,9 +250,13 @@ void ChunkManager::jobMesh(void* data) {
 
     if (c->removed.load(std::memory_order_acquire)) return;
 
-    std::lock_guard lk(mgr->readyMtx_);
     // Один и тот же чанк мог уже попасть в очередь — не дублируем.
-    for (const auto& r : mgr->meshesReady_) if (r.get() == c) return;
+    // Флаг на самом чанке вместо перебора очереди: очередь читают и
+    // пишут несколько рабочих потоков разом, и перебор под общим
+    // замком дорожал вместе с её длиной.
+    if (c->queuedForUpload.exchange(true, std::memory_order_acq_rel)) return;
+
+    std::lock_guard lk(mgr->readyMtx_);
     mgr->meshesReady_.push_back(ctx->chunk);
 }
 
@@ -276,15 +280,21 @@ NeighborLease ChunkManager::gatherNeighbors(i32 cx, i32 cz) const {
 
 std::vector<std::shared_ptr<Chunk>> ChunkManager::pollMeshesReady(usize maxCount) {
     std::vector<std::shared_ptr<Chunk>> out;
-    std::lock_guard lk(readyMtx_);
-    if (maxCount == 0 || meshesReady_.size() <= maxCount) {
-        out.swap(meshesReady_);
-        return out;
+    {
+        std::lock_guard lk(readyMtx_);
+        if (maxCount == 0 || meshesReady_.size() <= maxCount) {
+            out.swap(meshesReady_);
+        } else {
+            // Берём с начала — то, что готово дольше всех. Хвост
+            // остаётся до следующего кадра.
+            out.assign(meshesReady_.begin(), meshesReady_.begin() + (long)maxCount);
+            meshesReady_.erase(meshesReady_.begin(),
+                               meshesReady_.begin() + (long)maxCount);
+        }
     }
-    // Берём с начала — то, что готово дольше всех, ближе к игроку по
-    // времени постановки в очередь. Хвост остаётся до следующего кадра.
-    out.assign(meshesReady_.begin(), meshesReady_.begin() + (long)maxCount);
-    meshesReady_.erase(meshesReady_.begin(), meshesReady_.begin() + (long)maxCount);
+    // Вне очереди — значит можно ставить снова.
+    for (const auto& c : out)
+        if (c) c->queuedForUpload.store(false, std::memory_order_release);
     return out;
 }
 
@@ -366,7 +376,13 @@ void ChunkManager::removeChunks(const std::vector<ChunkCoord>& coords) {
         meshesReady_.erase(
             std::remove_if(meshesReady_.begin(), meshesReady_.end(),
                            [](const std::shared_ptr<Chunk>& c) {
-                               return c->removed.load(std::memory_order_acquire);
+                               if (!c->removed.load(std::memory_order_acquire))
+                                   return false;
+                               // Очередь его больше не держит — флаг
+                               // не должен утверждать обратное.
+                               c->queuedForUpload.store(false,
+                                                        std::memory_order_release);
+                               return true;
                            }),
             meshesReady_.end());
     }

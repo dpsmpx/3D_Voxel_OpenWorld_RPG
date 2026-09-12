@@ -85,6 +85,10 @@ private:
     Camera                camera_;
 
     ui::UiSystem*         ui_ = nullptr;
+
+    /// Когда и откуда в последний раз рассаживали траву.
+    f32       grassTimer_  = 0.f;
+    glm::vec3 grassOrigin_{ 0.f };
     ui::Minimap*          minimap_ = nullptr;
     player::Player*       currentPlayer_ = nullptr;
     world::ChunkManager*  currentWorld_ = nullptr;

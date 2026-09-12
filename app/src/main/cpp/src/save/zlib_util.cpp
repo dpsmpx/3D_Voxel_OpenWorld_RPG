@@ -45,10 +45,12 @@ std::vector<u8> zdecompress(const std::vector<u8>& in, u64 maxSize) {
             return out;
         }
         if (r == Z_BUF_ERROR) {
-            cap *= 2;
-            if (cap > maxSize) {
-                cap = maxSize;
-            }
+            // Упёрлись в потолок: расти больше некуда, и повторять с
+            // тем же размером бессмысленно. Раньше здесь было ровно
+            // это — двадцать одинаковых попыток, каждая с выделением
+            // и обнулением всего буфера и полной распаковкой заново.
+            if (cap >= maxSize) break;
+            cap = cap * 2 > maxSize ? maxSize : cap * 2;
             continue;
         }
         LOGE("zdecompress: ошибка %d", r);
