@@ -190,6 +190,15 @@ void init(const char* internalDataPath, const char* externalDataPath) {
                 std::snprintf(gSharedPath, sizeof(gSharedPath), "%s/voxelrpg.log", dir);
                 gSharedFd = openLog(gSharedPath);
             }
+
+            // Если Android/media почему-то недоступен, пишем хотя бы в
+            // свой внешний каталог: его читают файловые менеджеры через
+            // системный выбор папки, когда Termux туда не дотягивается.
+            if (gSharedFd < 0 && makeDirs(externalDataPath)) {
+                std::snprintf(gSharedPath, sizeof(gSharedPath),
+                              "%s/voxelrpg.log", externalDataPath);
+                gSharedFd = openLog(gSharedPath);
+            }
             if (gSharedFd < 0) gSharedPath[0] = '\0';
         }
     }

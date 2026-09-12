@@ -321,9 +321,20 @@ Logcat чужого приложения с телефона не прочита
 приложение. Поэтому игра ведёт журнал сама и пишет его в два места:
 
 ```bash
-# читается из Termux после termux-setup-storage
+termux-setup-storage        # один раз, иначе ~/storage не существует
 cat ~/storage/shared/Android/media/com.voxelrpg.game/voxelrpg.log
 ```
+
+Если этого файла нет, игра ещё ни разу не запускалась — журнал
+создаётся при старте приложения, а не при сборке. Установить и
+запустить:
+
+```bash
+termux-open build/apk/VoxelRPG.apk
+```
+
+Запасной путь на случай, если `Android/media` недоступен:
+`~/storage/shared/Android/data/com.voxelrpg.game/files/voxelrpg.log`.
 
 В журнале есть отметки этапов запуска — последняя показывает, где всё
 оборвалось:
