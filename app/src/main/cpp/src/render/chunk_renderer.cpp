@@ -156,7 +156,7 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx,
                                 CY * 0.5f,
                                 (f32)key.z * CH + CH * 0.5f };
         const glm::vec3 d = center - cameraPos;
-        const u8 want = lodForDistanceSq(glm::dot(d, d));
+        const u8 want = lodForDistanceSq(glm::dot(d, d), gpu.residentLod);
 
         // Остальные уровни помечаем недействительными: их содержимое
         // устарело вместе с перестроенным мешем.
@@ -235,7 +235,7 @@ void ChunkRenderer::render(vk::Context& ctx,
         const glm::vec3 center = (cmin + cmax) * 0.5f;
         const glm::vec3 d = center - cameraPos;
         const f32 distSq = glm::dot(d, d);
-        const u8 want = lodForDistanceSq(distSq);
+        const u8 want = lodForDistanceSq(distSq, cm.residentLod);
 
         // Нужного уровня нет в видеопамяти — рисуем тем, что есть,
         // и заказываем догрузку на следующий кадр.

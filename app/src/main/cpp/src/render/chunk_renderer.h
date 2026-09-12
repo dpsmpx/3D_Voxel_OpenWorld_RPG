@@ -11,6 +11,7 @@
 #include "../world/chunk_manager.h"
 #include "mesh_builder.h"
 #include "occlusion.h"
+#include <cmath>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -30,6 +31,16 @@ public:
                       const glm::vec3& cameraPos);
 
     void forgetChunk(world::ChunkCoord c);
+
+    /// Дальность прорисовки в блоках. Задаёт границы LOD так, чтобы
+    /// огрубление всегда приходилось на задымлённую даль.
+    void setViewDistanceBlocks(f32 blocks) {
+        lod0_ = blocks * 0.35f < 64.f ? 64.f : blocks * 0.35f;
+        lod1_ = blocks * 0.62f < 140.f ? 140.f : blocks * 0.62f;
+        lod2_ = blocks * 0.90f;
+        if (lod1_ < lod0_ * 1.2f) lod1_ = lod0_ * 1.2f;
+        if (lod2_ < lod1_ * 1.2f) lod2_ = lod1_ * 1.2f;
+    }
 
     /// Отбирает видимые чанки, раскладывает их по расстоянию и
     /// рисует в два прохода: непрозрачное от ближнего к дальнему,
@@ -79,20 +90,41 @@ private:
     /// LOD нет в видеопамяти, uploadChunks() догрузит его в след. кадре.
     struct LodRequest { world::ChunkCoord coord; u8 lod; };
 
-    /// LOD thresholds (в метрах, кв.расстояние)
-    static constexpr f32 LOD0_SQ = 64.f * 64.f;
-    static constexpr f32 LOD1_SQ = 160.f * 160.f;
-    static constexpr f32 LOD2_SQ = 320.f * 320.f;
+    /// Границы уровней детализации в блоках. Привязаны к дальности
+    /// прорисовки: при малой дальности зашитые 64/160/320 огрубляли
+    /// рельеф уже в двух шагах от игрока, при большой — наоборот,
+    /// заставляли тащить полный меш туда, где его съедает туман.
+    f32 lod0_ = 64.f, lod1_ = 160.f, lod2_ = 320.f;
+
+    /// Мёртвая зона у границы: пока чанк не отошёл от неё на восьмую
+    /// часть, уровень не меняется. Без неё шаг вперёд-назад на самой
+    /// границе перестраивает меш каждый кадр, и рельеф мерцает.
+    static constexpr f32 LOD_HYSTERESIS = 0.125f;
 
     /// Сколько догрузок LOD обслуживаем за кадр — ограничивает пик
     /// нагрузки при быстром перемещении игрока.
     static constexpr u32 MAX_LOD_UPLOADS_PER_FRAME = 8;
 
-    static u8 lodForDistanceSq(f32 distSq) {
-        if (distSq < LOD0_SQ) return 0;
-        if (distSq < LOD1_SQ) return 1;
-        if (distSq < LOD2_SQ) return 2;
+    u8 lodForDistanceSq(f32 distSq) const {
+        if (distSq < lod0_ * lod0_) return 0;
+        if (distSq < lod1_ * lod1_) return 1;
+        if (distSq < lod2_ * lod2_) return 2;
         return 3;
+    }
+
+    /// То же, но с мёртвой зоной вокруг текущего уровня.
+    u8 lodForDistanceSq(f32 distSq, u8 resident) const {
+        const u8 want = lodForDistanceSq(distSq);
+        if (want == resident || resident > 3) return want;
+        const f32 edge = (want > resident) ? bound(resident) : bound(want);
+        const f32 lo = edge * (1.f - LOD_HYSTERESIS);
+        const f32 hi = edge * (1.f + LOD_HYSTERESIS);
+        const f32 d = std::sqrt(distSq);
+        return (d > lo && d < hi) ? resident : want;
+    }
+
+    f32 bound(u8 lod) const {
+        return lod == 0 ? lod0_ : (lod == 1 ? lod1_ : lod2_);
     }
 
     /// Загружает один уровень детализации чанка в уже открытый пакет.

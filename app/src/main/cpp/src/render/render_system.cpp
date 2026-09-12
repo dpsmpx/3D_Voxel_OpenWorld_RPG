@@ -145,6 +145,7 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     // загруженных чанков виден обрывом на фоне чистого неба.
     const f32 vdBlocks = (f32)vd * (f32)world::CHUNK_SIZE;
     camera_.setFog(vdBlocks * 0.55f, vdBlocks * 0.94f);
+    chunkRenderer_.setViewDistanceBlocks(vdBlocks);
 
     const u32 frame = ctx.frameInFlight();
     CameraUbo ubo = camera_.toUbo(timeSec);

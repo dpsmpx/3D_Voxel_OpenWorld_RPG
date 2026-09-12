@@ -6,7 +6,7 @@ precision mediump int;
 
 layout(location = 0) in       vec4  vColor;
 layout(location = 1) in highp vec3  vWorldPos;
-layout(location = 2) in       float vAo;
+layout(location = 2) in       vec2  vShade;
 layout(location = 3) in flat  uint  vInfo;
 
 layout(set = 0, binding = 0) uniform CameraUbo {
@@ -53,7 +53,7 @@ highp float hash13(highp vec3 p) {
 void main() {
     int  face  = int(vInfo & 7u);
     vec3 N     = FACE_N[face];
-    float grain = float((vInfo >> 3) & 127u) * (2.0 / 255.0);
+    float grain = float((vInfo >> 3) & 15u) * (1.0 / 15.0) * 0.55;
 
     // ---- крапчатость по клеткам ----
     // Текстур нет, и ровная заливка читается как пластик. Шум с шагом
@@ -88,15 +88,22 @@ void main() {
     // полностью — оно приходит со всех сторон и в щель не попадает;
     // прямое солнце гасится частично, иначе освещённые склоны теряют
     // контраст и мир становится плоским.
-    float ao    = 0.42 + 0.58 * vAo;
+    float ao    = 0.42 + 0.58 * vShade.x;
     float aoSun = mix(1.0, ao, 0.6);
+
+    // Открытость неба. Под сводом пещеры небо не светит вовсе, а
+    // солнце тем более: без этого пещера освещена так же, как
+    // открытый склон. Остаток не нулевой — в полной темноте пещера не
+    // читается, она просто исчезает.
+    float sky    = 0.18 + 0.82 * vShade.y;
+    float skySun = smoothstep(0.35, 0.85, vShade.y);
 
     float skyVis = 0.5 + 0.5 * N.y;
     float ndl    = max(dot(N, cam.sunDir.xyz), 0.0);
 
-    vec3 ambient = skyLin * (0.16 + 0.34 * skyVis) * (0.25 + 0.75 * day) * ao;
-    vec3 sun     = sunTint * (ndl * 0.85 * day * above) * aoSun;
-    vec3 moon    = vec3(0.04, 0.055, 0.11) * (1.0 - day) * (0.30 + 0.35 * skyVis) * ao;
+    vec3 ambient = skyLin * (0.16 + 0.34 * skyVis) * (0.25 + 0.75 * day) * ao * sky;
+    vec3 sun      = sunTint * (ndl * 0.85 * day * above) * aoSun * skySun;
+    vec3 moon    = vec3(0.04, 0.055, 0.11) * (1.0 - day) * (0.30 + 0.35 * skyVis) * ao * sky;
 
     vec3 lit = albedo * (ambient + sun + moon + 0.02);
 

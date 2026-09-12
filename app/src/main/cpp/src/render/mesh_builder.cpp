@@ -38,7 +38,7 @@ void emitQuad(const world::Quad& q, const world::BlockDef& def,
     const u32 rgba = def.faceColor(q.v0.face);
     const u8 cr = (u8)(rgba >> 24), cg = (u8)(rgba >> 16);
     const u8 cb = (u8)(rgba >>  8), ca = (u8)(rgba);
-    const u32 grain = (u32)def.grain >> 1;   // 0..127
+    const u32 grain = (u32)def.grain >> 4;   // 0..15
 
     const glm::vec3 corners[4] = {
         q.v0.pos,
@@ -56,7 +56,8 @@ void emitQuad(const world::Quad& q, const world::BlockDef& def,
         const glm::vec3& p = corners[c];
         ao[i] = q.ao[c];
         verts.push_back({
-            packVoxelPos((u32)p.x, (u32)p.y, (u32)p.z, q.v0.face, ao[i], grain),
+            packVoxelPos((u32)p.x, (u32)p.y, (u32)p.z,
+                         q.v0.face, ao[i], q.sky[c], grain),
             cr, cg, cb, ca });
     }
 

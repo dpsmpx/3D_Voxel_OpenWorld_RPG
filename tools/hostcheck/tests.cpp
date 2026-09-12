@@ -400,7 +400,13 @@ void testGreedyMesh() {
     fillFlat(*chunk, 1, world::STONE);
     n = world::buildGreedyMesh(*chunk, nb, quads, world::Lod::Full);
     check(n > 0, "сплошной слой даёт геометрию");
-    check(n <= 6, "грани слиты жадно (не по вокселю на грань)");
+    // 32x32 верхних граней обязаны схлопнуться в одну. Низ у чанка
+    // без соседей дробится: по краю у него «нет свода» над границей,
+    // и открытость неба там другая. В настоящем мире соседи есть.
+    usize topQuads = 0;
+    for (const auto& q : quads) if (q.v0.face == 2) ++topQuads;
+    check(topQuads == 1, "верхняя грань слита в один квад");
+    check(n < 32, "грани слиты жадно (не по вокселю на грань)");
 
     f32 area = 0.f;
     for (const auto& q : quads) area += glm::length(q.du) * glm::length(q.dv);
@@ -491,13 +497,15 @@ void testVoxelShading() {
     // Упаковка вершины: всё достаётся обратно ровно так, как её
     // читает шейдер.
     for (u32 face = 0; face < 6; ++face) {
-        const u32 p = render::packVoxelPos(32, 128, 31, face, face % 4, 100);
+        const u32 p = render::packVoxelPos(32, 128, 31, face, face % 4,
+                                           (face + 2) % 8, 11);
         const bool ok = ( p        & 63u)  == 32
                      && ((p >>  6) & 255u) == 128
                      && ((p >> 14) & 63u)  == 31
                      && ((p >> 20) & 7u)   == face
                      && ((p >> 23) & 3u)   == (face % 4)
-                     && ((p >> 25) & 127u) == 100;
+                     && ((p >> 25) & 7u)   == ((face + 2) % 8)
+                     && ((p >> 28) & 15u)  == 11;
         if (!ok) { check(false, "упаковка вершины распаковывается обратно"); return; }
     }
     check(true, "упаковка вершины распаковывается обратно");
@@ -521,6 +529,30 @@ void testVoxelShading() {
     for (const auto& v : verts) if (v.r || v.g || v.b) colored = true;
     check(colored, "вершины несут цвет материала");
     check(opaqueIdx == idx.size(), "у камня нет полупрозрачной части");
+
+    // Небо: открытый склон освещён полностью, пещера — нет.
+    auto cave = std::make_unique<world::Chunk>();
+    for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+            for (i32 y = 0; y < 40; ++y)
+                cave->voxels[world::chunkIndex(x, y, z)] = world::STONE;
+    // Полость в толще: её пол неба не видит.
+    for (i32 x = 8; x < 24; ++x)
+        for (i32 z = 8; z < 24; ++z)
+            for (i32 y = 20; y < 24; ++y)
+                cave->voxels[world::chunkIndex(x, y, z)] = world::AIR;
+    world::buildGreedyMesh(*cave, nb, quads, world::Lod::Full);
+    bool openLit = false, caveDark = false;
+    for (const auto& q : quads) {
+        if (q.v0.face != 2) continue;
+        const bool surface = q.v0.pos.y > 39.f;
+        for (u8 v : q.sky) {
+            if (surface && v == 7) openLit = true;
+            if (!surface && v < 4) caveDark = true;
+        }
+    }
+    check(openLit, "открытая поверхность видит небо полностью");
+    check(caveDark, "пол пещеры неба почти не видит");
 
     // Вода уходит в хвост буфера: её рисуют отдельным проходом.
     auto lake = std::make_unique<world::Chunk>();
