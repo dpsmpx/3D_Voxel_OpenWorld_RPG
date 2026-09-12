@@ -124,12 +124,12 @@ void UiRenderer::attachExternalAtlas(VkImageView view, VkSampler sampler) {
 }
 
 void UiRenderer::setSurfaceRotation(u32 degrees) {
-    // Тот же угол, что в Camera::projection: композитор довернёт до
-    // нуля. x' = x*cos - y*sin, y' = x*sin + y*cos.
+    // Тот же угол и тот же знак, что в Camera::projection — знак там
+    // выверен устройством. x' = x*cos - y*sin, y' = x*sin + y*cos.
     switch (degrees) {
-        case 90:  rotC_ =  0.f; rotS_ = -1.f; break;   // -90
+        case 90:  rotC_ =  0.f; rotS_ =  1.f; break;   // +90
         case 180: rotC_ = -1.f; rotS_ =  0.f; break;
-        case 270: rotC_ =  0.f; rotS_ =  1.f; break;   // +90
+        case 270: rotC_ =  0.f; rotS_ = -1.f; break;   // -90
         default:  rotC_ =  1.f; rotS_ =  0.f; break;
     }
 }
@@ -167,10 +167,11 @@ void UiRenderer::pushTri(glm::vec2 a, glm::vec2 b, glm::vec2 c, u32 rgba) {
     u8 r = (rgba >> 24) & 0xFF, g = (rgba >> 16) & 0xFF;
     u8 bl = (rgba >>  8) & 0xFF, al = (rgba      ) & 0xFF;
     auto& V = verts_[activeSlot_];
-    const float u = whiteU_, v = whiteV_;
-    V.push_back({ rotate(a), {u, v}, r, g, bl, al });
-    V.push_back({ rotate(b), {u, v}, r, g, bl, al });
-    V.push_back({ rotate(c), {u, v}, r, g, bl, al });
+    // -1 — признак сплошной заливки, см. shaders/ui.frag.
+    const glm::vec2 uv{ -1.f, -1.f };
+    V.push_back({ rotate(a), uv, r, g, bl, al });
+    V.push_back({ rotate(b), uv, r, g, bl, al });
+    V.push_back({ rotate(c), uv, r, g, bl, al });
 }
 
 bool UiRenderer::ensureCapacity(FrameBuf& b, u32 vertsNeeded) {
@@ -179,7 +180,11 @@ bool UiRenderer::ensureCapacity(FrameBuf& b, u32 vertsNeeded) {
     u32 cap = b.capacity ? b.capacity : 4096;
     while (cap < vertsNeeded) cap *= 2;
     u64 bytes = (u64)cap * sizeof(UiVertex);
-    if (!b.vb.create(dev_, phys_, bytes, vk::BufferUsage::Vertex, true)) return false;
+    if (!b.vb.create(dev_, phys_, bytes, vk::BufferUsage::Vertex, true)) {
+        LOGE("интерфейс: не создан вершинный буфер на %llu байт",
+             (unsigned long long)bytes);
+        return false;
+    }
     b.capacity = cap;
     return true;
 }
@@ -196,6 +201,18 @@ void UiRenderer::flush(vk::Context& ctx) {
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
+
+    lastVerts_ = (u32)(verts_[0].size() + verts_[1].size());
+    lastDrawn_ = 0;
+
+    // Ругаемся один раз: пустой интерфейс — это не «нечего показать»,
+    // это ошибка, и отличить её от «нарисовали, но не видно» иначе
+    // нельзя.
+    static bool warnedEmpty = false;
+    if (lastVerts_ == 0 && !warnedEmpty) {
+        warnedEmpty = true;
+        LOGW("интерфейс: за кадр не построено ни одной вершины");
+    }
 
     const u32 frame = ctx.frameInFlight() % MAX_FRAMES;
     for (int slot = 0; slot < 2; ++slot) {
@@ -220,6 +237,7 @@ void UiRenderer::flush(vk::Context& ctx) {
         const VkBuffer vb = fb.vb.handle();
         vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offs);
         vkCmdDraw(cmd, fb.vertexCount, 1, 0, 0);
+        lastDrawn_ += fb.vertexCount;
     }
 }
 

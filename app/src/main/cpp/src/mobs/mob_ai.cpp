@@ -90,10 +90,25 @@ bool hasLOS(world::ChunkManager& world,
     return true;
 }
 
+/// Сколько поисков пути разрешено в текущем кадре.
+///
+/// Один A* с бюджетом в полторы тысячи шагов — это тысячи обращений к
+/// вокселям, а каждое берёт два замка и ищет чанк в таблице: единицы
+/// миллисекунд. Когда в кадр попадали сразу несколько мобов, логика
+/// съедала пятнадцать миллисекунд из шестнадцати. Мобу, которому не
+/// хватило бюджета, ничего не делается: он идёт по старому пути и
+/// пересчитает его в следующем кадре.
+static i32 g_pathBudget = 0;
+
+void resetPathBudget(i32 n) { g_pathBudget = n; }
+
 void repath(world::ChunkManager& world,
             MobAI& ai,
             const glm::vec3& from, const glm::vec3& to)
 {
+    if (g_pathBudget <= 0) return;
+    --g_pathBudget;
+
     world::ai::PathResult r = world::ai::findPath(
         world,
         { (i32)std::floor(from.x), (i32)std::floor(from.y), (i32)std::floor(from.z) },
@@ -164,6 +179,10 @@ void updateMobs(world::ChunkManager& world,
                 const glm::vec3& playerPos,
                 f32 dt)
 {
+    // Два поиска пути на кадр: этого хватает, чтобы стая не замирала,
+    // и не хватает, чтобы уронить кадр.
+    resetPathBudget(2);
+
     auto& pool = reg.pool<MobAI>();
     const usize n = pool.size();
     std::vector<ecs::Entity> toRemove;

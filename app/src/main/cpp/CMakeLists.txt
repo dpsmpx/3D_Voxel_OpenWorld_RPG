@@ -49,6 +49,21 @@ if(DEFINED ANDROID_NDK)
     target_include_directories(native_app_glue PUBLIC "${GLUE_DIR}")
 endif()
 
+# Отпечаток сборки в журнале. Без него по логу с устройства нельзя
+# сказать, какая именно версия установлена, и починенная ошибка
+# выглядит как непочиненная. В CI сборка всегда свежая; локально
+# значение берётся на этапе конфигурации CMake и может отстать —
+# перенастройте, если важно.
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE VOXEL_BUILD_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT VOXEL_BUILD_SHA)
+    set(VOXEL_BUILD_SHA "без git")
+endif()
+
 add_library(native-lib SHARED
     src/main.cpp
 
@@ -213,6 +228,8 @@ target_compile_options(native-lib PRIVATE
     -Wno-missing-field-initializers
     -fvisibility=hidden
 )
+
+target_compile_definitions(native-lib PRIVATE VOXEL_BUILD_SHA="${VOXEL_BUILD_SHA}")
 
 if(TARGET native_app_glue)
     target_link_libraries(native-lib native_app_glue)

@@ -56,6 +56,13 @@ public:
     /// Второй атлас (block atlas) — подключается извне
     void attachExternalAtlas(VkImageView view, VkSampler sampler);
 
+    /// Сколько вершин ушло на GPU в последнем кадре и сколько из них
+    /// нарисовано. Интерфейс не видно уже который круг, а по коду он
+    /// обязан рисоваться: это единственный способ отличить «не
+    /// построился» от «построился, но не виден».
+    u32 lastVertices() const { return lastVerts_; }
+    u32 lastDrawn()    const { return lastDrawn_; }
+
     float whiteU() const { return whiteU_; }
     float whiteV() const { return whiteV_; }
     VkDescriptorSetLayout descriptorLayout() const { return descSet_.layout(); }
@@ -99,6 +106,7 @@ private:
     int activeSlot_ = 0;
 
     float whiteU_ = 0.f, whiteV_ = 0.f;
+    u32 lastVerts_ = 0, lastDrawn_ = 0;
     /// cos/sin угла доворота; при нулевом повороте — (1, 0).
     float rotC_ = 1.f, rotS_ = 0.f;
     glm::vec2 rotate(glm::vec2 p) const {

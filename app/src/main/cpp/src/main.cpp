@@ -427,6 +427,8 @@ struct Engine {
         updateRunning();
         running     = true;
         LOGI("=== VoxelRPG готов (Phase 15). Spawn y=%.1f ===", playerSpawn.y);
+        LOGI("зерно мира: %llu, дальность %d чанков",
+             (unsigned long long)worldSeed, world->viewDistance());
     }
 
     void onWindowTerm() {
@@ -669,7 +671,13 @@ struct Engine {
         if (fb.width == 0 || fb.height == 0) return;
 
         const f32 fw = (f32)fb.width, fh = (f32)fb.height;
-        const f32 logicalAspect = vk.surfaceSwapsAxes() ? fh / fw : fw / fh;
+        // Соотношение берём прямо у буфера кадра. Лог с устройства
+        // показал, что буфер приходит уже в ориентации окна
+        // (2306x1080 при окне 2306x1080), то есть менять местами
+        // стороны не надо: от этого получалось 0.468 вместо 2.135, и
+        // мир сплющивался поперёк. Когда композитор доворачивает сам —
+        // а мы его об этом и просим, — переставлять нечего тем более.
+        const f32 logicalAspect = fw / fh;
 
         // Отдельной строкой, потому что различить эти три числа на
         // глаз невозможно, а от их соотношения зависит, растянут ли
@@ -677,7 +685,7 @@ struct Engine {
         // живёт в логических координатах; если одинаково — в
         // координатах буфера, и раскладка интерфейса окажется в
         // портретной коробке, растянутой на альбомный экран.
-        LOGI("Поверхность: окно %dx%d, буфер %ux%u, поворот %u, соотношение %.3f",
+        LOGI("Поверхность: окно %dx%d, буфер %ux%u, наш доворот %u, соотношение %.3f",
              winW_, winH_, fb.width, fb.height, vk.surfaceRotationDegrees(),
              (double)logicalAspect);
 
@@ -1177,6 +1185,9 @@ extern "C" void android_main(android_app* app) {
 
     LOGI("================================================");
     LOGI(" VoxelRPG: android_main (Phase 1-15)");
+#ifdef VOXEL_BUILD_SHA
+    LOGI(" сборка: %s", VOXEL_BUILD_SHA);
+#endif
     LOGI("================================================");
     if (crash::logPath()[0])       LOGI("журнал: %s", crash::logPath());
     if (crash::sharedLogPath()[0]) LOGI("журнал (читается из Termux): %s",
@@ -1299,6 +1310,7 @@ extern "C" void android_main(android_app* app) {
                 LOGI("кадры: показано %llu (%.1f/с), показ=%d | камера %.1f %.1f %.1f "
                      "| чанки: загружено %zu, нарисовано %u, индексов %u "
                      "| трава %u, мобы %u, NPC %u "
+                     "| интерфейс: вершин %u, нарисовано %u, экран %d "
                      "| мс: логика %.1f, подготовка %.1f, рисование %.1f",
                      (unsigned long long)presented, (double)fps,
                      (int)eng.vk.lastPresentResult(),
@@ -1309,6 +1321,9 @@ extern "C" void android_main(android_app* app) {
                      eng.render ? eng.render->grassCount() : 0u,
                      eng.render ? eng.render->mobInstances() : 0u,
                      eng.render ? eng.render->npcInstances() : 0u,
+                     eng.ui ? eng.ui->lastVertices() : 0u,
+                     eng.ui ? eng.ui->lastDrawn() : 0u,
+                     eng.ui ? (int)eng.ui->screen : -1,
                      (double)(msUpdate / n), (double)(msPrepare / n),
                      (double)(msDraw / n));
                 msUpdate = msPrepare = msDraw = 0.f;
