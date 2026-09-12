@@ -161,6 +161,45 @@ void installHandlers() {
 
 } // namespace
 
+namespace {
+
+/// Имя пакета из пути вида /data/data/<пакет>/... или
+/// /data/user/0/<пакет>/..., либо .../Android/data/<пакет>/files.
+void packageFromPath(const char* path, char* out, size_t outSize) {
+    out[0] = '\0';
+    if (!path) return;
+    static const char* markers[] = {"/Android/data/", "/data/data/", "/data/user/"};
+    for (const char* m : markers) {
+        const char* found = std::strstr(path, m);
+        if (!found) continue;
+        const char* rest = found + std::strlen(m);
+        // У /data/user/ сначала идёт номер пользователя.
+        if (std::strcmp(m, "/data/user/") == 0) {
+            while (*rest && *rest != '/') ++rest;
+            if (*rest == '/') ++rest;
+        }
+        size_t n = 0;
+        while (rest[n] && rest[n] != '/' && n + 1 < outSize) { out[n] = rest[n]; ++n; }
+        out[n] = '\0';
+        if (out[0]) return;
+    }
+}
+
+/// Пробует открыть журнал в каталоге; при успехе запоминает путь.
+bool tryShared(const char* dir) {
+    if (!dir || !*dir) return false;
+    if (!makeDirs(dir)) return false;
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s/voxelrpg.log", dir);
+    const int fd = openLog(path);
+    if (fd < 0) return false;
+    gSharedFd = fd;
+    std::snprintf(gSharedPath, sizeof(gSharedPath), "%s", path);
+    return true;
+}
+
+} // namespace
+
 void init(const char* internalDataPath, const char* externalDataPath) {
     if (internalDataPath && *internalDataPath) {
         std::snprintf(gPath, sizeof(gPath), "%s/voxelrpg.log", internalDataPath);
@@ -168,40 +207,53 @@ void init(const char* internalDataPath, const char* externalDataPath) {
         if (gFd < 0) gPath[0] = '\0';
     }
 
-    // externalDataPath выглядит как /storage/emulated/0/Android/data/<пакет>/files.
-    // Каталог Android/data с Android 11 закрыт для других приложений, а
-    // Android/media — нет, поэтому журнал кладём туда: из Termux он
-    // читается после termux-setup-storage.
-    if (externalDataPath && *externalDataPath) {
-        const char* marker = "/Android/data/";
-        const char* found = std::strstr(externalDataPath, marker);
-        if (found) {
-            const size_t prefix = (size_t)(found - externalDataPath);
-            char pkg[256] = {0};
-            const char* rest = found + std::strlen(marker);
-            size_t n = 0;
-            while (rest[n] && rest[n] != '/' && n + 1 < sizeof(pkg)) { pkg[n] = rest[n]; ++n; }
-            pkg[n] = '\0';
+    // Журнал во внешнем хранилище — единственный способ прочитать его с
+    // телефона: logcat чужого приложения недоступен. Каталог Android/data
+    // с Android 11 закрыт для других приложений, а Android/media — нет,
+    // поэтому основная цель именно он.
+    //
+    // На externalDataPath полагаться нельзя: ANativeActivity оставляет
+    // его пустым, если внешнее хранилище на момент запуска не смонтировано.
+    // Поэтому путь собирается и из него, и из корней хранилища с именем
+    // пакета, взятым из internalDataPath.
+    char pkg[256];
+    packageFromPath(externalDataPath, pkg, sizeof(pkg));
+    if (!pkg[0]) packageFromPath(internalDataPath, pkg, sizeof(pkg));
 
-            char dir[512];
-            std::snprintf(dir, sizeof(dir), "%.*s/Android/media/%s",
-                          (int)prefix, externalDataPath, pkg);
-            if (makeDirs(dir)) {
-                std::snprintf(gSharedPath, sizeof(gSharedPath), "%s/voxelrpg.log", dir);
-                gSharedFd = openLog(gSharedPath);
-            }
+    char dir[512];
+    if (pkg[0]) {
+        // Корень внешнего хранилища: сначала тот, что известен системе,
+        // затем обычные места.
+        const char* env = std::getenv("EXTERNAL_STORAGE");
+        const char* roots[] = { env, "/storage/emulated/0", "/sdcard", nullptr };
 
-            // Если Android/media почему-то недоступен, пишем хотя бы в
-            // свой внешний каталог: его читают файловые менеджеры через
-            // системный выбор папки, когда Termux туда не дотягивается.
-            if (gSharedFd < 0 && makeDirs(externalDataPath)) {
-                std::snprintf(gSharedPath, sizeof(gSharedPath),
-                              "%s/voxelrpg.log", externalDataPath);
-                gSharedFd = openLog(gSharedPath);
+        // Если externalDataPath всё же есть, его префикс — самый верный.
+        char fromExternal[512] = {0};
+        if (externalDataPath && *externalDataPath) {
+            const char* found = std::strstr(externalDataPath, "/Android/data/");
+            if (found) {
+                std::snprintf(fromExternal, sizeof(fromExternal), "%.*s",
+                              (int)(found - externalDataPath), externalDataPath);
             }
-            if (gSharedFd < 0) gSharedPath[0] = '\0';
+        }
+        if (fromExternal[0]) {
+            std::snprintf(dir, sizeof(dir), "%s/Android/media/%s", fromExternal, pkg);
+            tryShared(dir);
+        }
+        for (const char* root : roots) {
+            if (gSharedFd >= 0) break;
+            if (!root || !*root) continue;
+            std::snprintf(dir, sizeof(dir), "%s/Android/media/%s", root, pkg);
+            tryShared(dir);
         }
     }
+
+    // Запасной вариант: собственный внешний каталог. Termux туда не
+    // дотягивается, но файловые менеджеры через системный выбор папки — да.
+    if (gSharedFd < 0 && externalDataPath && *externalDataPath) {
+        tryShared(externalDataPath);
+    }
+    if (gSharedFd < 0) gSharedPath[0] = '\0';
 
     installHandlers();
 
@@ -211,6 +263,15 @@ void init(const char* internalDataPath, const char* externalDataPath) {
                   "\n======== VoxelRPG: запуск, unix-время %ld ========\n",
                   (long)t);
     rawStr(head);
+
+    // Пути — в сам журнал: если до нас дойдёт только внутренняя копия,
+    // будет видно, куда ещё пытались писать.
+    write('I', "внутренний журнал: %s", gPath[0] ? gPath : "(нет)");
+    write('I', "общий журнал: %s", gSharedPath[0] ? gSharedPath : "(нет)");
+    write('I', "internalDataPath=%s externalDataPath=%s пакет=%s",
+          internalDataPath ? internalDataPath : "(null)",
+          externalDataPath ? externalDataPath : "(null)",
+          pkg[0] ? pkg : "(не определён)");
 }
 
 void write(char level, const char* fmt, ...) {
