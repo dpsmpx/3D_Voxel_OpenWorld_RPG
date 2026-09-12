@@ -6,12 +6,26 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # -ffast-math допустим: во всей игре нет зависимостей от NaN/Inf.
+#
 # LTO включается и на компиляции, и на линковке разделяемой библиотеки —
 # native-lib собирается как SHARED, поэтому CMAKE_EXE_LINKER_FLAGS к ней
-# не применяется.
-set(CMAKE_CXX_FLAGS_RELEASE "-O2 -ffast-math -fno-exceptions -fno-rtti -flto")
+# не применяется. Выключается переключателем: при сборке на самом
+# телефоне линковка с LTO держит в памяти сразу весь модуль, и на
+# устройстве с малым объёмом ОЗУ процесс убивает ядро — сборка
+# обрывается без внятного сообщения. build.sh снимает LTO сам, если
+# свободной памяти мало.
+option(VOXEL_LTO "Межмодульная оптимизация при сборке release" ON)
+
+if(VOXEL_LTO)
+    set(VOXEL_LTO_FLAG "-flto")
+else()
+    set(VOXEL_LTO_FLAG "")
+    message(STATUS "LTO выключена (VOXEL_LTO=OFF)")
+endif()
+
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -ffast-math -fno-exceptions -fno-rtti ${VOXEL_LTO_FLAG}")
 set(CMAKE_CXX_FLAGS_DEBUG   "-O0 -g -DDEBUG -fno-exceptions -fno-rtti")
-set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "-flto")
+set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${VOXEL_LTO_FLAG}")
 
 add_compile_definitions(
     GLM_FORCE_DEPTH_ZERO_TO_ONE   # Vulkan: глубина в [0,1], а не [-1,1]

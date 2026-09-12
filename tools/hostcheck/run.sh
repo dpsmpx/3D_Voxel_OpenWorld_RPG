@@ -81,6 +81,9 @@ FLAGS=(
     -I "$SRC_DIR" -I "$PROJ/tools/hostcheck/include"
     -isystem "$TP/glm" -isystem "$TP/entt/include" -isystem "$TP/Vulkan-Headers/include"
     -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
+    # Как в настоящей сборке: без исключений и RTTI. Иначе хост
+    # принимает try/throw, dynamic_cast и typeid, а устройство — нет.
+    -fno-exceptions -fno-rtti
 )
 COMPILE_FLAGS=("${FLAGS[@]}")
 if [ "$SYNTAX_ONLY" -eq 0 ]; then

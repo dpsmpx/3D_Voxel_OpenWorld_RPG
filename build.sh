@@ -91,6 +91,27 @@ done
 # ---- Проверка окружения ----
 log "Проверка окружения..."
 
+# Какой код собираем. «Already up to date» при git pull на другой ветке —
+# обычное дело: обновляется origin/*, а рабочее дерево остаётся прежним,
+# и сборка молча идёт по старым исходникам. Без этой строки понять это
+# по выводу компилятора невозможно.
+if command -v git >/dev/null 2>&1 && [ -d "$PROJ/.git" ]; then
+    GIT_BRANCH="$(git -C "$PROJ" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+    GIT_HEAD="$(git -C "$PROJ" rev-parse --short HEAD 2>/dev/null || echo '?')"
+    GIT_DIRTY=""
+    git -C "$PROJ" diff --quiet 2>/dev/null || GIT_DIRTY="  (есть незакоммиченные правки)"
+    log "Исходники: $GIT_BRANCH @ $GIT_HEAD$GIT_DIRTY"
+
+    UPSTREAM="$(git -C "$PROJ" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+    if [ -n "${UPSTREAM:-}" ]; then
+        BEHIND="$(git -C "$PROJ" rev-list --count "HEAD..$UPSTREAM" 2>/dev/null || echo 0)"
+        if [ "${BEHIND:-0}" -gt 0 ]; then
+            warn "Ветка отстаёт от $UPSTREAM на $BEHIND коммит(ов) — собирается старый код."
+            warn "Обновиться: git merge --ff-only $UPSTREAM"
+        fi
+    fi
+fi
+
 # Подхватываем переменные, записанные termux-setup.sh, если текущая
 # оболочка их ещё не видит.
 if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -f "$HOME/.voxelrpg-env" ]; then
@@ -246,6 +267,48 @@ log "Атлас блоков..."
     warn "Атлас в ASTC не собран — будет процедурный RGBA8"
 
 # ---- CMake ----
+# Вызовы NDK новее минимального API или убранные из свежих NDK ловим
+# здесь: сообщение понятнее, чем сотня строк от компилятора, и ошибка
+# видна до того, как ninja начнёт собирать 97 файлов.
+if command -v python3 >/dev/null 2>&1 && [ -f "$PROJ/tools/hostcheck/check_android_api.py" ]; then
+    log "Сверка вызовов NDK с минимальным API..."
+    if ! python3 "$PROJ/tools/hostcheck/check_android_api.py"; then
+        err "Проверьте, что рабочее дерево обновлено: git log --oneline -1"
+        exit 1
+    fi
+fi
+
+# Сколько задач и нужна ли LTO. На телефоне память кончается раньше
+# ядер: восемь параллельных компиляций C++20 или линковка всего модуля
+# с LTO не помещаются в ОЗУ, и процесс убивает ядро — со стороны это
+# выглядит как обрыв сборки без сообщения. Считаем по свободной памяти,
+# а не по числу ядер.
+MEM_MB=0
+if [ -r /proc/meminfo ]; then
+    MEM_MB="$(awk '/^MemAvailable:/ {print int($2/1024); exit}' /proc/meminfo 2>/dev/null || echo 0)"
+fi
+CPUS="$(nproc 2>/dev/null || echo 2)"
+BUILD_JOBS="$CPUS"
+USE_LTO=ON
+
+if [ "${MEM_MB:-0}" -gt 0 ]; then
+    # Тяжёлый файл C++20 в пике занимает около гигабайта.
+    JOBS_BY_MEM=$(( MEM_MB / 1024 ))
+    [ "$JOBS_BY_MEM" -lt 1 ] && JOBS_BY_MEM=1
+    [ "$JOBS_BY_MEM" -lt "$BUILD_JOBS" ] && BUILD_JOBS="$JOBS_BY_MEM"
+    if [ "$MEM_MB" -lt 3072 ]; then
+        USE_LTO=OFF
+        warn "Свободно ${MEM_MB} МБ — LTO выключена, иначе линковку убьёт ядро."
+        warn "Включить принудительно: VOXEL_LTO=ON ./build.sh"
+    fi
+fi
+# Явное пожелание пользователя важнее оценки.
+case "${VOXEL_LTO:-}" in
+    ON|on|1)  USE_LTO=ON ;;
+    OFF|off|0) USE_LTO=OFF ;;
+esac
+[ -n "${BUILD_JOBS_OVERRIDE:-}" ] && BUILD_JOBS="$BUILD_JOBS_OVERRIDE"
+
 log "Конфигурация CMake ($MODE)..."
 
 mkdir -p "$CMAKE_BUILD_DIR"
@@ -264,13 +327,14 @@ cmake "$CPP_DIR" \
     -DANDROID_STL="c++_shared" \
     -DANDROID_ARM_NEON=ON \
     -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
+    -DVOXEL_LTO="$USE_LTO" \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 ok "CMake настроен"
 
 # ---- Сборка ----
-log "Сборка native библиотеки..."
-ninja -j"$(nproc)"
+log "Сборка native библиотеки, параллельных задач: $BUILD_JOBS..."
+ninja -j"$BUILD_JOBS"
 
 if [ ! -f "libnative-lib.so" ]; then
     err "libnative-lib.so не создан"
@@ -280,12 +344,22 @@ fi
 mkdir -p "$JNI_DIR"
 cp libnative-lib.so "$JNI_DIR/"
 
-# Копируем libc++_shared.so — обязательна для c++_shared.
-if [ -f "$SYSROOT/usr/lib/aarch64-linux-android/libc++_shared.so" ]; then
-    cp "$SYSROOT/usr/lib/aarch64-linux-android/libc++_shared.so" "$JNI_DIR/"
+# Копируем libc++_shared.so — при ANDROID_STL=c++_shared без неё
+# приложение не запустится: загрузчик не найдёт стандартную библиотеку.
+# Раскладка sysroot между версиями NDK менялась, поэтому если по
+# обычному пути файла нет — ищем, а не сдаёмся.
+LIBCXX="$SYSROOT/usr/lib/aarch64-linux-android/libc++_shared.so"
+if [ ! -f "$LIBCXX" ]; then
+    LIBCXX="$(find "$SYSROOT" -name 'libc++_shared.so' -path '*aarch64*' 2>/dev/null | head -1)"
+fi
+if [ -n "$LIBCXX" ] && [ -f "$LIBCXX" ]; then
+    cp "$LIBCXX" "$JNI_DIR/"
     ok "libc++_shared.so скопирована"
 else
-    warn "libc++_shared.so не найдена в sysroot"
+    err "libc++_shared.so не найдена в $SYSROOT"
+    err "Без неё APK установится, но приложение упадёт при запуске."
+    err "Проверьте целостность NDK: ./tools/termux-doctor.sh"
+    exit 1
 fi
 
 SO_SIZE=$(du -h "$JNI_DIR/libnative-lib.so" | cut -f1)
