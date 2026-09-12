@@ -248,9 +248,12 @@ TEST_SRCS=(
     "$SRC_DIR/core/job_system.cpp"
     "$SRC_DIR/mobs/mob_def.cpp"
     "$SRC_DIR/render/astc.cpp"
+    "$SRC_DIR/vk/vk_buffer.cpp"
+    "$SRC_DIR/vk/vk_texture.cpp"
 )
 if ! "$CXX" -std=c++20 -O1 -g0 \
-        -D__ANDROID__ -DGLM_FORCE_DEPTH_ZERO_TO_ONE -DGLM_ENABLE_EXPERIMENTAL -DENTT_NO_ETO -DHOSTCHECK=1 \
+        -D__ANDROID__ -DVK_USE_PLATFORM_ANDROID_KHR \
+        -DGLM_FORCE_DEPTH_ZERO_TO_ONE -DGLM_ENABLE_EXPERIMENTAL -DENTT_NO_ETO -DHOSTCHECK=1 \
         -I "$SRC_DIR" -I "$PROJ/tools/hostcheck/include" \
         -isystem "$TP/glm" -isystem "$TP/entt/include" -isystem "$TP/Vulkan-Headers/include" \
         -o "$OUT/tests" "${TEST_SRCS[@]}" "$OUT/obj/_stubs.o" -lpthread -ldl \

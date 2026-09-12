@@ -53,6 +53,10 @@ public:
 
 private:
     VkDevice dev_ = VK_NULL_HANDLE;
+    // Буферы интерфейса растут по мере надобности уже во время кадра,
+    // а не только при инициализации, поэтому физическое устройство
+    // нужно помнить: контекста в ensureCapacity нет.
+    VkPhysicalDevice phys_ = VK_NULL_HANDLE;
 
     // Шейдер и пайплайн
     vk::ShaderCache      shaders_;
