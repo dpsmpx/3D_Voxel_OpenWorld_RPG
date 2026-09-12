@@ -110,6 +110,56 @@ def check(path: Path):
     return errs
 
 
+def check_terrain():
+    """Обход граней террейна: таблица WINDING против осей FACES.
+
+    Здесь геометрии нет — есть две таблицы в разных файлах, и смысл
+    имеет только их сочетание. Считаем, как это делает мешер, и
+    требуем, чтобы нормаль по обходу совпала с направлением грани.
+    """
+    chunk = ROOT / "app/src/main/cpp/src/world/chunk.cpp"
+    mesh = ROOT / "app/src/main/cpp/src/render/mesh_builder.cpp"
+    if not chunk.exists() or not mesh.exists():
+        return ["не нашёл chunk.cpp или mesh_builder.cpp"]
+
+    fb = block(strip_comments(chunk.read_text(encoding="utf-8")), "FACES")
+    wb = block(strip_comments(mesh.read_text(encoding="utf-8")), "WINDING")
+    if fb is None or wb is None:
+        return ["не нашёл таблиц FACES/WINDING"]
+
+    faces = [[int(x) for x in re.findall(r"-?\d+", g)]
+             for g in re.findall(r"\{([^{}]*)\}", fb)]
+    wind = [[int(x) for x in re.findall(r"\d+", g)]
+            for g in re.findall(r"\{([^{}]*)\}", wb)]
+    if len(faces) != 6 or any(len(f) != 4 for f in faces):
+        return [f"FACES разобрался как {faces}"]
+    if len(wind) != 6 or any(len(w) != 4 for w in wind):
+        return [f"WINDING разобрался как {wind}"]
+
+    names = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+    errs = []
+    for f, (au, av, aw, sign) in enumerate(faces):
+        org = [0.0, 0.0, 0.0]
+        org[aw] = 1.0 if sign > 0 else 0.0
+        du = [0.0] * 3; du[au] = 1.0
+        dv = [0.0] * 3; dv[av] = 1.0
+        corners = [org,
+                   [org[i] + du[i] for i in range(3)],
+                   [org[i] + du[i] + dv[i] for i in range(3)],
+                   [org[i] + dv[i] for i in range(3)]]
+        o = wind[f]
+        for tri in ((o[0], o[1], o[2]), (o[0], o[2], o[3])):
+            a, b, c = (corners[i] for i in tri)
+            e1 = [b[i] - a[i] for i in range(3)]
+            e2 = [c[i] - a[i] for i in range(3)]
+            n = cross(e1, e2)
+            want = [0.0] * 3; want[aw] = float(sign)
+            if sum(n[i] * want[i] for i in range(3)) <= 0:
+                errs.append(f"террейн, грань {names[f]}: обход {tri} "
+                            f"смотрит внутрь")
+    return errs
+
+
 def main() -> int:
     all_errs = []
     checked = 0
@@ -121,12 +171,15 @@ def main() -> int:
         checked += 1
         all_errs += check(p)
 
+    all_errs += check_terrain()
+    checked += 1
+
     if all_errs:
         print("✗ Обход граней задан неверно:")
         for e in all_errs:
             print("    " + e)
         return 1
-    print(f"✓ Обход граней: проверено файлов {checked}, "
+    print(f"✓ Обход граней: проверено таблиц {checked}, "
           f"все треугольники смотрят наружу")
     return 0
 

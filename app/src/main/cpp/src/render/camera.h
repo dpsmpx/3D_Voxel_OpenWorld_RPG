@@ -63,11 +63,13 @@ public:
             /// Лёгкая тряска при ходьбе
             f32 bobY = std::sin(bobPhase_ * 2.f) * bobAmount_;
             f32 bobX = std::cos(bobPhase_) * bobAmount_ * 0.5f;
-            /// Сдвиг по осям камеры
-            glm::vec3 right { std::cos(yaw_), 0.f, -std::sin(yaw_) };
+            /// Сдвиг по осям камеры. Берём общий right(): здесь стояла
+            /// его копия с обратным знаком, и хотя покачивание головы
+            /// симметрично и разницы не видно, в следующий раз эту
+            /// формулу скопируют туда, где знак уже важен.
             position_ = targetPos_ + glm::vec3(0, firstEyeH_, 0)
                       + glm::vec3(0, bobY, 0)
-                      + right * bobX;
+                      + right() * bobX;
         } else {
             /// Third person: желаемое положение за спиной
             glm::vec3 desired = pivot - aimDir * thirdDist_;
