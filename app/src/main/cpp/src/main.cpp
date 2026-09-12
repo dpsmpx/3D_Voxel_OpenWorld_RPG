@@ -427,6 +427,8 @@ struct Engine {
         updateRunning();
         running     = true;
         LOGI("=== VoxelRPG готов (Phase 15). Spawn y=%.1f ===", playerSpawn.y);
+        LOGI("зерно мира: %llu, дальность %d чанков",
+             (unsigned long long)worldSeed, world->viewDistance());
     }
 
     void onWindowTerm() {

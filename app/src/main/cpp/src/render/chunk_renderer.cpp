@@ -92,6 +92,35 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
         chunk.meshes[lod].ready.store(false, std::memory_order_release);
     }
 
+    // Разбор первых нескольких мешей в журнал. По картинке нельзя
+    // отличить «граней не построилось» от «построились, но ушли не в
+    // тот проход»: и то и другое выглядит как мир, вывернутый
+    // наизнанку. А по числам — можно.
+    {
+        static int logged = 0;
+        if (logged < 6) {
+            ++logged;
+            u8 skyMin = 7, skyMax = 0, aoMin = 3, aoMax = 0;
+            usize blended = 0;
+            std::lock_guard lk(chunk.meshMutex);
+            for (const auto& q : chunk.meshes[lod].quads) {
+                for (u8 v : q.sky) { skyMin = v < skyMin ? v : skyMin;
+                                     skyMax = v > skyMax ? v : skyMax; }
+                for (u8 v : q.ao)  { aoMin = v < aoMin ? v : aoMin;
+                                     aoMax = v > aoMax ? v : aoMax; }
+            }
+            LOGI("меш чанка %d,%d ур.%u: квадов %zu, вершин %zu, индексов %zu "
+                 "(непрозрачных %u, полупрозрачных %zu), небо %u..%u, AO %u..%u",
+                 chunk.coord.x, chunk.coord.z, (unsigned)lod,
+                 chunk.meshes[lod].quads.size(), scratchVerts_.size(),
+                 scratchIndices_.size(), gm.opaqueIndices,
+                 scratchIndices_.size() - gm.opaqueIndices,
+                 (unsigned)skyMin, (unsigned)skyMax,
+                 (unsigned)aoMin, (unsigned)aoMax);
+            (void)blended;
+        }
+    }
+
     if (scratchIndices_.empty()) {
         // Чанк целиком пустой (небо или толща камня внутри) — рисовать нечего.
         gm.totalIndices = 0;
