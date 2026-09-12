@@ -56,9 +56,15 @@ constexpr glm::ivec3 FACE_NORMAL[6] = {
 /// запечённым затенением углов. Позиции остаются локальными для
 /// чанка: мировые получаются прибавлением смещения в вершинном
 /// шейдере.
+///
+/// Непрозрачное и полупрозрачное складываются в один буфер, но
+/// непрозрачное идёт первым, и outOpaqueIndices говорит, где проходит
+/// граница. Так вода и лёд рисуются вторым проходом — со смешиванием
+/// и без записи глубины, — а буфер остаётся один и вершины общие.
 void buildChunkVertices(const world::Chunk& chunk,
                         const std::vector<world::Quad>& quads,
                         std::vector<VoxelVertex>& outVerts,
-                        std::vector<u32>& outIndices);
+                        std::vector<u32>& outIndices,
+                        u32& outOpaqueIndices);
 
 } // namespace render

@@ -37,7 +37,7 @@ public:
     void prepareFrame(vk::Context& ctx,
                       world::ChunkManager& world,
                       ecs::Registry& registry,
-                      f32 timeSec,
+                      f32 timeSec, f32 dt,
                       player::Player* player,
                       const physics::RayHit& targetHit,
                       f32 fps);
@@ -70,6 +70,9 @@ private:
     vk::ShaderCache       shaders_;
     vk::DescriptorSet     descriptors_;
     vk::GraphicsPipeline  voxelPipeline_;
+    /// Тот же формат вершин и те же шейдеры, но со смешиванием и без
+    /// записи глубины: вода и лёд идут вторым проходом поверх мира.
+    vk::GraphicsPipeline  voxelBlendPipeline_;
     vk::Texture2D         atlas_;
     vk::Buffer            uboBuffers_[vk::Context::MAX_FRAMES];
 

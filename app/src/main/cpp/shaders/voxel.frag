@@ -98,7 +98,22 @@ void main() {
     vec3 sun     = sunTint * (ndl * 0.85 * day * above) * aoSun;
     vec3 moon    = vec3(0.04, 0.055, 0.11) * (1.0 - day) * (0.30 + 0.35 * skyVis) * ao;
 
-    vec3 lit = shoulder(albedo * (ambient + sun + moon + 0.02));
+    vec3 lit = albedo * (ambient + sun + moon + 0.02);
+
+    // Блик на полупрозрачном. Вода и лёд отличаются от камня не
+    // цветом, а тем, что отражают небо: без блика вода читается как
+    // синее стекло, положенное на дно.
+    if (vColor.a < 0.99) {
+        highp vec3 V = normalize(cam.cameraPos.xyz - vWorldPos);
+        vec3 H = normalize(V + cam.sunDir.xyz);
+        float spec = pow(max(dot(N, H), 0.0), 64.0) * day * above;
+        // Скользящий взгляд отражает сильнее — приближение Френеля.
+        float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0);
+        lit += sunTint * spec * 0.9;
+        lit += skyLin * fres * 0.35;
+    }
+
+    lit = shoulder(lit);
 
     // ---- туман ----
     highp vec3 toFrag = vWorldPos - cam.cameraPos.xyz;
@@ -110,5 +125,5 @@ void main() {
     float sunAmt   = max(dot(normalize(toFrag), cam.sunDir.xyz), 0.0);
     vec3  fogColor = mix(skyLin, sunTint, pow(sunAmt, 6.0) * 0.45 * above);
 
-    outColor = vec4(toSrgb(mix(lit, fogColor, fogAmt)), 1.0);
+    outColor = vec4(toSrgb(mix(lit, fogColor, fogAmt)), vColor.a);
 }

@@ -98,6 +98,15 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
         d.pushConstantSize  = sizeof(ChunkPush);
         d.pushConstantStage = VK_SHADER_STAGE_VERTEX_BIT;
         if (!voxelPipeline_.create(dev_, shaders_, d)) return false;
+
+        // Полупрозрачный проход. Глубину читаем, но не пишем: две
+        // поверхности воды подряд иначе вырезают друг друга, и в
+        // озере появляются дыры. Грани не отсекаем — на поверхность
+        // воды смотрят и снизу.
+        d.blend      = true;
+        d.depthWrite = false;
+        d.cullMode   = VK_CULL_MODE_NONE;
+        if (!voxelBlendPipeline_.create(dev_, shaders_, d)) return false;
     }
 
     if (!chunkRenderer_.init(dev_, ctx.physicalDevice())) return false;
@@ -130,7 +139,7 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
 void RenderSystem::prepareFrame(vk::Context& ctx,
                                 world::ChunkManager& world,
                                 ecs::Registry& registry,
-                                f32 timeSec,
+                                f32 timeSec, f32 dt,
                                 player::Player* player,
                                 const physics::RayHit& targetHit,
                                 f32 fps)
@@ -146,7 +155,10 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
 
     // Карта перекрытий обновляется раз в полсекунды: мир меняется
     // медленнее, а полный обход чанков недёшев.
-    occlusionTimer_ += 1.f / 60.f;
+    // Раньше здесь стояла константа 1/60, и на просадках карта
+    // перекрытий обновлялась втрое реже, чем задумано, — ровно тогда,
+    // когда она нужнее всего.
+    occlusionTimer_ += dt;
     if (occlusionTimer_ >= 0.5f) {
         occlusionTimer_ = 0.f;
         occlusion_.rebuild(world, camera_.position(), world.viewDistance() + 1);
@@ -165,7 +177,7 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     itemRenderer_.upload(ctx);
 
     static f32 grassTimer = 0.f;
-    grassTimer += (1.f / 60.f);
+    grassTimer += dt;
     if (grass_.instanceCount() == 0 || grassTimer > 0.5f) {
         grassTimer = 0.f;
         grass_.populateGrass(world, camera_.position(), 40.f);
@@ -194,7 +206,8 @@ void RenderSystem::render(vk::Context& ctx) {
 
     skybox_.render(ctx);
 
-    chunkRenderer_.render(ctx, voxelPipeline_.handle(), voxelPipeline_.layout(),
+    chunkRenderer_.render(ctx, voxelPipeline_.handle(),
+                          voxelBlendPipeline_.handle(), voxelPipeline_.layout(),
                           ds, fr, camera_.position(), &occlusion_);
 
     npcRenderer_.render(ctx, ds);
@@ -222,6 +235,7 @@ void RenderSystem::shutdown() {
     for (auto& b : uboBuffers_) b.destroy();
     descriptors_.destroy();
     atlas_.destroy();
+    voxelBlendPipeline_.destroy();
     voxelPipeline_.destroy();
     shaders_.destroyAll();
     dev_ = VK_NULL_HANDLE;

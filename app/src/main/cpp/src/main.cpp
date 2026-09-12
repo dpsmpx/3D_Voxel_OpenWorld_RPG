@@ -960,7 +960,7 @@ struct Engine {
         touch.endFrame();
     }
 
-    void prepareFrame(f32 timeSec) {
+    void prepareFrame(f32 timeSec, f32 dt) {
         const auto now = std::chrono::steady_clock::now();
         const f32 elapsed = std::chrono::duration<f32>(now - fpsTime).count();
         ++frameCount;
@@ -992,7 +992,7 @@ struct Engine {
 
         if (render && world && player) {
             const physics::RayHit hit = player->targetBlock(*world);
-            render->prepareFrame(vk, *world, registry, timeSec,
+            render->prepareFrame(vk, *world, registry, timeSec, dt,
                                  player.get(), hit, fps);
         }
     }
@@ -1213,7 +1213,7 @@ extern "C" void android_main(android_app* app) {
             const auto tA = std::chrono::steady_clock::now();
             eng.update(dt, timeSec);
             const auto tB = std::chrono::steady_clock::now();
-            eng.prepareFrame(timeSec);
+            eng.prepareFrame(timeSec, dt);
             const auto tC = std::chrono::steady_clock::now();
 
             if (!eng.vk.beginFrame()) {

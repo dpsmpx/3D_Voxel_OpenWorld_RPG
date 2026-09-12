@@ -31,9 +31,22 @@ public:
 
     void forgetChunk(world::ChunkCoord c);
 
+    /// Отбирает видимые чанки, раскладывает их по расстоянию и
+    /// рисует в два прохода: непрозрачное от ближнего к дальнему,
+    /// полупрозрачное — наоборот.
+    ///
+    /// Порядок здесь не косметика. Мобильные GPU отбрасывают
+    /// закрытые фрагменты по глубине ДО фрагментного шейдера, но
+    /// только если ближнее уже нарисовано: обход в порядке
+    /// хэш-таблицы, как было раньше, отдавал эту экономию даром.
+    /// А смешивание, наоборот, требует обратного порядка, иначе
+    /// вода поверх воды складывается неправильно.
+    ///
     /// occlusion может быть nullptr — тогда работает только
     /// отсечение по пирамиде видимости.
-    void render(vk::Context& ctx, VkPipeline pipe, VkPipelineLayout layout,
+    void render(vk::Context& ctx,
+                VkPipeline opaquePipe, VkPipeline blendPipe,
+                VkPipelineLayout layout,
                 VkDescriptorSet set, const math::Frustum& frustum,
                 const glm::vec3& cameraPos,
                 OcclusionCuller* occlusion = nullptr);
@@ -47,7 +60,13 @@ private:
     struct GpuMesh {
         vk::Buffer vb;
         vk::Buffer ib;
-        u32 indexCount = 0;
+        /// Индексы непрозрачной части: [0, opaqueIndices).
+        u32 opaqueIndices = 0;
+        /// Всего индексов; хвост — полупрозрачные грани.
+        u32 totalIndices  = 0;
+        /// 16 бит, пока вершин меньше 65536 — а это почти всегда.
+        /// Вдвое меньше индексного трафика на ровном месте.
+        VkIndexType indexType = VK_INDEX_TYPE_UINT16;
         bool valid = false;
     };
     struct ChunkGpu {
@@ -87,10 +106,19 @@ private:
 
     std::unordered_map<world::ChunkCoord, ChunkGpu, world::ChunkCoordHash> meshes_;
 
+    /// Что рисуем в этом кадре, уже отобранное и отсортированное.
+    struct Visible {
+        GpuMesh* mesh;
+        glm::vec3 origin;
+        f32 distSq;
+    };
+
     std::vector<VoxelVertex>  scratchVerts_;
     std::vector<u32>          scratchIndices_;
+    std::vector<u16>          scratchIndices16_;
     std::vector<world::Quad>  scratchQuads_;
     std::vector<LodRequest>   lodRequests_;
+    std::vector<Visible>      visible_;
     /// Staging-буферы текущего пакета: освобождаются только после
     /// того, как GPU дочитал их (endTransferBatch).
     std::vector<vk::StagingBuffer*> pendingStaging_;

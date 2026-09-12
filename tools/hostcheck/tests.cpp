@@ -509,7 +509,8 @@ void testVoxelShading() {
     std::vector<render::VoxelVertex> verts;
     std::vector<u32> idx;
     world::buildGreedyMesh(*step, nb, quads, world::Lod::Full);
-    render::buildChunkVertices(*step, quads, verts, idx);
+    u32 opaqueIdx = 0;
+    render::buildChunkVertices(*step, quads, verts, idx, opaqueIdx);
     check(verts.size() == quads.size() * 4, "на квад приходится четыре вершины");
     check(idx.size() == quads.size() * 6, "на квад приходится шесть индексов");
     u32 maxIdx = 0;
@@ -520,6 +521,19 @@ void testVoxelShading() {
     bool colored = false;
     for (const auto& v : verts) if (v.r || v.g || v.b) colored = true;
     check(colored, "вершины несут цвет материала");
+    check(opaqueIdx == idx.size(), "у камня нет полупрозрачной части");
+
+    // Вода уходит в хвост буфера: её рисуют отдельным проходом.
+    auto lake = std::make_unique<world::Chunk>();
+    for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z) {
+            lake->voxels[world::chunkIndex(x, 0, z)] = world::STONE;
+            lake->voxels[world::chunkIndex(x, 1, z)] = world::WATER;
+        }
+    world::buildGreedyMesh(*lake, nb, quads, world::Lod::Full);
+    render::buildChunkVertices(*lake, quads, verts, idx, opaqueIdx);
+    check(opaqueIdx > 0, "непрозрачная часть озера не пуста");
+    check(opaqueIdx < idx.size(), "вода вынесена в отдельный хвост буфера");
 }
 
 // ------------------------------------------------------------

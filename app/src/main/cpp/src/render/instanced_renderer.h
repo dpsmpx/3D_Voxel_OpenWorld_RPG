@@ -17,14 +17,18 @@
 namespace render {
 
 /// Instance layout должен совпадать с vertex input pipeline.
+///
+/// Координат в атласе тут больше нет: трава, как и весь мир, рисуется
+/// цветом материала, а не текстурой. Форму даёт сама геометрия —
+/// сужающаяся кверху трапеция, — а оттенок приходит инстансом, чтобы
+/// поляна не выглядела покрашенной одной банкой.
 struct GrassInstance {
     glm::vec3 pos;       // offset 0
     f32       scale;     // offset 12
-    glm::vec2 uvOrigin;  // offset 16
-    u8        r, g, b, a;// offset 24 (packed color)
-    f32       yaw;       // offset 28
+    u8        r, g, b, a;// offset 16 (packed color)
+    f32       yaw;       // offset 20
 };
-static_assert(sizeof(GrassInstance) == 32, "GrassInstance должен быть 32 байта");
+static_assert(sizeof(GrassInstance) == 24, "GrassInstance должен быть 24 байта");
 
 /// InstancedRenderer — рисует cross-quad геометрию (биллборд),
 /// один draw-call на все instances.
