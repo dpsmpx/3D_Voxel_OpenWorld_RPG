@@ -194,6 +194,13 @@ if [ ! -f "$NDK_HOME/sources/android/native_app_glue/android_native_app_glue.c" 
 fi
 
 ANDROID_JAR="$(find_android_jar "$ANDROID_HOME" || true)"
+if [ -n "$ANDROID_JAR" ]; then
+    # build-tools лежат рядом с platforms, поэтому корень SDK берём
+    # оттуда же, откуда нашёлся android.jar: ANDROID_HOME мог быть
+    # не задан или указывать на другой каталог.
+    ANDROID_HOME="${ANDROID_JAR%/platforms/*}"
+    export ANDROID_HOME
+fi
 if [ -z "$ANDROID_JAR" ]; then
     warn "android.jar не найден — ручная сборка APK пропущена"
     warn "Искали в: \$ANDROID_HOME, ~/android/android-sdk, ~/android-sdk,"
@@ -381,6 +388,30 @@ fi
 
 log "Упаковка APK (ручная)..."
 
+# Инструменты SDK проверяем запуском, а не наличием. Пакет aapt2 в
+# Termux бывает собран под x86_64: файл на месте, бит «исполняемый»
+# стоит, а загрузчик Android отвечает «unexpected e_type: 2», и до
+# самой программы дело не доходит. В каталоге SDK под aarch64 при этом
+# лежит рабочая сборка, поэтому сначала смотрим туда.
+AAPT2="$(find_sdk_tool aapt2 version || true)"
+if [ -z "$AAPT2" ]; then
+    err "Рабочий aapt2 не найден. Что есть:"
+    tool_report aapt2 >&2
+    err ""
+    err "Если архитектура выше не aarch64 — это сборка под другую машину."
+    err "Нужен SDK build-tools под aarch64:"
+    err "    https://github.com/lzhiyong/termux-ndk/releases"
+    err "    ./tools/termux-setup.sh --skip-packages --sdk <архив android-sdk>"
+    err ""
+    err "Библиотека уже собрана: $JNI_DIR/libnative-lib.so"
+    err "Её можно упаковать на любой машине с рабочим Android SDK."
+    exit 1
+fi
+log "aapt2: $AAPT2"
+
+ZIPALIGN="$(find_sdk_tool zipalign || true)"
+APKSIGNER="$(find_sdk_tool apksigner --version || true)"
+
 mkdir -p "$APK_OUT_DIR"
 cd "$APK_OUT_DIR"
 rm -f *.apk *.zip *.arsc *.dex resources.ap_ 2>/dev/null || true
@@ -396,7 +427,7 @@ if [ ! -d "$RES_DIR" ]; then
     err "Манифест ссылается на @mipmap/ic_launcher — без res сборка не пройдёт."
     exit 1
 fi
-aapt2 compile --dir "$RES_DIR" -o "$RES_ZIP"
+"$AAPT2" compile --dir "$RES_DIR" -o "$RES_ZIP"
 
 # ---- aapt2 link ----
 log "aapt2 link..."
@@ -407,7 +438,7 @@ if [ ! -f "$MANIFEST" ]; then
     exit 1
 fi
 
-aapt2 link \
+"$AAPT2" link \
     -o base.apk \
     -I "$ANDROID_JAR" \
     --manifest "$MANIFEST" \
@@ -449,15 +480,16 @@ ok "Native libs добавлены (без сжатия)"
 
 # ---- zipalign ----
 log "zipalign..."
-if command -v zipalign >/dev/null 2>&1; then
+if [ -n "$ZIPALIGN" ]; then
     # -p выравнивает .so по границе страницы: обязательно для
     # extractNativeLibs="false".
-    zipalign -f -p 4 base.apk aligned.apk
+    "$ZIPALIGN" -f -p 4 base.apk aligned.apk
     mv aligned.apk base.apk
     ok "zipalign выполнен"
 else
-    err "zipalign не найден, а он обязателен при extractNativeLibs=false"
-    err "Установи Android SDK build-tools"
+    err "Рабочий zipalign не найден, а он обязателен при extractNativeLibs=false."
+    tool_report zipalign >&2
+    err "Нужен SDK build-tools под aarch64 — см. сообщение про aapt2 выше."
     exit 1
 fi
 
@@ -467,9 +499,9 @@ log "Подпись APK..."
 # Release-ключ, если он есть; иначе debug.
 RELEASE_KEYSTORE="$APP_DIR/release.keystore"
 if [ "$MODE" = "release" ] && [ -f "$RELEASE_KEYSTORE" ] \
-   && command -v apksigner >/dev/null 2>&1; then
+   && [ -n "$APKSIGNER" ]; then
     log "Подписываю release-ключом..."
-    apksigner sign \
+    "$APKSIGNER" sign \
         --ks "$RELEASE_KEYSTORE" \
         --ks-pass "pass:${RELEASE_KEYSTORE_PASSWORD:-release}" \
         --ks-key-alias "${RELEASE_KEY_ALIAS:-release}" \
@@ -485,27 +517,38 @@ fi
 # Создаём debug keystore, если его нет.
 if [ "$SKIP_DEBUG_SIGN" -eq 0 ] && [ ! -f "$DEBUG_KEYSTORE" ]; then
     log "Создаю debug keystore..."
-    keytool -genkeypair \
-        -keystore "$DEBUG_KEYSTORE" \
-        -storepass android \
-        -alias androiddebugkey \
-        -keypass android \
-        -keyalg RSA \
-        -keysize 2048 \
-        -validity 10000 \
-        -dname "CN=Android Debug, O=Android, C=US" 2>/dev/null || {
-            warn "keytool не найден — APK не подписан"
-            warn "Установи JDK: pkg install openjdk-21"
-            warn "(если такого пакета нет: pkg search openjdk)"
-            mv base.apk "$APK_OUT_DIR/${GAME_NAME}.apk"
-            exit 0
-        }
+    mkdir -p "$(dirname "$DEBUG_KEYSTORE")"
+    if ! command -v keytool >/dev/null 2>&1; then
+        warn "keytool не найден — APK не подписан."
+        warn "Установи JDK: pkg install openjdk-21"
+        warn "(если такого пакета нет: pkg search openjdk)"
+        mv base.apk "$APK_OUT_DIR/${GAME_NAME}.apk"
+        exit 0
+    fi
+    # Ошибку keytool раньше глушили в /dev/null и объявляли «keytool не
+    # найден» — причина не доходила до пользователя вообще.
+    if ! KEYTOOL_ERR="$(keytool -genkeypair \
+            -keystore "$DEBUG_KEYSTORE" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug, O=Android, C=US" 2>&1)"; then
+        warn "keytool не смог создать $DEBUG_KEYSTORE:"
+        printf '%s\n' "$KEYTOOL_ERR" | sed 's/^/      /' >&2
+        warn "APK останется без подписи — установить его не получится."
+        mv base.apk "$APK_OUT_DIR/${GAME_NAME}.apk"
+        exit 0
+    fi
+    ok "debug keystore создан"
 fi
 
 if [ "$SKIP_DEBUG_SIGN" -eq 1 ]; then
     :   # уже подписан release-ключом
-elif command -v apksigner >/dev/null 2>&1; then
-    apksigner sign \
+elif [ -n "$APKSIGNER" ]; then
+    "$APKSIGNER" sign \
         --ks "$DEBUG_KEYSTORE" \
         --ks-pass pass:android \
         --ks-key-alias androiddebugkey \
@@ -514,7 +557,9 @@ elif command -v apksigner >/dev/null 2>&1; then
         base.apk
     ok "APK подписан"
 else
-    warn "apksigner не найден — копирую без подписи"
+    warn "Рабочий apksigner не найден — копирую APK без подписи."
+    warn "Такой APK Android установить не даст: подпишите его где-нибудь ещё"
+    warn "или поставьте SDK build-tools под aarch64."
     mv base.apk "$APK_OUT_DIR/${GAME_NAME}.apk"
 fi
 

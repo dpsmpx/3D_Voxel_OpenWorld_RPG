@@ -264,6 +264,38 @@ error: ".../prebuilt/linux-x86_64/bin/clang-21" has unexpected e_type: 2
 Что именно не так, покажет `./tools/termux-doctor.sh`: он не просто ищет
 файл `clang`, а запускает его и печатает архитектуру.
 
+#### «unexpected e_type» при упаковке APK
+
+```
+error: "/data/data/com.termux/files/usr/bin/aapt2" has unexpected e_type: 2
+```
+
+Та же причина, что и у NDK: `aapt2` из пакета собран под другую
+архитектуру. Рабочая сборка под aarch64 лежит в `build-tools/`
+установленного SDK, и `build.sh` теперь ищет инструменты там прежде
+`PATH`, проверяя их запуском. Если рабочего `aapt2` нет нигде:
+
+```bash
+./tools/termux-setup.sh --skip-packages --sdk <архив android-sdk>
+```
+
+Архив под aarch64 — на той же странице
+[lzhiyong/termux-ndk](https://github.com/lzhiyong/termux-ndk/releases).
+Библиотека `libnative-lib.so` к этому моменту уже собрана, так что APK
+можно упаковать и на любой другой машине с рабочим Android SDK.
+
+#### Сжатие атласа в ASTC
+
+Необязательно: без кодировщика игра строит атлас процедурно при старте
+и работает, просто текстуры занимают вчетверо больше видеопамяти.
+Включается установкой `astcenc` (`pkg install astc-encoder`); ищутся
+все обычные имена сборок — `astcenc`, `astcenc-neon`, `astcenc-sse2`,
+`astcenc-avx2`. Свой путь можно задать явно:
+
+```bash
+ASTCENC=/путь/к/astcenc ./build.sh
+```
+
 #### Звук и Android 7
 
 AAudio появился в Android 8.0 (API 26), а минимальная версия по ТЗ —

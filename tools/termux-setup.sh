@@ -102,6 +102,12 @@ if [ "$SKIP_PACKAGES" -eq 0 ]; then
     install_any "wget"           wget            || FAILED=1
     install_any "zlib"           zlib            || FAILED=1
 
+    # Кодировщик ASTC — необязателен: без него атлас останется RGBA8.
+    install_any "кодировщик ASTC" astc-encoder astcenc astcenc-neon || {
+        warn "astcenc не установлен — атлас текстур останется RGBA8"
+        warn "(игра работает, но текстуры займут вчетверо больше видеопамяти)"
+    }
+
     # Компилятор шейдеров. В Termux он может называться по-разному.
     install_any "компилятор шейдеров" shaderc glslc glslang || {
         warn "glslc не установлен — шейдеры придётся компилировать вручную"

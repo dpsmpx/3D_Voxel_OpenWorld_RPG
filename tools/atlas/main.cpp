@@ -74,9 +74,17 @@ int main(int argc, char** argv) {
 
     if (argc < 3) return 0;
 
+    // Имя кодировщика приходит третьим аргументом: официальные сборки
+    // astcenc называются по набору инструкций (astcenc-neon,
+    // astcenc-sse2, astcenc-avx2), и зашитое astcenc-native на aarch64
+    // не находится никогда.
+    const char* enc = (argc > 3 && argv[3][0]) ? argv[3] : "astcenc";
+
     // Сжатие: -exhaustive заметно медленнее, но атлас собирается
     // один раз на сборку, а качество тайлов важно — они видны вблизи.
-    std::string cmd = "astcenc-native -cl \"";
+    std::string cmd = "\"";
+    cmd += enc;
+    cmd += "\" -cl \"";
     cmd += argv[1];
     cmd += "\" \"";
     cmd += argv[2];

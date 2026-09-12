@@ -143,3 +143,69 @@ ndk_cmake_host_ok() {             # каталог NDK
     [ -x "$fallback" ] && "$fallback" --version >/dev/null 2>&1 && return 0
     return 1
 }
+
+# Проверяет, что программа действительно запускается ЗДЕСЬ. Наличия
+# файла и бита «исполняемый» мало: пакет мог принести сборку под другую
+# архитектуру, и тогда загрузчик Android отвечает «unexpected e_type»,
+# а до самой программы дело не доходит.
+tool_runs() {                     # путь [аргумент проверки]
+    local exe="$1" arg="${2:-}" out rc
+    [ -n "$exe" ] && [ -x "$exe" ] || return 1
+    out="$("$exe" $arg 2>&1)" && rc=0 || rc=$?
+    case "$out" in
+        *"unexpected e_type"*|*"Exec format error"*|\
+        *"cannot execute"*|*"not executable"*) return 1 ;;
+    esac
+    # 126 и 127 — оболочка не смогла запустить файл.
+    [ "$rc" -ge 126 ] && return 1
+    return 0
+}
+
+# Первый работающий вариант инструмента SDK. Сначала каталог SDK: в
+# сборках под aarch64 там нужные бинарники. Потом PATH — пакет из
+# репозитория вполне может оказаться сборкой под другую машину.
+find_sdk_tool() {                 # имя [аргумент проверки] -> путь
+    local name="$1" arg="${2:-}" root cand
+    for root in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" \
+                "$HOME/android/android-sdk" "$HOME/android-sdk"; do
+        [ -n "$root" ] || continue
+        for cand in "$root"/build-tools/*/"$name" "$root/$name"; do
+            if tool_runs "$cand" "$arg"; then printf '%s' "$cand"; return 0; fi
+        done
+    done
+    cand="$(command -v "$name" 2>/dev/null || true)"
+    if tool_runs "$cand" "$arg"; then printf '%s' "$cand"; return 0; fi
+    return 1
+}
+
+# Почему инструмент не запускается: путь, цель симлинка, архитектура.
+tool_report() {                   # имя
+    local name="$1" p real m
+    p="$(command -v "$name" 2>/dev/null || true)"
+    if [ -z "$p" ]; then
+        echo "    $name: в PATH не найден"
+        return 0
+    fi
+    echo "    $name: $p"
+    real="$(readlink -f "$p" 2>/dev/null)"
+    [ -n "$real" ] || real="$p"
+    [ "$real" != "$p" ] && echo "        ссылка на: $real"
+    m="$(elf_machine "$real")"
+    [ -n "$m" ] && echo "        архитектура: $m"
+    return 0
+}
+
+# Кодировщик ASTC. Официальные сборки astcenc называются по набору
+# инструкций (astcenc-neon, astcenc-sse2, astcenc-avx2, astcenc-native),
+# и на aarch64 имени astcenc-native обычно нет вовсе — из-за жёсткой
+# проверки одного этого имени сжатие не включалось никогда.
+find_astcenc() {                  # -> путь
+    local cand
+    for cand in "${ASTCENC:-}" astcenc astcenc-neon astcenc-native \
+                astcenc-sse2 astcenc-sse4.1 astcenc-avx2; do
+        [ -n "$cand" ] || continue
+        cand="$(command -v "$cand" 2>/dev/null || true)"
+        if tool_runs "$cand" "-help"; then printf '%s' "$cand"; return 0; fi
+    done
+    return 1
+}
