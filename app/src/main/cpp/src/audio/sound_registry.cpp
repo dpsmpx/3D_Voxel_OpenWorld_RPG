@@ -30,16 +30,8 @@ struct Rng {
 };
 
 // ============================================================
-// Огибающая. attack/decay в секундах.
+// Огибающая. Затухание — экспоненциальное, rate в 1/с.
 // ============================================================
-inline f32 envAD(f32 t, f32 dur, f32 attack, f32 decay, f32 sustainLevel) {
-    if (t < 0.f || t > dur) return 0.f;
-    if (t < attack) return t / std::max(0.001f, attack);
-    f32 d = (t - attack) / std::max(0.001f, decay);
-    if (d >= 1.f) return 0.f;
-    return (1.f - d) * (1.f - sustainLevel) + sustainLevel * (1.f - d);
-}
-
 inline f32 expoDecay(f32 t, f32 rate) {
     return std::exp(-t * rate);
 }
@@ -66,23 +58,6 @@ void genNoiseBurst(Sound& s, u32 sr, f32 dur, f32 amp,
         prev = prev + lowpass * (raw - prev);
         f32 env = expoDecay(t, decayRate);
         s.samples[i] = prev * env * amp;
-    }
-}
-
-// Синус с ADSR-огибающей.
-void genSineTone(Sound& s, u32 sr, f32 dur, f32 freq, f32 amp,
-                 f32 attack, f32 decay, f32 sustainLevel)
-{
-    u32 n = (u32)(sr * dur);
-    s.samples.resize(n);
-    s.frames = n;
-    s.sampleRate = sr;
-
-    for (u32 i = 0; i < n; ++i) {
-        f32 t = (f32)i / (f32)sr;
-        f32 phase = t * freq * 6.2831853f;
-        f32 env = envAD(t, dur, attack, decay, sustainLevel);
-        s.samples[i] = std::sin(phase) * env * amp;
     }
 }
 
@@ -239,23 +214,6 @@ void addKick(Sound& s, u32 sr, f32 startTime, f32 amp)
 // ============================================================
 // Генерация каждой звуковой дорожки.
 // ============================================================
-
-void genFootstep(Sound& s, u32 sr, f32 base, f32 lowpass, u32 seed) {
-    f32 dur = 0.09f;
-    u32 n = (u32)(sr * dur);
-    s.samples.assign(n, 0.f);
-    s.frames = n;
-    s.sampleRate = sr;
-
-    Rng r(seed);
-    f32 prev = 0.f;
-    for (u32 i = 0; i < n; ++i) {
-        f32 t = (f32)i / (f32)sr;
-        prev = prev + lowpass * (r.noise() - prev);
-        f32 env = expoDecay(t, 50.f);
-        s.samples[i] = prev * env * base;
-    }
-}
 
 void genFootstepSet(Sound& s, u32 sr, f32 lowpass, u32 seed, f32 amp) {
     // 4 варианта шагов, слегка отличающихся

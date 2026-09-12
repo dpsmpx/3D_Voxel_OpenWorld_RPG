@@ -2,6 +2,9 @@
 // Мобильный GPU: mediump достаточно для цвета и тумана, оставляем
 // highp только координатам, где точность действительно нужна.
 precision mediump float;
+// int по умолчанию тоже задаём явно: иначе glslang предупреждает,
+// что часть точностей осталась highp по умолчанию.
+precision mediump int;
 
 layout(location = 0) in highp vec2 vUv;
 layout(location = 1) in       vec4 vColor;

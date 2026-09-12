@@ -276,7 +276,6 @@ void applyOres(Chunk& chunk, const FeatureContext& ctx) {
 // LIQUIDS — вода и лава
 // ============================================================
 void applyLiquids(Chunk& chunk, const FeatureContext& ctx) {
-    const auto& terrain = *ctx.terrain;
     const i32 baseX = chunk.coord.x * CHUNK_SIZE;
     const i32 baseZ = chunk.coord.z * CHUNK_SIZE;
 
@@ -599,7 +598,6 @@ void stampDungeon(Chunk& c, const FeatureContext& ctx, const structs::Layout& L)
 void stampRuin(Chunk& c, const FeatureContext& ctx, const structs::Layout& L) {
     i32 cx = (L.minBlock.x + L.maxBlock.x) / 2;
     i32 cz = (L.minBlock.z + L.maxBlock.z) / 2;
-    i32 wy = ctx.terrain->surfaceHeight(cx, cz);
 
     // Обрушенные стены — случайные блоки в радиусе 6
     u32 h = L.seed;

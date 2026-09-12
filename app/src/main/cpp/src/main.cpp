@@ -81,7 +81,6 @@ using namespace ecs;
 namespace cfg = config;
 
 constexpr u64 DEFAULT_SEED      = 0xC0FFEEULL;
-constexpr u32 DEFAULT_VIEW_DIST = 7;
 
 struct Engine {
     vk::Context                            vk;

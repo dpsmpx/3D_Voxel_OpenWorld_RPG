@@ -59,13 +59,6 @@ struct BiomeField::Impl {
 BiomeField::BiomeField(u64 seed) : impl_(new Impl(seed)) {}
 // (в реальном проекте — unique_ptr, но здесь упрощаем для краткости)
 
-static inline f32 remap(f32 v, f32 inMin, f32 inMax, f32 outMin, f32 outMax) {
-    f32 t = (v - inMin) / (inMax - inMin);
-    if (t < 0.f) t = 0.f;
-    if (t > 1.f) t = 1.f;
-    return outMin + t * (outMax - outMin);
-}
-
 BiomeField::Sample BiomeField::fields(i32 x, i32 z) const {
     const f32 fx = (f32)x;
     const f32 fz = (f32)z;

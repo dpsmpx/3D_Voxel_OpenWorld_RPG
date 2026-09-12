@@ -7,6 +7,8 @@
 # ============================================================
 
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
+. "$PROJ/tools/ndk-common.sh"
+
 C_G='\033[0;32m'; C_Y='\033[1;33m'; C_R='\033[0;31m'; C_0='\033[0m'
 
 MISSING=0
@@ -78,18 +80,16 @@ elif [ ! -d "$NDK" ]; then
 else
     printf "${C_G}  ✓${C_0} %-22s %s\n" "ANDROID_NDK_HOME" "$NDK"
 
-    # Имя каталога prebuilt у разных сборок разное — ищем по шаблону,
-    # иначе рабочий NDK объявляется сломанным из-за имени каталога.
-    TC="$NDK/toolchains/llvm/prebuilt/linux-aarch64"
-    for _pb in "$NDK"/toolchains/llvm/prebuilt/*; do
-        [ -x "$_pb/bin/clang" ] && { TC="$_pb"; break; }
-    done
-    if [ -x "$TC/bin/clang" ]; then
-        printf "${C_G}  ✓${C_0} %-22s %s\n" "toolchain aarch64" "$TC"
+    # Наличия файла мало: NDK под x86_64 распакован ровно так же и
+    # отличается только тем, что его clang здесь не запускается.
+    if TC="$(ndk_toolchain "$NDK")"; then
+        printf "${C_G}  ✓${C_0} %-22s %s\n" "clang (запускается)" "$TC/bin/clang"
     else
-        printf "${C_R}  ✗${C_0} %-22s нет %s\n" "toolchain aarch64" "$TC/bin/clang"
-        printf "      Скорее всего скачан NDK под x86_64 — на телефоне он не запустится.\n"
-        printf "      Нужна сборка под linux-aarch64: github.com/lzhiyong/termux-ndk\n"
+        printf "${C_R}  ✗${C_0} %-22s ни один не запускается\n" "clang"
+        ndk_toolchain_report "$NDK"
+        printf "      Если архитектура не aarch64 — это NDK под x86_64; на телефоне\n"
+        printf "      он не стартует. Нужна сборка под linux-aarch64:\n"
+        printf "      https://github.com/lzhiyong/termux-ndk/releases\n"
         MISSING=$((MISSING + 1))
     fi
 
@@ -101,13 +101,60 @@ else
         MISSING=$((MISSING + 1))
     fi
 
-    if [ -f "$NDK/build/cmake/android.toolchain.cmake" ]; then
-        printf "${C_G}  ✓${C_0} %-22s\n" "android.toolchain.cmake"
-    else
-        printf "${C_R}  ✗${C_0} %-22s нет\n" "android.toolchain.cmake"
-        MISSING=$((MISSING + 1))
+    # Мало, чтобы файл был: в официальном NDK хост-тег зашит как
+    # linux-x86_64, и на телефоне CMake ищет компилятор не там.
+    ndk_cmake_host_ok "$NDK"
+    case "$?" in
+        0) if grep -q 'linux-aarch64' "$NDK/build/cmake/android.toolchain.cmake"; then
+               printf "${C_G}  ✓${C_0} %-22s знает хост aarch64\n" "android.toolchain.cmake"
+           else
+               printf "${C_G}  ✓${C_0} %-22s хост-тег зашит, но ведёт\n" "android.toolchain.cmake"
+               printf "      на рабочий toolchain (симлинк prebuilt/linux-x86_64)\n"
+           fi ;;
+        1) printf "${C_R}  ✗${C_0} %-22s не знает хост aarch64\n" "android.toolchain.cmake"
+           printf "      CMake уйдёт в prebuilt/linux-x86_64 и упадёт с unexpected e_type.\n"
+           printf "      Починить: ./tools/termux-setup.sh --fix-ndk\n"
+           MISSING=$((MISSING + 1)) ;;
+        *) printf "${C_R}  ✗${C_0} %-22s нет файла\n" "android.toolchain.cmake"
+           MISSING=$((MISSING + 1)) ;;
+    esac
+
+    FOREIGN="$(ndk_foreign_toolchains "$NDK" || true)"
+    if [ -n "$FOREIGN" ]; then
+        printf "${C_Y}  !${C_0} есть toolchain не для этой машины:\n"
+        printf '%s\n' "$FOREIGN" | sed 's|^|        |'
+        printf "      Убрать (освободит ~1 ГБ): ./tools/termux-setup.sh --fix-ndk\n"
+        WARNED=$((WARNED + 1))
     fi
 fi
+
+echo ""
+echo "Android SDK (нужен только android.jar для упаковки APK):"
+if JAR="$(find_android_jar)"; then
+    printf "${C_G}  ✓${C_0} %-22s %s\n" "android.jar" "$JAR"
+else
+    printf "${C_Y}  !${C_0} %-22s нет — APK не упакуется, .so соберётся\n" "android.jar"
+    printf "      ./tools/termux-setup.sh --skip-packages --sdk <архив SDK>\n"
+    WARNED=$((WARNED + 1))
+fi
+
+# Кросс-компилятор в PATH ломает сборку хостовых утилит (атлас).
+# Ошибка при этом выглядит как «unexpected e_type», и связь с PATH
+# по ней не видна — поэтому проверяем отдельно.
+echo ""
+echo "Хостовый компилятор:"
+if HCXX="$(host_cxx)"; then
+    printf "${C_G}  ✓${C_0} %-22s %s\n" "c++ для хоста" "$HCXX"
+else
+    printf "${C_R}  ✗${C_0} %-22s нет — pkg install clang\n" "c++ для хоста"
+    MISSING=$((MISSING + 1))
+fi
+case "$(command -v clang++ 2>/dev/null)" in
+    *"/toolchains/llvm/prebuilt/"*)
+        printf "${C_Y}  !${C_0} clang++ из PATH — кросс-компилятор NDK: %s\n" "$(command -v clang++)"
+        printf "      Уберите каталог NDK из PATH: он подменяет компилятор Termux.\n"
+        WARNED=$((WARNED + 1)) ;;
+esac
 
 echo ""
 echo "Зависимости проекта:"

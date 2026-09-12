@@ -1298,7 +1298,7 @@ void UiSystem::drawAttributesScreen(player::Player& player) {
         const f32 minusX = plusX - btnSize - 12.f;
 
         Rect mr{ minusX, btnY, btnSize, btnSize };
-        int mi = ui_.pushInteractiveRect(mr, [attr, prog, i, rows]() {
+        int mi = ui_.pushInteractiveRect(mr, [prog, i, rows]() {
             if (*rows[i].value <= 1) return;
             *rows[i].value -= 1;
             prog->availableAttrPoints += 1;
@@ -1314,7 +1314,7 @@ void UiSystem::drawAttributesScreen(player::Player& player) {
 
         Rect pr{ plusX, btnY, btnSize, btnSize };
         bool canAdd = prog->availableAttrPoints > 0 && *rows[i].value < 99;
-        int pi = ui_.pushInteractiveRect(pr, [attr, prog, i, rows, canAdd]() {
+        int pi = ui_.pushInteractiveRect(pr, [prog, i, rows, canAdd]() {
             if (!canAdd) return;
             *rows[i].value += 1;
             prog->availableAttrPoints -= 1;
