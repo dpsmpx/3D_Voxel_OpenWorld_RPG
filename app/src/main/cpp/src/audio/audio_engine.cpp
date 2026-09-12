@@ -7,6 +7,7 @@
 #include "../core/log.h"
 
 #include <aaudio/AAudio.h>
+#include <dlfcn.h>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -20,6 +21,90 @@ AudioEngine& engine() {
 }
 
 namespace {
+
+// AAudio появился в API 26, а минимальная версия по ТЗ — 24 (Android 7.0).
+// При обычной линковке с libaaudio.so приложение на Android 7 не
+// запустилось бы вовсе: динамический компоновщик не нашёл бы библиотеку
+// ещё до первой строки кода. Поэтому символы берутся в рантайме — на
+// Android 7 игра работает молча, на 8.0 и новее со звуком.
+struct AAudioApi {
+    aaudio_result_t (*createStreamBuilder)(AAudioStreamBuilder**);
+    void (*setDirection)(AAudioStreamBuilder*, aaudio_direction_t);
+    void (*setPerformanceMode)(AAudioStreamBuilder*, aaudio_performance_mode_t);
+    void (*setFormat)(AAudioStreamBuilder*, aaudio_format_t);
+    void (*setChannelCount)(AAudioStreamBuilder*, int32_t);
+    void (*setSampleRate)(AAudioStreamBuilder*, int32_t);
+    void (*setDataCallback)(AAudioStreamBuilder*, AAudioStream_dataCallback, void*);
+    void (*setErrorCallback)(AAudioStreamBuilder*, AAudioStream_errorCallback, void*);
+    aaudio_result_t (*openStream)(AAudioStreamBuilder*, AAudioStream**);
+    aaudio_result_t (*deleteBuilder)(AAudioStreamBuilder*);
+    aaudio_result_t (*requestStart)(AAudioStream*);
+    aaudio_result_t (*requestStop)(AAudioStream*);
+    aaudio_result_t (*closeStream)(AAudioStream*);
+    int32_t (*getSampleRate)(AAudioStream*);
+    int32_t (*getChannelCount)(AAudioStream*);
+    int32_t (*getFramesPerBurst)(AAudioStream*);
+};
+
+/// nullptr, если AAudio на этом устройстве нет (Android 7.0 и 7.1).
+const AAudioApi* aaudioApi() {
+    static AAudioApi api{};
+    static const AAudioApi* result = [&]() -> const AAudioApi* {
+        void* lib = dlopen("libaaudio.so", RTLD_NOW | RTLD_LOCAL);
+        if (!lib) {
+            LOGI("AudioEngine: libaaudio нет (нужен Android 8.0+) — играем без звука");
+            return nullptr;
+        }
+        bool ok = true;
+        auto sym = [&](const char* name) -> void* {
+            void* p = dlsym(lib, name);
+            if (!p) {
+                LOGE("AudioEngine: в libaaudio нет символа %s", name);
+                ok = false;
+            }
+            return p;
+        };
+        api.createStreamBuilder = reinterpret_cast<decltype(api.createStreamBuilder)>(
+            sym("AAudio_createStreamBuilder"));
+        api.setDirection = reinterpret_cast<decltype(api.setDirection)>(
+            sym("AAudioStreamBuilder_setDirection"));
+        api.setPerformanceMode = reinterpret_cast<decltype(api.setPerformanceMode)>(
+            sym("AAudioStreamBuilder_setPerformanceMode"));
+        api.setFormat = reinterpret_cast<decltype(api.setFormat)>(
+            sym("AAudioStreamBuilder_setFormat"));
+        api.setChannelCount = reinterpret_cast<decltype(api.setChannelCount)>(
+            sym("AAudioStreamBuilder_setChannelCount"));
+        api.setSampleRate = reinterpret_cast<decltype(api.setSampleRate)>(
+            sym("AAudioStreamBuilder_setSampleRate"));
+        api.setDataCallback = reinterpret_cast<decltype(api.setDataCallback)>(
+            sym("AAudioStreamBuilder_setDataCallback"));
+        api.setErrorCallback = reinterpret_cast<decltype(api.setErrorCallback)>(
+            sym("AAudioStreamBuilder_setErrorCallback"));
+        api.openStream = reinterpret_cast<decltype(api.openStream)>(
+            sym("AAudioStreamBuilder_openStream"));
+        api.deleteBuilder = reinterpret_cast<decltype(api.deleteBuilder)>(
+            sym("AAudioStreamBuilder_delete"));
+        api.requestStart = reinterpret_cast<decltype(api.requestStart)>(
+            sym("AAudioStream_requestStart"));
+        api.requestStop = reinterpret_cast<decltype(api.requestStop)>(
+            sym("AAudioStream_requestStop"));
+        api.closeStream = reinterpret_cast<decltype(api.closeStream)>(
+            sym("AAudioStream_close"));
+        api.getSampleRate = reinterpret_cast<decltype(api.getSampleRate)>(
+            sym("AAudioStream_getSampleRate"));
+        api.getChannelCount = reinterpret_cast<decltype(api.getChannelCount)>(
+            sym("AAudioStream_getChannelCount"));
+        api.getFramesPerBurst = reinterpret_cast<decltype(api.getFramesPerBurst)>(
+            sym("AAudioStream_getFramesPerBurst"));
+
+        if (!ok) {
+            dlclose(lib);
+            return nullptr;
+        }
+        return &api;
+    }();
+    return result;
+}
 
 aaudio_data_callback_result_t onAudioData(AAudioStream* /*stream*/,
                                           void* userData,
@@ -54,27 +139,32 @@ bool AudioEngine::init(u32 sampleRate) {
     if (stream_) return true;
     sampleRate_ = sampleRate;
 
+    // Проверяем доступность AAudio до синтеза банка звуков: на
+    // Android 7 иначе впустую тратились бы секунды и мегабайты на то,
+    // что всё равно некуда играть.
+    const AAudioApi* aa = aaudioApi();
+    if (!aa) return false;
+
     SoundRegistry::instance().init(sampleRate);
 
     AAudioStreamBuilder* builder = nullptr;
-    aaudio_result_t r = AAudio_createStreamBuilder(&builder);
+    aaudio_result_t r = aa->createStreamBuilder(&builder);
     if (r != AAUDIO_OK) {
         LOGE("AudioEngine: AAudio_createStreamBuilder fail: %d", (int)r);
         return false;
     }
 
-    AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
-    AAudioStreamBuilder_setPerformanceMode(builder,
-        AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
-    AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
-    AAudioStreamBuilder_setChannelCount(builder, 2);
-    AAudioStreamBuilder_setSampleRate(builder, (i32)sampleRate);
-    AAudioStreamBuilder_setDataCallback(builder, onAudioData, this);
-    AAudioStreamBuilder_setErrorCallback(builder, onAudioError, this);
+    aa->setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
+    aa->setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    aa->setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
+    aa->setChannelCount(builder, 2);
+    aa->setSampleRate(builder, (i32)sampleRate);
+    aa->setDataCallback(builder, onAudioData, this);
+    aa->setErrorCallback(builder, onAudioError, this);
 
     AAudioStream* stream = nullptr;
-    r = AAudioStreamBuilder_openStream(builder, &stream);
-    AAudioStreamBuilder_delete(builder);
+    r = aa->openStream(builder, &stream);
+    aa->deleteBuilder(builder);
 
     if (r != AAUDIO_OK) {
         LOGE("AudioEngine: openStream fail: %d", (int)r);
@@ -82,17 +172,17 @@ bool AudioEngine::init(u32 sampleRate) {
     }
     stream_ = stream;
 
-    r = AAudioStream_requestStart(stream_);
+    r = aa->requestStart(stream_);
     if (r != AAUDIO_OK) {
         LOGE("AudioEngine: requestStart fail: %d", (int)r);
-        AAudioStream_close(stream_);
+        aa->closeStream(stream_);
         stream_ = nullptr;
         return false;
     }
 
-    i32 actualRate = AAudioStream_getSampleRate(stream_);
-    i32 actualChannels = AAudioStream_getChannelCount(stream_);
-    i32 framesPerBurst = AAudioStream_getFramesPerBurst(stream_);
+    i32 actualRate = aa->getSampleRate(stream_);
+    i32 actualChannels = aa->getChannelCount(stream_);
+    i32 framesPerBurst = aa->getFramesPerBurst(stream_);
 
     LOGI("AudioEngine: stream open at %d Hz, %d ch, burst=%d",
          actualRate, actualChannels, framesPerBurst);
@@ -103,8 +193,12 @@ bool AudioEngine::init(u32 sampleRate) {
 
 void AudioEngine::shutdown() {
     if (!stream_) return;
-    AAudioStream_requestStop(stream_);
-    AAudioStream_close(stream_);
+    // Поток открыт — значит, таблица символов точно загрузилась.
+    const AAudioApi* aa = aaudioApi();
+    if (aa) {
+        aa->requestStop(stream_);
+        aa->closeStream(stream_);
+    }
     stream_ = nullptr;
 
     for (auto& v : voices_) {
