@@ -6,6 +6,7 @@
 #include "../core/types.h"
 #include "../core/math.h"
 #include "../vk/vk_buffer.h"
+#include "instance_ring.h"
 #include "../vk/vk_pipeline.h"
 #include "../vk/vk_shader.h"
 #include "../vk/vk_context.h"
@@ -52,8 +53,7 @@ private:
     vk::GraphicsPipeline pipeline_;
     vk::Buffer           vbo_;   // unit cube
     vk::Buffer           ibo_;   // 36 indices
-    vk::Buffer           instanceGpu_;
-    u64                  instanceCapacity_ = 0;
+    InstanceRing         instances_;
 
     std::vector<MobInstance> cpuInstances_;
     u32 instanceCount_ = 0;

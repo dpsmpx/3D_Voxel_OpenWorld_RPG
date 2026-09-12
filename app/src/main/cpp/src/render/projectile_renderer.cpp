@@ -53,6 +53,7 @@ constexpr u32 CUBE_I[36] = {
 
 bool ProjectileRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout) {
     dev_ = ctx.device();
+    instances_.init(dev_, ctx.physicalDevice());
     shaders_.init(dev_, mgr);
 
     u64 vbBytes = sizeof(CUBE_V);
@@ -158,33 +159,18 @@ void ProjectileRenderer::rebuild(ecs::Registry& reg) {
 }
 
 void ProjectileRenderer::upload(vk::Context& ctx) {
+    (void)ctx;
+    instanceCount_ = (u32)cpu_.size();
     if (instanceCount_ == 0) return;
-
-    u64 bytes = (u64)instanceCount_ * sizeof(MobInstance);
-    if (!instanceGpu_.handle() || instanceCapacity_ < bytes) {
-        if (instanceGpu_.handle()) instanceGpu_.destroy();
-        if (!instanceGpu_.create(dev_, ctx.physicalDevice(), bytes,
-                                 vk::BufferUsage::Vertex, false)) return;
-        instanceCapacity_ = bytes;
-    }
-
-    auto* s = new vk::Buffer();
-    s->create(dev_, ctx.physicalDevice(), bytes, vk::BufferUsage::Staging, true);
-    s->write(cpu_.data(), bytes);
-    ctx.submitOneShot([&](VkCommandBuffer cmd){
-        VkBufferCopy c{0,0,bytes};
-        vkCmdCopyBuffer(cmd, s->handle(), instanceGpu_.handle(), 1, &c);
-        VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-        mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        mb.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
-    });
-    s->destroy(); delete s;
+    // Пишем прямо в память, видимую процессору: ни временного буфера,
+    // ни отдельной отправки в очередь, ни ожидания GPU.
+    if (!instances_.write(cpu_.data(),
+                          (u64)instanceCount_ * sizeof(MobInstance)))
+        instanceCount_ = 0;
 }
 
 void ProjectileRenderer::render(vk::Context& ctx, VkDescriptorSet set) {
-    if (instanceCount_ == 0 || !instanceGpu_.handle()) return;
+    if (instanceCount_ == 0 || !instances_.handle()) return;
     VkCommandBuffer cmd = ctx.currentCmd();
 
     VkViewport vp{};
@@ -198,7 +184,7 @@ void ProjectileRenderer::render(vk::Context& ctx, VkDescriptorSet set) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline_.layout(), 0, 1, &set, 0, nullptr);
-    VkBuffer vbs[2] = { vbo_.handle(), instanceGpu_.handle() };
+    VkBuffer vbs[2] = { vbo_.handle(), instances_.handle() };
     VkDeviceSize offs[2] = { 0, 0 };
     vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offs);
     vkCmdBindIndexBuffer(cmd, ibo_.handle(), 0, VK_INDEX_TYPE_UINT32);
@@ -208,7 +194,7 @@ void ProjectileRenderer::render(vk::Context& ctx, VkDescriptorSet set) {
 void ProjectileRenderer::destroy() {
     vbo_.destroy();
     ibo_.destroy();
-    instanceGpu_.destroy();
+    instances_.destroy();
     pipeline_.destroy();
     shaders_.destroyAll();
     dev_ = VK_NULL_HANDLE;

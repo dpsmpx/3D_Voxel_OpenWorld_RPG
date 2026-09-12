@@ -28,14 +28,42 @@ void ChunkRenderer::shutdown() {
             if (g.valid) { g.vb.destroy(); g.ib.destroy(); }
     meshes_.clear();
     lodRequests_.clear();
+    // Здесь уже всё дождались: устройство простаивает.
+    for (auto& r : retired_) {
+        vkDestroyBuffer(r.h.dev, r.h.buf, nullptr);
+        vkFreeMemory(r.h.dev, r.h.mem, nullptr);
+    }
+    retired_.clear();
     staging_.destroy();
+}
+
+void ChunkRenderer::retire(vk::Buffer& b) {
+    auto h = b.release();
+    if (h.buf != VK_NULL_HANDLE) retired_.push_back({ frameNo_, h });
+}
+
+void ChunkRenderer::collectRetired() {
+    // Столько кадров GPU может держать в работе; плюс один про запас.
+    const u64 keep = (u64)vk::Context::MAX_FRAMES + 1;
+    usize w = 0;
+    for (usize i = 0; i < retired_.size(); ++i) {
+        if (frameNo_ < retired_[i].frame + keep) {
+            retired_[w++] = retired_[i];
+            continue;
+        }
+        vkDestroyBuffer(retired_[i].h.dev, retired_[i].h.buf, nullptr);
+        vkFreeMemory(retired_[i].h.dev, retired_[i].h.mem, nullptr);
+    }
+    retired_.resize(w);
 }
 
 void ChunkRenderer::forgetChunk(world::ChunkCoord c) {
     auto it = meshes_.find(c);
     if (it == meshes_.end()) return;
+    // Чанк выгружается посреди кадра, а его буферы могут быть заняты
+    // в ещё не показанных кадрах: уничтожение откладываем.
     for (auto& g : it->second.lod)
-        if (g.valid) { g.vb.destroy(); g.ib.destroy(); }
+        if (g.valid) { retire(g.vb); retire(g.ib); }
     meshes_.erase(it);
 
     lodRequests_.erase(
@@ -89,7 +117,7 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
     const u64 vbBytes = scratchVerts_.size() * sizeof(VoxelVertex);
 
     if (gm.valid && (gm.vb.size() < vbBytes || gm.ib.size() < ibBytes)) {
-        gm.vb.destroy(); gm.ib.destroy(); gm.valid = false;
+        retire(gm.vb); retire(gm.ib); gm.valid = false;
     }
     if (!gm.valid) {
         // С запасом 25%, чтобы мелкие правки блоков не пересоздавали буфер.
@@ -141,6 +169,8 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx, world::ChunkManager& world,
                                  const std::vector<std::shared_ptr<world::Chunk>>& chunks,
                                  const glm::vec3& cameraPos)
 {
+    frameNo_ = ctx.framesPresented();
+    collectRetired();
     if (chunks.empty() && lodRequests_.empty()) return;
 
     VkCommandBuffer cmd = ctx.beginTransferBatch();

@@ -53,7 +53,7 @@ highp float hash13(highp vec3 p) {
 void main() {
     int  face  = int(vInfo & 7u);
     vec3 N     = FACE_N[face];
-    float grain = float((vInfo >> 3) & 7u) * (1.0 / 7.0) * 0.55;
+    float grain = float((vInfo >> 3) & 7u) * (1.0 / 7.0) * 0.30;
     bool  tint  = ((vInfo >> 6) & 1u) != 0u;
 
     // ---- крапчатость по клеткам ----
@@ -103,6 +103,14 @@ void main() {
     vec3  sunTint = toLinear(mix(vec3(1.00, 0.52, 0.26), vec3(1.00, 0.97, 0.92),
                                  smoothstep(0.0, 0.30, cam.sunDir.y)));
 
+    // Небо как источник: его цвет, но приглушённый к белому. Умножать
+    // на сам skyLin нельзя — он в линейном пространстве тёмный, и всё
+    // в тени уходило в чёрно-синее, а материал переставал читаться.
+    float skyMax = max(max(skyLin.r, skyLin.g), max(skyLin.b, 0.001));
+    vec3  skyTint = mix(vec3(1.0), skyLin / skyMax, 0.60);
+    // Снизу светит не небо, а отражение земли — тёплое и слабое.
+    const vec3 groundTint = vec3(0.62, 0.56, 0.46);
+
     // Затенение углов запечено в геометрию мешером. Небо им гасится
     // полностью — оно приходит со всех сторон и в щель не попадает;
     // прямое солнце гасится частично, иначе освещённые склоны теряют
@@ -120,9 +128,17 @@ void main() {
     float skyVis = 0.5 + 0.5 * N.y;
     float ndl    = max(dot(N, cam.sunDir.xyz), 0.0);
 
-    vec3 ambient = skyLin * (0.16 + 0.34 * skyVis) * (0.25 + 0.75 * day) * ao * sky;
-    vec3 sun      = sunTint * (ndl * 0.85 * day * above) * aoSun * skySun;
-    vec3 moon    = vec3(0.04, 0.055, 0.11) * (1.0 - day) * (0.30 + 0.35 * skyVis) * ao * sky;
+    // Полусфера: сверху небо, снизу отражение земли. Освещённость
+    // подобрана так, чтобы грань в тени была примерно вдвое темнее
+    // освещённой, а не в двадцать раз: физически честное отношение
+    // прямого света к небесному превращает боковые грани в чёрные
+    // дыры, и мир перестаёт читаться как объём.
+    vec3  hemi = mix(groundTint, skyTint, skyVis);
+    float amb  = mix(0.34, 0.66, skyVis) * (0.30 + 0.70 * day);
+
+    vec3 ambient = hemi * amb * ao * sky;
+    vec3 sun     = sunTint * (ndl * 0.52 * day * above) * aoSun * skySun;
+    vec3 moon    = vec3(0.05, 0.065, 0.12) * (1.0 - day) * (0.35 + 0.35 * skyVis) * ao * sky;
 
     vec3 lit = albedo * (ambient + sun + moon + 0.02);
 
@@ -149,7 +165,7 @@ void main() {
     fogAmt = fogAmt * fogAmt * (3.0 - 2.0 * fogAmt);
 
     float sunAmt   = max(dot(normalize(toFrag), cam.sunDir.xyz), 0.0);
-    vec3  fogColor = mix(skyLin, sunTint, pow(sunAmt, 6.0) * 0.45 * above);
+    vec3  fogColor = mix(skyLin, sunTint, pow(sunAmt, 8.0) * 0.30 * above);
 
     outColor = vec4(toSrgb(mix(lit, fogColor, fogAmt)), vColor.a);
 }

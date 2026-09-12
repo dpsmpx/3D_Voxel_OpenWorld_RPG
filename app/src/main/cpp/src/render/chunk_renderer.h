@@ -130,6 +130,12 @@ private:
         return lod == 0 ? lod0_ : (lod == 1 ? lod1_ : lod2_);
     }
 
+    /// Откладывает уничтожение буфера. Кадр, в котором из него ещё
+    /// читает GPU, может быть в работе — освобождать сразу нельзя.
+    void retire(vk::Buffer& b);
+    /// Освобождает то, что GPU точно дочитал.
+    void collectRetired();
+
     /// Загружает один уровень детализации чанка в уже открытый пакет.
     bool uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
                    ChunkGpu& gpu, world::Chunk& chunk, u8 lod);
@@ -154,6 +160,12 @@ private:
     std::vector<world::Quad>  scratchQuads_;
     std::vector<LodRequest>   lodRequests_;
     std::vector<Visible>      visible_;
+
+    /// Буферы, отправленные на покой: номер кадра и дескрипторы.
+    struct Retired { u64 frame; vk::Buffer::Handles h; };
+    std::vector<Retired> retired_;
+    /// Номер последнего показанного кадра — отсчёт для Retired.
+    u64 frameNo_ = 0;
     /// Staging-буферы текущего пакета: освобождаются только после
     /// того, как GPU дочитал их (endTransferBatch).
     std::vector<vk::StagingBuffer*> pendingStaging_;

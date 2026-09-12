@@ -31,7 +31,7 @@ bool Skybox::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout de
     return true;
 }
 
-void Skybox::render(vk::Context& ctx) {
+void Skybox::render(vk::Context& ctx, VkDescriptorSet set) {
     VkCommandBuffer cmd = ctx.currentCmd();
 
     VkViewport vp{};
@@ -43,7 +43,9 @@ void Skybox::render(vk::Context& ctx) {
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
-    vkCmdDraw(cmd, 3, 1, 0, 0);   // fullscreen triangle
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline_.layout(), 0, 1, &set, 0, nullptr);
+    vkCmdDraw(cmd, 3, 1, 0, 0);   // полноэкранный треугольник
 }
 
 void Skybox::destroy() {

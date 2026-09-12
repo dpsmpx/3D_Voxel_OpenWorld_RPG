@@ -225,6 +225,12 @@ if ! python3 "$PROJ/tools/hostcheck/check_includes.py"; then
     exit 1
 fi
 
+# ---- дескрипторы у конвейеров ----
+echo "==> Дескрипторы конвейеров..."
+if ! python3 "$PROJ/tools/hostcheck/check_bindings.py"; then
+    exit 1
+fi
+
 # ---- обход граней ----
 # Половина каждого куба мобов и NPC просвечивала насквозь: три грани из
 # шести были намотаны наоборот. Компилятору такая таблица безразлична.

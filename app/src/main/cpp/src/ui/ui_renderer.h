@@ -31,6 +31,10 @@ public:
     /// Один "батч" = один descriptor set (атлас). Мы держим 2 батча:
     ///   slot 0 — font atlas (по умолчанию)
     ///   slot 1 — block atlas (external)
+    /// Поворот вывода — тот же, что у камеры. Интерфейс считает NDC
+    /// сам, на процессоре, поэтому доворачивать его надо здесь.
+    void setSurfaceRotation(u32 degrees);
+
     void beginFrame();
     void setAtlas(int slot);   // 0 или 1
     void pushQuad(glm::vec2 pos, glm::vec2 size,
@@ -85,13 +89,21 @@ private:
         u32 capacity = 0;
     };
     static constexpr u32 MAX_FRAMES = vk::Context::MAX_FRAMES;
-    FrameBuf frames_[MAX_FRAMES];
+    /// По буферу на кадр в работе и на атлас. Раньше индексом был
+    /// только атлас: пока GPU читал вершины прошлого кадра, процессор
+    /// переписывал их для следующего — интерфейс мигал и рвался.
+    FrameBuf frames_[MAX_FRAMES][2];
 
     /// CPU-side буферы
     std::vector<UiVertex> verts_[2];  // по атласу
     int activeSlot_ = 0;
 
     float whiteU_ = 0.f, whiteV_ = 0.f;
+    /// cos/sin угла доворота; при нулевом повороте — (1, 0).
+    float rotC_ = 1.f, rotS_ = 0.f;
+    glm::vec2 rotate(glm::vec2 p) const {
+        return { p.x * rotC_ - p.y * rotS_, p.x * rotS_ + p.y * rotC_ };
+    }
 
     bool ensureCapacity(FrameBuf& b, u32 vertsNeeded);
 };

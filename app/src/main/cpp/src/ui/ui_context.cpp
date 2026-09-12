@@ -55,6 +55,15 @@ void UiContext::rect(float x, float y, float w, float h, UiColor c) {
                  r_->whiteU(), r_->whiteV(), r_->whiteU(), r_->whiteV(), c);
 }
 
+void UiContext::image(float x, float y, float w, float h, UiColor tint) {
+    if (!r_) return;
+    r_->setAtlas(1);
+    r_->pushQuad({ toNdcX(x, screenW_), toNdcY(y, screenH_) },
+                 { toNdcW(w, screenW_), toNdcH(h, screenH_) },
+                 0.f, 0.f, 1.f, 1.f, tint);
+    r_->setAtlas(0);
+}
+
 void UiContext::rectOutline(float x, float y, float w, float h, float th, UiColor c) {
     rect(x, y, w, th, c);
     rect(x, y + h - th, w, th, c);

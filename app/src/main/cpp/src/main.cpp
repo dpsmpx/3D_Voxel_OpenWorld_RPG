@@ -153,6 +153,10 @@ struct Engine {
     /// Мир под игроком ещё генерируется — физику держим выключенной.
     bool waitingForGround = false;
 
+    /// Последний известный размер окна. В нём приходят касания и в
+    /// нём же интерфейс считает свои прямоугольники.
+    i32 winW_ = 0, winH_ = 0;
+
     /// Окно готово и приложение на переднем плане — можно рисовать.
     /// Два состояния держим раздельно: Android присылает фокус раньше,
     /// чем создаёт поверхность, и одного события мало, чтобы понять,
@@ -198,6 +202,7 @@ struct Engine {
 
         const i32 ww = ANativeWindow_getWidth(w);
         const i32 wh = ANativeWindow_getHeight(w);
+        winW_ = ww; winH_ = wh;
 
         crash::step("менеджер сохранений");
         saveMgr.init(internalDataPath.c_str());
@@ -221,8 +226,7 @@ struct Engine {
             LOGE("RenderSystem init failed");
             return;
         }
-        render->camera().setAspect((f32)ww / (f32)wh);
-        render->camera().setViewport((u32)ww, (u32)wh);
+        applySurfaceGeometry();
         render->camera().setFog(140.f, 380.f);
         render->camera().setSunDir(dayCycle.sunDirection());
         render->camera().setSky(dayCycle.skyColor(), dayCycle.skyLight(),
@@ -236,9 +240,13 @@ struct Engine {
         }
         ui->setScreenSize(ww, wh);
         ui->attachTouch(&touch);
+        ui->setSurfaceRotation(vk.surfaceRotationDegrees());
         ui->showFps = cfg::settingsConst().showFps;
 
         ui->minimap.init(vk, 128);
+        // Второй атлас интерфейса — миникарта. Слот под него был
+        // заведён с самого начала и не использовался.
+        ui->attachExternalAtlas(ui->minimap.view(), ui->minimap.sampler());
 
         ui->onQuit = [this]() { wantQuit = true; };
         ui->onSave = [this]() { doSave(lastSaveProfile, lastSaveSlot); };
@@ -642,6 +650,42 @@ struct Engine {
             if (b != world::AIR && !world::blocks().isTransparent(b)) return true;
         }
         return false;
+    }
+
+    /// Переносит геометрию поверхности в камеру и интерфейс.
+    ///
+    /// Три разные вещи, которые легко перепутать:
+    ///  * размер ОКНА (ANativeWindow) — в нём приходят касания и в нём
+    ///    же интерфейс считает свои прямоугольники;
+    ///  * размер БУФЕРА кадра (swapchain) — в нём живёт gl_FragCoord,
+    ///    и именно его ждёт шейдер неба;
+    ///  * поворот при выводе — композитор довернёт кадр, и повернуть
+    ///    содержимое обязаны мы сами.
+    /// Раньше в шейдер уезжал размер окна, а поворот не учитывался
+    /// нигде: мир лежал на боку, а небо строилось по чужой сетке.
+    void applySurfaceGeometry() {
+        if (!render) return;
+        const VkExtent2D fb = vk.extent();
+        if (fb.width == 0 || fb.height == 0) return;
+
+        const f32 fw = (f32)fb.width, fh = (f32)fb.height;
+        const f32 logicalAspect = vk.surfaceSwapsAxes() ? fh / fw : fw / fh;
+
+        // Отдельной строкой, потому что различить эти три числа на
+        // глаз невозможно, а от их соотношения зависит, растянут ли
+        // интерфейс. Если окно и буфер повёрнуты по-разному, окно
+        // живёт в логических координатах; если одинаково — в
+        // координатах буфера, и раскладка интерфейса окажется в
+        // портретной коробке, растянутой на альбомный экран.
+        LOGI("Поверхность: окно %dx%d, буфер %ux%u, поворот %u, соотношение %.3f",
+             winW_, winH_, fb.width, fb.height, vk.surfaceRotationDegrees(),
+             (double)logicalAspect);
+
+        auto& cam = render->camera();
+        cam.setAspect(logicalAspect);
+        cam.setViewport(fb.width, fb.height);
+        cam.setSurfaceRotation(vk.surfaceRotationDegrees());
+        if (ui) ui->setSurfaceRotation(vk.surfaceRotationDegrees());
     }
 
     void update(f32 dt, f32 timeSec) {
@@ -1095,13 +1139,11 @@ static void handleCmd(android_app* app, int32_t cmd) {
             if (!app->window || !eng->initialized) break;
             const i32 ww = ANativeWindow_getWidth(app->window);
             const i32 wh = ANativeWindow_getHeight(app->window);
+            eng->winW_ = ww; eng->winH_ = wh;
             eng->vk.onResize(app->window);
             eng->touch.setViewport(ww, wh);
-            if (eng->render) {
-                eng->render->camera().setAspect((f32)ww / (f32)wh);
-                eng->render->camera().setViewport((u32)ww, (u32)wh);
-            }
             if (eng->ui) eng->ui->setScreenSize(ww, wh);
+            eng->applySurfaceGeometry();
             break;
         }
         case APP_CMD_GAINED_FOCUS:
@@ -1217,7 +1259,13 @@ extern "C" void android_main(android_app* app) {
             const auto tC = std::chrono::steady_clock::now();
 
             if (!eng.vk.beginFrame()) {
-                if (app->window) eng.vk.onResize(app->window);
+                // Цепочка устарела — обычно из-за поворота экрана.
+                // Пересоздали её, значит обязаны заново перенести
+                // размеры и угол в камеру и интерфейс.
+                if (app->window) {
+                    eng.vk.onResize(app->window);
+                    eng.applySurfaceGeometry();
+                }
             } else {
                 if (eng.render) eng.render->render(eng.vk);
                 eng.vk.endFrame();

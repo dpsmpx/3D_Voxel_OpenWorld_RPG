@@ -24,6 +24,17 @@ public:
 
     void destroy();
 
+    /// Дескрипторы буфера без владельца.
+    struct Handles {
+        VkDevice       dev = VK_NULL_HANDLE;
+        VkBuffer       buf = VK_NULL_HANDLE;
+        VkDeviceMemory mem = VK_NULL_HANDLE;
+    };
+    /// Отдаёт владение и обнуляет себя. Нужно, чтобы отложить
+    /// уничтожение: буфер, из которого GPU ещё читает кадр, нельзя
+    /// освобождать в тот момент, когда он перестал быть нужен нам.
+    Handles release();
+
     /// Только для hostVisible. Для device-local — используйте upload().
     void* map();
     void  unmap();
