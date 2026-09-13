@@ -45,9 +45,12 @@ RayHit raycastVoxels(world::ChunkManager& world,
     glm::ivec3 normal{0, 0, 0};
     f32 t = 0.f;
 
-    // Начальный воксель: если игрок внутри блока — вернуть его
+    // Начальный воксель: если игрок внутри блока — вернуть его.
+    // Луч идёт по соседним клеткам, то есть почти всегда по одному
+    // чанку: читаем через курсор, а не ищем чанк на каждый шаг.
     auto& reg = world::blocks();
-    u16 b0 = world.getVoxel(x, y, z);
+    world::VoxelReader rd(world);
+    u16 b0 = rd.at(x, y, z);
     if (reg.isSolid(b0)) {
         hit.hit = true;
         hit.block = { x, y, z };
@@ -74,7 +77,7 @@ RayHit raycastVoxels(world::ChunkManager& world,
 
         if (t > maxDist) break;
 
-        u16 b = world.getVoxel(x, y, z);
+        u16 b = rd.at(x, y, z);
         if (reg.isSolid(b)) {
             hit.hit = true;
             hit.block = { x, y, z };
