@@ -124,6 +124,16 @@ int main(int argc, char** argv) {
     const char* cull = "";
     int   oneTri = -1;
     bool  assertSolid = false;
+    // Мобильный GPU исполняет mediump как 16-битное число, а
+    // программная реализация — как 32-битное. Ключ включает настоящую
+    // половинную точность: шейдеры подсовываются пропущенные через
+    // spirv-opt --convert-relaxed-to-half, а устройство должно уметь
+    // shaderFloat16.
+    bool  fp16 = false;
+    // Тот же отладочный вид, что включается в игре ключом
+    // debug_shading: номер едет в свободной компоненте screenSize.z,
+    // и шейдер игры разбирает его сам.
+    int   shading = 0;
     int   bestTri = -1, bestMesh = -1;
     float bestArea = 0.f;
     u32   bestFace = 0;
@@ -149,6 +159,8 @@ int main(int argc, char** argv) {
         else if (a == "--cull")  cull = next();
         else if (a == "--onetri") oneTri = atoi(next());
         else if (a == "--assert-solid") assertSolid = true;
+        else if (a == "--fp16") fp16 = true;
+        else if (a == "--shading") shading = atoi(next());
         else { std::printf("vkcheck: неизвестный ключ %s\n", a.c_str()); return 2; }
     }
 
@@ -213,6 +225,15 @@ int main(int argc, char** argv) {
     VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     dci.queueCreateInfoCount = 1; dci.pQueueCreateInfos = &qci;
     dci.pEnabledFeatures = &feats;
+    VkPhysicalDeviceShaderFloat16Int8FeaturesKHR f16{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR};
+    const char* f16Exts[] = { VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME };
+    if (fp16) {
+        f16.shaderFloat16 = VK_TRUE;
+        dci.pNext = &f16;
+        dci.enabledExtensionCount   = 1;
+        dci.ppEnabledExtensionNames = f16Exts;
+    }
     VkDevice dev;
     VKOK(vkCreateDevice(phys, &dci, nullptr, &dev));
     VkQueue queue;
@@ -316,7 +337,11 @@ int main(int argc, char** argv) {
     // ---- мир: тот же генератор и тот же мешер ----
     world::blocks();
     world::TerrainGenerator gen(seed);
-    const int R = 4;
+    // Радиус в чанках — как дальность прорисовки в игре. Раньше стояло
+    // жёсткое 4: до огрублённых уровней (LOD 2 начинается со 140
+    // блоков, LOD 3 — с 202) проверка попросту не доставала, а игра
+    // рисует их десятками.
+    const int R = viewDist;
     // Границы LOD — те же, что ставит ChunkRenderer::setViewDistanceBlocks
     // при дальности прорисовки viewDist чанков. Раньше инструмент
     // строил ВСЕ чанки на одном уровне, а игра мешает уровни в одном
@@ -528,6 +553,7 @@ int main(int argc, char** argv) {
         u.viewProj    = cam.projection() * view;
         u.invViewProj = glm::inverse(u.viewProj);
         u.cameraPos   = glm::vec4(eye, 1.f);
+        u.screenSize  = glm::vec4((float)W, (float)H, (float)shading, 0.f);
     }
     ubo.write(&u, sizeof(u));
 

@@ -50,8 +50,44 @@ highp float hash13(highp vec3 p) {
     return fract((p.x + p.y) * p.z);
 }
 
+// Отладочные виды: одно слагаемое вместо всей картинки.
+//
+// Артефакт, который видно на устройстве, может не повторяться ни в
+// офлайн-рендере, ни в программном Vulkan — там другой драйвер и
+// другая точность. Тогда единственный способ узнать, какой из входов
+// фрагмента врёт, — показать их по одному прямо на устройстве.
+// Номер вида приходит в свободной компоненте screenSize.z, так что ни
+// второго конвейера, ни отдельных .spv не нужно.
+const vec3 FACE_DBG[6] = vec3[6](
+    vec3(1.0, 0.2, 0.2), vec3(0.6, 0.1, 0.1),
+    vec3(0.2, 1.0, 0.2), vec3(0.1, 0.5, 0.1),
+    vec3(0.2, 0.4, 1.0), vec3(0.1, 0.2, 0.6));
+
+bool debugView(int mode, int face, out vec4 outc) {
+    outc = vec4(0.0, 0.0, 0.0, 1.0);
+    if (mode == 1) outc = vec4(vColor.rgb, 1.0);                 // цвет вершины
+    else if (mode == 2) outc = vec4(vec3(vShade.y), 1.0);        // открытость неба
+    else if (mode == 3) outc = vec4(vec3(vShade.x), 1.0);        // затенение углов
+    else if (mode == 4) outc = vec4(FACE_DBG[face], 1.0);        // номер грани
+    else if (mode == 5) {                                        // расстояние
+        highp float d = length(vWorldPos - cam.cameraPos.xyz);
+        outc = vec4(vec3(clamp(d / 256.0, 0.0, 1.0)), 1.0);
+    }
+    else if (mode == 6) outc = vec4(vec3(clamp(vWorldPos.y / 128.0, 0.0, 1.0)), 1.0);
+    else return false;
+    return true;
+}
+
 void main() {
     int  face  = int(vInfo & 7u);
+
+    {
+        vec4 dbg;
+        if (debugView(int(cam.screenSize.z + 0.5), face, dbg)) {
+            outColor = dbg;
+            return;
+        }
+    }
     vec3 N     = FACE_N[face];
     float grain = float((vInfo >> 3) & 7u) * (1.0 / 7.0) * 0.30;
     bool  tint  = ((vInfo >> 6) & 1u) != 0u;

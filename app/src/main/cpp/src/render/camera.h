@@ -127,12 +127,19 @@ public:
     }
     glm::mat4 viewProj() const { return projection() * view(); }
 
+    /// Отладочный вид террейна, 0 — обычная картинка. См. voxel.frag.
+    void setDebugShading(i32 mode) { debugShading_ = mode; }
+
     CameraUbo toUbo(f32 timeSec) const {
         CameraUbo u;
         u.viewProj    = viewProj();
         u.invViewProj = glm::inverse(u.viewProj);
         u.cameraPos   = glm::vec4(position_, 1.f);
-        u.screenSize  = glm::vec4((f32)screenW_, (f32)screenH_, 0.f, 0.f);
+        // z — номер отладочного вида террейна (0 — обычная картинка).
+        // Свободная компонента вместо отдельного конвейера: включать
+        // вид можно на живом устройстве, не пересобирая шейдеры.
+        u.screenSize  = glm::vec4((f32)screenW_, (f32)screenH_,
+                                  (f32)debugShading_, 0.f);
         u.sunDir      = glm::vec4(sunDir_, skyLight_);
         u.fogParams   = glm::vec4(fogStart_, fogEnd_, timeOfDay_, timeSec);
         u.skyColor    = glm::vec4(skyColor_, 1.f);
@@ -159,6 +166,7 @@ private:
     // на всю остальную сцену. Ближе десяти сантиметров камера всё
     // равно не подходит: её не пускают столкновения.
     f32 near_ = 0.1f, far_ = 512.f;
+    i32 debugShading_ = 0;
     u32 screenW_ = 1080, screenH_ = 1920;
     u32 surfaceRot_ = 0;
     f32 fogStart_ = 150.f, fogEnd_ = 400.f;

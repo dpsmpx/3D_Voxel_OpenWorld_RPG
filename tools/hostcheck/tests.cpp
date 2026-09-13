@@ -761,6 +761,44 @@ static std::string readSource(const char* path) {
 // тест глубины читает. На экране это выглядело как «видно сквозь
 // блоки»: глубина одного кадра проверялась против остатков другого.
 // ------------------------------------------------------------
+void testDebugShadingWired() {
+    group("рендер: отладочные виды террейна");
+
+    // Три звена одной цепочки: настройка в файле, её передача в
+    // камеру и разбор номера в шейдере. Рвётся любое — и вид молча
+    // перестаёт включаться, а узнать об этом можно только собрав APK
+    // и не увидев разницы на экране.
+    const std::string set = readSource("app/src/main/cpp/src/config/settings.cpp");
+    const std::string cam = readSource("app/src/main/cpp/src/render/camera.h");
+    const std::string rs  = readSource("app/src/main/cpp/src/render/render_system.cpp");
+    const std::string fr  = readSource("app/src/main/cpp/shaders/voxel.frag");
+    if (set.empty() || cam.empty() || rs.empty() || fr.empty()) {
+        check(true, "исходники не найдены, проверка пропущена");
+        return;
+    }
+
+    check(set.find("\"debug_shading\"") != std::string::npos,
+          "ключ debug_shading читается и пишется в settings.cfg");
+    check(rs.find("setDebugShading(config::settingsConst().debugShading)") != std::string::npos,
+          "система рендера отдаёт номер вида камере");
+    check(cam.find("(f32)debugShading_") != std::string::npos,
+          "камера кладёт номер в свободную компоненту screenSize.z");
+    check(fr.find("cam.screenSize.z") != std::string::npos,
+          "шейдер террейна разбирает номер из screenSize.z");
+    check(fr.find("vShade.y") != std::string::npos && fr.find("vShade.x") != std::string::npos,
+          "виды показывают открытость неба и затенение углов");
+
+    // Ноль обязан остаться обычной картинкой, иначе игра всегда
+    // рисует отладку.
+    const usize dv = fr.find("bool debugView(");
+    check(dv != std::string::npos, "разбор вида вынесен в отдельную функцию");
+    if (dv != std::string::npos) {
+        const std::string body = fr.substr(dv, 900);
+        check(body.find("else return false;") != std::string::npos,
+              "неизвестный номер (в том числе 0) оставляет обычный расчёт");
+    }
+}
+
 void testRenderPassSync() {
     group("vk: зависимость прохода рендера");
 
@@ -2652,6 +2690,7 @@ int main() {
 
     testVulkanGuards();
     testRenderPassSync();
+    testDebugShadingWired();
     testUiTapSurvivesRedraw();
     testHudAndButtonsDoNotOverlap();
     testBufferMapContract();

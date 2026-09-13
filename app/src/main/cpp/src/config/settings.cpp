@@ -105,6 +105,7 @@ void Settings::clamp() {
     sfxVolume          = std::clamp(sfxVolume, 0.f, 1.f);
     autosaveInterval   = std::clamp(autosaveInterval, 60.f, 900.f);
     viewDistance       = std::clamp(viewDistance, 4, 12);
+    debugShading       = std::clamp(debugShading, 0, 6);
 
     u8 langIdx = (u8)language;
     if (langIdx >= (u8)Language::Count) language = Language::English;
@@ -114,6 +115,7 @@ bool Settings::isValid() const {
     if (cameraSensitivity < 0.1f || cameraSensitivity > 5.0f) return false;
     if (uiScale < 0.75f || uiScale > 1.5f) return false;
     if (viewDistance < 4 || viewDistance > 12) return false;
+    if (debugShading < 0 || debugShading > 6) return false;
     if ((u8)language >= (u8)Language::Count) return false;
     return true;
 }
@@ -179,6 +181,7 @@ bool Settings::save(const std::string& path) const {
     std::fprintf(f, "\n[Render]\n");
     wi("view_distance",      viewDistance);
     wb("vsync",              vsync);
+    wi("debug_shading",      debugShading);
 
     std::fclose(f);
     LOGI("Settings сохранены: %s", path.c_str());
@@ -260,6 +263,8 @@ bool Settings::load(const std::string& path) {
             viewDistance = readI32(kv.value, viewDistance);
         else if (std::strcmp(kv.key, "vsync") == 0)
             vsync = readBool(kv.value, vsync);
+        else if (std::strcmp(kv.key, "debug_shading") == 0)
+            debugShading = readI32(kv.value, debugShading);
     }
 
     std::fclose(f);
