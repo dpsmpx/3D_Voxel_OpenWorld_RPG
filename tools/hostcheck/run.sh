@@ -290,3 +290,27 @@ if ! "$OUT/tests"; then
     echo "✗ Тесты не прошли"
     exit 1
 fi
+
+# ---- кадр настоящим Vulkan ----
+#
+# Всё, что выше, проверяет данные и исходный текст. Ни одна из этих
+# проверок не заметила, что конвейер объявляет лицевой не ту сторону
+# грани: данные были верны, текст выглядел разумно, а мир на
+# устройстве был виден изнутри. Заметить это может только настоящий
+# Vulkan с настоящими шейдерами — им и заканчиваем.
+#
+# Драйвера может не быть (сборка на телефоне, чистый образ CI) — тогда
+# шаг пропускается, а не валит проверку.
+if [ -f /usr/share/vulkan/icd.d/lvp_icd.json ] || [ -n "${VK_ICD_FILENAMES:-}" ]; then
+    echo "==> Кадр настоящим Vulkan..."
+    if ! "$PROJ/tools/vkcheck/run.sh" --assert-solid > "$OUT/vkcheck.log" 2>&1; then
+        echo "✗ Проверка графики не прошла:"
+        grep -E "ПРОВАЛ|\[слой\]|error" "$OUT/vkcheck.log" | head -20 | sed 's/^/    /'
+        echo "    полный лог: $OUT/vkcheck.log"
+        exit 1
+    fi
+    grep -E "^vkcheck:" "$OUT/vkcheck.log" | sed 's/^/  /'
+else
+    echo "==> Кадр настоящим Vulkan: пропущено (нет программного драйвера;"
+    echo "    apt-get install -y mesa-vulkan-drivers vulkan-validationlayers)"
+fi

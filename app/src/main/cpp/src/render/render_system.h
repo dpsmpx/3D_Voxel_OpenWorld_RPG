@@ -28,6 +28,7 @@
 
 namespace render {
 
+
 class RenderSystem {
 public:
     bool init(vk::Context& ctx, AAssetManager* mgr);

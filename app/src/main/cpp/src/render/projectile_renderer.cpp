@@ -89,7 +89,6 @@ bool ProjectileRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptor
     d.fragName    = "shaders/projectile.frag.spv";
     d.depthFormat = ctx.depthFormat();
     d.cullMode    = VK_CULL_MODE_NONE;
-    d.frontFace   = VK_FRONT_FACE_CLOCKWISE;   // см. PipelineDesc: Y-flip проекции
     d.depthTest   = true;
     d.depthWrite  = false;
     d.blend       = true;
