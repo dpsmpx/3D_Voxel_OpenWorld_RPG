@@ -37,6 +37,7 @@ mkdir -p "$OUT"
     "$SRC"/world/{chunk,block,terrain,biome,noise,features,chunk_manager}.cpp \
     "$SRC"/render/mesh_builder.cpp \
     "$SRC"/world/ai/pathfinding.cpp \
+    "$SRC"/audio/{audio_engine,sound_registry}.cpp \
     "$SRC"/core/{crashlog,job_system}.cpp \
     "$OUT/stubs.o" \
     -lpthread -ldl

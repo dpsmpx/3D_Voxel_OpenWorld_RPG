@@ -1244,6 +1244,47 @@ void testAudioMixer() {
     eng.stop(fresh, 0.f);
     check(drain(), "чужой голос останавливается своим дескриптором");
 
+    // --- молчащий голос не выпадает из синхронизации ---
+    //
+    // Все четыре музыкальные петли играют всегда, слышна одна;
+    // переключение треков — плавная смена громкостей. Молчащие
+    // голоса мы не смешиваем, но положение в сэмплах у них обязано
+    // идти дальше: иначе вернувшаяся громкость продолжит трек с
+    // давно устаревшего места, и переход прозвучит рывком.
+    {
+        audio::AudioEngine a, b;
+        a.setMasterVolume(1.f); a.setSfxVolume(1.f);
+        b.setMasterVolume(1.f); b.setSfxVolume(1.f);
+
+        auto va = a.play(audio::SOUND_MUSIC_EXPLORE, 1.f, true);
+        auto vb = b.play(audio::SOUND_MUSIC_EXPLORE, 1.f, true);
+        check(va.valid() && vb.valid(), "две одинаковые петли запускаются");
+
+        std::vector<f32> bufA((usize)FRAMES * 2), bufB((usize)FRAMES * 2);
+        auto mixTo = [&](audio::AudioEngine& e, std::vector<f32>& dst) {
+            std::fill(dst.begin(), dst.end(), 0.f);
+            e.mixInto(dst.data(), FRAMES);
+        };
+
+        // Первый играет громко, второй молчит — двадцать буферов.
+        a.setVoiceGain(va, 1.f);
+        b.setVoiceGain(vb, 0.f);
+        for (int i2 = 0; i2 < 20; ++i2) {
+            a.update(0.016f, {}); mixTo(a, bufA);
+            b.update(0.016f, {}); mixTo(b, bufB);
+        }
+        // Теперь оба громкие: если молчавший не двигал курсор, он
+        // отстанет ровно на эти двадцать буферов.
+        b.setVoiceGain(vb, 1.f);
+        a.update(0.016f, {}); mixTo(a, bufA);
+        b.update(0.016f, {}); mixTo(b, bufB);
+
+        f32 diff = 0.f;
+        for (usize i2 = 0; i2 < bufA.size(); ++i2)
+            diff = std::max(diff, std::fabs(bufA[i2] - bufB[i2]));
+        check(diff < 1e-5f, "молчавший голос остался на том же месте трека");
+    }
+
     // --- выход за пределы не ломает буфер ---
     for (int i = 0; i < 70; ++i) eng.play(audio::SOUND_UI_CLICK, 1.f, true);
     eng.update(0.016f, {});

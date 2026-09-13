@@ -16,6 +16,8 @@
 //   ./tools/bench/run.sh meshing    — только по подстроке в названии
 // ============================================================
 #include "core/job_system.h"
+#include "audio/audio_engine.h"
+#include "audio/sound_registry.h"
 #include "world/block.h"
 #include "world/chunk.h"
 #include "world/chunk_manager.h"
@@ -321,6 +323,44 @@ int main(int argc, char** argv) {
     // Мир разрушен — теперь можно останавливать планировщик. Обратный
     // порядок повесил бы выход: деструктор мира ждёт фоновых задач.
     jobs::gJobs.stop();
+
+    // ---- Звук ----
+    // mixInto крутится на потоке реального времени: буфер надо отдать
+    // до срока, иначе в динамике будет щелчок.
+    std::printf("\nзвук\n");
+    {
+        const auto t0 = Clock::now();
+        audio::SoundRegistry::instance().init(48000);
+        std::printf("    (генерация звуков при запуске: %.0f мс)\n",
+                    std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+
+        audio::AudioEngine snd;
+        snd.setMasterVolume(1.f);
+        snd.setSfxVolume(1.f);
+        constexpr u32 AFRAMES = 256;
+        std::vector<f32> abuf((usize)AFRAMES * 2);
+
+        // Четыре музыкальные петли, как в игре: слышна одна.
+        audio::VoiceHandle music[4];
+        const audio::SoundId tracks[4] = {
+            audio::SOUND_MUSIC_EXPLORE, audio::SOUND_MUSIC_COMBAT,
+            audio::SOUND_MUSIC_DUNGEON, audio::SOUND_MUSIC_VILLAGE };
+        for (int i = 0; i < 4; ++i) {
+            music[i] = snd.play(tracks[i], i == 0 ? 1.f : 0.f, true);
+            snd.setVoiceIsMusic(music[i], true);
+        }
+        snd.setMusicVolume(1.f);
+        snd.update(0.016f, {});
+        bench("mixInto: музыка (слышна одна из четырёх)",
+              [&] { snd.mixInto(abuf.data(), AFRAMES); },
+              "кадр", (double)AFRAMES);
+
+        for (int i = 0; i < 4; ++i) snd.setVoiceGain(music[i], 1.f);
+        snd.update(0.016f, {});
+        bench("mixInto: музыка (слышны все четыре)",
+              [&] { snd.mixInto(abuf.data(), AFRAMES); },
+              "кадр", (double)AFRAMES);
+    }
 
     std::printf("\n");
     return 0;

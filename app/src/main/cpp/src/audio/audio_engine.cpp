@@ -449,6 +449,31 @@ void AudioEngine::mixInto(f32* out, u32 frames) {
         u64 cursor = v.cursor;
         bool loop = v.looping;
 
+        // Голос, которого не слышно, смешивать незачем — но положение
+        // в сэмплах двигать обязательно. Музыкальные петли играют все
+        // четыре сразу и всегда, а слышна из них одна: остальные
+        // ждут своей очереди на нулевой громкости, и переключение
+        // треков — это плавная смена громкостей, а не перезапуск.
+        // Если у молчащего голоса остановить курсор, при возврате
+        // громкости он продолжит с давно устаревшего места, и
+        // переход прозвучит рывком.
+        //
+        // Без этого звуковой поток каждый вызов честно перемножал
+        // тишину: четыре петли вместо одной, на потоке с жёстким
+        // сроком отдачи буфера.
+        constexpr f32 SILENCE = 1e-4f;
+        if (gL < SILENCE && gR < SILENCE) {
+            cursor += frames;
+            if (cursor >= totalFrames) {
+                if (loop) cursor %= (totalFrames ? totalFrames : 1);
+                else { freeVoice(idx); continue; }
+            }
+            const u32 stQuiet = v.state.load(std::memory_order_relaxed);
+            if (stQuiet == VoiceState_Active || stQuiet == VoiceState_Freeing)
+                v.cursor = cursor;
+            continue;
+        }
+
         for (u32 i = 0; i < frames; ++i) {
             if (cursor >= totalFrames) {
                 if (loop) {
