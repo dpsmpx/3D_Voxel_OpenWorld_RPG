@@ -85,6 +85,8 @@ public:
     i32 screenHeight() const { return screenH_; }
 
 private:
+    static bool sameRect(const Rect& a, const Rect& b);
+
     struct Interactive {
         Rect rect;
         std::function<void()> onTap;
@@ -97,12 +99,33 @@ private:
         bool  done = false;
     };
 
+    /// Начатое нажатие живёт ОТДЕЛЬНО от списка прямоугольников.
+    ///
+    /// Интерфейс здесь immediate-mode: interactives_ собирается заново
+    /// на каждом кадре, а beginFrame() очищает его. Нажатие же длится
+    /// сотню миллисекунд, то есть пять-семь кадров. Пометка «этот
+    /// прямоугольник держит палец номер N» жила внутри списка — и
+    /// стиралась первой же перерисовкой. К моменту отпускания искать
+    /// было уже некого, и обработчик не вызывался НИКОГДА, кроме
+    /// случая, когда палец успевал подняться в том же кадре.
+    ///
+    /// Поэтому при нажатии запоминаем сам прямоугольник и его
+    /// обработчик здесь: перерисовка их не трогает.
+    struct Capture {
+        bool  active = false;
+        i32   touchId = -1;
+        Rect  rect{0.f, 0.f, 0.f, 0.f};
+        std::function<void()> onTap;
+        bool  inside = false;
+    };
+
     UiRenderer* r_ = nullptr;
     i32 screenW_ = 1080;
     i32 screenH_ = 1920;
 
     std::vector<Interactive> interactives_;
     std::vector<PendingTap>  pendingTaps_;
+    Capture                  capture_;
 
     /// Активный тач — тот, который начал первое касание в этом кадре
     /// и ещё не завершился. Используется для слайдеров и drag.

@@ -11,6 +11,7 @@
 #include <memory>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <thread>
 #include <ctime>
 #include <string>
@@ -26,6 +27,7 @@
 #include "config/playtime.h"
 
 #include "input/touch.h"
+#include "input/touch_layout.h"
 
 #include "vk/vk_context.h"
 
@@ -571,50 +573,39 @@ struct Engine {
     // config::ButtonSlot, иначе сохранённые сдвиги уедут не туда.
     // ============================================================
     void setupButtons() {
-        // Правый низ: атака и всё, что рядом с большим пальцем.
-        btnAttack_ = touch.addButton({ 0.72f, -0.62f }, 100.f,
-            [this](u32) { evAttack_ = true; }, nullptr);
+        // Положения и размеры — в input/touch_layout.h, рядом с такой
+        // же таблицей HUD. Здесь остаются только действия: сами числа
+        // нужны ещё и проверке раскладки, а две копии чисел уже
+        // однажды разъехались — «CAM» оказалась поверх «ATT».
+        using input::DEFAULT_BUTTONS;
+        const f32 sw = (f32)(winW_ > 0 ? winW_ : 1920);
+        const f32 sh = (f32)(winH_ > 0 ? winH_ : 1080);
+        auto add = [&](u32 slot, std::function<void(u32)> onPress) {
+            const auto& L = DEFAULT_BUTTONS[slot];
+            const u32 id = touch.addButton(input::buttonCenterNdc(L, sw, sh),
+                                           input::buttonRadiusPx(L, sh),
+                                           std::move(onPress), nullptr);
+            // Шрифт HUD знает только латиницу до 95-го кода, поэтому
+            // подписи короткие и заглавными.
+            touch.setButtonLabel(id, L.label);
+            return id;
+        };
 
-        btnFinisher_ = touch.addButton({ 0.90f, -0.30f }, 60.f,
-            [this](u32) { evFinish_ = true; }, nullptr);
-
-        btnJump_ = touch.addButton({ 0.88f, -0.72f }, 85.f, nullptr, nullptr);
-
-        // Левая половина: движение и контекстные действия.
-        btnSprint_ = touch.addButton({ -0.88f, -0.20f }, 70.f, nullptr, nullptr);
-
-        btnBreak_ = touch.addButton({ 0.52f, -0.30f }, 70.f,
-            [this](u32) { evBreak_ = true; }, nullptr);
-
-        btnPlace_ = touch.addButton({ 0.36f, -0.62f }, 80.f,
-            [this](u32) { evPlace_ = true; }, nullptr);
-
-        btnInteract_ = touch.addButton({ -0.52f, -0.62f }, 70.f,
-            [this](u32) { evInteract_ = true; }, nullptr);
-
-        btnUseItem_ = touch.addButton({ -0.36f, -0.86f }, 55.f,
-            [this](u32) { evUseItem_ = true; }, nullptr);
-
-        btnCamera_ = touch.addButton({ 0.92f, 0.62f }, 55.f,
-            [this](u32) {
+        btnAttack_   = add(cfg::Btn_Attack,   [this](u32) { evAttack_   = true; });
+        btnFinisher_ = add(cfg::Btn_Finisher, [this](u32) { evFinish_   = true; });
+        btnJump_     = add(cfg::Btn_Jump,     nullptr);
+        btnSprint_   = add(cfg::Btn_Sprint,   nullptr);
+        btnBreak_    = add(cfg::Btn_Break,    [this](u32) { evBreak_    = true; });
+        btnPlace_    = add(cfg::Btn_Place,    [this](u32) { evPlace_    = true; });
+        btnInteract_ = add(cfg::Btn_Interact, [this](u32) { evInteract_ = true; });
+        btnUseItem_  = add(cfg::Btn_UseItem,  [this](u32) { evUseItem_  = true; });
+        btnCamera_   = add(cfg::Btn_Camera,   [this](u32) {
                 if (!player) return;
                 player->cameraMode =
                     (player->cameraMode == player::CameraMode::FirstPerson)
                         ? player::CameraMode::ThirdPerson
                         : player::CameraMode::FirstPerson;
-            }, nullptr);
-
-        // Подписи. Шрифт HUD знает только латиницу до 95-го кода,
-        // поэтому коротко и заглавными.
-        touch.setButtonLabel(btnAttack_,   "ATK");
-        touch.setButtonLabel(btnFinisher_, "FIN");
-        touch.setButtonLabel(btnJump_,     "JMP");
-        touch.setButtonLabel(btnSprint_,   "RUN");
-        touch.setButtonLabel(btnBreak_,    "DIG");
-        touch.setButtonLabel(btnPlace_,    "PUT");
-        touch.setButtonLabel(btnInteract_, "USE");
-        touch.setButtonLabel(btnUseItem_,  "ITM");
-        touch.setButtonLabel(btnCamera_,   "CAM");
+            });
 
         buttonIds_[cfg::Btn_Attack]   = btnAttack_;
         buttonIds_[cfg::Btn_Finisher] = btnFinisher_;

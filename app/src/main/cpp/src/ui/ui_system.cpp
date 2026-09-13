@@ -3,6 +3,7 @@
  * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
  */
 #include "ui_system.h"
+#include "hud_layout.h"
 #include "slider.h"
 #include "hud_resources.h"
 #include "../combat/weapon.h"
@@ -266,23 +267,25 @@ void UiSystem::drawHud(vk::Context& /*ctx*/,
         ui_.rect(r.x, r.y, r.w, r.h, fill);
         ui_.rectOutline(r.x, r.y, r.w, r.h, 2.f, COL_BLACK);
         float tw = ui_.textWidth(label, 2.f);
-        ui_.text(label, r.x + (r.w - tw) * 0.5f, r.y + 16.f, 2.f, COL_WHITE);
+        float th = ui_.textHeight(2.f);
+        ui_.text(label, r.x + (r.w - tw) * 0.5f, r.y + (r.h - th) * 0.5f,
+                 2.f, COL_WHITE);
     };
 
-    drawMenuButton({ (float)screenW_ - 80.f,  12.f, 60.f, 50.f }, "|||",
-                   [this]() { screen = Screen::PauseMenu; });
-    drawMenuButton({ (float)screenW_ - 80.f,  70.f, 60.f, 50.f }, "INV",
-                   [this]() { screen = Screen::Inventory; });
-    drawMenuButton({ (float)screenW_ - 80.f, 128.f, 60.f, 50.f }, "SKL",
-                   [this]() { screen = Screen::SkillTree; });
-    drawMenuButton({ (float)screenW_ - 80.f, 186.f, 60.f, 50.f }, "ATT",
-                   [this]() { screen = Screen::Attributes; });
-    drawMenuButton({ (float)screenW_ - 80.f, 244.f, 60.f, 50.f }, "QST",
-                   [this]() { screen = Screen::QuestLog; });
-    drawMenuButton({ (float)screenW_ - 80.f, 302.f, 60.f, 50.f }, "REP",
-                   [this]() { screen = Screen::Reputation; });
-    drawMenuButton({ (float)screenW_ - 80.f, 360.f, 60.f, 50.f }, "SAV",
-                   [this]() {
+    // Геометрия столбца — в ui/hud_layout.h: её же читает проверка
+    // раскладки, иначе наложение с круглыми кнопками видно только на
+    // устройстве.
+    auto menuSlot = [&](u32 i) {
+        const HudRect r = hudMenuRect(i, (float)screenW_, (float)screenH_);
+        return Rect{ r.x, r.y, r.w, r.h };
+    };
+    drawMenuButton(menuSlot(0), "|||", [this]() { screen = Screen::PauseMenu; });
+    drawMenuButton(menuSlot(1), "INV", [this]() { screen = Screen::Inventory; });
+    drawMenuButton(menuSlot(2), "SKL", [this]() { screen = Screen::SkillTree; });
+    drawMenuButton(menuSlot(3), "ATT", [this]() { screen = Screen::Attributes; });
+    drawMenuButton(menuSlot(4), "QST", [this]() { screen = Screen::QuestLog; });
+    drawMenuButton(menuSlot(5), "REP", [this]() { screen = Screen::Reputation; });
+    drawMenuButton(menuSlot(6), "SAV", [this]() {
                        saveLoadMode = SaveLoadMode::Save;
                        screen = Screen::SaveLoad;
                    });
@@ -430,9 +433,10 @@ void UiSystem::drawHudResources(player::Player& player) {
 void UiSystem::drawMinimap(player::Player& player) {
     if (minimap.size() == 0) return;
 
-    const float mSize = 180.f;
-    const float mx = (float)screenW_ - mSize - 20.f;
-    const float my = (float)screenH_ - mSize - 20.f;
+    // Числа — в ui/hud_layout.h, вместе с остальной раскладкой HUD.
+    const float mSize = MINIMAP_SIZE;
+    const float mx = (float)screenW_ - mSize - MINIMAP_MARGIN;
+    const float my = (float)screenH_ - mSize - MINIMAP_MARGIN;
 
     // Рамка
     ui_.rect(mx - 4.f, my - 4.f, mSize + 8.f, mSize + 8.f, COL_BLACK);
@@ -558,11 +562,11 @@ void UiSystem::drawReputationNotification(player::Player& player) {
 }
 
 void UiSystem::drawHotbar(player::Player& player) {
-    const int slots = 9;
-    const float sw = 60.f, sh = 60.f;
-    const float totalW = slots * (sw + 4.f) - 4.f;
+    const int slots = (int)HOTBAR_SLOTS;
+    const float sw = HOTBAR_SLOT, sh = HOTBAR_SLOT;
+    const float totalW = slots * (sw + HOTBAR_GAP) - HOTBAR_GAP;
     const float x0 = ((float)screenW_ - totalW) * 0.5f;
-    const float y0 = (float)screenH_ - 84.f;
+    const float y0 = (float)screenH_ - HOTBAR_BOTTOM;
 
     auto* inv = player.inventory();
     u8 activeHotbar = inv ? inv->activeHotbar : 0;
