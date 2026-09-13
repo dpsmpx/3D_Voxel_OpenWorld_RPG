@@ -236,7 +236,7 @@ void NpcRenderer::upload(vk::Context& ctx) {
 }
 
 void NpcRenderer::render(vk::Context& ctx, VkDescriptorSet set) {
-    if (instanceCount_ == 0 || !instances_.handle()) return;
+    if (instanceCount_ == 0 || !instances_.handle() || !pipeline_.valid()) return;
     VkCommandBuffer cmd = ctx.currentCmd();
 
     VkViewport vp{};

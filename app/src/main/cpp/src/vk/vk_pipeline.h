@@ -64,6 +64,14 @@ public:
     VkPipeline       handle() const { return pipeline_; }
     VkPipelineLayout layout() const { return layout_; }
 
+    /// Создан ли пайплайн на самом деле. Часть рендереров движок
+    /// заводит необязательными: не собрался — LOGW и живём дальше.
+    /// Но нулевой дескриптор драйвер не проверяет, а разыменовывает:
+    /// процесс падает внутри libvulkan, где от нашего кода не
+    /// остаётся ни имени функции, ни строки. Спрашивать перед
+    /// записью команд должен тот, кто их пишет.
+    bool valid() const { return pipeline_ != VK_NULL_HANDLE; }
+
 private:
     VkDevice         dev_ = VK_NULL_HANDLE;
     VkPipeline       pipeline_ = VK_NULL_HANDLE;

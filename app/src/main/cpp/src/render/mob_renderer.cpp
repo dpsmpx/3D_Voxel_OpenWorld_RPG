@@ -223,7 +223,7 @@ void MobRenderer::upload(vk::Context& ctx) {
 }
 
 void MobRenderer::render(vk::Context& ctx, VkDescriptorSet set, const math::Frustum&) {
-    if (instanceCount_ == 0 || !instances_.handle()) return;
+    if (instanceCount_ == 0 || !instances_.handle() || !pipeline_.valid()) return;
     VkCommandBuffer cmd = ctx.currentCmd();
 
     VkViewport vp{};

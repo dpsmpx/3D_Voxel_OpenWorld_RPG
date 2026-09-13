@@ -729,6 +729,218 @@ void testBossPhases() {
 // строки. Ровно так игра падала при первом кадре — интерфейс дорастил
 // свой буфер, передав нулевое физическое устройство.
 // ------------------------------------------------------------
+// ------------------------------------------------------------
+// Часть договоров о работе с Vulkan проверяется по исходному
+// тексту: настоящего VkDevice на хосте нет, а заглушки не выделяют
+// памяти и ничего не синхронизируют. Читаем файл целиком; пустая
+// строка означает «запустили не из корня проекта».
+// ------------------------------------------------------------
+static std::string readSource(const char* path) {
+    std::FILE* f = std::fopen(path, "rb");
+    if (!f) return {};
+    std::string out;
+    char buf[4096];
+    usize n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+    std::fclose(f);
+    return out;
+}
+
+// ------------------------------------------------------------
+// Синхронизация прохода рендера.
+//
+// Буфер глубины в движке ОДИН на всю цепочку показа, а кадров в
+// работе два. Значит порядок доступа к нему держится исключительно
+// на зависимости подпрохода от VK_SUBPASS_EXTERNAL — а она была
+// неполной сразу трижды: не ждала позднюю стадию тестов глубины
+// (именно на ней глубина дописывается), не делала прошлые записи
+// доступными (нулевой srcAccessMask) и не упоминала чтений, хотя
+// тест глубины читает. На экране это выглядело как «видно сквозь
+// блоки»: глубина одного кадра проверялась против остатков другого.
+// ------------------------------------------------------------
+void testRenderPassSync() {
+    group("vk: зависимость прохода рендера");
+
+    const std::string src = readSource("app/src/main/cpp/src/vk/vk_context.cpp");
+    if (src.empty()) {
+        check(true, "исходник vk_context.cpp не найден, проверка пропущена");
+        return;
+    }
+
+    const usize beg = src.find("bool Context::createRenderPass()");
+    check(beg != std::string::npos, "createRenderPass на месте");
+    if (beg == std::string::npos) return;
+    const usize end = src.find("\nbool Context::", beg + 10);
+    const std::string body = src.substr(beg, end - beg);
+
+    const usize dep = body.find("VkSubpassDependency dep{}");
+    check(dep != std::string::npos, "зависимость подпрохода объявлена");
+    if (dep == std::string::npos) return;
+    const std::string d = body.substr(dep);
+
+    const usize src_ = d.find("dep.srcStageMask");
+    const usize dst_ = d.find("dep.dstStageMask");
+    check(src_ != std::string::npos && dst_ != std::string::npos && src_ < dst_,
+          "обе половины зависимости заданы");
+    if (src_ == std::string::npos || dst_ == std::string::npos) return;
+
+    const std::string srcHalf = d.substr(src_, dst_ - src_);
+    check(srcHalf.find("LATE_FRAGMENT_TESTS") != std::string::npos,
+          "ждём позднюю стадию тестов глубины прошлого кадра");
+    check(srcHalf.find("VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT") != std::string::npos,
+          "и делаем его записи глубины доступными");
+    check(srcHalf.find("VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT") != std::string::npos,
+          "то же для цвета");
+
+    const std::string dstHalf = d.substr(dst_);
+    check(dstHalf.find("VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT") != std::string::npos,
+          "тест глубины читает — чтение указано во второй половине");
+
+    // --- Отвергнутая отправка не должна оборачиваться зависанием ---
+    //
+    // Забор кадра подаёт vkQueueSubmit. Если отправку отвергли, его не
+    // подадут никогда, а ждут его без срока: приложение замирает без
+    // единой строки в журнале. И показывать после провала отправки
+    // нельзя — показ ждёт семафор, которого тоже никто не подаст.
+    const usize efb = src.find("void Context::endFrame()");
+    check(efb != std::string::npos, "endFrame на месте");
+    if (efb != std::string::npos) {
+        const std::string ef = src.substr(efb);
+        const usize fail = ef.find("if (sub != VK_SUCCESS)");
+        const usize pres = ef.find("vkQueuePresentKHR");
+        check(fail != std::string::npos && pres != std::string::npos && fail < pres,
+              "неудача отправки разбирается до показа");
+        if (fail != std::string::npos && pres != std::string::npos && fail < pres) {
+            const std::string branch = ef.substr(fail, pres - fail);
+            check(branch.find("return;") != std::string::npos,
+                  "после отвергнутой отправки кадр не показывается");
+        }
+    }
+
+    check(src.find("if (framePending_[currentFrame_])") != std::string::npos,
+          "забор ждут, только если его кто-то обещал подать");
+
+    // --- Слой проверки включается сам, если он есть ---
+    check(src.find("instanceLayerPresent(\"VK_LAYER_KHRONOS_validation\")")
+              != std::string::npos,
+          "наличие слоя проверки спрашивают у загрузчика");
+    check(src.find("(void)layers;") == std::string::npos,
+          "и не выбрасывают список слоёв, не дойдя до vkCreateInstance");
+    check(src.find("ci.enabledLayerCount       = (u32)layers.size();")
+              != std::string::npos,
+          "найденный слой попадает в VkInstanceCreateInfo");
+}
+
+// ------------------------------------------------------------
+// Договор vk::Buffer::map().
+//
+// map() возвращал сохранённый при создании указатель, а unmap() его
+// обнулял — и второй map() отдавал nullptr, ничего об этом не
+// сообщая. Единственный, кто этим пользовался, — интерфейс: он писал
+// вершины, снимал отображение и на следующем кадре получал nullptr,
+// молча пропуская отрисовку. Интерфейс жил ровно два первых кадра за
+// весь запуск; в журнале это выглядело как «вершин 3468,
+// нарисовано 0» и держалось много сборок подряд.
+//
+// Заглушки Vulkan на хосте не выделяют настоящей памяти, поэтому
+// проверяем то, что от них не зависит: договор о том, что map()
+// после unmap() обязан вернуть отображение, а не тишину.
+// ------------------------------------------------------------
+void testBufferMapContract() {
+    group("vk::Buffer: отображение памяти");
+
+    // Смотрим на исходный текст: на хосте настоящий VkDevice создать
+    // нечем, а договор проверить надо.
+    const char* path = "app/src/main/cpp/src/vk/vk_buffer.cpp";
+    std::FILE* f = std::fopen(path, "rb");
+    if (!f) {   // запуск не из корня проекта — проверку пропускаем
+        check(true, "исходник vk_buffer.cpp не найден, проверка пропущена");
+        return;
+    }
+    std::string src;
+    char buf[4096];
+    usize n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) src.append(buf, n);
+    std::fclose(f);
+
+    const usize mapPos = src.find("void* Buffer::map()");
+    check(mapPos != std::string::npos, "map() на месте");
+    if (mapPos == std::string::npos) return;
+
+    const usize mapEnd = src.find("\n}", mapPos);
+    const std::string body = src.substr(mapPos, mapEnd - mapPos);
+
+    check(body.find("vkMapMemory") != std::string::npos,
+          "map() создаёт отображение, если его нет, а не возвращает тишину");
+
+    // И тот, кто этим пользуется, отображение больше не снимает.
+    std::FILE* uf = std::fopen("app/src/main/cpp/src/ui/ui_renderer.cpp", "rb");
+    check(uf != nullptr, "исходник ui_renderer.cpp на месте");
+    if (uf) {
+        std::string ui;
+        while ((n = std::fread(buf, 1, sizeof(buf), uf)) > 0) ui.append(buf, n);
+        std::fclose(uf);
+        check(ui.find(".unmap()") == std::string::npos,
+              "интерфейс не снимает отображение своих вершинных буферов");
+    }
+
+    // --- Данные кадра пишутся после ожидания на заборе ---
+    //
+    // Буферов камеры столько же, сколько кадров в работе, и выбираются
+    // они по номеру кадра. Слот, в который пишем сейчас, последний раз
+    // читался кадром, отправленным двумя кадрами назад; дождаться его
+    // можно только на заборе, а забор ждёт beginFrame(). Значит писать
+    // в такой буфер из prepareFrame(), который идёт ДО beginFrame(),
+    // нельзя: процессор перепишет матрицы прямо во время того, как GPU
+    // рисует ими предыдущий кадр, и геометрия перестанет сходиться
+    // сама с собой.
+    std::FILE* rf = std::fopen("app/src/main/cpp/src/render/render_system.cpp", "rb");
+    check(rf != nullptr, "исходник render_system.cpp на месте");
+    if (rf) {
+        std::string rs;
+        while ((n = std::fread(buf, 1, sizeof(buf), rf)) > 0) rs.append(buf, n);
+        std::fclose(rf);
+
+        const usize prep = rs.find("void RenderSystem::prepareFrame");
+        const usize rend = rs.find("void RenderSystem::render(");
+        check(prep != std::string::npos && rend != std::string::npos &&
+              prep < rend, "prepareFrame и render на месте");
+
+        if (prep != std::string::npos && rend != std::string::npos && prep < rend) {
+            const std::string prepBody = rs.substr(prep, rend - prep);
+            check(prepBody.find("uboBuffers_[") == std::string::npos ||
+                  prepBody.find("uboBuffers_[frame].write") == std::string::npos,
+                  "prepareFrame не пишет в буфер камеры: забор ещё не дождан");
+
+            const std::string rendBody = rs.substr(rend);
+            check(rendBody.find("uboBuffers_[frame].write") != std::string::npos,
+                  "render пишет камеру сам — после ожидания на заборе");
+        }
+    }
+
+    // --- Семафор показа принадлежит изображению, а не слоту кадра ---
+    //
+    // renderFinished_ ждёт vkQueuePresentKHR, а показ асинхронный: он
+    // может быть ещё не выполнен, когда очередь кадров вернётся к тому
+    // же слоту. Выбирая семафор по номеру кадра, мы подавали сигнал на
+    // семафор, которого кто-то ещё ждёт, — а это неопределённое
+    // поведение, из которого на экран попадает недорисованное.
+    std::FILE* vf = std::fopen("app/src/main/cpp/src/vk/vk_context.cpp", "rb");
+    check(vf != nullptr, "исходник vk_context.cpp на месте");
+    if (vf) {
+        std::string vc;
+        while ((n = std::fread(buf, 1, sizeof(buf), vf)) > 0) vc.append(buf, n);
+        std::fclose(vf);
+
+        check(vc.find("renderFinished_[imgIdx_]") != std::string::npos,
+              "семафор показа выбирается по изображению");
+        check(vc.find("renderFinished_[currentFrame_]") == std::string::npos,
+              "и не по слоту кадра");
+        check(vc.find("imagesInFlight_[imgIdx_]") != std::string::npos,
+              "занятость изображения отслеживается отдельно от слота кадра");
+    }
+}
+
 void testVulkanGuards() {
     group("vk: защита от нулевых дескрипторов");
 
@@ -2046,6 +2258,8 @@ int main() {
     testBossPhases();
 
     testVulkanGuards();
+    testRenderPassSync();
+    testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();
     testWorldQueries();

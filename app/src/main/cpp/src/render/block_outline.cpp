@@ -72,7 +72,7 @@ bool BlockOutline::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLay
 void BlockOutline::render(vk::Context& ctx, VkDescriptorSet uboSet,
                           const glm::ivec3& bp, bool visible)
 {
-    if (!visible) return;
+    if (!visible || !pipeline_.valid()) return;
     VkCommandBuffer cmd = ctx.currentCmd();
 
     // Лёгкое расширение наружу — чтобы линии не сливались с блоками

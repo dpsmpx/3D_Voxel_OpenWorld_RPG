@@ -151,13 +151,36 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     world.setLodBands(chunkRenderer_.lodBand(0), chunkRenderer_.lodBand(1),
                       chunkRenderer_.lodBand(2));
 
-    const u32 frame = ctx.frameInFlight();
-    CameraUbo ubo = camera_.toUbo(timeSec);
-    uboBuffers_[frame].write(&ubo, sizeof(CameraUbo));
+    // Камера в буфер здесь НЕ пишется — см. render(). Эта функция
+    // выполняется до vkWaitForFences на заборе текущего кадра, то есть
+    // в момент, когда GPU ещё может читать буфер этого же слота из
+    // кадра, отправленного двумя кадрами раньше.
 }
 
 void RenderSystem::render(vk::Context& ctx) {
     const u32 frame = ctx.frameInFlight();
+
+    // Матрицы камеры пишем здесь, а не в prepareFrame.
+    //
+    // Буферов камеры столько же, сколько кадров в работе, и выбираются
+    // они по номеру кадра. Значит слот, в который мы пишем сейчас,
+    // последний раз читался кадром, отправленным двумя кадрами назад —
+    // и дождаться его можно только на заборе. Забор ждёт beginFrame(),
+    // а prepareFrame() выполняется ДО него.
+    //
+    // То есть процессор переписывал матрицы прямо во время того, как
+    // GPU рисовал ими предыдущий кадр. Одна отправка читает буфер не
+    // разом, а по мере выполнения команд: небо и ближние чанки
+    // успевали взять старую матрицу, дальние — уже новую. Геометрия
+    // переставала сходиться между собой, и сквозь ближние поверхности
+    // становились видны внутренности дальних. Чем быстрее двигалась
+    // камера, тем заметнее.
+    //
+    // render() вызывается только после успешного beginFrame(), то есть
+    // после ожидания на заборе: здесь слот заведомо свободен.
+    CameraUbo ubo = camera_.toUbo(timeSec_);
+    uboBuffers_[frame].write(&ubo, sizeof(CameraUbo));
+
     VkDescriptorSet ds = descriptors_.set(frame);
     math::Frustum fr = camera_.frustum();
 

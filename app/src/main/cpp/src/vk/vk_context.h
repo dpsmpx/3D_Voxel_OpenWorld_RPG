@@ -106,11 +106,20 @@ private:
     bool createCommandPool();
     bool createCommandBuffers();
     bool createSyncObjects();
+    /// Семафоры и отметки занятости, привязанные к изображениям цепочки.
+    bool createSwapchainSync();
+    void destroySwapchainSync();
     void destroySwapchain();
     /// Изменился ли размер окна с момента создания цепочки.
     bool surfaceExtentChanged() const;
+    /// Разбирает кадр, который захватил изображение, но не дошёл до
+    /// показа: подаёт забор слота и забирает семафор изображения.
+    void discardAcquiredFrame();
 
     VkInstance       instance_ = VK_NULL_HANDLE;
+    /// Обработчик сообщений слоя проверки. Живёт, только если слой
+    /// нашёлся на устройстве; иначе VK_NULL_HANDLE и ноль накладных.
+    VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
     VkSurfaceKHR     surface_  = VK_NULL_HANDLE;
     VkPhysicalDevice physical_ = VK_NULL_HANDLE;
     VkDevice         device_   = VK_NULL_HANDLE;
@@ -134,9 +143,32 @@ private:
     VkCommandPool                cmdPool_ = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> cmdBuffers_;
 
+    /// По одному на кадр в работе: ими распоряжается сам кадр.
     std::vector<VkSemaphore> imgAvailable_;
-    std::vector<VkSemaphore> renderFinished_;
     std::vector<VkFence>     inFlight_;
+    /// Обещал ли кто-нибудь подать забор слота. Отправка в очередь
+    /// может быть отвергнута, и тогда забор не подадут никогда —
+    /// а ожидание на нём бессрочное.
+    bool                     framePending_[MAX_FRAMES] = {};
+
+    /// А эти — ПО ОДНОМУ НА ИЗОБРАЖЕНИЕ ЦЕПОЧКИ, и это принципиально.
+    ///
+    /// renderFinished_ ждёт vkQueuePresentKHR, а показ асинхронный: он
+    /// может быть ещё не выполнен, когда очередь кадров снова дойдёт до
+    /// того же слота. Раньше семафор выбирался по номеру кадра в
+    /// работе, и тогда мы подавали сигнал на семафор, которого кто-то
+    /// ещё ждёт. Драйвер вправе перепутать, какой сигнал чей: на экран
+    /// попадает недорисованное изображение, а то и два кадра разом.
+    ///
+    /// imagesInFlight_ — чей забор сейчас держит это изображение.
+    /// Забор кадра говорит только про слот кадра; про то, свободна ли
+    /// картинка, которую вернул vkAcquireNextImageKHR, он не знает
+    /// ничего, а вернуть он может любую.
+    ///
+    /// Оба массива живут ровно столько же, сколько сама цепочка:
+    /// число изображений при пересоздании может измениться.
+    std::vector<VkSemaphore> renderFinished_;
+    std::vector<VkFence>     imagesInFlight_;   ///< чужие заборы, не наши
     u32                      currentFrame_ = 0;
     u64                      framesPresented_ = 0;
     u64                      swapchainRebuilds_ = 0;
