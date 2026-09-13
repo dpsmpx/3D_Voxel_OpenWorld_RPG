@@ -31,6 +31,7 @@
 #include "save/save_format.h"
 #include "world/block.h"
 #include "world/chunk.h"
+#include "world/debug_scene.h"
 #include "world/chunk_manager.h"
 #include "render/mesh_builder.h"
 #include "vk/vk_buffer.h"
@@ -761,6 +762,74 @@ static std::string readSource(const char* path) {
 // тест глубины читает. На экране это выглядело как «видно сквозь
 // блоки»: глубина одного кадра проверялась против остатков другого.
 // ------------------------------------------------------------
+void testMinimalScene() {
+    group("сцена: минимальная детерминированная");
+
+    world::Chunk c;
+    c.coord = { 0, 0, 0 };
+    world::buildMinimalScene(c);
+
+    const i32 G = world::SCENE_GROUND_Y;
+
+    // Ровная земля: трава на G-1, воздух над ней.
+    check(c.at(1, G - 1, 1) == world::GRASS, "ровная земля покрыта травой");
+    check(c.at(1, G, 1) == world::AIR,       "над землёй воздух");
+    check(c.at(1, G - 2, 1) == world::DIRT,  "под травой земля");
+    check(c.at(1, 0, 1) == world::STONE,     "внизу камень");
+
+    // Одиночный поднятый блок.
+    check(c.at(world::SCENE_BLOCK_X, G, world::SCENE_BLOCK_Z) == world::STONE,
+          "поднятый блок на месте");
+    check(c.at(world::SCENE_BLOCK_X, G + 1, world::SCENE_BLOCK_Z) == world::AIR,
+          "над ним воздух");
+
+    // Лесенка: каждая следующая колонка на блок выше.
+    bool stairs = true;
+    for (i32 x = world::SCENE_SLOPE_X0; x <= world::SCENE_SLOPE_X1; ++x) {
+        const i32 top = G + (x - world::SCENE_SLOPE_X0);
+        if (c.at(x, top, 6) != world::GRASS) stairs = false;
+        if (c.at(x, top + 1, 6) != world::AIR) stairs = false;
+    }
+    check(stairs, "лесенка поднимается на блок за шаг");
+
+    // Вода: верх вровень с землёй, дно каменное.
+    check(c.at(world::SCENE_POOL_X0, G - 1, world::SCENE_POOL_Z0) == world::WATER,
+          "вода стоит вровень с землёй");
+    check(c.at(world::SCENE_POOL_X0, G - 3, world::SCENE_POOL_Z0) == world::STONE,
+          "дно водоёма каменное");
+    check(c.at(world::SCENE_POOL_X0, G, world::SCENE_POOL_Z0) == world::AIR,
+          "над водой воздух");
+
+    // Дерево: ствол и крона.
+    check(c.at(world::SCENE_TREE_X, G, world::SCENE_TREE_Z) == world::WOOD,
+          "ствол дерева на месте");
+    check(c.at(world::SCENE_TREE_X, G + 4, world::SCENE_TREE_Z) == world::LEAVES,
+          "крона над стволом");
+
+    // Соседний чанк — только ровная земля: он служит фоном и даёт
+    // центральному честных соседей.
+    world::Chunk n;
+    n.coord = { 1, 0, 0 };
+    world::buildMinimalScene(n);
+    bool flat = true;
+    for (i32 z = 0; z < world::CHUNK_SIZE && flat; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+            if (n.at(x, G, z) != world::AIR || n.at(x, G - 1, z) != world::GRASS) {
+                flat = false; break;
+            }
+    check(flat, "соседние чанки — ровная земля без примет");
+
+    // Сцена не зависит ни от чего внешнего: второй вызов обязан дать
+    // тот же чанк до последнего вокселя.
+    world::Chunk again;
+    again.coord = { 0, 0, 0 };
+    world::buildMinimalScene(again);
+    bool same = true;
+    for (i32 i = 0; i < world::CHUNK_VOL; ++i)
+        if (again.voxels[(usize)i] != c.voxels[(usize)i]) { same = false; break; }
+    check(same, "повторная сборка даёт тот же чанк");
+}
+
 void testDebugShadingWired() {
     group("рендер: отладочные виды террейна");
 
@@ -2691,6 +2760,7 @@ int main() {
     testVulkanGuards();
     testRenderPassSync();
     testDebugShadingWired();
+    testMinimalScene();
     testUiTapSurvivesRedraw();
     testHudAndButtonsDoNotOverlap();
     testBufferMapContract();

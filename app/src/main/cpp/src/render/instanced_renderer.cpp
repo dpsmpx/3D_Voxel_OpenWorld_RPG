@@ -6,6 +6,8 @@
 #include "grass_pipeline.h"
 #include "../core/log.h"
 #include "../world/block.h"
+#include "../world/debug_scene.h"
+#include "../config/settings.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <random>
 #include <cmath>
@@ -98,7 +100,12 @@ void InstancedRenderer::populateGrass(const world::ChunkManager& world,
                 f32 ddz = (f32)wz - playerPos.z;
                 if (ddx*ddx + ddz*ddz > radius*radius) continue;
 
-                const i32 surf = world.generator().surfaceHeight(wx, wz);
+                // В минимальной сцене рельеф задан сценой, а не
+                // генератором: высота обязана совпасть с той, что
+                // подставляет tools/vkcheck, иначе трава разойдётся.
+                const i32 surf = config::settingsConst().debugScene
+                               ? world::SCENE_GROUND_Y
+                               : world.generator().surfaceHeight(wx, wz);
 
                 // Трава растёт только на реальном грунте и только если
                 // над ним воздух: getVoxel учитывает пещеры, воду и

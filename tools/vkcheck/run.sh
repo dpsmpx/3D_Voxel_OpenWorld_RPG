@@ -58,7 +58,7 @@ echo "==> Сборка..."
     "$PROJ/tools/vkcheck/vkcheck.cpp" \
     "$SRC"/vk/{vk_buffer,vk_pipeline,vk_shader,vk_descriptors,vk_renderpass}.cpp \
     "$SRC"/render/{mesh_builder,voxel_pipeline,grass_pipeline}.cpp \
-    "$SRC"/world/{chunk,block,terrain,biome,noise,features}.cpp \
+    "$SRC"/world/{chunk,block,terrain,biome,noise,features,debug_scene}.cpp \
     "$SRC"/core/crashlog.cpp \
     -lvulkan -ldl -lpthread
 

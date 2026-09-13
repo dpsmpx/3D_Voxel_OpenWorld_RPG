@@ -3,6 +3,8 @@
  * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
  */
 #include "chunk_manager.h"
+#include "debug_scene.h"
+#include "../config/settings.h"
 #include "../core/log.h"
 #include "../core/memory.h"
 #include <algorithm>
@@ -145,7 +147,10 @@ void ChunkManager::jobGenerate(void* data) {
         // Пишем весь массив вокселей разом: черновые состояния наружу
         // не видны, читатели ждут на shared-замке.
         std::unique_lock lk(c->voxelMutex);
-        generateChunkVoxels(*c, terrain, columns.data(), mgr->seed_);
+        if (config::settingsConst().debugScene)
+            buildMinimalScene(*c);
+        else
+            generateChunkVoxels(*c, terrain, columns.data(), mgr->seed_);
     }
 
     c->version.fetch_add(1, std::memory_order_release);

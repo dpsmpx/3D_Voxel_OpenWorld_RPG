@@ -3,6 +3,7 @@
  * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
  */
 #include "render_system.h"
+#include "../world/debug_scene.h"
 #include "voxel_pipeline.h"
 #include "../core/log.h"
 #include "../config/settings.h"
@@ -69,7 +70,10 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
                                 const physics::RayHit& targetHit,
                                 f32 fps)
 {
-    timeSec_       = timeSec;
+    // В минимальной сцене время стоит: иначе трава качается по
+    // fogParams.w и два кадра не совпадут никогда.
+    timeSec_       = config::settingsConst().debugScene
+                   ? world::SCENE_TIME_SEC : timeSec;
     currentPlayer_ = player;
     currentWorld_  = &world;
     currentFps_    = fps;

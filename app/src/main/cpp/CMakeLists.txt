@@ -95,6 +95,7 @@ add_library(native-lib SHARED
     src/world/block.cpp
     src/world/chunk.cpp
     src/world/chunk_manager.cpp
+    src/world/debug_scene.cpp
     src/world/enchant_altar.cpp
     src/world/features.cpp
     src/world/noise.cpp

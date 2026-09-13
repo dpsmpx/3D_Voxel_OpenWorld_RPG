@@ -32,6 +32,7 @@
 #include "vk/vk_context.h"
 
 #include "world/chunk_manager.h"
+#include "world/debug_scene.h"
 #include "world/block.h"
 #include "world/enchant_altar.h"
 #include "world/day_cycle.h"
@@ -953,6 +954,26 @@ struct Engine {
         cam.setYawPitch(cameraYawPitch.x, cameraYawPitch.y);
         cam.setSunDir(dayCycle.sunDirection());
         cam.setSky(dayCycle.skyColor(), dayCycle.skyLight(), dayCycle.timeOfDay());
+
+        // Минимальная детерминированная сцена: камера, солнце и небо
+        // прибиты к числам из world/debug_scene.h — тем самым, по
+        // которым tools/vkcheck --scene minimal рисует свой кадр.
+        // Подвижная камера, ходящее солнце и качающаяся от времени
+        // трава не дали бы сравнить два кадра никогда.
+        if (config::settingsConst().debugScene) {
+            cam.setFirstPerson(true);
+            cam.setHeadBob(0.f, 0.f);
+            cam.setFirstPersonEye(0.f);
+            cam.setThirdPersonDistance(0.f);
+            cam.setTargetPosition({ world::SCENE_EYE_X, world::SCENE_EYE_Y,
+                                    world::SCENE_EYE_Z });
+            cam.setYawPitch(world::SCENE_YAW, world::SCENE_PITCH);
+            cam.setSunDir({ world::SCENE_SUN_X, world::SCENE_SUN_Y,
+                            world::SCENE_SUN_Z });
+            cam.setSky({ world::SCENE_SKY_R, world::SCENE_SKY_G,
+                         world::SCENE_SKY_B },
+                       world::SCENE_SKY_LIGHT, world::SCENE_TIME_OF_DAY);
+        }
         cam.followTarget(*world, player->aimDir());
 
         // Мир

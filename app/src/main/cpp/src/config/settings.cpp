@@ -182,6 +182,7 @@ bool Settings::save(const std::string& path) const {
     wi("view_distance",      viewDistance);
     wb("vsync",              vsync);
     wi("debug_shading",      debugShading);
+    wb("debug_scene",        debugScene);
 
     std::fclose(f);
     LOGI("Settings сохранены: %s", path.c_str());
@@ -265,6 +266,8 @@ bool Settings::load(const std::string& path) {
             vsync = readBool(kv.value, vsync);
         else if (std::strcmp(kv.key, "debug_shading") == 0)
             debugShading = readI32(kv.value, debugShading);
+        else if (std::strcmp(kv.key, "debug_scene") == 0)
+            debugScene = readBool(kv.value, debugScene);
     }
 
     std::fclose(f);
