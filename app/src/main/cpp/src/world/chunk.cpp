@@ -12,27 +12,36 @@
 
 namespace world {
 
-namespace {
-
-// Сэмплирование вокселя с учётом границ чанка — обёртка над соседями
+// Сэмплирование вокселя с учётом границ чанка — обёртка над соседями.
+// Объявлена в chunk.h: договор о трёх исходах проверяется тестом.
 u16 sampleVoxel(const Chunk& c, const ChunkNeighbors& nb,
                 i32 x, i32 y, i32 z)
 {
     if (c.inBounds(x, y, z)) return c.voxels[chunkIndex(x, y, z)];
 
-    if (x < 0 && nb.nx) return nb.nx->at(x + CHUNK_SIZE, y, z);
-    if (x >= CHUNK_SIZE && nb.px) return nb.px->at(x - CHUNK_SIZE, y, z);
-    if (y < 0 && nb.ny) return nb.ny->at(x, y + CHUNK_SIZE_Y, z);
-    if (y >= CHUNK_SIZE_Y && nb.py) return nb.py->at(x, y - CHUNK_SIZE_Y, z);
-    if (z < 0 && nb.nz) return nb.nz->at(x, y, z + CHUNK_SIZE);
-    if (z >= CHUNK_SIZE && nb.pz) return nb.pz->at(x, y, z - CHUNK_SIZE);
+    if (x < 0)             return nb.nx ? nb.nx->at(x + CHUNK_SIZE, y, z) : UNKNOWN;
+    if (x >= CHUNK_SIZE)   return nb.px ? nb.px->at(x - CHUNK_SIZE, y, z) : UNKNOWN;
+    if (z < 0)             return nb.nz ? nb.nz->at(x, y, z + CHUNK_SIZE) : UNKNOWN;
+    if (z >= CHUNK_SIZE)   return nb.pz ? nb.pz->at(x, y, z - CHUNK_SIZE) : UNKNOWN;
+
+    // Выше потолка мира — настоящий воздух: там ничего нет и не будет.
+    if (y >= CHUNK_SIZE_Y) return nb.py ? nb.py->at(x, y - CHUNK_SIZE_Y, z) : AIR;
+    // Ниже дна — не воздух: наружу дно мира смотреть не должно, иначе
+    // мешер строит по нему грань, которую никто никогда не увидит.
+    if (y < 0)             return nb.ny ? nb.ny->at(x, y + CHUNK_SIZE_Y, z) : UNKNOWN;
     return AIR;
 }
+
+namespace {
 
 // Перекрывает ли блок свет для затенения углов. Воздух и всё
 // прозрачное — нет: сквозь стекло, листву и воду угол не темнеет.
 inline bool blocksLight(const BlockRegistry& reg, u16 id) {
     if (id == AIR) return false;
+    // Незагруженный сосед свет не перекрывает: иначе на стыке
+    // появлялась бы тень от блока, которого, может, и нет вовсе.
+    // Когда сосед подгрузится, чанк перемешируется и посчитает честно.
+    if (id == UNKNOWN) return false;
     const BlockDef& d = reg.get(id);
     return d.isSolid && !d.isTransparent;
 }
@@ -111,14 +120,21 @@ u16 collapseCell(const Chunk& c, const ChunkNeighbors& nb,
     const i32 bx = cx * step, by = cy * step, bz = cz * step;
     u16 best = AIR;
     i32 bestY = -1;
+    bool anyUnknown = false;
     for (i32 y = step - 1; y >= 0; --y) {
         for (i32 z = 0; z < step; ++z)
             for (i32 x = 0; x < step; ++x) {
                 const u16 v = sampleVoxel(c, nb, bx + x, by + y, bz + z);
+                // Неизвестное не блок и не воздух: запоминаем и идём
+                // дальше. Если во всей клетке не нашлось ни одного
+                // настоящего блока, клетка остаётся неизвестной —
+                // мешер по ней грань не построит.
+                if (v == UNKNOWN) { anyUnknown = true; continue; }
                 if (v != AIR) { best = v; bestY = y; break; }
             }
         if (bestY >= 0) break;
     }
+    if (bestY < 0 && anyUnknown) return UNKNOWN;
     return best;
 }
 
@@ -304,11 +320,23 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                     i32 c[3];
                     c[ax.u] = iu; c[ax.v] = iv; c[ax.w] = slice;
                     const u16 cur = vol.at(c[0], c[1], c[2]);
-                    if (cur == AIR) continue;
+                    if (cur == AIR || cur == UNKNOWN) continue;
 
                     i32 n[3] = { c[0], c[1], c[2] };
                     n[ax.w] += ax.sign;
                     const u16 neighbor = vol.at(n[0], n[1], n[2]);
+
+                    // Сосед неизвестен — решать нельзя.
+                    //
+                    // Три состояния, а не два: сосед есть и там воздух
+                    // (грань открыта), сосед есть и там блок (грань
+                    // закрыта), соседнего чанка ещё нет (неизвестно).
+                    // Раньше третье считалось первым, и по краю
+                    // незагруженного чанка вырастала наружная стена во
+                    // всю толщу земли. Когда сосед подгрузится,
+                    // ChunkManager перестроит этот чанк, и настоящая
+                    // граница появится сама.
+                    if (neighbor == UNKNOWN) continue;
 
                     const BlockDef& cd = reg.get(cur);
                     const BlockDef& nd = reg.get(neighbor);

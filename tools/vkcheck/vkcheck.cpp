@@ -469,6 +469,14 @@ int main(int argc, char** argv) {
                         100.0 * (double)top[i].first / (double)vertTotal);
     }
 
+    // Положение глаз и пиксели на единицу нужны траве раньше, чем
+    // настраивается камера: порог по экранному размеру считается при
+    // наборе инстансов, как и в игре.
+    const float eyeY = (minimalScene && !camGiven)
+                     ? world::SCENE_EYE_Y
+                     : (float)gen.surfaceHeight((i32)px, (i32)pz) + height;
+    const float pxPerUnit = (float)H * 0.5f / std::tan(glm::radians(70.f) * 0.5f);
+
     // Инстансы травы по тем же правилам, что populateGrass: 24 пробы
     // на чанк, детерминированный хеш, только на траве и песке.
     {
@@ -505,10 +513,21 @@ int main(int argc, char** argv) {
                     const f32 dist = std::sqrt(ddx * ddx + ddz * ddz);
                     const f32 fade = (40.f - dist) / (40.f * render::GRASS_FADE);
                     const f32 k = fade < 0.f ? 0.f : (fade > 1.f ? 1.f : fade);
-                    if (k < 0.2f) continue;
+                    if (k <= 0.f) continue;
+                    const f32 gscale = (0.6f + (f32)(h % 40) / 100.f) * k;
+                    // Тот же порог по экранному размеру, что в игре.
+                    {
+                        const f32 ex = (f32)wx + 0.5f - px;
+                        const f32 ey = (f32)surf - eyeY;
+                        const f32 ez = (f32)wz + 0.5f - pz;
+                        const f32 ed = std::sqrt(ex*ex + ey*ey + ez*ez);
+                        if (ed > 0.001f &&
+                            gscale * pxPerUnit / ed < render::GRASS_MIN_PIXELS)
+                            continue;
+                    }
                     render::GrassInstance in{};
                     in.pos   = { (f32)wx + 0.5f, (f32)surf, (f32)wz + 0.5f };
-                    in.scale = (0.6f + (f32)(h % 40) / 100.f) * k;
+                    in.scale = gscale;
                     in.r = 90; in.g = 170; in.b = 70; in.a = 255;
                     in.yaw = (f32)(h % 628) / 100.f;
                     gi.push_back(in);

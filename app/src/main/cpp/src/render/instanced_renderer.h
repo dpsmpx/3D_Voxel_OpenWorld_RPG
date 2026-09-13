@@ -27,6 +27,15 @@ namespace render {
 /// границы должен исчезать, а не мерцать точкой в один пиксель.
 constexpr f32 GRASS_FADE = 0.45f;
 
+/// Ниже какого экранного размера пучок вообще не отправляется на GPU.
+///
+/// Непрозрачная геометрия меньше пикселя ничем не сглаживается: она
+/// либо закрашивает пиксель целиком, либо исчезает, и от кадра к кадру
+/// перещёлкивает. Поле такой травы читается как россыпь мерцающих
+/// точек, а не как трава. Три пикселя — это уже различимый штрих, и
+/// ниже него пучок не нужен ни для чего.
+constexpr f32 GRASS_MIN_PIXELS = 3.0f;
+
 struct GrassInstance {
     glm::vec3 pos;       // offset 0
     f32       scale;     // offset 12
@@ -46,7 +55,13 @@ public:
     bool init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout);
     void destroy();
 
-    void populateGrass(const world::ChunkManager& world, const glm::vec3& playerPos, f32 radius);
+    /// pixelsPerUnit — во сколько экранных пикселей превращается одна
+    /// мировая единица на расстоянии в одну единицу от камеры:
+    /// (высота кадра / 2) / tan(fov / 2). По ней считается настоящий
+    /// экранный размер пучка, и всё, что мельче GRASS_MIN_PIXELS, на
+    /// GPU не уезжает вовсе.
+    void populateGrass(const world::ChunkManager& world, const glm::vec3& playerPos,
+                       f32 radius, f32 pixelsPerUnit);
 
     void upload(vk::Context& ctx);
     /// set передаётся явно и привязывается своим layout'ом. Раньше

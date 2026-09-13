@@ -35,6 +35,7 @@
 #include "world/chunk_manager.h"
 #include "render/mesh_builder.h"
 #include "render/camera.h"
+#include "render/instanced_renderer.h"
 #include "vk/vk_buffer.h"
 #include "vk/vk_texture.h"
 #include "world/noise.h"
@@ -763,6 +764,212 @@ static std::string readSource(const char* path) {
 // тест глубины читает. На экране это выглядело как «видно сквозь
 // блоки»: глубина одного кадра проверялась против остатков другого.
 // ------------------------------------------------------------
+void testUnknownNeighborIsNotAir() {
+    group("мешер: незагруженный сосед — не воздух");
+
+    world::blocks();
+
+    // Столбик у самой границы чанка: его грань на стыке решается по
+    // соседнему чанку.
+    auto make = [] {
+        auto c = std::make_unique<world::Chunk>();
+        c->coord = { 0, 0, 0 };
+        for (i32 y = 0; y < 34; ++y)
+            for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+                for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                    c->setUnlocked(x, y, z, world::STONE);
+        return c;
+    };
+
+    // Сколько граней смотрит в сторону отсутствующего соседа (+X).
+    auto facesTowardPlusX = [](const std::vector<world::Quad>& qs) {
+        usize n = 0;
+        for (const auto& q : qs)
+            if (q.v0.face == 0 && q.v0.pos.x >= (f32)world::CHUNK_SIZE) ++n;
+        return n;
+    };
+
+    std::vector<world::Quad> quads;
+
+    // 1. Соседа нет — состояние неизвестно, грань строить нельзя.
+    {
+        auto c = make();
+        world::ChunkNeighbors nb;   // все указатели пустые
+        world::buildGreedyMesh(*c, nb, quads, world::Lod::Full);
+        check(facesTowardPlusX(quads) == 0,
+              "без соседа наружная грань на стыке не строится");
+        check(!quads.empty(), "остальной чанк при этом мешируется");
+    }
+
+    // 2. Сосед есть и там воздух — грань открыта.
+    auto air = std::make_unique<world::Chunk>();
+    air->coord = { 1, 0, 0 };
+    {
+        auto c = make();
+        world::ChunkNeighbors nb;
+        nb.px = air.get();
+        world::buildGreedyMesh(*c, nb, quads, world::Lod::Full);
+        check(facesTowardPlusX(quads) > 0,
+              "сосед есть и пуст — грань на стыке появляется");
+    }
+
+    // 3. Сосед есть и он сплошной — грань закрыта.
+    auto solid = std::make_unique<world::Chunk>();
+    solid->coord = { 1, 0, 0 };
+    for (i32 y = 0; y < 34; ++y)
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+            for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                solid->setUnlocked(x, y, z, world::STONE);
+    {
+        auto c = make();
+        world::ChunkNeighbors nb;
+        nb.px = solid.get();
+        world::buildGreedyMesh(*c, nb, quads, world::Lod::Full);
+        check(facesTowardPlusX(quads) == 0,
+              "сосед есть и сплошной — грань на стыке закрыта");
+    }
+
+    // Сам источник: отсутствующий сосед обязан отдаваться отдельным
+    // значением, а не воздухом.
+    {
+        auto c = make();
+        world::ChunkNeighbors nb;
+        check(world::sampleVoxel(*c, nb, world::CHUNK_SIZE, 10, 0) == world::UNKNOWN,
+              "за границей без соседа читается UNKNOWN, а не AIR");
+        nb.px = air.get();
+        check(world::sampleVoxel(*c, nb, world::CHUNK_SIZE, 10, 0) == world::AIR,
+              "с пустым соседом читается настоящий AIR");
+        check(world::UNKNOWN != world::AIR, "UNKNOWN и AIR — разные значения");
+    }
+
+    // То же на огрублённом уровне: там объём строится отдельно, и
+    // неизвестность обязана дожить до мешера.
+    {
+        auto c = make();
+        world::ChunkNeighbors nb;
+        world::buildGreedyMesh(*c, nb, quads, world::Lod::Half);
+        check(facesTowardPlusX(quads) == 0,
+              "на огрублённом уровне стык без соседа тоже пуст");
+    }
+}
+
+void testNeighborArrivalTriggersRemesh() {
+    group("мир: появление соседа перестраивает границу");
+
+    // Механизм: задача генерации ставит в очередь меширование не
+    // только своего чанка, но и четырёх соседей. Без этого чанк,
+    // смешированный без соседа, навсегда остался бы с дырой на стыке —
+    // ровно то, ради чего UNKNOWN и вводился.
+    const std::string cm = readSource("app/src/main/cpp/src/world/chunk_manager.cpp");
+    if (cm.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+
+    const usize gen = cm.find("c->generated.store(true");
+    check(gen != std::string::npos, "чанк помечается сгенерированным");
+    if (gen == std::string::npos) return;
+
+    const std::string after = cm.substr(gen, 1400);
+    check(after.find("enqueueMesh(ctx->coord)") != std::string::npos,
+          "свой чанк ставится на меширование");
+    usize n = 0;
+    for (const char* d : { "coord.x - 1", "coord.x + 1", "coord.z - 1", "coord.z + 1" })
+        if (after.find(d) != std::string::npos) ++n;
+    check(n == 4, "и все четыре соседа — тоже");
+
+    // Поведение: тот же чанк, смешированный без соседа и с соседом,
+    // обязан дать разное число граней на стыке.
+    world::blocks();
+    auto c = std::make_unique<world::Chunk>();
+    c->coord = { 0, 0, 0 };
+    for (i32 y = 0; y < 34; ++y)
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+            for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                c->setUnlocked(x, y, z, world::STONE);
+
+    std::vector<world::Quad> quads;
+    world::ChunkNeighbors none;
+    world::buildGreedyMesh(*c, none, quads, world::Lod::Full);
+    const usize without = quads.size();
+
+    auto air = std::make_unique<world::Chunk>();
+    air->coord = { 1, 0, 0 };
+    world::ChunkNeighbors with;
+    with.px = air.get();
+    world::buildGreedyMesh(*c, with, quads, world::Lod::Full);
+    check(quads.size() > without,
+          "после появления соседа граница добирает грани");
+}
+
+void testNoPerVoxelGrain() {
+    group("шейдер: цвет грани не зависит от номера вокселя");
+
+    const std::string f = readSource("app/src/main/cpp/shaders/voxel.frag");
+    if (f.empty()) { check(true, "шейдер не найден, проверка пропущена"); return; }
+
+    check(f.find("hash13") == std::string::npos ||
+          f.find("float hash13") == std::string::npos,
+          "функции шума в шейдере нет");
+    check(f.find("* (1.0 + grain") == std::string::npos,
+          "цвет материала на зерно не умножается");
+
+    // Альбедо считается из цвета вершины и фаски, и больше ни из чего.
+    const usize a = f.find("vec3 albedo = ");
+    check(a != std::string::npos, "альбедо считается");
+    if (a != std::string::npos) {
+        const std::string line = f.substr(a, f.find(';', a) - a);
+        check(line.find("vColor") != std::string::npos, "из цвета материала");
+        check(line.find("hash") == std::string::npos &&
+              line.find("grain") == std::string::npos &&
+              line.find("noise") == std::string::npos &&
+              line.find("random") == std::string::npos,
+              "без шума, зерна и случайности");
+    }
+
+    // Замены шума другим шумом быть не должно.
+    check(f.find("fract(sin(") == std::string::npos, "и не заменён другим шумом");
+
+    // Точность межстадийных переменных объявлена явно с обеих сторон.
+    check(f.find("in highp vec2  vShade") != std::string::npos,
+          "vShade объявлена highp в фрагментном шейдере");
+    check(f.find("clamp(vShade, 0.0, 1.0)") != std::string::npos,
+          "затенение ограничено своим договорным диапазоном");
+}
+
+void testDistantGrassIsNotSubPixel() {
+    group("трава: субпиксельных пучков не бывает");
+
+    // Порог считается по настоящему экранному размеру, поэтому верен
+    // при любом поле зрения и разрешении.
+    const f32 pxPerUnit = 1080.f * 0.5f / std::tan(glm::radians(70.f) * 0.5f);
+    check(pxPerUnit > 700.f && pxPerUnit < 800.f,
+          "пикселей на единицу посчитано разумно");
+
+    // Пучок высотой 0.6 на 40 блоках занимает меньше трёх пикселей?
+    // Тогда он обязан быть отброшен ещё до отправки на GPU.
+    const f32 farScale = 0.6f;
+    const f32 farDist  = 200.f;
+    check(farScale * pxPerUnit / farDist < render::GRASS_MIN_PIXELS,
+          "на двухстах блоках пучок мельче порога");
+    check(farScale * pxPerUnit / 10.f > render::GRASS_MIN_PIXELS,
+          "а на десяти — крупнее");
+
+    const std::string g = readSource("app/src/main/cpp/src/render/instanced_renderer.cpp");
+    if (g.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    check(g.find("GRASS_MIN_PIXELS") != std::string::npos,
+          "порог применяется при наборе инстансов");
+    check(g.find("continue") != std::string::npos, "и пучок именно отбрасывается");
+
+    // Отбрасывать надо ДО записи в буфер, а не в шейдере.
+    const usize thr = g.find("GRASS_MIN_PIXELS");
+    const usize push = g.find("cpuInstances_.push_back");
+    check(thr != std::string::npos && push != std::string::npos && thr < push,
+          "отсечка стоит раньше отправки инстанса");
+
+    const std::string fs = readSource("app/src/main/cpp/shaders/grass.frag");
+    if (!fs.empty())
+        check(fs.find("discard") == std::string::npos,
+              "и не подменяется discard'ом во фрагментном шейдере");
+}
+
 void testDiagnosticBuildWired() {
     group("сборка: диагностический APK");
 
@@ -2931,6 +3138,10 @@ int main() {
     testMinimalScene();
     testDebugSceneIsolated();
     testDiagnosticBuildWired();
+    testUnknownNeighborIsNotAir();
+    testNeighborArrivalTriggersRemesh();
+    testNoPerVoxelGrain();
+    testDistantGrassIsNotSubPixel();
     testUiTapSurvivesRedraw();
     testHudAndButtonsDoNotOverlap();
     testBufferMapContract();

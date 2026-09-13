@@ -111,7 +111,7 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
         (grassTimer_ > 0.5f && grassMoved) || grassTimer_ > 3.f) {
         grassTimer_  = 0.f;
         grassOrigin_ = camPos;
-        grass_.populateGrass(world, camPos, 40.f);
+        grass_.populateGrass(world, camPos, 40.f, camera_.pixelsPerUnit());
         grass_.upload(ctx);
     }
 

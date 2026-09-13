@@ -62,7 +62,8 @@ bool InstancedRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorS
 }
 
 void InstancedRenderer::populateGrass(const world::ChunkManager& world,
-                                      const glm::vec3& playerPos, f32 radius)
+                                      const glm::vec3& playerPos, f32 radius,
+                                      f32 pixelsPerUnit)
 {
     cpuInstances_.clear();
     const i32 R = (i32)(radius / (f32)world::CHUNK_SIZE) + 1;
@@ -140,11 +141,34 @@ void InstancedRenderer::populateGrass(const world::ChunkManager& world,
                 const f32 dist = std::sqrt(ddx * ddx + ddz * ddz);
                 const f32 fade = (radius - dist) / (radius * GRASS_FADE);
                 const f32 k = fade < 0.f ? 0.f : (fade > 1.f ? 1.f : fade);
-                if (k < 0.2f) continue;
+                if (k <= 0.f) continue;
+
+                const f32 scale = (0.6f + (f32)(h % 40) / 100.f) * k;
+
+                // Настоящий порог, а не «почти ноль».
+                //
+                // Затухание по расстоянию уменьшает пучок, но само по
+                // себе не решает, когда он перестаёт быть виден:
+                // отсечка по k отбрасывала пучки «где-то у края», а
+                // экранный размер зависит ещё и от поля зрения, и от
+                // разрешения, и от высоты самого пучка. Считаем его
+                // прямо: высота в мире, делённая на расстояние до
+                // камеры, умноженная на пиксели на единицу.
+                //
+                // Так порог одинаково верен и на телефоне, и в
+                // офлайн-проверке, и при любой дальности прорисовки.
+                const f32 eyeDx = (f32)wx + 0.5f - playerPos.x;
+                const f32 eyeDy = (f32)sy - playerPos.y;
+                const f32 eyeDz = (f32)wz + 0.5f - playerPos.z;
+                const f32 eyeDist = std::sqrt(eyeDx * eyeDx + eyeDy * eyeDy
+                                            + eyeDz * eyeDz);
+                if (eyeDist > 0.001f &&
+                    scale * pixelsPerUnit / eyeDist < GRASS_MIN_PIXELS)
+                    continue;
 
                 GrassInstance inst{};
                 inst.pos = { (f32)wx + 0.5f, (f32)sy, (f32)wz + 0.5f };
-                inst.scale = (0.6f + (f32)(h % 40) / 100.f) * k;
+                inst.scale = scale;
                 inst.r = ch(24, 0.82f);
                 inst.g = ch(16, 1.04f);
                 inst.b = ch( 8, 0.72f);
