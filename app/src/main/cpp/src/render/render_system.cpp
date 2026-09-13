@@ -129,6 +129,12 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     camera_.setDebugShading(config::settingsConst().debugShading);
     world.setLodBands(chunkRenderer_.lodBand(0), chunkRenderer_.lodBand(1),
                       chunkRenderer_.lodBand(2));
+    // Уровень детализации мир и рендер считают от ОДНОЙ величины —
+    // от положения камеры. Раньше мир мерил от чанка, в котором стоит
+    // игрок, а рендер — от камеры до центра чанка: на границе уровня
+    // они расходились на половину чанка и спорили каждый кадр, отчего
+    // дальний рельеф перестраивался без остановки.
+    world.setCameraPosition(camPos);
 
     // Камера в буфер здесь НЕ пишется — см. render(). Эта функция
     // выполняется до vkWaitForFences на заборе текущего кадра, то есть

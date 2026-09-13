@@ -1445,6 +1445,300 @@ void testBufferMapContract() {
 // кнопки экранного управления живут в TouchInput и работали, а все
 // прямоугольные — меню, инвентарь, настройки, торговля — молчали.
 // ------------------------------------------------------------
+// Уровень детализации: одна формула, одна точка отсчёта
+// ------------------------------------------------------------
+void testLodHasSingleSourceOfTruth() {
+    group("LOD: одна формула и одна точка отсчёта");
+
+    // Формула живёт в world/lod.h, и обе стороны зовут именно её.
+    const std::string crh = readSource("app/src/main/cpp/src/render/chunk_renderer.h");
+    const std::string cmc = readSource("app/src/main/cpp/src/world/chunk_manager.cpp");
+    const std::string rsc = readSource("app/src/main/cpp/src/render/render_system.cpp");
+    if (crh.empty() || cmc.empty() || rsc.empty()) {
+        check(true, "исходники не найдены, проверка пропущена");
+    } else {
+        check(crh.find("world::LodBands") != std::string::npos,
+              "рендер держит границы из world/lod.h");
+        check(crh.find("f32 lod0_") == std::string::npos &&
+              crh.find("f32 lod1_") == std::string::npos,
+              "своей копии границ у рендера не осталось");
+        check(crh.find("world::lodForDistanceSq") != std::string::npos,
+              "рендер зовёт общую формулу");
+        check(cmc.find("world::lodForChunk") != std::string::npos,
+              "мир зовёт ту же формулу");
+        check(cmc.find("cameraX_.load") != std::string::npos,
+              "и меряет от камеры");
+        check(cmc.find("playerChunkX_") == std::string::npos,
+              "мерить от чанка игрока мир перестал");
+        check(rsc.find("world.setCameraPosition(camPos)") != std::string::npos,
+              "рендер сообщает миру позицию камеры каждый кадр");
+    }
+
+    // Самый грубый уровень начинается за концом тумана. Туман кончается
+    // на 0.94 дальности прорисовки (см. render_system), значит граница
+    // третьего уровня обязана лежать дальше.
+    for (i32 vd : { 4, 6, 8, 12 }) {
+        world::LodBands b;
+        const f32 blocks = (f32)vd * (f32)world::CHUNK_SIZE;
+        b.fromViewDistance(blocks);
+        if (b.lod2 <= blocks * 0.94f) {
+            check(false, "третий уровень уведён за туман");
+            break;
+        }
+        if (vd == 12) check(true, "третий уровень уведён за туман");
+    }
+
+    // Мёртвая зона: у самой границы уровень не пляшет туда-сюда.
+    world::LodBands b;
+    b.fromViewDistance(8.f * (f32)world::CHUNK_SIZE);
+    const f32 edge = b.lod0;
+    const f32 inside  = edge * 0.97f;
+    const f32 outside = edge * 1.03f;
+    check(world::lodForDistanceSq(inside * inside, b) == 0,
+          "без предыстории ближе границы — нулевой уровень");
+    check(world::lodForDistanceSq(outside * outside, b) == 1,
+          "без предыстории дальше границы — первый");
+    check(world::lodForDistanceSq(outside * outside, b, 0) == 0,
+          "чуть за границей уровень не меняется, если был нулевым");
+    check(world::lodForDistanceSq(inside * inside, b, 1) == 1,
+          "и не меняется обратно, если был первым");
+    const f32 far = edge * 1.30f;
+    check(world::lodForDistanceSq(far * far, b, 0) == 1,
+          "за мёртвой зоной уровень всё-таки меняется");
+
+    // Обе стороны считают от ОДНОЙ величины: центра чанка.
+    const glm::vec3 cam{ 100.f, 64.f, -40.f };
+    const u8 direct = world::lodForChunk(3, -2, cam, b);
+    const glm::vec3 d = world::chunkCenter(3, -2) - cam;
+    check(direct == world::lodForDistanceSq(glm::dot(d, d), b),
+          "lodForChunk и есть расстояние до центра чанка");
+}
+
+// ------------------------------------------------------------
+// Резидентный меш не исчезает, пока не приехал новый
+// ------------------------------------------------------------
+void testResidentLodSurvivesRequest() {
+    group("LOD: резидентный меш живёт до приезда нового");
+
+    const std::string crc = readSource("app/src/main/cpp/src/render/chunk_renderer.cpp");
+    const std::string cmc = readSource("app/src/main/cpp/src/world/chunk_manager.cpp");
+    if (crc.empty() || cmc.empty()) {
+        check(true, "исходники не найдены, проверка пропущена");
+        return;
+    }
+
+    // 1. Запасной вариант в render() — ровно residentLod, а не первый
+    //    попавшийся уровень из четырёх.
+    const usize a = crc.find("Нужного уровня нет в видеопамяти");
+    const usize b = crc.find("if (!chosen)");
+    check(a != std::string::npos && b != std::string::npos && a < b,
+          "в render() есть ветка «нужного уровня нет»");
+    if (a != std::string::npos && b != std::string::npos && a < b) {
+        const std::string win = crc.substr(a, b - a);
+        check(win.find("cm.residentLod") != std::string::npos,
+              "запасной вариант — резидентный уровень");
+        check(win.find("i < 4") == std::string::npos &&
+              win.find("l < 4") == std::string::npos,
+              "перебора всех четырёх уровней там больше нет");
+    }
+
+    // 2. Смена резидентного уровня происходит только после успешной
+    //    загрузки: присваивание стоит внутри if (uploadLod(...)).
+    const usize u = crc.find("if (uploadLod(ctx, cmd, it->second, c, req.lod))");
+    check(u != std::string::npos, "уровень грузится из очереди запросов");
+    if (u != std::string::npos) {
+        const std::string win = crc.substr(u, 200);
+        check(win.find("residentLod  = req.lod") != std::string::npos,
+              "резидентным уровень становится после успешной загрузки");
+    }
+
+    // 3. Мир не выбрасывает остальные уровни при постройке нового,
+    //    если они всё ещё соответствуют текущим вокселям.
+    const usize m = cmc.find("for (u8 other = 0; other < 4; ++other)");
+    check(m != std::string::npos, "мир перебирает прочие уровни чанка");
+    if (m != std::string::npos) {
+        const std::string win = cmc.substr(m, 500);
+        check(win.find("revision == ctx->version") != std::string::npos,
+              "и оставляет те, что построены по тем же вокселям");
+    }
+}
+
+// ------------------------------------------------------------
+// Вода на огрублённых уровнях
+// ------------------------------------------------------------
+namespace {
+
+/// Карта верхних граней: для каждого столбца — есть ли над ним
+/// водяная грань и есть ли твёрдая.
+struct TopMap {
+    bool water[world::CHUNK_SIZE][world::CHUNK_SIZE] = {};
+    bool solid[world::CHUNK_SIZE][world::CHUNK_SIZE] = {};
+    i32 waterCells = 0, solidCells = 0;
+};
+
+TopMap topFaces(const std::vector<world::Quad>& quads) {
+    TopMap m;
+    for (const auto& q : quads) {
+        if (q.v0.face != 2) continue;          // только грани вверх
+        const glm::vec3 p1 = q.v0.pos + q.du + q.dv;
+        const i32 x0 = (i32)std::floor(std::min(q.v0.pos.x, p1.x));
+        const i32 x1 = (i32)std::floor(std::max(q.v0.pos.x, p1.x));
+        const i32 z0 = (i32)std::floor(std::min(q.v0.pos.z, p1.z));
+        const i32 z1 = (i32)std::floor(std::max(q.v0.pos.z, p1.z));
+        for (i32 z = z0; z < z1; ++z)
+            for (i32 x = x0; x < x1; ++x) {
+                if ((u32)x >= (u32)world::CHUNK_SIZE ||
+                    (u32)z >= (u32)world::CHUNK_SIZE) continue;
+                if (q.v0.block == world::WATER) m.water[x][z] = true;
+                else                            m.solid[x][z] = true;
+            }
+    }
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            if (m.water[x][z]) ++m.waterCells;
+            if (m.solid[x][z]) ++m.solidCells;
+        }
+    return m;
+}
+
+} // namespace
+
+void testCoarseWaterIsStable() {
+    group("LOD: вода не разливается и не исчезает при огрублении");
+
+    world::blocks();
+    world::ChunkNeighbors nb;
+    std::vector<world::Quad> quads;
+
+    // --- Берег, не совпадающий с сеткой 8x8 ---
+    // Суша до x=19 высотой 31 блок, дальше вода 28..31 поверх камня.
+    // Поверхность воды ВЫШЕ кромки берега — ровно тот случай, на
+    // котором правило «выигрывает верхний воксель» отдавало воде всю
+    // клетку 8^3 и берег становился прозрачным.
+    auto shore = std::make_unique<world::Chunk>();
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            const bool land = x < 20;
+            const i32 stoneTop = land ? 30 : 27;
+            for (i32 y = 0; y <= stoneTop; ++y)
+                shore->setUnlocked(x, y, z, world::STONE);
+            if (!land)
+                for (i32 y = 28; y <= 31; ++y)
+                    shore->setUnlocked(x, y, z, world::WATER);
+        }
+
+    world::buildGreedyMesh(*shore, nb, quads, world::Lod::Quarter);
+    const TopMap q4 = topFaces(quads);
+    world::buildGreedyMesh(*shore, nb, quads, world::Lod::Eighth);
+    const TopMap q8 = topFaces(quads);
+
+    check(q4.waterCells > 0, "на уровне 4^3 вода есть");
+    check(q8.waterCells > 0, "на уровне 8^3 вода не исчезла");
+
+    // Не разливается: вода грубого уровня не залезает туда, где на
+    // уровне мельче была суша.
+    i32 spill = 0;
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+            if (q8.water[x][z] && !q4.water[x][z]) ++spill;
+    check(spill == 0, "вода 8^3 не заливает берег, сухой на 4^3");
+
+    // Берег остаётся непрозрачным: под водой на грубом уровне не
+    // должно открываться сквозной дыры.
+    check(q8.solid[17][4], "полоса берега шириной в полклетки осталась сушей");
+    check(q8.water[25][4], "а вода за ней осталась водой");
+
+    // --- Озеро с одиноким выступом ---
+    // Вода 24..27 по всему чанку, и один столб камня до 31. Правило
+    // «выигрывает верхний воксель» отдавало этому столбу целую клетку
+    // 8^3, и озеро в ней пропадало целиком.
+    auto lake = std::make_unique<world::Chunk>();
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            for (i32 y = 0; y <= 23; ++y)
+                lake->setUnlocked(x, y, z, world::STONE);
+            for (i32 y = 24; y <= 27; ++y)
+                lake->setUnlocked(x, y, z, world::WATER);
+        }
+    for (i32 y = 24; y <= 31; ++y)
+        lake->setUnlocked(0, y, 0, world::STONE);
+
+    world::buildGreedyMesh(*lake, nb, quads, world::Lod::Quarter);
+    const TopMap l4 = topFaces(quads);
+    world::buildGreedyMesh(*lake, nb, quads, world::Lod::Eighth);
+    const TopMap l8 = topFaces(quads);
+
+    check(l4.waterCells > world::CHUNK_SIZE * world::CHUNK_SIZE / 2,
+          "на уровне 4^3 озеро занимает почти весь чанк");
+    check(l8.waterCells * 2 >= l4.waterCells,
+          "на уровне 8^3 озеро не съедено выступом");
+    check(l8.water[3][3], "клетка с одиноким камнем осталась водой");
+}
+
+// ------------------------------------------------------------
+// Порядок смешивания воды
+// ------------------------------------------------------------
+void testWaterSortedByWaterCenter() {
+    group("вода: порядок смешивания считается по самой воде");
+
+    world::blocks();
+    world::ChunkNeighbors nb;
+    std::vector<world::Quad> quads;
+    std::vector<render::VoxelVertex> verts;
+    std::vector<u32> idx;
+    u32 opaqueIdx = 0;
+
+    auto lake = std::make_unique<world::Chunk>();
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            for (i32 y = 0; y <= 27; ++y)
+                lake->setUnlocked(x, y, z, world::STONE);
+            for (i32 y = 28; y <= 31; ++y)
+                lake->setUnlocked(x, y, z, world::WATER);
+        }
+    world::buildGreedyMesh(*lake, nb, quads, world::Lod::Full);
+
+    glm::vec3 center{ -1.f, -1.f, -1.f };
+    render::buildChunkVertices(*lake, quads, verts, idx, opaqueIdx, &center);
+    check(opaqueIdx < idx.size(), "полупрозрачная часть у озера есть");
+    check(center.y > 27.f && center.y < 33.f,
+          "центр прозрачной геометрии — на уровне воды");
+    check(std::abs(center.y - (f32)world::CHUNK_SIZE_Y * 0.5f) > 20.f,
+          "и это не середина чанка по высоте");
+
+    // Чанк без воды центра не даёт — сортировать нечего.
+    auto rock = std::make_unique<world::Chunk>();
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+            for (i32 y = 0; y <= 20; ++y)
+                rock->setUnlocked(x, y, z, world::STONE);
+    world::buildGreedyMesh(*rock, nb, quads, world::Lod::Full);
+    glm::vec3 none{ 5.f, 5.f, 5.f };
+    render::buildChunkVertices(*rock, quads, verts, idx, opaqueIdx, &none);
+    check(opaqueIdx == idx.size(), "у камня полупрозрачной части нет");
+    check(none == glm::vec3(0.f), "и центр прозрачной геометрии не задан");
+
+    // Рендер обязан сортировать отдельный список именно по нему.
+    const std::string crc = readSource("app/src/main/cpp/src/render/chunk_renderer.cpp");
+    const std::string crh = readSource("app/src/main/cpp/src/render/chunk_renderer.h");
+    if (crc.empty() || crh.empty()) {
+        check(true, "исходники не найдены, проверка пропущена");
+        return;
+    }
+    check(crh.find("glm::vec3 blendCenter") != std::string::npos,
+          "меш хранит центр своей прозрачной геометрии");
+    check(crc.find("chosen->blendCenter") != std::string::npos,
+          "расстояние для смешивания меряется до воды");
+    const usize s = crc.find("std::sort(blended_.begin()");
+    check(s != std::string::npos, "список прозрачного сортируется отдельно");
+    if (s != std::string::npos) {
+        const std::string win = crc.substr(s, 200);
+        check(win.find("a.distSq > b.distSq") != std::string::npos,
+              "от дальнего к ближнему");
+    }
+}
+
+// ------------------------------------------------------------
 void testUiTapSurvivesRedraw() {
     group("ui: нажатие переживает перерисовку");
 
@@ -3142,6 +3436,10 @@ int main() {
     testNeighborArrivalTriggersRemesh();
     testNoPerVoxelGrain();
     testDistantGrassIsNotSubPixel();
+    testLodHasSingleSourceOfTruth();
+    testResidentLodSurvivesRequest();
+    testCoarseWaterIsStable();
+    testWaterSortedByWaterCenter();
     testUiTapSurvivesRedraw();
     testHudAndButtonsDoNotOverlap();
     testBufferMapContract();

@@ -101,44 +101,77 @@ struct MeshVolume {
 
 /// Сводит куб step^3 вокселей к одной клетке.
 ///
-/// Клетка твёрдая, если в ней есть хоть один непустой воксель, а цвет
-/// берётся от САМОГО ВЕРХНЕГО из них — того, который видно снаружи.
+/// Клетка непуста, если в ней есть хоть один непустой воксель, а
+/// материал берётся от САМОГО ВЕРХНЕГО из них — того, который видно
+/// снаружи. Порог «хотя бы четверть куба» казался разумным, но
+/// поверхность мира — это один слой травы поверх толщи: при шаге
+/// восемь она даёт восьмую часть клетки и пропадала целиком, а там,
+/// где рельеф чуть ниже порога, в земле открывались дыры насквозь.
+/// Выбирать самый частый блок нельзя по той же причине: в клетке, где
+/// трава лежит на камне, камня больше — и дальний луг становился серым.
 ///
-/// Оба правила выстраданы. Порог «хотя бы четверть куба» казался
-/// разумным, но поверхность мира — это один слой травы поверх толщи:
-/// при шаге восемь она даёт восьмую часть клетки и пропадала целиком,
-/// а там, где рельеф чуть ниже её порога, в земле открывались дыры
-/// насквозь. Округлять высоту вверх безопаснее, чем вниз: лишний
-/// воксель на дальнем склоне не виден, а дыра видна сразу.
+/// Отдельное правило для ЖИДКОСТЕЙ, и вот почему.
 ///
-/// Выбирать же самый частый блок нельзя по той же причине: в клетке,
-/// где трава лежит на камне, камня больше — и дальний луг становился
-/// серым.
-u16 collapseCell(const Chunk& c, const ChunkNeighbors& nb,
+/// Вода прозрачна, и клетка-вода — это дыра в непрозрачном рельефе.
+/// Правило «верхний воксель выигрывает» отдавало такой клетке весь
+/// куб, стоило воде оказаться выше кромки берега хоть в одной
+/// колонке. При шаге 4 берег ещё делился на четыре клетки и вода
+/// оставалась в своей, а при шаге 8 те же блоки сходились в одну —
+/// и полоса суши шириной в полклетки становилась прозрачной: сквозь
+/// дальний берег было видно небо. Обратный случай так же груб: если
+/// верхней оказывалась суша, озеро внутри клетки исчезало целиком.
+/// То есть вода то разливалась, то пропадала ровно на переходе
+/// 4³ → 8³, и это читалось как мигание на горизонте.
+///
+/// Теперь решают КОЛОНКИ, а не один воксель: у каждой колонки клетки
+/// берётся её верхний непустой блок, и клетка становится водой лишь
+/// тогда, когда вода наверху у БОЛЬШИНСТВА колонок. Правило не
+/// зависит от порядка обхода, не отдаёт клетку одному вокселю и
+/// меняется плавно: озеро шире половины клетки останется озером на
+/// любом шаге, а берег останется сушей.
+u16 collapseCell(const BlockRegistry& reg, const Chunk& c,
+                 const ChunkNeighbors& nb,
                  i32 cx, i32 cy, i32 cz, i32 step)
 {
     const i32 bx = cx * step, by = cy * step, bz = cz * step;
-    u16 best = AIR;
-    i32 bestY = -1;
+
+    i32 solidCols = 0,  liquidCols = 0;
+    u16 topSolid  = AIR; i32 topSolidY  = -1;
+    u16 topLiquid = AIR; i32 topLiquidY = -1;
     bool anyUnknown = false;
-    for (i32 y = step - 1; y >= 0; --y) {
-        for (i32 z = 0; z < step; ++z)
-            for (i32 x = 0; x < step; ++x) {
+
+    for (i32 z = 0; z < step; ++z) {
+        for (i32 x = 0; x < step; ++x) {
+            for (i32 y = step - 1; y >= 0; --y) {
                 const u16 v = sampleVoxel(c, nb, bx + x, by + y, bz + z);
                 // Неизвестное не блок и не воздух: запоминаем и идём
                 // дальше. Если во всей клетке не нашлось ни одного
                 // настоящего блока, клетка остаётся неизвестной —
                 // мешер по ней грань не построит.
                 if (v == UNKNOWN) { anyUnknown = true; continue; }
-                if (v != AIR) { best = v; bestY = y; break; }
+                if (v == AIR) continue;
+                if (reg.get(v).isLiquid) {
+                    ++liquidCols;
+                    if (y > topLiquidY) { topLiquidY = y; topLiquid = v; }
+                } else {
+                    ++solidCols;
+                    if (y > topSolidY) { topSolidY = y; topSolid = v; }
+                }
+                break;   // ниже верхнего блока колонки смотреть незачем
             }
-        if (bestY >= 0) break;
+        }
     }
-    if (bestY < 0 && anyUnknown) return UNKNOWN;
-    return best;
+
+    if (solidCols == 0 && liquidCols == 0)
+        return anyUnknown ? UNKNOWN : AIR;
+    // Ничья достаётся суше: лишний воксель берега на горизонте не
+    // виден, а дыра в берегу видна сразу.
+    if (liquidCols > solidCols) return topLiquid;
+    return topSolid != AIR ? topSolid : topLiquid;
 }
 
-void buildCoarse(const Chunk& c, const ChunkNeighbors& nb, i32 step,
+void buildCoarse(const BlockRegistry& reg, const Chunk& c,
+                 const ChunkNeighbors& nb, i32 step,
                  std::vector<u16>& out, i32& cw, i32& ch, i32& cd)
 {
     const i32 dx = CHUNK_SIZE / step, dy = CHUNK_SIZE_Y / step, dz = CHUNK_SIZE / step;
@@ -148,7 +181,7 @@ void buildCoarse(const Chunk& c, const ChunkNeighbors& nb, i32 step,
         for (i32 cz = -1; cz <= dz; ++cz)
             for (i32 cx = -1; cx <= dx; ++cx)
                 out[((usize)(cy + 1) * cd + (cz + 1)) * cw + (cx + 1)] =
-                    collapseCell(c, nb, cx, cy, cz, step);
+                    collapseCell(reg, c, nb, cx, cy, cz, step);
 }
 
 // Высота верхней непрозрачной клетки в колонке, -1 если колонка
@@ -274,7 +307,7 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
     vol.dimY  = CHUNK_SIZE_Y / step;
     vol.dimZ  = CHUNK_SIZE   / step;
     if (step > 1) {
-        buildCoarse(chunk, nb, step, coarse, vol.cw, vol.ch, vol.cd);
+        buildCoarse(blocks(), chunk, nb, step, coarse, vol.cw, vol.ch, vol.cd);
         vol.coarse = &coarse;
     }
 

@@ -10,6 +10,7 @@
 #include "../vk/vk_staging_pool.h"
 #include "../world/chunk_manager.h"
 #include "mesh_builder.h"
+#include "../world/lod.h"
 #include <cmath>
 #include <memory>
 #include <unordered_map>
@@ -38,13 +39,8 @@ public:
 
     /// Дальность прорисовки в блоках. Задаёт границы LOD так, чтобы
     /// огрубление всегда приходилось на задымлённую даль.
-    void setViewDistanceBlocks(f32 blocks) {
-        lod0_ = blocks * 0.35f < 64.f ? 64.f : blocks * 0.35f;
-        lod1_ = blocks * 0.62f < 140.f ? 140.f : blocks * 0.62f;
-        lod2_ = blocks * 0.90f;
-        if (lod1_ < lod0_ * 1.2f) lod1_ = lod0_ * 1.2f;
-        if (lod2_ < lod1_ * 1.2f) lod2_ = lod1_ * 1.2f;
-    }
+    void setViewDistanceBlocks(f32 blocks) { bands_.fromViewDistance(blocks); }
+    const world::LodBands& bands() const { return bands_; }
 
     /// Отбирает видимые чанки, раскладывает их по расстоянию и
     /// рисует в два прохода: непрозрачное от ближнего к дальнему,
@@ -64,7 +60,7 @@ public:
 
     /// Границы уровней детализации в блоках — их же берёт мир,
     /// чтобы мешировать новый чанк сразу в нужном разрешении.
-    f32 lodBand(int i) const { return bound((u8)i); }
+    f32 lodBand(int i) const { return bands_.bound((u8)i); }
 
     /// Метрики
     u32 lastDrawnChunks() const { return lastDrawnChunks_; }
@@ -91,6 +87,11 @@ private:
         /// во втором. Без этого различения пустое небо над головой
         /// заказывалось бы каждый кадр.
         bool uploaded = false;
+        /// Центр полупрозрачной геометрии в координатах чанка.
+        /// Сортировать проход со смешиванием по центру всего чанка
+        /// нельзя: он на половине высоты мира, в шестидесяти блоках
+        /// над прудом. См. mesh_builder.
+        glm::vec3 blendCenter{ 0.f };
     };
     struct ChunkGpu {
         GpuMesh                        lod[4];
@@ -117,12 +118,7 @@ private:
     /// прорисовки: при малой дальности зашитые 64/160/320 огрубляли
     /// рельеф уже в двух шагах от игрока, при большой — наоборот,
     /// заставляли тащить полный меш туда, где его съедает туман.
-    f32 lod0_ = 64.f, lod1_ = 160.f, lod2_ = 320.f;
-
-    /// Мёртвая зона у границы: пока чанк не отошёл от неё на восьмую
-    /// часть, уровень не меняется. Без неё шаг вперёд-назад на самой
-    /// границе перестраивает меш каждый кадр, и рельеф мерцает.
-    static constexpr f32 LOD_HYSTERESIS = 0.125f;
+    world::LodBands bands_;
 
     /// Сколько догрузок LOD обслуживаем за кадр — ограничивает пик
     /// нагрузки при быстром перемещении игрока.
@@ -134,26 +130,13 @@ private:
     /// пережила поворот головы.
     static constexpr u64 LOD_REQUEST_RETRY = 120;
 
+    // Формула выбора уровня живёт в world/lod.h и одна на весь
+    // проект: и мир, и рендер зовут именно её.
     u8 lodForDistanceSq(f32 distSq) const {
-        if (distSq < lod0_ * lod0_) return 0;
-        if (distSq < lod1_ * lod1_) return 1;
-        if (distSq < lod2_ * lod2_) return 2;
-        return 3;
+        return world::lodForDistanceSq(distSq, bands_);
     }
-
-    /// То же, но с мёртвой зоной вокруг текущего уровня.
     u8 lodForDistanceSq(f32 distSq, u8 resident) const {
-        const u8 want = lodForDistanceSq(distSq);
-        if (want == resident || resident > 3) return want;
-        const f32 edge = (want > resident) ? bound(resident) : bound(want);
-        const f32 lo = edge * (1.f - LOD_HYSTERESIS);
-        const f32 hi = edge * (1.f + LOD_HYSTERESIS);
-        const f32 d = std::sqrt(distSq);
-        return (d > lo && d < hi) ? resident : want;
-    }
-
-    f32 bound(u8 lod) const {
-        return lod == 0 ? lod0_ : (lod == 1 ? lod1_ : lod2_);
+        return world::lodForDistanceSq(distSq, bands_, resident);
     }
 
     /// Откладывает уничтожение буфера. Кадр, в котором из него ещё
@@ -180,6 +163,15 @@ private:
         f32 distSq;
     };
 
+    /// Полупрозрачная часть видимых чанков, со своим расстоянием —
+    /// от камеры до самой воды, а не до центра чанка.
+    struct Blended {
+        GpuMesh* mesh;
+        glm::vec3 origin;
+        f32 distSq;
+    };
+
+    std::vector<Blended>      blended_;
     std::vector<VoxelVertex>  scratchVerts_;
     std::vector<u32>          scratchIndices_;
     std::vector<u16>          scratchIndices16_;

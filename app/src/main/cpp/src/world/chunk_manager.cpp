@@ -3,6 +3,7 @@
  * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
  */
 #include "chunk_manager.h"
+#include "lod.h"
 #include "debug_scene.h"
 #include "../config/settings.h"
 #include "../core/log.h"
@@ -161,7 +162,9 @@ void ChunkManager::jobGenerate(void* data) {
     // сперва мешируется в полном разрешении, а через кадр
     // перестраивается в грубом — двойная работа на каждом новом чанке
     // у края мира, а их там больше всего.
-    c->lodWanted.store(mgr->lodForChunk(ctx->coord), std::memory_order_release);
+    c->lodWanted.store(
+        mgr->lodForChunk(ctx->coord, c->lodWanted.load(std::memory_order_acquire) & 3),
+        std::memory_order_release);
 
     mgr->enqueueMesh(ctx->coord);
     mgr->enqueueMesh({ ctx->coord.x - 1, ctx->coord.z });
@@ -235,10 +238,22 @@ void ChunkManager::jobMesh(void* data) {
         c->meshes[lod].built    = true;
         c->meshes[lod].ready.store(true, std::memory_order_release);
 
-        // Остальные уровни устарели вместе с вокселями: их данные
-        // больше не годятся, и держать их незачем.
+        // Остальные уровни НЕ уничтожаются.
+        //
+        // Раньше построение нового уровня тут же обнуляло все
+        // прочие — и между «старый снесли» и «новый доехал на GPU»
+        // у чанка не оставалось ни одного пригодного представления.
+        // Дальний рельеф от этого перещёлкивал: уровень не сменялся
+        // плавно, он исчезал и появлялся заново.
+        //
+        // Помечаем устаревшими только те уровни, что построены по
+        // СТАРЫМ вокселям: их данные и правда больше не годятся. Если
+        // же воксели не менялись, прежний уровень остаётся законным
+        // запасным и рисуется, пока новый не приедет целиком.
         for (u8 other = 0; other < 4; ++other) {
             if (other == lod) continue;
+            if (!c->meshes[other].built) continue;
+            if (c->meshes[other].revision == ctx->version) continue;
             c->meshes[other].built = false;
             c->meshes[other].ready.store(false, std::memory_order_release);
             std::vector<Quad>().swap(c->meshes[other].quads);
@@ -306,24 +321,24 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::pollMeshesReady(usize maxCount
 // Потоковая загрузка вокруг игрока
 // ============================================================
 
-u8 ChunkManager::lodForChunk(ChunkCoord c) const {
-    const f32 dx = (f32)(c.x - playerChunkX_.load(std::memory_order_relaxed))
-                 * (f32)CHUNK_SIZE;
-    const f32 dz = (f32)(c.z - playerChunkZ_.load(std::memory_order_relaxed))
-                 * (f32)CHUNK_SIZE;
-    const f32 d2 = dx * dx + dz * dz;
-    if (d2 < lodBand0_ * lodBand0_) return 0;
-    if (d2 < lodBand1_ * lodBand1_) return 1;
-    if (d2 < lodBand2_ * lodBand2_) return 2;
-    return 3;
+u8 ChunkManager::lodForChunk(ChunkCoord c, u8 current) const {
+    // Та же формула и тот же критерий, что у рендера: расстояние от
+    // центра чанка до камеры, с той же мёртвой зоной. См. world/lod.h.
+    const glm::vec3 cam{ cameraX_.load(std::memory_order_relaxed),
+                         cameraY_.load(std::memory_order_relaxed),
+                         cameraZ_.load(std::memory_order_relaxed) };
+    return world::lodForChunk(c, cam, bands_, current);
 }
 
 void ChunkManager::update(const glm::vec3& playerPos) {
     ++frameCounter_;
+    if (!cameraKnown_.load(std::memory_order_acquire)) {
+        cameraX_.store(playerPos.x, std::memory_order_relaxed);
+        cameraY_.store(playerPos.y, std::memory_order_relaxed);
+        cameraZ_.store(playerPos.z, std::memory_order_relaxed);
+    }
     const i32 pcx = (i32)std::floor(playerPos.x / (f32)CHUNK_SIZE);
     const i32 pcz = (i32)std::floor(playerPos.z / (f32)CHUNK_SIZE);
-    playerChunkX_.store(pcx, std::memory_order_relaxed);
-    playerChunkZ_.store(pcz, std::memory_order_relaxed);
 
     for (i32 dz = -viewDistance_; dz <= viewDistance_; ++dz) {
         for (i32 dx = -viewDistance_; dx <= viewDistance_; ++dx) {

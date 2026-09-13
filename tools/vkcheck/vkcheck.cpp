@@ -25,6 +25,7 @@
 #include "world/debug_scene.h"
 #include "render/instanced_renderer.h"
 #include "world/chunk.h"
+#include "world/lod.h"
 #include "world/block.h"
 #include "world/terrain.h"
 #include "world/features.h"
@@ -357,12 +358,13 @@ int main(int argc, char** argv) {
     // строил ВСЕ чанки на одном уровне, а игра мешает уровни в одном
     // кадре — и ровно на стыках уровней её картинка отличалась от
     // проверочной.
+    // Формула не повторяется здесь заново: копия уже однажды разошлась
+    // с игрой (0.62 против 0.60, 0.90 против 0.98) и молча меняла
+    // картинку проверки. Берём ту же world::LodBands, что и рендер.
     const f32 vdBlocks = (f32)viewDist * (f32)world::CHUNK_SIZE;
-    f32 lodB0 = vdBlocks * 0.35f < 64.f  ? 64.f  : vdBlocks * 0.35f;
-    f32 lodB1 = vdBlocks * 0.62f < 140.f ? 140.f : vdBlocks * 0.62f;
-    f32 lodB2 = vdBlocks * 0.90f;
-    if (lodB1 < lodB0 * 1.2f) lodB1 = lodB0 * 1.2f;
-    if (lodB2 < lodB1 * 1.2f) lodB2 = lodB1 * 1.2f;
+    world::LodBands bands;
+    bands.fromViewDistance(vdBlocks);
+    const f32 lodB0 = bands.lod0, lodB1 = bands.lod1, lodB2 = bands.lod2;
     struct Mesh { vk::Buffer vb, ib; u32 opaque = 0, total = 0; glm::vec3 origin{0}; };
     std::vector<Mesh> meshes;
     std::vector<std::shared_ptr<world::Chunk>> chunks;
@@ -407,13 +409,9 @@ int main(int argc, char** argv) {
         // то, что центр чанка берётся по всей его высоте.
         i32 useLod = lod;
         if (lod < 0) {
-            const f32 ccx = (f32)c->coord.x * world::CHUNK_SIZE + world::CHUNK_SIZE * 0.5f;
-            const f32 ccz = (f32)c->coord.z * world::CHUNK_SIZE + world::CHUNK_SIZE * 0.5f;
-            const f32 ccy = world::CHUNK_SIZE_Y * 0.5f;
-            const f32 ey  = (f32)gen.surfaceHeight((i32)px, (i32)pz) + height;
-            const f32 ddx = ccx - px, ddy = ccy - ey, ddz = ccz - pz;
-            const f32 dd  = std::sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
-            useLod = dd < lodB0 ? 0 : (dd < lodB1 ? 1 : (dd < lodB2 ? 2 : 3));
+            const f32 ey = (f32)gen.surfaceHeight((i32)px, (i32)pz) + height;
+            useLod = (i32)world::lodForChunk(c->coord.x, c->coord.z,
+                                             glm::vec3(px, ey, pz), bands);
         }
         lodUsed[useLod & 3]++;
         world::buildGreedyMesh(*c, nb, quads, (world::Lod)useLod);
