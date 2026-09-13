@@ -32,14 +32,19 @@ bool findSpawnSpot(world::ChunkManager& world,
                    i32& outX, i32& outY, i32& outZ)
 {
     auto& reg = world::blocks();
+    // Все двенадцать попыток бьют в один и тот же чанк, а каждая
+    // проходит колонку сверху донизу по три чтения на шаг: до четырёх
+    // с половиной тысяч чтений на вызов, и так шесть раз дважды в
+    // секунду. Через getVoxel это больше миллисекунды в одном кадре.
+    world::VoxelReader rd(world);
     for (int tries = 0; tries < 12; ++tries) {
         i32 x = cx * world::CHUNK_SIZE + (i32)(urand() % world::CHUNK_SIZE);
         i32 z = cz * world::CHUNK_SIZE + (i32)(urand() % world::CHUNK_SIZE);
 
         for (i32 y = world::CHUNK_SIZE_Y - 2; y > 1; --y) {
-            const u16 b   = world.getVoxel(x, y, z);
-            const u16 bel = world.getVoxel(x, y - 1, z);
-            const u16 abv = world.getVoxel(x, y + 1, z);
+            const u16 b   = rd.at(x, y, z);
+            const u16 bel = rd.at(x, y - 1, z);
+            const u16 abv = rd.at(x, y + 1, z);
             if (reg.isSolid(bel) && b == world::AIR && abv == world::AIR) {
                 if (bel == world::WATER || bel == world::LAVA) break;
                 outX = x; outY = y; outZ = z;
@@ -58,8 +63,9 @@ f32 Spawner::lightAt(world::ChunkManager& world, const world::DayCycle& day,
     // Небесный свет доходит до точки, если над ней нет непрозрачных
     // блоков. Полноценное запекание света чанк пока не считает,
     // поэтому проверяем колонку напрямую — дёшево и достаточно.
+    world::VoxelReader rd(world);
     for (i32 yy = y + 1; yy < world::CHUNK_SIZE_Y; ++yy) {
-        const u16 b = world.getVoxel(x, yy, z);
+        const u16 b = rd.at(x, yy, z);
         if (b == world::AIR) continue;
         if (world::blocks().isTransparent(b)) continue;
         return 0.05f;   // под перекрытием — пещерная темнота
