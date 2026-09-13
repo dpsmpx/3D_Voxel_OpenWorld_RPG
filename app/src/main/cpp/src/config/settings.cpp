@@ -106,6 +106,10 @@ void Settings::clamp() {
     autosaveInterval   = std::clamp(autosaveInterval, 60.f, 900.f);
     viewDistance       = std::clamp(viewDistance, 4, 12);
     debugShading       = std::clamp(debugShading, 0, 6);
+    // Диагностическую сборку не выключить настройкой: файл с
+    // debug_scene = false мог остаться от обычной сборки, а APK с
+    // флагом обязан запускаться диагностическим всегда.
+    if (DIAGNOSTIC_BUILD) debugScene = true;
 
     u8 langIdx = (u8)language;
     if (langIdx >= (u8)Language::Count) language = Language::English;

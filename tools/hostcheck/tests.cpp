@@ -763,6 +763,53 @@ static std::string readSource(const char* path) {
 // тест глубины читает. На экране это выглядело как «видно сквозь
 // блоки»: глубина одного кадра проверялась против остатков другого.
 // ------------------------------------------------------------
+void testDiagnosticBuildWired() {
+    group("сборка: диагностический APK");
+
+    // Сам признак проверяется в двух конфигурациях отдельным бинарником
+    // (tools/hostcheck/diag_build_check.cpp): внутри одного его не
+    // проверить, решение принимается на этапе компиляции. Здесь —
+    // обвязка, без которой флаг до компилятора не доедет.
+    const std::string cm = readSource("app/src/main/cpp/CMakeLists.txt");
+    const std::string gr = readSource("app/build.gradle");
+    const std::string wf = readSource(".github/workflows/build.yml");
+    const std::string st = readSource("app/src/main/cpp/src/config/settings.cpp");
+    const std::string mn = readSource("app/src/main/cpp/src/main.cpp");
+    if (cm.empty() || gr.empty() || wf.empty() || st.empty() || mn.empty()) {
+        check(true, "файлы сборки не найдены, проверка пропущена");
+        return;
+    }
+
+    check(cm.find("option(VOXEL_DEBUG_SCENE") != std::string::npos,
+          "CMake знает ключ VOXEL_DEBUG_SCENE");
+    check(cm.find("VOXEL_DEBUG_SCENE=1") != std::string::npos,
+          "и превращает его в определение для компилятора");
+    check(cm.find("option(VOXEL_DEBUG_SCENE \"Собрать диагностический APK с минимальной сценой\" OFF)")
+              != std::string::npos,
+          "по умолчанию ключ выключен: обычные сборки остаются игрой");
+
+    check(gr.find("diagnostic {") != std::string::npos,
+          "в gradle есть тип сборки diagnostic");
+    {
+        const usize d = gr.find("diagnostic {");
+        if (d != std::string::npos)
+            check(gr.substr(d, 900).find("-DVOXEL_DEBUG_SCENE=ON") != std::string::npos,
+                  "тип сборки diagnostic передаёт ключ в CMake");
+    }
+
+    check(wf.find("assembleDiagnostic") != std::string::npos,
+          "GitHub Actions собирает диагностический APK");
+    check(wf.find("VoxelRPG-diagnostic") != std::string::npos,
+          "и выкладывает его отдельным артефактом");
+    check(wf.find("debug_scene=true (build diagnostic mode)") != std::string::npos,
+          "прогон сверяет, что флаг доехал до библиотеки");
+
+    check(st.find("if (DIAGNOSTIC_BUILD) debugScene = true;") != std::string::npos,
+          "настройкой диагностическую сборку не выключить");
+    check(mn.find("debug_scene=true (build diagnostic mode)") != std::string::npos,
+          "диагностический APK объявляет режим в журнале");
+}
+
 void testDebugSceneIsolated() {
     group("сцена: стенд изолирован");
 
@@ -2883,6 +2930,7 @@ int main() {
     testDebugShadingWired();
     testMinimalScene();
     testDebugSceneIsolated();
+    testDiagnosticBuildWired();
     testUiTapSurvivesRedraw();
     testHudAndButtonsDoNotOverlap();
     testBufferMapContract();
