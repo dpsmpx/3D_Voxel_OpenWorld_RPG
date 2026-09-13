@@ -6,6 +6,8 @@
 // Собирается и запускается скриптом tools/hostcheck/run.sh.
 // ============================================================
 #include "core/job_system.h"
+#include "audio/audio_engine.h"
+#include "audio/sound_registry.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
 #include "save/save_format.h"
@@ -1070,6 +1072,184 @@ void testPathShape() {
     jobs::gJobs.stop();
 }
 
+
+// ------------------------------------------------------------
+// Микшер звука.
+//
+// Подсистема целиком проверяема на хосте: звуки синтезируются
+// процедурно, а AAudio нужен только чтобы отдать готовый буфер
+// наружу. mixInto можно звать напрямую — это и есть то, что делает
+// звуковой поток.
+//
+// Ловим ровно те дефекты, которые нашлись обзором и которые никак
+// себя не проявляют, кроме как «звук какой-то странный»: молчащий
+// ползунок громкости музыки, оборванное затухание и дескриптор
+// давно закончившегося звука, управляющий чужим голосом.
+// ------------------------------------------------------------
+void testAudioMixer() {
+    group("audio::AudioEngine");
+
+    audio::SoundRegistry::instance().init(48000);
+    audio::AudioEngine eng;              // без init(): поток AAudio не нужен
+
+    constexpr u32 FRAMES = 256;
+    std::vector<f32> buf((usize)FRAMES * 2);
+    auto peak = [&]() {
+        f32 m = 0.f;
+        for (f32 x : buf) m = std::max(m, std::fabs(x));
+        return m;
+    };
+    auto mix = [&]() {
+        std::fill(buf.begin(), buf.end(), 0.f);
+        eng.mixInto(buf.data(), FRAMES);
+    };
+    // Доводит микшер до полной тишины. Без этого чужой недоигравший
+    // голос маскирует проверку: тишину от него не отличить.
+    auto drain = [&]() {
+        for (int i = 0; i < 20000; ++i) { mix(); if (peak() == 0.f) return true; }
+        return false;
+    };
+
+    eng.setMasterVolume(1.f);
+    eng.setSfxVolume(1.f);
+    eng.setMusicVolume(1.f);
+
+    // --- громкость категорий действительно применяется ---
+    auto sfx = eng.play(audio::SOUND_UI_CLICK, 1.f, /*looping=*/true);
+    check(sfx.valid(), "звук запускается");
+    eng.update(0.016f, {});
+    mix();
+    const f32 loud = peak();
+    check(loud > 0.f, "звучащий голос даёт ненулевой сигнал");
+
+    eng.setSfxVolume(0.f);
+    eng.update(0.016f, {});
+    mix();
+    check(peak() < loud * 0.01f, "ползунок эффектов заглушает эффект");
+
+    eng.setSfxVolume(1.f);
+    eng.setVoiceIsMusic(sfx, true);
+    eng.setMusicVolume(0.f);
+    eng.update(0.016f, {});
+    mix();
+    check(peak() < loud * 0.01f, "ползунок музыки заглушает музыку");
+
+    // Громкость, заданную владельцем голоса, пересчёт громкостей
+    // обязан уважать, а не затирать: setVoiceGain и update() писали в
+    // одно поле, и ползунок музыки не работал вовсе.
+    eng.setMusicVolume(1.f);
+    eng.setVoiceGain(sfx, 0.25f);
+    eng.update(0.016f, {});
+    mix();
+    const f32 quarter = peak();
+    eng.setVoiceGain(sfx, 1.0f);
+    eng.update(0.016f, {});
+    mix();
+    const f32 full = peak();
+    check(quarter > 0.f && full > quarter * 2.f,
+          "setVoiceGain не затирается пересчётом громкостей");
+
+    eng.stop(sfx, 0.f);
+    check(drain(), "после остановки микшер замолкает");
+
+    // --- затухание доигрывает звук, а не повторяет один кусок ---
+    //
+    // Признак дефекта: у затухающего голоса не сохранялось положение
+    // в сэмплах, и каждый следующий буфер брался с того же места —
+    // один и тот же кусок, только всё тише. По самому сигналу это не
+    // видно (громкость-то падает), поэтому сравниваем ФОРМУ волны:
+    // нормируем оба буфера на их собственный пик. При застывшем
+    // положении формы совпадут точно.
+    auto fading = eng.play(audio::SOUND_MUSIC_EXPLORE, 1.f, /*looping=*/true);
+    check(fading.valid(), "длинный звук запускается");
+    eng.update(0.016f, {});
+    eng.stop(fading, 2.0f);
+
+    mix();
+    std::vector<f32> blockA = buf;
+    mix();
+    std::vector<f32> blockB = buf;
+
+    auto normalize = [](std::vector<f32>& v) {
+        f32 m = 0.f;
+        for (f32 x : v) m = std::max(m, std::fabs(x));
+        if (m > 0.f) for (f32& x : v) x /= m;
+        return m;
+    };
+    const f32 peakA = normalize(blockA);
+    const f32 peakB = normalize(blockB);
+    check(peakA > 0.f && peakB > 0.f, "затухающий голос ещё звучит");
+
+    f32 shapeDiff = 0.f;
+    for (usize i2 = 0; i2 < blockA.size(); ++i2)
+        shapeDiff = std::max(shapeDiff, std::fabs(blockA[i2] - blockB[i2]));
+    check(shapeDiff > 0.01f,
+          "затухающий голос продолжает звук, а не повторяет тот же кусок");
+
+    // Затухание обязано длиться столько, сколько заказано. Именно
+    // это ломал прежний порядок записи: состояние Freeing
+    // публиковалось раньше длительности, и звуковой поток мог
+    // увидеть длительность от прошлого использования слота — а если
+    // та была нулевой, звук обрывался мгновенно вместо угасания.
+    //
+    // Сравнивать огибающую по соседним буферам бессмысленно: сам
+    // материал нарастает быстрее, чем снимает двухсекундный спад.
+    // Проверяем по времени: на середине ещё слышно, после конца —
+    // тишина. Один буфер это 256/48000 секунды.
+    constexpr int BLOCKS_PER_SEC = 48000 / (int)FRAMES;
+    bool audibleMidway = false;
+    for (int i2 = 0; i2 < BLOCKS_PER_SEC; ++i2) {       // ~первая секунда из двух
+        mix();
+        if (peak() > 0.f) audibleMidway = true;
+    }
+    check(audibleMidway, "на середине заказанного спада звук ещё слышен");
+
+    for (int i2 = 0; i2 < BLOCKS_PER_SEC * 2; ++i2) mix();   // спад заведомо кончился
+    mix();
+    check(peak() == 0.f, "после конца спада голос замолкает сам");
+
+    eng.stop(fading, 0.f);
+    check(drain(), "затухавший голос освобождается");
+
+    // --- устаревший дескриптор не управляет чужим голосом ---
+    auto oneShot = eng.play(audio::SOUND_UI_CLICK, 1.f, /*looping=*/false);
+    check(oneShot.valid(), "одноразовый звук запускается");
+    check(drain(), "доигравший звук освобождает голос");
+    check(eng.activeVoiceCount() == 0, "активных голосов не осталось");
+
+    auto fresh = eng.play(audio::SOUND_UI_CLICK, 1.f, /*looping=*/true);
+    check(fresh.valid(), "слот переиспользуется");
+    check(fresh.id == oneShot.id, "тот же слот — проверка имеет смысл");
+    check(!(fresh == oneShot), "у нового голоса другое поколение");
+
+    eng.update(0.016f, {});
+    mix();
+    const f32 before = peak();
+    check(before > 0.f, "новый голос слышен");
+
+    eng.stop(oneShot, 0.f);            // устаревший дескриптор
+    eng.update(0.016f, {});
+    mix();
+    check(peak() > before * 0.5f, "устаревший дескриптор не глушит чужой голос");
+
+    eng.setVoiceGain(oneShot, 0.f);    // он же
+    eng.update(0.016f, {});
+    mix();
+    check(peak() > before * 0.5f, "устаревший дескриптор не меняет чужую громкость");
+
+    eng.stop(fresh, 0.f);
+    check(drain(), "чужой голос останавливается своим дескриптором");
+
+    // --- выход за пределы не ломает буфер ---
+    for (int i = 0; i < 70; ++i) eng.play(audio::SOUND_UI_CLICK, 1.f, true);
+    eng.update(0.016f, {});
+    mix();
+    bool finite = true;
+    for (f32 x : buf) if (!(x >= -1.0001f && x <= 1.0001f)) finite = false;
+    check(finite, "сигнал не выходит за пределы даже при переполнении голосов");
+}
+
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -1089,6 +1269,7 @@ int main() {
     testWorldQueries();
     testVoxelReader();
     testPathShape();
+    testAudioMixer();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);
     if (g_failed) {

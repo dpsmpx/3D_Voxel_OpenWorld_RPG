@@ -265,6 +265,8 @@ TEST_SRCS=(
     "$SRC_DIR/world/features.cpp"
     "$SRC_DIR/world/chunk_manager.cpp"
     "$SRC_DIR/world/ai/pathfinding.cpp"
+    "$SRC_DIR/audio/audio_engine.cpp"
+    "$SRC_DIR/audio/sound_registry.cpp"
     "$SRC_DIR/render/mesh_builder.cpp"
     "$SRC_DIR/core/crashlog.cpp"
     "$SRC_DIR/core/job_system.cpp"

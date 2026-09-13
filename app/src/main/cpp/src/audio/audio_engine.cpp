@@ -201,9 +201,9 @@ void AudioEngine::shutdown() {
     }
     stream_ = nullptr;
 
-    for (auto& v : voices_) {
-        v.state.store(VoiceState_Free);
-    }
+    // Через freeVoice, а не напрямую: иначе дескрипторы, выданные до
+    // остановки, остались бы действительными после повторного пуска.
+    for (i32 i = 0; i < MAX_VOICES; ++i) freeVoice(i);
     LOGI("AudioEngine: остановлен");
 }
 
@@ -220,45 +220,76 @@ i32 AudioEngine::claimVoice() {
     return -1;
 }
 
-void AudioEngine::releaseVoice(i32 idx) {
+void AudioEngine::freeVoice(i32 idx) {
     if (idx < 0 || idx >= MAX_VOICES) return;
-    voices_[idx].generation++;
+    // Поколение растёт ДО перевода в Free: заявка на слот читает его
+    // после успешного CAS, то есть уже увидит новое значение.
+    voices_[idx].generation.fetch_add(1, std::memory_order_relaxed);
     voices_[idx].state.store(VoiceState_Free, std::memory_order_release);
 }
+
+Voice* AudioEngine::resolve(VoiceHandle h) {
+    if (!h.valid() || h.id >= MAX_VOICES) return nullptr;
+    Voice& v = voices_[h.id];
+    // Поколение и было придумано для этой проверки, но её нигде не
+    // делали: дескриптор давно закончившегося звука продолжал
+    // управлять тем, кто занял его слот следующим.
+    if (v.generation.load(std::memory_order_acquire) != h.gen) return nullptr;
+    return &v;
+}
+
+const Voice* AudioEngine::resolve(VoiceHandle h) const {
+    if (!h.valid() || h.id >= MAX_VOICES) return nullptr;
+    const Voice& v = voices_[h.id];
+    if (v.generation.load(std::memory_order_acquire) != h.gen) return nullptr;
+    return &v;
+}
+
+namespace {
+/// Общая часть play и play3D: они отличались только двумя полями, а
+/// повторяли по два десятка строк настройки голоса.
+VoiceHandle startVoice(Voice& v, i32 idx, SoundId id, const Sound& snd,
+                       f32 gain, bool looping,
+                       bool spatialized, const glm::vec3& pos,
+                       std::atomic<bool>& isMusicFlag)
+{
+    v.soundId = id;
+    v.sound   = &snd;
+    v.cursor  = 0;
+    v.baseGain.store(gain * snd.defaultGain, std::memory_order_relaxed);
+    v.liveGain.store(gain * snd.defaultGain, std::memory_order_relaxed);
+    v.atten.store(1.f, std::memory_order_relaxed);
+    v.panL.store(1.f, std::memory_order_relaxed);
+    v.panR.store(1.f, std::memory_order_relaxed);
+    v.looping = looping || snd.looping;
+    v.spatialized = spatialized;
+    v.position = pos;
+    v.fadeStart = 1.f;
+    v.fadeTime  = 0.f;
+    v.fadeDur   = 0.f;
+
+    isMusicFlag.store(false, std::memory_order_relaxed);
+
+    VoiceHandle h;
+    h.id  = idx;
+    h.gen = v.generation.load(std::memory_order_relaxed);
+
+    // Публикуем последней строкой: до неё звуковой поток слот не видит.
+    v.state.store(VoiceState_Active, std::memory_order_release);
+    return h;
+}
+} // namespace
 
 VoiceHandle AudioEngine::play(SoundId id, f32 gain, bool looping) {
     if (id == SOUND_NONE || id >= SOUND_COUNT) return {};
     const Sound& snd = SoundRegistry::instance().get(id);
     if (!snd.valid()) return {};
 
-    i32 idx = claimVoice();
+    const i32 idx = claimVoice();
     if (idx < 0) return {};
 
-    Voice& v = voices_[idx];
-
-    v.soundId = id;
-    v.sound   = &snd;
-    v.cursor  = 0;
-    v.baseGain = gain * snd.defaultGain;
-    v.liveGain.store(v.baseGain);
-    v.atten.store(1.f);
-    v.panL    = 1.f;
-    v.panR    = 1.f;
-    v.looping = looping || snd.looping;
-    v.spatialized = false;
-    v.position = glm::vec3(0.f);
-    v.fadeStart = 1.f;
-    v.fadeTime  = 0.f;
-    v.fadeDur   = 0.f;
-
-    isMusic_[idx].store(false);
-
-    v.state.store(VoiceState_Active, std::memory_order_release);
-
-    VoiceHandle h;
-    h.id = idx;
-    h.gen = v.generation;
-    return h;
+    return startVoice(voices_[idx], idx, id, snd, gain, looping,
+                      /*spatialized=*/false, glm::vec3(0.f), isMusic_[idx]);
 }
 
 VoiceHandle AudioEngine::play3D(SoundId id, const glm::vec3& pos,
@@ -268,74 +299,56 @@ VoiceHandle AudioEngine::play3D(SoundId id, const glm::vec3& pos,
     const Sound& snd = SoundRegistry::instance().get(id);
     if (!snd.valid()) return {};
 
-    i32 idx = claimVoice();
+    const i32 idx = claimVoice();
     if (idx < 0) return {};
 
-    Voice& v = voices_[idx];
-
-    v.soundId = id;
-    v.sound   = &snd;
-    v.cursor  = 0;
-    v.baseGain = gain * snd.defaultGain;
-    v.liveGain.store(v.baseGain);
-    v.atten.store(1.f);
-    v.panL    = 1.f;
-    v.panR    = 1.f;
-    v.looping = looping || snd.looping;
-    v.spatialized = true;
-    v.position = pos;
-    v.fadeStart = 1.f;
-    v.fadeTime  = 0.f;
-    v.fadeDur   = 0.f;
-
-    isMusic_[idx].store(false);
-
-    v.state.store(VoiceState_Active, std::memory_order_release);
-
-    VoiceHandle h;
-    h.id = idx;
-    h.gen = v.generation;
-    return h;
+    return startVoice(voices_[idx], idx, id, snd, gain, looping,
+                      /*spatialized=*/true, pos, isMusic_[idx]);
 }
 
 void AudioEngine::stop(VoiceHandle v, f32 fadeSec) {
-    if (!v.valid() || v.id >= MAX_VOICES) return;
-    Voice& vo = voices_[v.id];
-    if (vo.state.load() != VoiceState_Active) return;
+    Voice* vo = resolve(v);
+    if (!vo) return;
+    if (vo->state.load(std::memory_order_acquire) != VoiceState_Active) return;
 
-    if (fadeSec <= 0.f) {
-        vo.state.store(VoiceState_Freeing, std::memory_order_release);
-        vo.fadeTime = 0.f;
-        vo.fadeDur  = 0.f;
-        vo.fadeStart = vo.liveGain.load() * vo.atten.load();
-    } else {
-        vo.state.store(VoiceState_Freeing, std::memory_order_release);
-        vo.fadeTime = 0.f;
-        vo.fadeDur  = fadeSec;
-        vo.fadeStart = vo.liveGain.load() * vo.atten.load();
-    }
+    // Параметры затухания выставляем ДО перевода в Freeing. Раньше
+    // было наоборот, и звуковой поток мог увидеть Freeing с ещё не
+    // записанной длительностью — от прошлого использования слота.
+    // Если та оказывалась нулевой, затухание пропускалось целиком, и
+    // звук обрывался вместо того чтобы угаснуть.
+    vo->fadeTime  = 0.f;
+    vo->fadeDur   = fadeSec > 0.f ? fadeSec : 0.f;
+    vo->fadeStart = vo->liveGain.load(std::memory_order_relaxed) *
+                    vo->atten.load(std::memory_order_relaxed);
+    vo->state.store(VoiceState_Freeing, std::memory_order_release);
 }
 
 void AudioEngine::setVoiceGain(VoiceHandle v, f32 gain) {
-    if (!v.valid() || v.id >= MAX_VOICES) return;
-    voices_[v.id].liveGain.store(gain, std::memory_order_relaxed);
+    Voice* vo = resolve(v);
+    if (!vo) return;
+    // Пишем в baseGain — «сколько хочет владелец голоса», — а не в
+    // liveGain. В liveGain кладёт update(), домножив на громкость
+    // категории; писать туда же значило затирать настройку
+    // громкости, и ползунок музыки не работал вовсе.
+    vo->baseGain.store(gain, std::memory_order_relaxed);
 }
 
 void AudioEngine::setVoicePosition(VoiceHandle v, const glm::vec3& pos) {
-    if (!v.valid() || v.id >= MAX_VOICES) return;
-    if (voices_[v.id].state.load() == VoiceState_Active) {
-        voices_[v.id].position = pos;
+    Voice* vo = resolve(v);
+    if (!vo) return;
+    if (vo->state.load(std::memory_order_acquire) == VoiceState_Active) {
+        vo->position = pos;
     }
 }
 
 void AudioEngine::setVoiceIsMusic(VoiceHandle v, bool isMusic) {
-    if (!v.valid() || v.id >= MAX_VOICES) return;
-    isMusic_[v.id].store(isMusic);
+    if (!resolve(v)) return;
+    isMusic_[v.id].store(isMusic, std::memory_order_relaxed);
 }
 
 bool AudioEngine::isMusicVoice(VoiceHandle v) const {
-    if (!v.valid() || v.id >= MAX_VOICES) return false;
-    return isMusic_[v.id].load();
+    if (!resolve(v)) return false;
+    return isMusic_[v.id].load(std::memory_order_relaxed);
 }
 
 u32 AudioEngine::activeVoiceCount() const {
@@ -362,8 +375,8 @@ void AudioEngine::applySpatial(Voice& v, const AudioListener& L) {
     glm::vec3 dir = d / dist;
     f32 dot = glm::dot(dir, L.right);
 
-    v.panL = 1.f - std::max(0.f, dot)  * 0.75f;
-    v.panR = 1.f - std::max(0.f, -dot) * 0.75f;
+    v.panL.store(1.f - std::max(0.f, dot)  * 0.75f, std::memory_order_relaxed);
+    v.panR.store(1.f - std::max(0.f, -dot) * 0.75f, std::memory_order_relaxed);
 }
 
 void AudioEngine::update(f32 dt, const AudioListener& listener) {
@@ -384,9 +397,11 @@ void AudioEngine::update(f32 dt, const AudioListener& listener) {
         if (st == VoiceState_Active) {
             applySpatial(v, listenerCache_);
 
-            f32 volMult = isMusic_[i].load() ? musicVol : sfxVol;
-            // liveGain хранит baseGain * volMult (перезапись, без накопления).
-            v.liveGain.store(v.baseGain * volMult, std::memory_order_relaxed);
+            const f32 volMult = isMusic_[i].load(std::memory_order_relaxed)
+                                ? musicVol : sfxVol;
+            // liveGain = «сколько хочет владелец» * громкость категории.
+            v.liveGain.store(v.baseGain.load(std::memory_order_relaxed) * volMult,
+                             std::memory_order_relaxed);
         }
     }
     (void)dt;
@@ -404,19 +419,19 @@ void AudioEngine::mixInto(f32* out, u32 frames) {
 
         const Sound* snd = v.sound;
         if (!snd || !snd->valid()) {
-            v.state.store(VoiceState_Free, std::memory_order_release);
+            freeVoice(idx);
             continue;
         }
 
         f32 fadeGain = 1.f;
         if (st == VoiceState_Freeing) {
             if (v.fadeDur <= 0.f) {
-                v.state.store(VoiceState_Free, std::memory_order_release);
+                freeVoice(idx);
                 continue;
             }
             f32 t = v.fadeTime / v.fadeDur;
             if (t >= 1.f) {
-                v.state.store(VoiceState_Free, std::memory_order_release);
+                freeVoice(idx);
                 continue;
             }
             fadeGain = v.fadeStart * (1.f - t);
@@ -427,8 +442,8 @@ void AudioEngine::mixInto(f32* out, u32 frames) {
         f32 atten = v.atten.load(std::memory_order_relaxed);
         f32 baseGain = live * atten * master * fadeGain;
 
-        f32 gL = baseGain * v.panL;
-        f32 gR = baseGain * v.panR;
+        const f32 gL = baseGain * v.panL.load(std::memory_order_relaxed);
+        const f32 gR = baseGain * v.panR.load(std::memory_order_relaxed);
 
         const u32 totalFrames = snd->frames;
         u64 cursor = v.cursor;
@@ -439,7 +454,7 @@ void AudioEngine::mixInto(f32* out, u32 frames) {
                 if (loop) {
                     cursor = 0;
                 } else {
-                    v.state.store(VoiceState_Free, std::memory_order_release);
+                    freeVoice(idx);
                     break;
                 }
             }
@@ -449,7 +464,13 @@ void AudioEngine::mixInto(f32* out, u32 frames) {
             ++cursor;
         }
 
-        if (v.state.load(std::memory_order_relaxed) == VoiceState_Active) {
+        // Положение в сэмплах сохраняем и для затухающего голоса.
+        // Раньше — только для активного, и затухание проигрывало один
+        // и тот же кусок буфера снова и снова: вместо угасания
+        // получалось жужжание. Освобождённый слот не трогаем: его
+        // мог уже занять другой звук и обнулить курсор.
+        const u32 stNow = v.state.load(std::memory_order_relaxed);
+        if (stNow == VoiceState_Active || stNow == VoiceState_Freeing) {
             v.cursor = cursor;
         }
     }
