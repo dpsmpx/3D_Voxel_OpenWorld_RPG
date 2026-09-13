@@ -8,6 +8,7 @@
 #include "core/job_system.h"
 #include "audio/audio_engine.h"
 #include "audio/sound_registry.h"
+#include "audio/audio_events.h"
 #include "save/save_inventory.h"
 #include "save/world_delta.h"
 #include "items/item_def.h"
@@ -1975,6 +1976,44 @@ void testQuestProgress() {
         reg.add(other, combat::StatusEffects{});
         killByPlayer(other);
         check(q2->progress == 0, "убийство чужого вида не засчитывается");
+    }
+
+    // --- Бой звучит ---
+    // Звуки удара по мобу, его смерти и урона игроку были написаны и
+    // синтезировались при запуске, но не проигрывались нигде: бой шёл
+    // молча. Проверяем через настоящий движок звука — сколько голосов
+    // он завёл.
+    {
+        audio::SoundRegistry::instance().init(48000);
+        audio::AudioEngine snd;
+        audio::events().setEngine(&snd);
+
+        const u32 before = snd.activeVoiceCount();
+        const ecs::Entity m = spawnMob();
+        reg.add(m, ecs::Transform{ glm::vec3(1.f, 2.f, 3.f) });
+        combat::DamageInstance light;
+        light.amount = 1.f;                 // не смертельный
+        light.sourceEntity = (u32)player;
+        combat::applyDamage(reg, m, light);
+        check(snd.activeVoiceCount() > before, "удар по мобу слышен");
+
+        // Отдельный моб: у только что ударенного стоят кадры
+        // неуязвимости, и добить его тем же ударом нельзя.
+        const u32 afterHit = snd.activeVoiceCount();
+        const ecs::Entity victim = spawnMob();
+        reg.add(victim, ecs::Transform{ glm::vec3(4.f, 5.f, 6.f) });
+        killByPlayer(victim);
+        check(snd.activeVoiceCount() > afterHit, "смерть моба слышна");
+
+        const u32 afterDeath = snd.activeVoiceCount();
+        combat::DamageInstance onPlayer;
+        onPlayer.amount = 1.f;
+        onPlayer.sourceEntity = (u32)m;
+        reg.add(player, ecs::PlayerTag{});
+        combat::applyDamage(reg, player, onPlayer);
+        check(snd.activeVoiceCount() > afterDeath, "урон по игроку слышен");
+
+        audio::events().setEngine(nullptr);
     }
 
     // Убийство не игроком не засчитывается: у моба нет прогрессии,

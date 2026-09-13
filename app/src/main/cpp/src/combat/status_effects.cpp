@@ -9,6 +9,7 @@
 #include "../mobs/mob_ai.h"
 #include "../progression/progression.h"
 #include "../quests/quest.h"
+#include "../audio/audio_events.h"
 #include <algorithm>
 
 namespace combat {
@@ -129,7 +130,24 @@ f32 applyDamage(ecs::Registry& reg, ecs::Entity target, const DamageInstance& dm
     auto* se = reg.get<StatusEffects>(target);
     if (se) applyStatuses(*se, dmg);
 
-    if (h->current <= 0.f) {
+    // Звук попадания и смерти. Эти события были написаны и
+    // синтезировались при запуске, но их никто не проигрывал: бой шёл
+    // молча — ни мобы, ни игрок никак не отзывались на урон.
+    const bool killed = h->current <= 0.f;
+    if (final > 0.f) {
+        const bool isPlayer = reg.has<ecs::PlayerTag>(target);
+        if (isPlayer) {
+            if (killed) audio::events().playerDeath();
+            else        audio::events().playerHurt();
+        } else if (reg.has<mobs::MobTag>(target)) {
+            if (auto* tf = reg.get<ecs::Transform>(target)) {
+                if (killed) audio::events().mobDeath(tf->position);
+                else        audio::events().mobHurt(tf->position);
+            }
+        }
+    }
+
+    if (killed) {
         auto* agent = reg.get<ecs::AIAgent>(target);
         if (agent) agent->state = ecs::AIAgent::Dead;
         onTargetDeath(reg, target, dmg.sourceEntity);

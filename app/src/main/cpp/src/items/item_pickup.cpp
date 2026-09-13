@@ -4,6 +4,7 @@
  */
 #include "item_pickup.h"
 #include "../quests/quest.h"
+#include "../audio/audio_events.h"
 #include "../ecs/components.h"
 #include "../physics/raycast.h"
 #include "../world/block.h"
@@ -146,6 +147,9 @@ void updatePickups(world::ChunkManager& world,
             // рюкзак нужного — и счётчик оставался в нуле.
             quests::notifyItemCollected(reg, (u32)playerEntity,
                                         pickedId, (i32)res.added);
+            // Звук подбора: событие было написано, но не проигрывалось
+            // нигде — предметы подбирались беззвучно.
+            audio::events().pickupItem();
         }
     }
 
