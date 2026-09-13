@@ -5,6 +5,7 @@
 #include "pathfinding.h"
 #include "../block.h"
 #include <unordered_map>
+#include <unordered_set>
 #include <queue>
 #include <cmath>
 #include <algorithm>
@@ -28,7 +29,10 @@ inline u64 hashCell(i32 x, i32 y, i32 z) {
 struct OpenNode {
     f32 g, f;
     glm::ivec3 pos;
-    i32 parentIdx;
+    /// Индекс САМОГО узла в nodeStore, а не его родителя. Поле
+    /// называлось parentIdx и хранило при этом собственный индекс —
+    /// из-за этой путаницы восстановление пути и оказалось неверным.
+    i32 selfIdx;
 };
 struct OpenNodeCmp {
     bool operator()(const OpenNode& a, const OpenNode& b) const { return a.f > b.f; }
@@ -37,40 +41,40 @@ struct OpenNodeCmp {
 // ============================================================
 // Проверка столбца: пусто ли на высотах [y, y+bodyHeight)
 // ============================================================
-bool columnFree(world::ChunkManager& world, i32 x, i32 z, i32 yBase, f32 bodyHeight) {
+bool columnFree(world::VoxelReader& rd, i32 x, i32 z, i32 yBase, f32 bodyHeight) {
     i32 yTop = yBase + (i32)std::ceil(bodyHeight);
     auto& reg = world::blocks();
     for (i32 y = yBase; y < yTop; ++y) {
-        if (reg.isSolid(world.getVoxel(x, y, z))) return false;
+        if (reg.isSolid(rd.at(x, y, z))) return false;
     }
     return true;
 }
 
-bool groundSolid(world::ChunkManager& world, i32 x, i32 z, i32 yBase) {
+bool groundSolid(world::VoxelReader& rd, i32 x, i32 z, i32 yBase) {
     auto& reg = world::blocks();
-    return reg.isSolid(world.getVoxel(x, yBase - 1, z));
+    return reg.isSolid(rd.at(x, yBase - 1, z));
 }
 
 } // namespace
 
-bool isStandable(world::ChunkManager& world, i32 x, i32 y, i32 z, const MoveParams& mp) {
+bool isStandable(world::VoxelReader& rd, i32 x, i32 y, i32 z, const MoveParams& mp) {
     if (y < 1 || y >= world::CHUNK_SIZE_Y - 2) return false;
 
     // Тело должно помещаться
-    if (!columnFree(world, x, z, y, mp.bodyHeight)) return false;
+    if (!columnFree(rd, x, z, y, mp.bodyHeight)) return false;
 
     // Опора снизу
-    if (groundSolid(world, x, z, y)) return true;
+    if (groundSolid(rd, x, z, y)) return true;
 
     // Разрешим "висеть" в воде/лаве
     if (mp.allowWater) {
-        u16 below = world.getVoxel(x, y - 1, z);
+        u16 below = rd.at(x, y - 1, z);
         if (below == world::WATER) return true;
     }
     return false;
 }
 
-bool canStep(world::ChunkManager& world,
+bool canStep(world::VoxelReader& rd,
              i32 x, i32 y, i32 z,
              i32 nx, i32 ny, i32 nz,
              const MoveParams& mp,
@@ -87,7 +91,7 @@ bool canStep(world::ChunkManager& world,
     }
 
     // Целевая клетка должна быть standable
-    if (!isStandable(world, nx, ny, nz, mp)) return false;
+    if (!isStandable(rd, nx, ny, nz, mp)) return false;
 
     // Для горизонтального шага без изменения Y проверяем, что можно
     // пройти "напрямую" (нет стены между)
@@ -99,7 +103,7 @@ bool canStep(world::ChunkManager& world,
     if (dy == 1) {
         if (!mp.allowJump) return false;
         // В промежуточной позиции (nx, y+1, nz) должно быть свободно
-        if (!columnFree(world, nx, nz, y + 1, mp.bodyHeight)) return false;
+        if (!columnFree(rd, nx, nz, y + 1, mp.bodyHeight)) return false;
         stepCost = 1.6f;
         return true;
     }
@@ -117,8 +121,10 @@ namespace {
 // Внутренняя куча для A* с реконструкцией пути
 struct AStar {
     std::unordered_map<u64, f32> gScore;
-    std::unordered_map<u64, i32> parentIdx;    // индекс в nodeStore
-    std::unordered_map<u64, i32> closedSet;
+    /// Клетка -> индекс её родителя в nodeStore. Именно родителя:
+    /// по этой таблице путь и разматывается от цели к началу.
+    std::unordered_map<u64, i32> parentIdx;
+    std::unordered_set<u64>      closedSet;
     std::vector<glm::ivec3> nodeStore;
     std::priority_queue<OpenNode, std::vector<OpenNode>, OpenNodeCmp> open;
 };
@@ -133,6 +139,13 @@ PathResult findPath(world::ChunkManager& world,
     PathResult out;
     if (start == goal) { out.ok = true; return out; }
 
+    // Один курсор на весь поиск. A* с бюджетом в полторы тысячи шагов
+    // делает тысячи чтений вокселей, и почти все — в одном и том же
+    // чанке. Через ChunkManager::getVoxel каждое стоило поиска в
+    // хэш-таблице и двух захватов замков; здесь чанк ищется только
+    // при переходе через его границу.
+    world::VoxelReader rd(world);
+
     AStar A;
     auto heur = [](const glm::ivec3& a, const glm::ivec3& b) {
         return std::fabs((f32)(a.x - b.x))
@@ -143,7 +156,7 @@ PathResult findPath(world::ChunkManager& world,
     A.nodeStore.push_back(start);
     u64 hStart = hashCell(start.x, start.y, start.z);
     A.gScore[hStart] = 0.f;
-    A.parentIdx[hStart] = -1;
+    A.parentIdx[hStart] = -1;   // у начала родителя нет
     A.open.push({ 0.f, heur(start, goal), start, 0 });
 
     i32 iterations = 0;
@@ -155,18 +168,31 @@ PathResult findPath(world::ChunkManager& world,
 
         u64 hCur = hashCell(cur.pos.x, cur.pos.y, cur.pos.z);
         if (A.closedSet.count(hCur)) continue;
-        A.closedSet[hCur] = cur.parentIdx;
+        A.closedSet.insert(hCur);
 
         if (cur.pos == goal) {
-            // Реконструкция
-            i32 idx = cur.parentIdx;
+            // Разматываем путь от цели к началу по таблице родителей.
+            //
+            // Раньше здесь получалась чепуха: родителем новой клетки
+            // записывался «предпоследний добавленный узел» вместо
+            // текущей клетки, и цепочка уводила в соседнюю ветку
+            // поиска. Путь в восемь блоков выходил из четырёх тысяч
+            // точек, моб шёл по нему зигзагом, а сглаживание потом
+            // перебирало эти тысячи точек попарно, проверяя видимость.
             std::vector<glm::ivec3> rev;
             rev.push_back(cur.pos);
-            while (idx >= 0) {
-                rev.push_back(A.nodeStore[idx]);
-                u64 hNode = hashCell(A.nodeStore[idx].x, A.nodeStore[idx].y, A.nodeStore[idx].z);
-                idx = A.parentIdx.count(hNode) ? A.parentIdx[hNode] : -1;
-                if (idx >= 0 && rev.size() > 4096) break;
+            u64 h = hCur;
+            // Узлов в цепочке не больше, чем было раскрыто клеток:
+            // каждая попадает в неё не более одного раза. Ограничение
+            // всё же оставляем — на случай, если это перестанет быть
+            // правдой, зацикливаться здесь нельзя.
+            const usize limit = A.nodeStore.size() + 1;
+            while (rev.size() <= limit) {
+                auto it = A.parentIdx.find(h);
+                if (it == A.parentIdx.end() || it->second < 0) break;
+                const glm::ivec3 p = A.nodeStore[(usize)it->second];
+                rev.push_back(p);
+                h = hashCell(p.x, p.y, p.z);
             }
             std::reverse(rev.begin(), rev.end());
             out.waypoints = std::move(rev);
@@ -181,7 +207,7 @@ PathResult findPath(world::ChunkManager& world,
         // Варианты y: same, +1, -1..-N
         auto tryNeighbor = [&](i32 nx, i32 ny, i32 nz) {
             f32 stepCost;
-            if (!canStep(world, cx, cy, cz, nx, ny, nz, mp, stepCost)) return;
+            if (!canStep(rd, cx, cy, cz, nx, ny, nz, mp, stepCost)) return;
 
             u64 hN = hashCell(nx, ny, nz);
             if (A.closedSet.count(hN)) return;
@@ -191,18 +217,11 @@ PathResult findPath(world::ChunkManager& world,
             if (it != A.gScore.end() && tentative >= it->second) return;
 
             A.gScore[hN] = tentative;
-            i32 newIdx = (i32)A.nodeStore.size();
+            const i32 newIdx = (i32)A.nodeStore.size();
             A.nodeStore.push_back({ nx, ny, nz });
-            A.parentIdx[hN] = cur.parentIdx >= 0
-                ? A.parentIdx.count(hCur) ? A.parentIdx[hCur] : 0
-                : 0;
-            // Внимание: parentIdx для новой ноды должен указывать на текущую ноду
-            A.parentIdx[hN] = (i32)(A.nodeStore.size() - 2);  // индекс cur в nodeStore (грубо)
-            // Уточним: правильный способ — хранить idx текущего узла.
-            // Для простоты используем индекс последнего добавленного -1.
-            // В реальном проекте nodeStore растёт, а parentIdx должен
-            // ссылаться на ИНДЕКС узла. Здесь эта грубость допустима, поскольку
-            // мы возвращаем путь по координатам, а не по индексам.
+            // Родитель новой клетки — та, из которой мы в неё шагнули,
+            // то есть текущая. Её индекс в nodeStore лежит прямо в узле.
+            A.parentIdx[hN] = cur.selfIdx;
 
             f32 f = tentative + heur({nx, ny, nz}, goal);
             A.open.push({ tentative, f, {nx, ny, nz}, newIdx });
@@ -230,7 +249,7 @@ PathResult findPath(world::ChunkManager& world,
 // ============================================================
 namespace {
 
-bool hasLineOfSight(world::ChunkManager& world,
+bool hasLineOfSight(world::VoxelReader& rd,
                     const glm::ivec3& a,
                     const glm::ivec3& b,
                     const MoveParams& mp)
@@ -250,9 +269,9 @@ bool hasLineOfSight(world::ChunkManager& world,
         // тело
         i32 yTop = y + (i32)std::ceil(mp.bodyHeight);
         for (i32 yy = y; yy < yTop; ++yy)
-            if (reg.isSolid(world.getVoxel(x, yy, z))) return false;
+            if (reg.isSolid(rd.at(x, yy, z))) return false;
         // под ногами (кроме конечной точки — там standable уже проверен)
-        if (i < steps && !reg.isSolid(world.getVoxel(x, y - 1, z))) return false;
+        if (i < steps && !reg.isSolid(rd.at(x, y - 1, z))) return false;
     }
     return true;
 }
@@ -264,6 +283,7 @@ void smoothPath(world::ChunkManager& world,
                 const MoveParams& mp)
 {
     if (path.size() < 3) return;
+    world::VoxelReader rd(world);
     std::vector<glm::ivec3> out;
     out.push_back(path.front());
     usize i = 0;
@@ -271,7 +291,7 @@ void smoothPath(world::ChunkManager& world,
         // Ищем самый дальний видимый узел
         bool found = false;
         for (usize k = path.size() - 1; k > i + 1; --k) {
-            if (hasLineOfSight(world, path[i], path[k], mp)) {
+            if (hasLineOfSight(rd, path[i], path[k], mp)) {
                 out.push_back(path[k]);
                 i = k;
                 found = true;

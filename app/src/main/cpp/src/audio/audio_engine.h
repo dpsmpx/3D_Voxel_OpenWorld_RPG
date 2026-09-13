@@ -22,28 +22,48 @@ enum VoiceState : u32 {
     VoiceState_Claimed = 3,
 };
 
+/// Голос микшера.
+///
+/// Поля делятся на три группы, и путать их нельзя:
+///   * пишутся только под заявкой (между Claimed и Active) — обычные,
+///     их читает потом только звуковой поток;
+///   * пишутся игровым потоком на живом голосе — обязаны быть
+///     атомарными, иначе это гонка с микшером;
+///   * пишутся только микшером — обычные.
+///
+/// panL/panR попадали во вторую группу, но атомарными не были:
+/// applySpatial пишет их из игрового потока, а mixInto читает из
+/// звукового.
 struct Voice {
     std::atomic<u32> state{ VoiceState_Free };
 
     SoundId       soundId      = SOUND_NONE;
     const Sound*  sound        = nullptr;
-    u64           cursor       = 0;
-    f32           baseGain     = 1.f;
+    u64           cursor       = 0;          ///< только микшер
+    /// Громкость, которую заказал владелец голоса. Игровой поток
+    /// меняет её через setVoiceGain, update() домножает на громкость
+    /// категории и кладёт результат в liveGain.
+    std::atomic<f32> baseGain{ 1.f };
     std::atomic<f32> liveGain{ 1.f };
     std::atomic<f32> atten{ 1.f };
-    f32           panL         = 1.f;
-    f32           panR         = 1.f;
+    std::atomic<f32> panL{ 1.f };
+    std::atomic<f32> panR{ 1.f };
     bool          looping      = false;
     bool          spatialized  = false;
     bool          randomizedStart = false;
 
-    glm::vec3     position{0.f};
+    glm::vec3     position{0.f};   ///< только игровой поток
 
     f32           fadeStart    = 1.f;
     f32           fadeTime     = 0.f;
     f32           fadeDur      = 0.f;
 
-    u32           generation   = 0;
+    /// Растёт при каждом освобождении слота. По ней отличается живой
+    /// голос от давно закончившегося, чей слот уже занят другим
+    /// звуком. Упорядочена освобождением/заявкой слота: микшер
+    /// увеличивает её ДО перевода в Free (release), заявка читает
+    /// после успешного CAS (acquire).
+    std::atomic<u32> generation{ 0 };
 };
 
 class AudioEngine {
@@ -92,7 +112,13 @@ public:
 
 private:
     i32 claimVoice();
-    void releaseVoice(i32 idx);
+    /// Освобождает слот, увеличив поколение. Единственный способ
+    /// перевести голос в Free: без роста поколения старые дескрипторы
+    /// продолжали бы управлять чужим звуком.
+    void freeVoice(i32 idx);
+    /// Голос по дескриптору — или nullptr, если дескриптор устарел.
+    Voice* resolve(VoiceHandle h);
+    const Voice* resolve(VoiceHandle h) const;
     void applySpatial(Voice& v, const AudioListener& L);
 
     AAudioStream* stream_ = nullptr;

@@ -10,10 +10,11 @@
 namespace physics {
 
 void CharacterController::detectEnvironment(world::ChunkManager& world) {
+    world::VoxelReader rd(world);
     auto blockAt = [&](const glm::vec3& p) -> u16 {
-        return world.getVoxel((i32)std::floor(p.x),
-                              (i32)std::floor(p.y),
-                              (i32)std::floor(p.z));
+        return rd.at((i32)std::floor(p.x),
+                     (i32)std::floor(p.y),
+                     (i32)std::floor(p.z));
     };
 
     glm::vec3 feet = state_.position + glm::vec3(0, 0.1f, 0);
@@ -47,7 +48,10 @@ bool CharacterController::tryStepUp(world::ChunkManager& world,
     // Направление движения.
     glm::vec3 dir = glm::vec3(moveDelta.x, 0.f, moveDelta.z) / horizLen;
 
+    // Курсор на всю проверку: она перебирает несколько коробок
+    // вокселей вокруг игрока, то есть почти всегда один и тот же чанк.
     auto& reg = world::blocks();
+    world::VoxelReader rd(world);
 
     // Проверяем несколько высот от 0.2 до stepHeight.
     constexpr int STEPS = 6;
@@ -71,7 +75,7 @@ bool CharacterController::tryStepUp(world::ChunkManager& world,
         for (i32 y = y0; y <= y1 && !blocked; ++y) {
             for (i32 z = z0; z <= z1 && !blocked; ++z) {
                 for (i32 x = x0; x <= x1; ++x) {
-                    if (reg.isSolid(world.getVoxel(x, y, z))) {
+                    if (reg.isSolid(rd.at(x, y, z))) {
                         blocked = true;
                         break;
                     }
@@ -84,13 +88,13 @@ bool CharacterController::tryStepUp(world::ChunkManager& world,
         i32 fy = (i32)std::floor(testPos.y - 0.05f);
         i32 fx = (i32)std::floor(testPos.x);
         i32 fz = (i32)std::floor(testPos.z);
-        bool groundBelow = reg.isSolid(world.getVoxel(fx, fy, fz));
+        bool groundBelow = reg.isSolid(rd.at(fx, fy, fz));
 
         if (!groundBelow) {
             // Проверим вокруг (для широких ног).
             for (i32 dx = -1; dx <= 1 && !groundBelow; ++dx) {
                 for (i32 dz = -1; dz <= 1; ++dz) {
-                    if (reg.isSolid(world.getVoxel(fx + dx, fy, fz + dz))) {
+                    if (reg.isSolid(rd.at(fx + dx, fy, fz + dz))) {
                         groundBelow = true;
                         break;
                     }
@@ -116,7 +120,7 @@ bool CharacterController::tryStepUp(world::ChunkManager& world,
         for (i32 y = ay0; y <= ay1 && !aheadBlocked; ++y) {
             for (i32 z = az0; z <= az1 && !aheadBlocked; ++z) {
                 for (i32 x = ax0; x <= ax1; ++x) {
-                    if (reg.isSolid(world.getVoxel(x, y, z))) {
+                    if (reg.isSolid(rd.at(x, y, z))) {
                         aheadBlocked = true;
                         break;
                     }
@@ -151,6 +155,7 @@ void CharacterController::snapDown(world::ChunkManager& world, f32 dt) {
     if (state_.velocity.y < -snapDownMaxVel * 8.f) return;
 
     auto& reg = world::blocks();
+    world::VoxelReader rd(world);
 
     // Проверяем, есть ли твёрдый блок в пределах snapDownDist.
     const f32 stepSize = 0.05f;
@@ -160,7 +165,7 @@ void CharacterController::snapDown(world::ChunkManager& world, f32 dt) {
         i32 py = (i32)std::floor(probe.y);
         i32 pz = (i32)std::floor(probe.z);
 
-        if (reg.isSolid(world.getVoxel(px, py, pz))) {
+        if (reg.isSolid(rd.at(px, py, pz))) {
             // Вычислим, где "пол" блока.
             f32 floorY = (f32)(py + 1);
             // Притягиваем к полу.

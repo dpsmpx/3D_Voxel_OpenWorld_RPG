@@ -617,19 +617,6 @@ void UiSystem::drawPauseMenu(player::Player& player) {
 
     ui_.text(T(StrKey::Menu_Pause), cx + 100.f, cy - 60.f, 3.f, COL_WHITE);
 
-    auto menuBtn = [&](const char* label, float y, UiColor bg,
-                       std::function<void()> onClick)
-    {
-        Rect r{ cx, y, cw, ch };
-        ui_.pushInteractiveRect(r, std::move(onClick));
-        int idx = (int)ui_.screenWidth(); // заглушка, используем button
-        (void)idx;
-
-        // Используем button для отрисовки + обработки
-        // Нам нужен idx, но push уже сделал работу. Поэтому
-        // перепишем: сначала запомним idx.
-        // (Реализация ниже)
-    };
 
     // Прямые кнопки
     {
@@ -711,7 +698,6 @@ void UiSystem::drawPauseMenu(player::Player& player) {
         }
     }
 
-    (void)menuBtn;
 }
 
 // ============================================================
@@ -1919,8 +1905,76 @@ void UiSystem::drawTradeScreen(player::Player& player) {
     const f32 listY = 140.f;
 
     if (tradeCtx.tab == 0) {
-        ui_.text("(BUY list from trader)", listX, listY, 1.8f,
-                 rgba(180, 180, 180, 255));
+        // Ассортимент торговца. Здесь стояла строка-заглушка
+        // «(BUY list from trader)»: купить было физически не за что
+        // нажать, хотя и цены, и запас, и обработчик покупки уже были
+        // написаны.
+        auto* reg = player.registryHandle();
+        auto* tinv = reg
+            ? reg->get<trade::TradeInventory>((ecs::Entity)tradeCtx.traderEntity)
+            : nullptr;
+
+        factions::ReputationTier tier = factions::ReputationTier::Neutral;
+        if (reg) {
+            if (auto* rep = reg->get<factions::Reputation>(player.entity()))
+                tier = rep->tier(factions::FactionId::Villagers);
+        }
+
+        if (!tinv || tinv->entries.empty()) {
+            ui_.text(T(StrKey::Trade_NothingToBuy), listX, listY, 1.8f,
+                     rgba(180, 180, 180, 255));
+        } else {
+            int shown = 0;
+            for (const auto& e : tinv->entries) {
+                if (!e.isBuyable || e.stock == 0) continue;
+                if (shown >= 24) break;             // четыре ряда по шесть
+
+                const int c = shown % 6, rrow = shown / 6;
+                ++shown;
+
+                const auto& def = items::items().get(e.itemId);
+                const auto price = trade::priceFor(e.itemId, e.basePrice, tier,
+                                                   e.isBuyable, e.isSellable);
+
+                const f32 x = listX + c * 140.f;
+                const f32 y = listY + rrow * 90.f;
+                Rect rr{ x, y, 130.f, 80.f };
+
+                const u16 itemId = e.itemId;
+                const bool affordable = wal->gold >= price.buyPrice;
+                int ri = ui_.pushInteractiveRect(rr, [this, itemId, affordable]() {
+                    tradeCtx.selectedIdx = (i32)itemId;
+                    tradeCtx.selCount = 1;
+                    if (affordable && onTradeBuy) onTradeBuy(itemId, 1);
+                });
+                const bool pressed = ui_.isInteractivePressed(ri);
+
+                // Недоступное по деньгам показываем тусклым: иначе
+                // нажатие просто ничего не делает, и непонятно почему.
+                ui_.rect(rr.x, rr.y, rr.w, rr.h,
+                         !affordable ? rgba(40, 40, 40, 200)
+                                     : (pressed ? rgba(60, 80, 60, 240)
+                                                : rgba(40, 50, 40, 220)));
+                ui_.rectOutline(rr.x, rr.y, rr.w, rr.h, 2.f, COL_BLACK);
+
+                char lbl[64];
+                std::snprintf(lbl, sizeof(lbl), "%s x%u",
+                              def.name, (unsigned)e.stock);
+                ui_.text(lbl, rr.x + 6.f, rr.y + 8.f, 1.4f,
+                         affordable ? COL_WHITE : rgba(130, 130, 130, 255));
+
+                char priceBuf[32];
+                std::snprintf(priceBuf, sizeof(priceBuf), "%u g",
+                              (unsigned)price.buyPrice);
+                ui_.text(priceBuf, rr.x + 6.f, rr.y + 30.f, 1.3f,
+                         affordable ? rgba(255, 220, 100, 255)
+                                    : rgba(140, 120, 70, 255));
+            }
+            if (shown == 0) {
+                ui_.text(T(StrKey::Trade_NothingToBuy), listX, listY, 1.8f,
+                         rgba(180, 180, 180, 255));
+            }
+        }
     } else {
         // SELL — инвентарь
         for (int r = 0; r < 4; ++r) {

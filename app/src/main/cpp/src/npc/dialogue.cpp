@@ -10,11 +10,19 @@
 #include "../quests/quest_generator.h"
 #include "../progression/progression.h"
 #include "../progression/resource_regen.h"
+#include "../items/currency.h"
 #include "../core/log.h"
+#include <cstdio>
 #include <cstring>
 #include <algorithm>
 
 namespace npc {
+
+/// Сколько берёт целитель за полное восстановление здоровья.
+/// Одно число на текст варианта ответа и на списание — иначе они
+/// разъезжаются, что уже однажды и случилось.
+constexpr u64 HEAL_COST = 50;
+
 
 using namespace factions;
 
@@ -132,7 +140,13 @@ DialogueRegistry::DialogueRegistry() {
         DialogueNode n1{};
         n1.id = 1;
         n1.text = "Wounds of body and mind. I can tend to both.";
-        n1.choices.push_back({ "Heal me (50 gold).", DialogueAction::Heal, 0 });
+        // Цена берётся из одной константы и подставляется в текст:
+        // раньше «50 gold» было написано в строке, а списания не было
+        // вовсе — целитель лечил бесплатно и сколько угодно раз.
+        char healText[64];
+        std::snprintf(healText, sizeof(healText), "Heal me (%u gold).",
+                      (unsigned)HEAL_COST);
+        n1.choices.push_back({ healText, DialogueAction::Heal, 0 });
         n1.choices.push_back({ "Not now.", DialogueAction::EndDialogue, 0 });
         t.nodes.push_back(n1);
 
@@ -399,21 +413,21 @@ bool applyChoice(ecs::Registry& reg,
     }
 
     case DialogueAction::OpenTrade:
-        // Phase 12
-        dlg.active = false;
-        return false;
-
     case DialogueAction::OpenCraft:
-        // Phase 12
+        // Экран открывает главный цикл: диалог не знает об интерфейсе.
+        dlg.pendingAction = choice.action;
         dlg.active = false;
         return false;
 
     case DialogueAction::Heal: {
-        // Лечение за золото — упрощённая версия
-        // (в Phase 12 будет полная экономика)
-        auto* h = reg.get<ecs::Health>(dlg.playerEntity);
-        if (h) {
+        // В самом варианте ответа написано «за 50 золотых», а списания
+        // не было: целитель лечил бесплатно и сколько угодно раз.
+        auto* h   = reg.get<ecs::Health>(dlg.playerEntity);
+        auto* wal = reg.get<items::Wallet>(dlg.playerEntity);
+        if (h && wal && h->current < h->max && wal->spend(HEAL_COST)) {
             h->current = h->max;
+            LOGI("Целитель: восстановил здоровье за %u золотых",
+                 (unsigned)HEAL_COST);
         }
         dlg.active = false;
         return false;

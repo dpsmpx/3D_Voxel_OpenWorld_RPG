@@ -63,9 +63,20 @@ public:
     u32 lastVertices() const { return lastVerts_; }
     u32 lastDrawn()    const { return lastDrawn_; }
 
+    /// Вершины, накопленные за текущий кадр, по атласам (0 — шрифт,
+    /// 1 — внешний). Интерфейс целиком строится на процессоре, так
+    /// что по этому потоку его можно проверить без устройства —
+    /// этим занимается tools/hostcheck.
+    const std::vector<UiVertex>& pendingVertices(int slot) const {
+        return verts_[slot == 1 ? 1 : 0];
+    }
+
     float whiteU() const { return whiteU_; }
     float whiteV() const { return whiteV_; }
-    VkDescriptorSetLayout descriptorLayout() const { return descSet_.layout(); }
+    /// Раскладка дескрипторов интерфейса. Раньше здесь возвращалась
+    /// раскладка поля descSet_, которое init() не заполняет вовсе,
+    /// то есть всегда нулевой дескриптор.
+    VkDescriptorSetLayout descriptorLayout() const { return descLayout_; }
 
 private:
     VkDevice dev_ = VK_NULL_HANDLE;
@@ -77,7 +88,6 @@ private:
     // Шейдер и пайплайн
     vk::ShaderCache      shaders_;
     vk::GraphicsPipeline pipeline_;
-    vk::DescriptorSet    descSet_;      // layout = 1 sampler2D
 
     // Атлас шрифта
     vk::Texture2D fontAtlas_;

@@ -217,7 +217,17 @@ bool Context::createSwapchain() {
     } else {
         surfaceTransform_ = caps.currentTransform;
     }
+    displayTransform_ = caps.currentTransform;
     const VkSurfaceTransformFlagBitsKHR displayTransform = caps.currentTransform;
+
+    // Осознанное расхождение: мы просим одно, экран живёт в другом.
+    // Драйвер обязан отвечать на каждый показ VK_SUBOPTIMAL_KHR — это
+    // не поломка, а буквальный ответ «можно было бы и лучше». Пока мы
+    // помним, что расхождение наше собственное, этот ответ надо
+    // молча пропускать: пересоздание цепочки его не лечит, потому что
+    // после пересоздания расхождение ровно то же.
+    presentMayBeSuboptimal_ = (surfaceTransform_ != caps.currentTransform);
+    suboptimalPresents_ = 0;
 
     swapExtent_ = caps.currentExtent;
     if (swapExtent_.width == UINT32_MAX) {
@@ -433,13 +443,28 @@ void Context::destroySwapchain() {
     vkDestroySwapchainKHR(device_, swapchain_, nullptr); swapchain_ = VK_NULL_HANDLE;
 }
 
+// Дешёвая проверка «окно действительно стало другим». Один запрос к
+// драйверу; вызывается только когда показ пожаловался.
+bool Context::surfaceExtentChanged() const {
+    VkSurfaceCapabilitiesKHR caps{};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_, surface_, &caps) != VK_SUCCESS)
+        return false;
+    if (caps.currentExtent.width == UINT32_MAX) return false;   // размер задаём мы
+    if (caps.currentExtent.width == 0 || caps.currentExtent.height == 0) return false;
+    return caps.currentExtent.width  != swapExtent_.width ||
+           caps.currentExtent.height != swapExtent_.height;
+}
+
 void Context::onResize(ANativeWindow* /*window*/) {
     destroySwapchain();
     if (!createSwapchain())    { LOGE("resize: swapchain"); return; }
     if (!createImageViews())   { LOGE("resize: image views"); return; }
     if (!createDepthResources()){ LOGE("resize: depth"); return; }
     if (!createFramebuffers()) { LOGE("resize: framebuffers"); return; }
-    LOGI("Swapchain пересоздан: %ux%u", swapExtent_.width, swapExtent_.height);
+    ++swapchainRebuilds_;
+    LOGI("Swapchain пересоздан (%llu-й раз): %ux%u",
+         (unsigned long long)swapchainRebuilds_,
+         swapExtent_.width, swapExtent_.height);
 }
 
 bool Context::beginFrame() {
@@ -511,9 +536,34 @@ void Context::endFrame() {
     pi.pImageIndices = &imgIdx_;
     const VkResult pres = vkQueuePresentKHR(gfxQueue_, &pi);
     lastPresent_ = pres;
-    if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR) {
+    if (pres == VK_ERROR_OUT_OF_DATE_KHR) {
         needsResize_ = true;
-    } else if (pres == VK_SUCCESS) {
+    } else if (pres == VK_SUCCESS || pres == VK_SUBOPTIMAL_KHR) {
+        // «Suboptimal» — это не «устарело»: кадр показан. Пока мы сами
+        // просим preTransform, отличный от поворота экрана, драйвер
+        // обязан возвращать этот ответ на КАЖДОМ кадре. Прежний код
+        // принимал его за приказ пересоздать цепочку — и цепочка
+        // пересоздавалась шестьдесят раз в секунду, каждый раз с
+        // vkDeviceWaitIdle и с полностью пропущенным следующим кадром.
+        // Мир при этом не успевал нарисоваться ни разу.
+        if (pres == VK_SUBOPTIMAL_KHR) {
+            if (!presentMayBeSuboptimal_) {
+                // Расхождения мы не просили — значит оно настоящее.
+                needsResize_ = true;
+            } else {
+                // Поворот мы отдали композитору осознанно, а вот
+                // изменившийся размер окна — настоящая причина
+                // пересоздать. Спрашиваем драйвер редко: ответ
+                // SUBOPTIMAL приходит каждый кадр, а окно так часто
+                // не меняется.
+                if (suboptimalPresents_ == 0)
+                    LOGI("показ отвечает SUBOPTIMAL — это ожидаемо: поворот "
+                         "отдан композитору; следим только за размером окна");
+                if ((suboptimalPresents_++ % SUBOPTIMAL_RECHECK) == 0 &&
+                    surfaceExtentChanged())
+                    needsResize_ = true;
+            }
+        }
         // Первый показанный кадр — важная веха: до него «чёрный экран»
         // и «кадры не доходят до экрана» выглядят одинаково.
         if (framesPresented_ == 0) LOGI("первый кадр показан на экране");
@@ -535,13 +585,13 @@ void Context::endFrame() {
 void Context::shutdown() {
     if (device_) {
         vkDeviceWaitIdle(device_);
-        if (transferCmd_ != VK_NULL_HANDLE) {
-            vkFreeCommandBuffers(device_, cmdPool_, 1, &transferCmd_);
-            transferCmd_ = VK_NULL_HANDLE;
-        }
-        if (transferFence_ != VK_NULL_HANDLE) {
-            vkDestroyFence(device_, transferFence_, nullptr);
-            transferFence_ = VK_NULL_HANDLE;
+        transferCmd_ = VK_NULL_HANDLE;
+        for (auto& slot : transfers_) {
+            if (slot.cmd != VK_NULL_HANDLE)
+                vkFreeCommandBuffers(device_, cmdPool_, 1, &slot.cmd);
+            if (slot.fence != VK_NULL_HANDLE)
+                vkDestroyFence(device_, slot.fence, nullptr);
+            slot = TransferSlot{};
         }
         for (u32 i = 0; i < MAX_FRAMES; ++i) {
             vkDestroySemaphore(device_, imgAvailable_[i], nullptr);
@@ -571,42 +621,67 @@ VkCommandBuffer Context::beginTransferBatch() {
         return VK_NULL_HANDLE;
     }
 
-    if (transferFence_ == VK_NULL_HANDLE) {
+    TransferSlot& slot = transfers_[transferSlot_];
+
+    if (slot.fence == VK_NULL_HANDLE) {
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        if (vkCreateFence(device_, &fi, nullptr, &transferFence_) != VK_SUCCESS) {
+        if (vkCreateFence(device_, &fi, nullptr, &slot.fence) != VK_SUCCESS) {
             LOGE("beginTransferBatch: не создан fence");
             return VK_NULL_HANDLE;
         }
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool        = cmdPool_;
+        ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandBufferCount = 1;
+        if (vkAllocateCommandBuffers(device_, &ai, &slot.cmd) != VK_SUCCESS) {
+            slot.cmd = VK_NULL_HANDLE;
+            LOGE("beginTransferBatch: не выделен командный буфер");
+            return VK_NULL_HANDLE;
+        }
+    } else if (slot.submitted) {
+        // Этот слот отдавали GPU TRANSFER_SLOTS пакетов назад — к
+        // этому моменту он давно закончен, и ожидание ничего не стоит.
+        // Оно нужно только чтобы переиспользовать командный буфер.
+        vkWaitForFences(device_, 1, &slot.fence, VK_TRUE, UINT64_MAX);
+        vkResetCommandBuffer(slot.cmd, 0);
     }
-
-    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    ai.commandPool        = cmdPool_;
-    ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ai.commandBufferCount = 1;
-    if (vkAllocateCommandBuffers(device_, &ai, &transferCmd_) != VK_SUCCESS) {
-        transferCmd_ = VK_NULL_HANDLE;
-        LOGE("beginTransferBatch: не выделен командный буфер");
-        return VK_NULL_HANDLE;
-    }
+    vkResetFences(device_, 1, &slot.fence);
+    slot.submitted = false;
 
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(transferCmd_, &bi);
+    vkBeginCommandBuffer(slot.cmd, &bi);
+
+    // Записи идут в буферы, из которых ещё может читать предыдущий
+    // кадр. Область действия барьера — вся очередь: первая половина
+    // захватывает всё, что отправлено раньше, поэтому копии дождутся
+    // чужого чтения вершин без остановки процессора.
+    VkMemoryBarrier before{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    before.srcAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+    before.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(slot.cmd,
+                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 1, &before, 0, nullptr, 0, nullptr);
+
+    transferCmd_ = slot.cmd;
     return transferCmd_;
 }
 
 void Context::endTransferBatch() {
     if (transferCmd_ == VK_NULL_HANDLE) return;
+    TransferSlot& slot = transfers_[transferSlot_];
 
-    // Один барьер на весь пакет: дальше вершинный ввод читает всё,
-    // что мы только что скопировали.
-    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    mb.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+    // Вторая половина барьера: дальше вершинный ввод читает всё, что
+    // мы только что скопировали. Она тоже действует на всю очередь,
+    // то есть и на кадр, который будет отправлен следом.
+    VkMemoryBarrier after{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    after.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    after.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
     vkCmdPipelineBarrier(transferCmd_,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-                         0, 1, &mb, 0, nullptr, 0, nullptr);
+                         0, 1, &after, 0, nullptr, 0, nullptr);
 
     vkEndCommandBuffer(transferCmd_);
 
@@ -614,12 +689,19 @@ void Context::endTransferBatch() {
     si.commandBufferCount = 1;
     si.pCommandBuffers    = &transferCmd_;
 
-    vkResetFences(device_, 1, &transferFence_);
-    vkQueueSubmit(gfxQueue_, 1, &si, transferFence_);
-    vkWaitForFences(device_, 1, &transferFence_, VK_TRUE, UINT64_MAX);
+    // Раньше здесь стояло ожидание на заборе — процессор простаивал,
+    // пока GPU не доделает и копии, и всё, что стояло в очереди до
+    // них, то есть весь предыдущий кадр. На загрузке чанков это
+    // съедало пятнадцать миллисекунд из шестнадцати. Порядок теперь
+    // держат барьеры очереди, а забор нужен лишь для того, чтобы
+    // через TRANSFER_SLOTS пакетов переиспользовать командный буфер.
+    const VkResult r = vkQueueSubmit(gfxQueue_, 1, &si, slot.fence);
+    if (r != VK_SUCCESS) LOGE("endTransferBatch: vkQueueSubmit %d", (int)r);
+    slot.submitted = (r == VK_SUCCESS);
 
-    vkFreeCommandBuffers(device_, cmdPool_, 1, &transferCmd_);
-    transferCmd_ = VK_NULL_HANDLE;
+    transferCmd_  = VK_NULL_HANDLE;
+    transferSlot_ = (transferSlot_ + 1) % TRANSFER_SLOTS;
+    ++transferBatchNo_;
 }
 
 void Context::submitOneShot(const std::function<void(VkCommandBuffer)>& fn) {

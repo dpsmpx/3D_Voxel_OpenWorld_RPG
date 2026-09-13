@@ -32,6 +32,22 @@ struct FeatureContext {
     }
 };
 
+/// Заполняет чанк целиком: слои рельефа по готовым колонкам, затем
+/// все фичи в правильном порядке. Одно место на весь проект — и
+/// потоковая генерация мира, и офлайн-рендер из tools/preview
+/// получают один и тот же ландшафт. Раньше раскладка слоёв была
+/// выписана в обоих, и офлайн-рендер мог незаметно разойтись с игрой
+/// ровно тогда, когда он нужнее всего.
+///
+/// Замок на вокселях не берётся: вызывающий знает, нужен ли он.
+/// columns — CHUNK_SIZE x CHUNK_SIZE, индекс x * CHUNK_SIZE + z.
+void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
+                         const TerrainGenerator::Column* columns, u64 seed);
+
+/// Считает колонки чанка в переданный буфер (он будет нужного размера).
+void computeChunkColumns(const TerrainGenerator& terrain, i32 chunkX, i32 chunkZ,
+                         std::vector<TerrainGenerator::Column>& out);
+
 // ============================================================
 // Features применяются к чанку ПОСЛЕ terrain-слоёв, но ДО
 // построения меша. Каждая фича пишет в voxels[] по локальным

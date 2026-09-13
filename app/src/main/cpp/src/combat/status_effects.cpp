@@ -8,6 +8,8 @@
 #include "../mobs/mob_def.h"
 #include "../mobs/mob_ai.h"
 #include "../progression/progression.h"
+#include "../quests/quest.h"
+#include "../audio/audio_events.h"
 #include <algorithm>
 
 namespace combat {
@@ -53,6 +55,16 @@ static void onTargetDeath(ecs::Registry& reg,
     if (auto* tag = reg.get<mobs::MobTag>(target)) {
         const auto& def = mobs::mobRegistry().get(tag->id);
         xpReward = def.xpReward;
+
+        // Цели вида «убить N таких-то» отмечаются здесь же, где
+        // начисляется опыт: это единственное место, которое знает и
+        // убийцу, и вид убитого, и срабатывает ровно один раз.
+        // Функция quests::notifyMobKilled существовала, но её никто
+        // не вызывал — а на такие цели приходится большинство
+        // выдаваемых квестов, и счётчик у них навсегда оставался в
+        // нуле. Проверка на Progression выше заодно отсекает мобов,
+        // убивающих друг друга: квесты считают только игрока.
+        quests::notifyMobKilled(reg, killerEntity, tag->id);
     }
 
     if (xpReward > 0) {
@@ -118,7 +130,24 @@ f32 applyDamage(ecs::Registry& reg, ecs::Entity target, const DamageInstance& dm
     auto* se = reg.get<StatusEffects>(target);
     if (se) applyStatuses(*se, dmg);
 
-    if (h->current <= 0.f) {
+    // Звук попадания и смерти. Эти события были написаны и
+    // синтезировались при запуске, но их никто не проигрывал: бой шёл
+    // молча — ни мобы, ни игрок никак не отзывались на урон.
+    const bool killed = h->current <= 0.f;
+    if (final > 0.f) {
+        const bool isPlayer = reg.has<ecs::PlayerTag>(target);
+        if (isPlayer) {
+            if (killed) audio::events().playerDeath();
+            else        audio::events().playerHurt();
+        } else if (reg.has<mobs::MobTag>(target)) {
+            if (auto* tf = reg.get<ecs::Transform>(target)) {
+                if (killed) audio::events().mobDeath(tf->position);
+                else        audio::events().mobHurt(tf->position);
+            }
+        }
+    }
+
+    if (killed) {
         auto* agent = reg.get<ecs::AIAgent>(target);
         if (agent) agent->state = ecs::AIAgent::Dead;
         onTargetDeath(reg, target, dmg.sourceEntity);

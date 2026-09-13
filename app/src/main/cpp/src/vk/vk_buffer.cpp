@@ -128,28 +128,4 @@ void Buffer::write(const void* data, u64 size) {
     std::memcpy(mapped_, data, n);
 }
 
-void Buffer::upload(VkDevice dev, VkPhysicalDevice phys, VkCommandBuffer cmdOrNull,
-                    const void* data, u64 size)
-{
-    if (hostVisible_) { write(data, size); return; }
-    if (!cmdOrNull) { LOGE("upload: нужен cmd buffer"); return; }
-
-    // Временный staging
-    Buffer staging;
-    if (!staging.create(dev, phys, size, BufferUsage::Staging, true)) return;
-    staging.write(data, size);
-
-    VkBufferCopy region{0, 0, size};
-    vkCmdCopyBuffer(cmdOrNull, staging.handle(), buf_, 1, &region);
-
-    // Staging уничтожаем после submit — но vkCmdCopyBuffer ещё не выполнен.
-    // Поэтому используем vkQueueWaitIdle в Context::submitOneShot, после чего
-    // staging будет безопасно уничтожен деструктором.
-    // ВАЖНО: эту функцию вызывать ТОЛЬКО внутри submitOneShot.
-    // Откладываем destroy до следующего upload. Простейший способ — утечка
-    // при N вызовах, поэтому мы не полагаемся на неё — используем write() для
-    // маленьких данных, а большие заливаем через Context::submitOneShot.
-    staging.destroy();
-}
-
 } // namespace vk

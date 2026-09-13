@@ -115,6 +115,9 @@ void InstancedRenderer::populateGrass(const world::ChunkManager& world,
     const i32 pcz = (i32)std::floor(playerPos.z / world::CHUNK_SIZE);
 
     static world::SimplexNoise noise(0xBEEF1234);
+    // Проверки грунта идут по соседним колонкам одного чанка —
+    // курсор вместо поиска чанка на каждое чтение.
+    world::VoxelReader rd(world);
 
     // Детерминированный PRNG по (x,z) — чтобы трава не "прыгала"
     auto hash = [](i32 x, i32 z) -> u32 {
@@ -147,9 +150,9 @@ void InstancedRenderer::populateGrass(const world::ChunkManager& world,
                 // Трава растёт только на реальном грунте и только если
                 // над ним воздух: getVoxel учитывает пещеры, воду и
                 // постройки игрока, в отличие от высоты из генератора.
-                const u16 ground = world.getVoxel(wx, surf - 1, wz);
+                const u16 ground = rd.at(wx, surf - 1, wz);
                 if (ground != world::GRASS && ground != world::SAND) continue;
-                if (world.getVoxel(wx, surf, wz) != world::AIR) continue;
+                if (rd.at(wx, surf, wz) != world::AIR) continue;
 
                 const i32 sy = surf;
 

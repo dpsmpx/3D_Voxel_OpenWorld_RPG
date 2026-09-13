@@ -5,6 +5,7 @@
 #include "minimap.h"
 #include "../world/block.h"
 #include "../core/log.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -48,7 +49,7 @@ bool Minimap::init(vk::Context& ctx, u32 px) {
 
     dev_ = ctx.device();
     size_ = px;
-    pixels_.assign(size_ * size_ * 4, 0);
+    pixels_.assign((usize)size_ * size_ * 4, 0);
 
     if (!tex_.create(ctx.device(), ctx.physicalDevice(),
                      ctx.gfxQueue(), ctx.gfxFamily(),
@@ -67,106 +68,128 @@ bool Minimap::init(vk::Context& ctx, u32 px) {
 }
 
 void Minimap::destroy() {
+    if (pool_ != VK_NULL_HANDLE && dev_ != VK_NULL_HANDLE) {
+        vkDestroyCommandPool(dev_, pool_, nullptr);
+        pool_ = VK_NULL_HANDLE;
+    }
     tex_.destroy();
     pixels_.clear();
     dev_ = VK_NULL_HANDLE;
 }
 
+// ============================================================
+// Перерисовка миникарты — по строкам, а не целиком.
+//
+// Полный проход по 128x128 — это шестнадцать тысяч расчётов высоты
+// поверхности, а каждый расчёт прогоняет все шумовые поля колонки.
+// Замер на хосте: двенадцать миллисекунд, из них одиннадцать с
+// половиной — именно высоты. На телефоне заметно больше. Раз в
+// секунду это ровный провал кадра, причём ровно такой, который
+// невозможно объяснить глядя на рендер.
+//
+// Поэтому проход разбит на порции строк и растянут на полтора
+// десятка кадров, а начинается он только когда игрок заметно
+// сдвинулся (или давно не обновлялись). Пока идёт проход, карта на
+// экране показывает прошлый снимок целиком: рисуем в отдельный
+// буфер и меняем местами в самом конце. Иначе половина карты была бы
+// от старого положения игрока, половина от нового.
+// ============================================================
 void Minimap::update(world::ChunkManager& world,
                      const glm::vec3& playerPos,
-                     f32 radiusBlocks)
+                     f32 radiusBlocks,
+                     f32 dt)
 {
     if (size_ == 0) return;
     if (radiusBlocks < 8.f) radiusBlocks = 8.f;
 
-    center_ = playerPos;
-    blocksPerPixel_ = (radiusBlocks * 2.f) / (f32)size_;
+    sincePass_ += dt;
+
+    if (!passActive_) {
+        const f32 dx = playerPos.x - passCenter_.x;
+        const f32 dz = playerPos.z - passCenter_.z;
+        const bool moved = dx * dx + dz * dz > MOVE_THRESHOLD * MOVE_THRESHOLD;
+        const bool stale = sincePass_ >= REFRESH_SECONDS;
+        if (!moved && !stale && !pixels_.empty() && everDrawn_) return;
+
+        passActive_  = true;
+        rowCursor_   = 0;
+        sincePass_   = 0.f;
+        passCenter_  = playerPos;
+        passScale_   = (radiusBlocks * 2.f) / (f32)size_;
+        scratch_.assign((usize)size_ * size_ * 4, 0);
+    }
 
     const f32 half = (f32)size_ * 0.5f;
     const auto& gen = world.generator();
+    // Курсор: вертикальный проход по каждой колонке читает соседние
+    // воксели одного чанка, и строка карты идёт вдоль чанка.
+    world::VoxelReader rd(world);
 
-    for (u32 py = 0; py < size_; ++py) {
+    const u32 rowEnd = std::min(size_, rowCursor_ + ROWS_PER_CALL);
+    for (; rowCursor_ < rowEnd; ++rowCursor_) {
+        const u32 py = rowCursor_;
         for (u32 px = 0; px < size_; ++px) {
-            f32 dxBlocks = ((f32)px - half) * blocksPerPixel_;
-            f32 dzBlocks = ((f32)py - half) * blocksPerPixel_;
+            const f32 dxBlocks = ((f32)px - half) * passScale_;
+            const f32 dzBlocks = ((f32)py - half) * passScale_;
 
-            i32 wx = (i32)std::floor(playerPos.x + dxBlocks);
-            i32 wz = (i32)std::floor(playerPos.z + dzBlocks);
+            const i32 wx = (i32)std::floor(passCenter_.x + dxBlocks);
+            const i32 wz = (i32)std::floor(passCenter_.z + dzBlocks);
 
-            i32 surfaceY = gen.surfaceHeight(wx, wz);
+            const i32 surfaceY = gen.surfaceHeight(wx, wz);
 
             u16 found = world::AIR;
-            i32 yStart = surfaceY + 4;
-            i32 yEnd = (surfaceY - 8 < 1) ? 1 : (surfaceY - 8);
+            const i32 yStart = surfaceY + 4;
+            const i32 yEnd = (surfaceY - 8 < 1) ? 1 : (surfaceY - 8);
 
             for (i32 y = yStart; y >= yEnd; --y) {
-                u16 b = world.getVoxel(wx, y, wz);
+                const u16 b = rd.at(wx, y, wz);
                 if (b == world::AIR) continue;
                 found = b;
                 if (b == world::WATER) continue;
                 break;
             }
 
-            MapColor c = mapColorFor(found);
-            usize idx = ((usize)py * size_ + (usize)px) * 4;
-            pixels_[idx + 0] = c.r;
-            pixels_[idx + 1] = c.g;
-            pixels_[idx + 2] = c.b;
-            pixels_[idx + 3] = c.a;
+            const MapColor c = mapColorFor(found);
+            const usize idx = ((usize)py * size_ + (usize)px) * 4;
+            scratch_[idx + 0] = c.r;
+            scratch_[idx + 1] = c.g;
+            scratch_[idx + 2] = c.b;
+            scratch_[idx + 3] = c.a;
         }
     }
 
-    dirty_ = true;
+    if (rowCursor_ < size_) return;   // проход ещё не закончен
+
+    pixels_.swap(scratch_);
+    center_          = passCenter_;
+    blocksPerPixel_  = passScale_;
+    passActive_      = false;
+    everDrawn_       = true;
+    dirty_           = true;
 }
 
 void Minimap::flushUpload(vk::Context& ctx) {
     if (!dirty_) return;
     if (!tex_.view()) return;
 
-    // Создаём временный command pool для upload.
-    // Используем ctx.submitOneShot, но там свой pool — а нам нужен
-    // доступ к pool для передачи в Texture2D::upload.
-    // Простейший путь: вызываем upload через submitOneShot с ручным
-    // созданием command buffer'а внутри Texture2D::upload с pool,
-    // полученным из ctx через getter. Здесь — используем стандартный
-    // путь: у vk::Context нет публичного pool для Texture2D.
-    //
-    // Компромисс: для каждой загрузки миникарты используем один
-    // одноразовый пул внутри Texture2D::upload. Это допустимо,
-    // потому что загрузка происходит редко (раз в 1 сек).
-
-    // vk::Texture2D::upload требует pool+queue. Чтобы не менять сигнатуру
-    // vk::Context, создаём локальный пул здесь.
-    // Проще всего: положиться на то, что миникарта обновляется редко,
-    // и upload сделает всё синхронно.
-
-    // Пул уже не нужен: Texture2D::upload получит его через
-    // встроенный в ctx.gfxFamily(). Однако у нас нет доступа к
-    // gfxFamily()-pool'у без публичного API. Используем
-    // submitOneShot для простоты.
-
-    // Финальный вариант: пересоздаём текстуру раз в update,
-    // но так как это дорого, делаем upload только если dirty.
-
-    // Реализация upload через submitOneShot невозможна без доступа к
-    // внутреннему буферу. Поэтому используем Texture2D::upload
-    // с локальным pool.
-
-    VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    pci.queueFamilyIndex = ctx.gfxFamily();
-    pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-
-    VkCommandPool localPool = VK_NULL_HANDLE;
-    if (vkCreateCommandPool(ctx.device(), &pci, nullptr, &localPool) != VK_SUCCESS) {
-        dirty_ = false;
-        return;
+    // vk::Texture2D::upload принимает пул команд, а у vk::Context
+    // своего публичного пула нет. Держим один собственный: раньше он
+    // создавался и уничтожался на каждой заливке, то есть раз в
+    // секунду на ровном месте.
+    if (pool_ == VK_NULL_HANDLE) {
+        VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        pci.queueFamilyIndex = ctx.gfxFamily();
+        pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        if (vkCreateCommandPool(ctx.device(), &pci, nullptr, &pool_) != VK_SUCCESS) {
+            LOGE("миникарта: не создан пул команд");
+            dirty_ = false;
+            return;
+        }
     }
 
     tex_.upload(ctx.device(), ctx.physicalDevice(),
-                localPool, ctx.gfxQueue(),
+                pool_, ctx.gfxQueue(),
                 pixels_.data(), pixels_.size());
-
-    vkDestroyCommandPool(ctx.device(), localPool, nullptr);
     dirty_ = false;
 }
 

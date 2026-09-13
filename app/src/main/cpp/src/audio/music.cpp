@@ -28,8 +28,14 @@ void MusicDirector::init(AudioEngine& engine) {
     // переход никогда не рвётся на границе буфера.
     for (u32 i = 0; i < TRACK_COUNT; ++i) {
         voices_[i] = engine.play(TRACK_SOUNDS[i], 0.f, /*looping=*/true);
-        if (!voices_[i].valid())
+        if (!voices_[i].valid()) {
             LOGW("MusicDirector: не удалось запустить трек %u", i);
+            continue;
+        }
+        // Без этой пометки движок считал музыку обычным звуком и
+        // применял к ней громкость эффектов, а ползунок громкости
+        // музыки не делал вообще ничего.
+        engine.setVoiceIsMusic(voices_[i], true);
     }
 
     levels_[Explore] = 1.f;

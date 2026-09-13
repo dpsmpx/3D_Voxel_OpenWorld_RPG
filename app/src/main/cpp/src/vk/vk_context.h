@@ -38,7 +38,19 @@ public:
     u64              framesPresented() const { return framesPresented_; }
     /// Последняя ошибка vkQueuePresentKHR (VK_SUCCESS, если её не было).
     VkResult         lastPresentResult() const { return lastPresent_; }
+    /// Сколько раз пересоздавалась цепочка показа. Здоровое число —
+    /// единицы за сеанс: по одному на поворот экрана. Если оно растёт
+    /// вместе с кадрами, значит ответ показа снова принимают за приказ
+    /// пересоздавать, и половина кадров не доходит до экрана.
+    u64              swapchainRebuilds() const { return swapchainRebuilds_; }
     static constexpr u32 MAX_FRAMES = 2;
+
+    /// Пакет передачи больше не ждёт GPU на процессоре, поэтому его
+    /// командный буфер нельзя ни освободить, ни перезаписать сразу.
+    /// Кольцо из нескольких слотов: к моменту, когда очередь снова
+    /// доходит до слота, его работа давно закончена. Столько же
+    /// пакетов держатся занятыми staging-буферы, см. vk::StagingPool.
+    static constexpr u32 TRANSFER_SLOTS = MAX_FRAMES + 1;
 
     // ---- Одиночная передача ----
     /// Выполняет fn(cmd) в отдельном командном буфере и ждёт завершения.
@@ -95,6 +107,8 @@ private:
     bool createCommandBuffers();
     bool createSyncObjects();
     void destroySwapchain();
+    /// Изменился ли размер окна с момента создания цепочки.
+    bool surfaceExtentChanged() const;
 
     VkInstance       instance_ = VK_NULL_HANDLE;
     VkSurfaceKHR     surface_  = VK_NULL_HANDLE;
@@ -125,14 +139,34 @@ private:
     std::vector<VkFence>     inFlight_;
     u32                      currentFrame_ = 0;
     u64                      framesPresented_ = 0;
+    u64                      swapchainRebuilds_ = 0;
     VkResult                 lastPresent_ = VK_SUCCESS;
     bool                     needsResize_ = false;
+    /// Поворот экрана, каким его видит драйвер (в отличие от того,
+    /// какой мы просим через preTransform).
+    VkSurfaceTransformFlagBitsKHR displayTransform_ =
+        VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    /// Мы сами попросили preTransform, не совпадающий с поворотом
+    /// экрана, — значит ответ SUBOPTIMAL на показе ожидаем и не
+    /// является поводом пересоздавать цепочку.
+    bool                     presentMayBeSuboptimal_ = false;
+    u32                      suboptimalPresents_ = 0;
+    /// Как часто перепроверять размер окна, пока показ отвечает
+    /// SUBOPTIMAL: примерно раз в секунду при 60 кадрах.
+    static constexpr u32     SUBOPTIMAL_RECHECK = 60;
     u32                      imgIdx_ = 0;
     bool                     frameStarted_ = false;
 
     /// Пакет передач: буфер и забор переиспользуются между кадрами.
-    VkCommandBuffer          transferCmd_   = VK_NULL_HANDLE;
-    VkFence                  transferFence_ = VK_NULL_HANDLE;
+    struct TransferSlot {
+        VkCommandBuffer cmd   = VK_NULL_HANDLE;
+        VkFence         fence = VK_NULL_HANDLE;
+        bool            submitted = false;
+    };
+    TransferSlot             transfers_[TRANSFER_SLOTS];
+    u32                      transferSlot_    = 0;
+    u64                      transferBatchNo_ = 0;
+    VkCommandBuffer          transferCmd_     = VK_NULL_HANDLE;
 };
 
 } // namespace vk

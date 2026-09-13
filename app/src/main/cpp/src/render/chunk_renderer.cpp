@@ -125,6 +125,7 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
         // Чанк целиком пустой (небо или толща камня внутри) — рисовать нечего.
         gm.totalIndices = 0;
         gm.opaqueIndices = 0;
+        gm.uploaded = true;
         return true;
     }
 
@@ -146,7 +147,12 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
     const u64 vbBytes = scratchVerts_.size() * sizeof(VoxelVertex);
 
     if (gm.valid && (gm.vb.size() < vbBytes || gm.ib.size() < ibBytes)) {
-        retire(gm.vb); retire(gm.ib); gm.valid = false;
+        retire(gm.vb); retire(gm.ib);
+        gm.valid = false;
+        // Буферов больше нет: если пересоздать их не удастся, уровень
+        // должен считаться незагруженным, иначе его никто не закажет
+        // заново и чанк останется дырой.
+        gm.uploaded = false;
     }
     if (!gm.valid) {
         // С запасом 25%, чтобы мелкие правки блоков не пересоздавали буфер.
@@ -163,7 +169,7 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
     auto* sVb = staging_.acquire(vbBytes);
     if (!sVb) return false;
     auto* sIb = staging_.acquire(ibBytes);
-    if (!sIb) { staging_.release(sVb); return false; }
+    if (!sIb) { staging_.retire(sVb); return false; }
 
     std::memcpy(sVb->mapped, scratchVerts_.data(), vbBytes);
     std::memcpy(sIb->mapped, ibSrc, ibBytes);
@@ -173,12 +179,14 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
     VkBufferCopy c2{0, 0, ibBytes};
     vkCmdCopyBuffer(cmd, sIb->buffer, gm.ib.handle(), 1, &c2);
 
-    // Staging освобождается вызывающим после endTransferBatch():
-    // до этого GPU ещё читает из него.
+    // Staging возвращается в оборот не сразу: после endTransferBatch()
+    // вызывающий помечает его сроком годности, и он освободится, когда
+    // GPU наверняка дочитает.
     pendingStaging_.push_back(sVb);
     pendingStaging_.push_back(sIb);
 
     gm.totalIndices = (u32)scratchIndices_.size();
+    gm.uploaded = true;
     return true;
 }
 
@@ -236,6 +244,10 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx, world::ChunkManager& world,
 
     VkCommandBuffer cmd = ctx.beginTransferBatch();
     if (cmd == VK_NULL_HANDLE) return;
+    // Новый пакет: staging-буферы, из которых GPU уже дочитал, снова
+    // свободны. Срок — во столько же пакетов, во сколько кольцо
+    // командных буферов передачи.
+    staging_.collect(vk::Context::TRANSFER_SLOTS);
 
     constexpr f32 CH = (f32)world::CHUNK_SIZE;
     constexpr f32 CY = (f32)world::CHUNK_SIZE_Y;
@@ -257,21 +269,39 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx, world::ChunkManager& world,
         const u8 want = lodForDistanceSq(glm::dot(d, d), gpu.residentLod);
 
         // Мешер строит один уровень, и это мог быть не тот, который
-        // нужен сейчас: игрок успел отойти. Берём то, что построено,
-        // — пустой чанк выглядит дырой в мире, — и заказываем нужный.
-        u8 have = want;
+        // нужен сейчас: игрок успел отойти, и lodWanted сменился уже
+        // после того, как задача прочитала его. Поэтому берём не
+        // «желаемый» уровень, а тот, который действительно построен.
+        // Раньше здесь подставлялось текущее значение lodWanted без
+        // проверки — и если построен был другой уровень, загрузка
+        // тихо возвращала false.
+        constexpr u8 NONE = 0xFF;
+        u8 have = NONE;
         {
             std::lock_guard lk(c.meshMutex);
-            if (!c.meshes[want].built)
-                have = c.lodWanted.load(std::memory_order_acquire) & 3;
+            if (c.meshes[want].built) {
+                have = want;
+            } else {
+                const u8 w = c.lodWanted.load(std::memory_order_acquire) & 3;
+                if (c.meshes[w].built) have = w;
+                else for (u8 l = 0; l < 4; ++l)
+                    if (c.meshes[l].built) { have = l; break; }
+            }
         }
 
-        // Остальные уровни помечаем недействительными: их содержимое
-        // устарело вместе с перестроенным мешем.
-        for (u8 l = 0; l < 4; ++l) {
-            if (l != have && gpu.lod[l].valid) gpu.lod[l].totalIndices = 0;
-        }
-        if (uploadLod(ctx, cmd, gpu, c, have)) {
+        if (have != NONE && uploadLod(ctx, cmd, gpu, c, have)) {
+            // Остальные уровни устарели вместе с перестроенным мешем —
+            // но обнулять их можно только теперь, когда на смену
+            // действительно приехал новый. Раньше они обнулялись до
+            // загрузки: не удалась загрузка — и чанк пропадал с экрана
+            // целиком, потому что рисовать стало нечем ни на одном
+            // уровне. На ходу это выглядело как дыры в мире.
+            for (u8 l = 0; l < 4; ++l) {
+                if (l == have) continue;
+                gpu.lod[l].totalIndices  = 0;
+                gpu.lod[l].opaqueIndices = 0;
+                gpu.lod[l].uploaded      = false;
+            }
             gpu.residentLod  = have;
             gpu.requestedLod = 0xFF;
             releaseQuads(c, have);
@@ -294,7 +324,9 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx, world::ChunkManager& world,
 
     ctx.endTransferBatch();
 
-    for (auto* s : pendingStaging_) staging_.release(s);
+    // Пакет отправлен, но не дождан: GPU ещё читает из staging.
+    // Буферы вернутся в оборот сами, через несколько пакетов.
+    for (auto* s : pendingStaging_) staging_.retire(s);
     pendingStaging_.clear();
 }
 
@@ -347,7 +379,12 @@ void ChunkRenderer::render(vk::Context& ctx,
         if (cm.lod[want].valid && cm.lod[want].totalIndices > 0) {
             chosen = &cm.lod[want];
         } else {
-            if (cm.residentLod != want && lodRequests_.size() < 256)
+            // Заказываем по признаку «этого уровня в видеопамяти нет»,
+            // а не по residentLod: после неудачной загрузки резидентный
+            // уровень мог совпасть с нужным, запрос не уходил, и чанк
+            // оставался невидимым до следующей перестройки меша.
+            // Пустой чанк при этом помечен выгруженным и не заказывается.
+            if (!cm.lod[want].uploaded && lodRequests_.size() < 256)
                 lodRequests_.push_back({ coord, want });
             for (u8 i = 0; i < 4; ++i) {
                 if (cm.lod[i].valid && cm.lod[i].totalIndices > 0) {

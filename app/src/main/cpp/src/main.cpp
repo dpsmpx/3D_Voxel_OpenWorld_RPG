@@ -153,6 +153,25 @@ struct Engine {
     /// Мир под игроком ещё генерируется — физику держим выключенной.
     bool waitingForGround = false;
 
+    // ------------------------------------------------------------
+    // Счётчики редких задач.
+    //
+    // Не всё в кадре нужно считать каждый кадр. Выбор музыкального
+    // трека, индикатор загрузки и отметка «дошёл до места» меняются
+    // единицы раз в минуту, а стоят обхода пулов ECS, десятков чтений
+    // вокселей и восьми десятков поисков чанка под общим замком —
+    // шестьдесят раз в секунду.
+    //
+    // Полями, а не статическими переменными внутри функции: те
+    // переживали смену мира, и первый кадр нового отсчитывал время от
+    // чужого значения.
+    // ------------------------------------------------------------
+    f32  ambienceTimer_    = 1e9f;   ///< музыкальный контекст, 4 раза в секунду
+    f32  loadProgressTimer_= 1e9f;   ///< индикатор загрузки, 4 раза в секунду
+    f32  locCheckTimer_    = 0.f;    ///< цели квестов «дойти до места»
+    i32  cachedHostiles_   = 0;
+    bool cachedUnderground_= false;
+
     /// Последний известный размер окна. В нём приходят касания и в
     /// нём же интерфейс считает свои прямоугольники.
     i32 winW_ = 0, winH_ = 0;
@@ -431,6 +450,17 @@ struct Engine {
              (unsigned long long)worldSeed, world->viewDistance());
     }
 
+    /// Отпускает мир, не трогая остальное.
+    ///
+    /// Разрушение ChunkManager дожидается фоновых задач, а дождаться
+    /// их можно только пока планировщик крутится. Поэтому мир обязан
+    /// уйти раньше jobs::gJobs.stop() — в том числе на путях, где
+    /// полная разборка не случилась: инициализация могла оборваться
+    /// уже после создания мира (например, на неудаче рендера), и
+    /// тогда мир доживал до деструктора Engine, то есть до момента,
+    /// когда ждать уже некого.
+    void releaseWorld() { world.reset(); }
+
     void onWindowTerm() {
         if (initialized && player && world) {
             LOGI("Автосейв при выходе...");
@@ -447,6 +477,14 @@ struct Engine {
         initialized = false;
         updateRunning();
 
+        // Последние кадры ещё могут выполняться на GPU, а дальше мы
+        // уничтожаем их буферы, конвейеры и текстуры. Ждать здесь
+        // обязаны мы: vk.shutdown() ждёт слишком поздно, когда всё
+        // уже уничтожено. Без этого закрытие приложения — это
+        // уничтожение объектов, которыми драйвер прямо сейчас
+        // пользуется.
+        vk.waitIdle();
+
         if (render) {
             render->setUiSystem(nullptr);
             render->shutdown();
@@ -456,6 +494,12 @@ struct Engine {
         stationSpawner.reset();
         npcSpawner.reset();
         spawner.reset();
+        // У UiSystem нет деструктора, освобождающего ресурсы Vulkan:
+        // атлас шрифта, его память и сэмплер, пул дескрипторов,
+        // конвейер, модули шейдеров и вершинные буферы кадров жили до
+        // конца процесса. Свернуть и развернуть приложение несколько
+        // раз — и всё это накапливалось в видеопамяти.
+        if (ui) ui->destroy();
         ui.reset();
         player.reset();
         world.reset();
@@ -726,6 +770,21 @@ struct Engine {
         bool dialogueActive = dlg && dlg->active;
         if (ui) ui->setDialogueActive(dialogueActive);
 
+        // Диалог мог попросить открыть экран — сам он этого не умеет,
+        // об интерфейсе он не знает. Раньше выбор «покажи товар»
+        // просто закрывал диалог, и торговля оставалась недостижимой.
+        if (dlg && ui && dlg->pendingAction != npc::DialogueAction::None) {
+            const auto act = dlg->pendingAction;
+            dlg->pendingAction = npc::DialogueAction::None;
+            if (act == npc::DialogueAction::OpenTrade) {
+                ui->openTrade(dlg->npcEntity);
+            } else if (act == npc::DialogueAction::OpenCraft) {
+                // Кузнец работает как переносная мастерская: свой
+                // станок рядом с ним искать не надо.
+                ui->openCrafting(crafting::StationType::Anvil);
+            }
+        }
+
         // Phase 15: обновляем spatial hash раз в кадр (лениво).
         spatialHash.tick();
 
@@ -932,24 +991,22 @@ struct Engine {
         progression::tickProgression(registry, dt);
         quests::tickQuestTime(registry, (u32)player->entity(), dt);
 
-        static f32 locCheckTimer = 0.f;
-        locCheckTimer += dt;
-        if (locCheckTimer >= 0.5f) {
-            locCheckTimer = 0.f;
+        locCheckTimer_ += dt;
+        if (locCheckTimer_ >= 0.5f) {
+            locCheckTimer_ = 0.f;
             auto p = player->controller.state().position;
             quests::notifyLocationReached(registry, (u32)player->entity(),
                                           { (i32)p.x, (i32)p.y, (i32)p.z });
         }
 
-        // Миникарта (раз в сек)
+        // Миникарта. Перерисовка растянута по строкам на полтора
+        // десятка кадров, поэтому зовём её каждый кадр: она сама
+        // решает, начинать ли новый проход. Раньше здесь стоял
+        // таймер на секунду, и вся перерисовка — около дюжины
+        // миллисекунд — приходилась на один кадр из шестидесяти.
         if (ui && ui->minimap.size() > 0) {
-            static f32 minimapTimer = 0.f;
-            minimapTimer += dt;
-            if (minimapTimer >= 1.0f) {
-                minimapTimer = 0.f;
-                ui->minimap.update(*world, player->controller.state().position, 64.f);
-                ui->minimap.flushUpload(vk);
-            }
+            ui->minimap.update(*world, player->controller.state().position, 64.f, dt);
+            if (ui->minimap.dirty()) ui->minimap.flushUpload(vk);
         }
 
         // Phase 14: audio update
@@ -962,16 +1019,23 @@ struct Engine {
 
             musicCtx.paused = ui ? ui->paused() : false;
 
-            // Бой — если рядом моб в состоянии Chase/Attack.
-            musicCtx.nearbyHostiles = hostilesNearby();
+            // Бой и «под землёй» — обход пула мобов и вертикальный
+            // столб чтений вокселей до потолка мира. Музыке хватает
+            // четырёх раз в секунду; каждый кадр это было полторы
+            // сотни захватов замков в пустоту.
+            ambienceTimer_ += dt;
+            if (ambienceTimer_ >= 0.25f) {
+                ambienceTimer_ = 0.f;
+                cachedHostiles_    = hostilesNearby();
+                cachedUnderground_ = isUnderground(player->controller.state().position);
+            }
+            musicCtx.nearbyHostiles = cachedHostiles_;
             musicCtx.inCombat = musicCtx.nearbyHostiles > 0;
 
             // Деревня — рядом станция крафта или NPC.
             musicCtx.inVillage = ui && ui->nearbyStation != crafting::StationType::None;
 
-            // Под землёй — если над головой есть перекрытие.
-            const glm::vec3 ppos = player->controller.state().position;
-            musicCtx.underground = isUnderground(ppos);
+            musicCtx.underground = cachedUnderground_;
 
             if (auto* hp = registry.get<ecs::Health>(player->entity()))
                 musicCtx.playerHealthPct = hp->max > 0.f ? hp->current / hp->max : 1.f;
@@ -986,7 +1050,14 @@ struct Engine {
         // Считаем долю чанков в ближнем радиусе, у которых уже есть меш:
         // пока их мало, игрок смотрит в пустоту и без индикатора не
         // понимает, что происходит.
-        if (ui) {
+        // Индикатор загрузки: доля чанков в ближнем радиусе, у которых
+        // уже есть данные. Восемь десятков поисков чанка, каждый —
+        // разделяемый замок на общей карте, которую в это же время
+        // пишут потоки генерации. Индикатору хватает четырёх раз в
+        // секунду; каждый кадр он мешал тем, чей прогресс показывает.
+        loadProgressTimer_ += dt;
+        if (ui && loadProgressTimer_ >= 0.25f) {
+            loadProgressTimer_ = 0.f;
             const i32 r = std::min(4, world->viewDistance());
             const glm::vec3 p = player->controller.state().position;
             const i32 pcx = (i32)std::floor(p.x / (f32)world::CHUNK_SIZE);
@@ -1234,6 +1305,7 @@ extern "C" void android_main(android_app* app) {
             if (source) source->process(app, source);
             if (app->destroyRequested) {
                 if (eng.initialized) eng.onWindowTerm();
+                eng.releaseWorld();
                 jobs::gJobs.stop();
                 return;
             }
@@ -1242,6 +1314,7 @@ extern "C" void android_main(android_app* app) {
         if (eng.wantQuit) {
             eng.wantQuit = false;
             if (eng.initialized) eng.onWindowTerm();
+            eng.releaseWorld();
             jobs::gJobs.stop();
             ANativeActivity_finish(app->activity);
             return;
@@ -1307,13 +1380,14 @@ extern "C" void android_main(android_app* app) {
                 const glm::vec3 cam = eng.render ? eng.render->camera().position()
                                                  : glm::vec3(0.f);
                 const f32 n = msFrames ? (f32)msFrames : 1.f;
-                LOGI("кадры: показано %llu (%.1f/с), показ=%d | камера %.1f %.1f %.1f "
+                LOGI("кадры: показано %llu (%.1f/с), показ=%d, цепочка %llu | камера %.1f %.1f %.1f "
                      "| чанки: загружено %zu, нарисовано %u, индексов %u "
                      "| трава %u, мобы %u, NPC %u "
                      "| интерфейс: вершин %u, нарисовано %u, экран %d "
                      "| мс: логика %.1f, подготовка %.1f, рисование %.1f",
                      (unsigned long long)presented, (double)fps,
                      (int)eng.vk.lastPresentResult(),
+                     (unsigned long long)eng.vk.swapchainRebuilds(),
                      (double)cam.x, (double)cam.y, (double)cam.z,
                      eng.world ? eng.world->loadedChunks() : (usize)0,
                      eng.render ? eng.render->drawnChunks() : 0u,

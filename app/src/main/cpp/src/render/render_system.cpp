@@ -102,7 +102,7 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     currentFps_    = fps;
     lastHit_       = targetHit;
 
-    const auto ready = world.pollMeshesReady();
+    const auto ready = world.pollMeshesReady(render::ChunkRenderer::MAX_MESH_UPLOADS_PER_FRAME);
     chunkRenderer_.uploadChunks(ctx, world, ready, camera_.position());
 
     mobRenderer_.rebuild(registry);
@@ -117,11 +117,24 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     itemRenderer_.rebuild(registry);
     itemRenderer_.upload(ctx);
 
-    static f32 grassTimer = 0.f;
-    grassTimer += dt;
-    if (grass_.instanceCount() == 0 || grassTimer > 0.5f) {
-        grassTimer = 0.f;
-        grass_.populateGrass(world, camera_.position(), 40.f);
+    // Трава пересобирается по шести сотням проб шума вокруг игрока.
+    // Раньше это делалось строго раз в полсекунды, даже когда игрок
+    // стоит на месте и пересобирать нечего — ровный всплеск работы
+    // дважды в секунду на ровном месте. Теперь поводов два: игрок
+    // заметно сдвинулся, либо прошло достаточно времени, чтобы
+    // подхватить изменения рельефа от построек и раскопок.
+    // Счётчик — поле, а не статическая переменная функции: та
+    // переживала смену мира и путала первый кадр нового.
+    grassTimer_ += dt;
+    const glm::vec3 camPos = camera_.position();
+    const f32 grassDx = camPos.x - grassOrigin_.x;
+    const f32 grassDz = camPos.z - grassOrigin_.z;
+    const bool grassMoved = grassDx * grassDx + grassDz * grassDz > 6.f * 6.f;
+    if (grass_.instanceCount() == 0 ||
+        (grassTimer_ > 0.5f && grassMoved) || grassTimer_ > 3.f) {
+        grassTimer_  = 0.f;
+        grassOrigin_ = camPos;
+        grass_.populateGrass(world, camPos, 40.f);
         grass_.upload(ctx);
     }
 

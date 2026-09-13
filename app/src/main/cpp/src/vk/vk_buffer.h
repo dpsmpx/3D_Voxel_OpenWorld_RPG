@@ -15,8 +15,13 @@ enum class BufferUsage {
     Staging,
 };
 
-/// GpuBuffer — владеет VkBuffer + VkDeviceMemory.
-/// Для device-local буферов загрузка идёт через временный staging.
+/// Buffer — владеет VkBuffer + VkDeviceMemory.
+///
+/// Здесь был ещё метод upload(), создававший временный staging и
+/// уничтожавший его сразу после записи vkCmdCopyBuffer — то есть до
+/// того, как команда выполнится. Его никто не вызывал; удалён, чтобы
+/// не вызвал. Для device-local буферов пользуйтесь пакетом передачи
+/// vk::Context::beginTransferBatch() и vk::StagingPool.
 class Buffer {
 public:
     bool create(VkDevice dev, VkPhysicalDevice phys,
@@ -35,14 +40,9 @@ public:
     /// освобождать в тот момент, когда он перестал быть нужен нам.
     Handles release();
 
-    /// Только для hostVisible. Для device-local — используйте upload().
+    /// Только для hostVisible; device-local памяти отображения нет.
     void* map();
     void  unmap();
-
-    /// Загрузка данных. Для device-local создаёт staging и копирует.
-    /// Для hostVisible делает прямой memcpy.
-    void upload(VkDevice dev, VkPhysicalDevice phys, VkCommandBuffer cmdOrNull,
-                const void* data, u64 size);
 
     /// Прямая запись для hostVisible (карты памяти не меняются).
     void write(const void* data, u64 size);

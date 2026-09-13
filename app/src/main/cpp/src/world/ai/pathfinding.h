@@ -24,12 +24,16 @@ struct MoveParams {
 
 /// Проверка: может ли моб стоять в позиции (x, y, z) — координаты
 /// блока, в котором находятся ступни.
-bool isStandable(world::ChunkManager& world,
+///
+/// Читает мир через курсор, а не через менеджер: проверки ходят по
+/// соседним клеткам, то есть почти всегда по одному и тому же чанку,
+/// и поиск чанка на каждый воксель здесь — основная цена.
+bool isStandable(world::VoxelReader& rd,
                  i32 x, i32 y, i32 z, const MoveParams& mp);
 
 /// Может ли моб перейти из (x,y,z) в (nx,ny,nz) — одна клетка.
 /// Проверяет все необходимые условия и возвращает стоимость шага.
-bool canStep(world::ChunkManager& world,
+bool canStep(world::VoxelReader& rd,
              i32 x, i32 y, i32 z,
              i32 nx, i32 ny, i32 nz,
              const MoveParams& mp,

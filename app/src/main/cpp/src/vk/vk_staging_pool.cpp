@@ -23,7 +23,29 @@ bool StagingPool::init(VkDevice dev, VkPhysicalDevice phys) {
     return true;
 }
 
+void StagingPool::collect(u32 keep) {
+    keepBatches_ = keep ? keep : 1;
+    ++batchNo_;
+    for (auto& b : buffers_)
+        if (b->inUse && b->freeAtBatch != 0 && batchNo_ >= b->freeAtBatch) {
+            b->inUse = false;
+            b->freeAtBatch = 0;
+        }
+}
+
+void StagingPool::retire(StagingBuffer* s) {
+    if (!s) return;
+    // Освободится не раньше, чем через keepBatches_ пакетов: столько
+    // держится кольцо командных буферов передачи в vk::Context.
+    s->freeAtBatch = batchNo_ + keepBatches_;
+}
+
 bool StagingPool::resize(StagingBuffer* s, u64 newCap) {
+    // Буфер сейчас перестанет существовать. Если пересоздать его не
+    // удастся, ёмкость должна быть нулевой: иначе acquire() потом
+    // выдаст «достаточно большой» буфер с пустым дескриптором, и
+    // копия пойдёт из ниоткуда.
+    s->capacity = 0;
     if (s->mapped) { vkUnmapMemory(dev_, s->memory); s->mapped = nullptr; }
     if (s->buffer) { vkDestroyBuffer(dev_, s->buffer, nullptr); s->buffer = VK_NULL_HANDLE; }
     if (s->memory) { vkFreeMemory(dev_, s->memory, nullptr);   s->memory = VK_NULL_HANDLE; }
@@ -49,26 +71,42 @@ bool StagingPool::resize(StagingBuffer* s, u64 newCap) {
     return true;
 }
 
-StagingBuffer* StagingPool::acquire(u64 minSize) {
-    // 1. Свободный и достаточно большой
-    for (auto& b : buffers_)
-        if (!b->inUse && b->capacity >= minSize) { b->inUse = true; return b.get(); }
+/// Размер буфера под запрос: степень двойки, но не меньше порога.
+/// Раньше здесь стояла общая на весь пул «текущая ёмкость», которая
+/// только росла: один большой чанк поднимал её, и дальше КАЖДЫЙ
+/// буфер выделялся по новому размеру. При минимуме в мегабайт и
+/// нескольких десятках живых буферов это десятки мегабайт под данные,
+/// которым хватает пары.
+static u64 capacityFor(u64 minSize) {
+    u64 cap = 64ull * 1024;
+    while (cap < minSize) cap *= 2;
+    return cap;
+}
 
-    // 2. Свободный, но маленький — расширяем
+StagingBuffer* StagingPool::acquire(u64 minSize) {
+    if (minSize == 0) return nullptr;
+
+    // 1. Свободный и достаточно большой — берём наименьший подходящий,
+    //    чтобы четырёхмегабайтный буфер не уходил под сорок килобайт.
+    StagingBuffer* best = nullptr;
     for (auto& b : buffers_) {
-        if (!b->inUse && b->capacity < minSize) {
-            u64 cap = nextCapacity_;
-            while (cap < minSize) cap *= 2;
-            if (resize(b.get(), cap)) { nextCapacity_ = std::max(nextCapacity_, cap); b->inUse = true; return b.get(); }
-        }
+        if (b->inUse || b->capacity < minSize) continue;
+        if (!best || b->capacity < best->capacity) best = b.get();
     }
+    if (best) { best->inUse = true; return best; }
+
+    // 2. Свободный, но маленький — расширяем самый большой из них:
+    //    так растёт один буфер, а не плодятся новые.
+    StagingBuffer* grow = nullptr;
+    for (auto& b : buffers_) {
+        if (b->inUse) continue;
+        if (!grow || b->capacity > grow->capacity) grow = b.get();
+    }
+    if (grow && resize(grow, capacityFor(minSize))) { grow->inUse = true; return grow; }
 
     // 3. Новый
-    u64 cap = nextCapacity_;
-    while (cap < minSize) cap *= 2;
     auto b = std::make_unique<StagingBuffer>();
-    if (!resize(b.get(), cap)) return nullptr;
-    nextCapacity_ = std::max(nextCapacity_, cap);
+    if (!resize(b.get(), capacityFor(minSize))) return nullptr;
     b->inUse = true;
     buffers_.push_back(std::move(b));
     return buffers_.back().get();

@@ -134,8 +134,13 @@ for f in "${DISK[@]}"; do
     [ -s "$err" ] && { echo "########## $f"; cat "$err"; } >> "$LOG"
 done
 
-ERRORS=$(grep -c "error:" "$LOG" 2>/dev/null || echo 0)
-WARNS=$(grep -c "warning:" "$LOG" 2>/dev/null || echo 0)
+# grep -c печатает «0» и выходит с кодом 1, когда совпадений нет.
+# Связка «|| echo 0» дописывала к этому нулю ещё один, счётчик
+# становился двухстрочным, и сравнение ниже падало с «integer
+# expression expected» — то есть проверка предупреждений молча не
+# работала. «|| true» оставляет ровно то, что напечатал grep.
+ERRORS=$( { grep -c "error:" "$LOG" || true; } 2>/dev/null )
+WARNS=$( { grep -c "warning:" "$LOG" || true; } 2>/dev/null )
 if [ -s "$OUT/failed.txt" ]; then
     BADN=$(sort -u "$OUT/failed.txt" | wc -l)
     echo "✗ Не скомпилировалось файлов: $BADN из ${#DISK[@]}, ошибок: $ERRORS"
@@ -231,6 +236,14 @@ if ! python3 "$PROJ/tools/hostcheck/check_bindings.py"; then
     exit 1
 fi
 
+# ---- таблицы строк ----
+# static_assert ловит забытую строку, но не строку, вставленную не на
+# своё место: количество сходится, а все подписи ниже — чужие.
+echo "==> Таблицы строк..."
+if ! python3 "$PROJ/tools/hostcheck/check_localization.py"; then
+    exit 1
+fi
+
 # ---- обход граней ----
 # Половина каждого куба мобов и NPC просвечивала насквозь: три грани из
 # шести были намотаны наоборот. Компилятору такая таблица безразлична.
@@ -249,29 +262,24 @@ if ! python3 "$PROJ/tools/hostcheck/check_android_api.py"; then
 fi
 
 # ---- тесты логики ----
+#
+# Линкуемся с теми же объектными файлами, которые уже собраны выше для
+# libnative-lib. Раньше здесь жил список исходников, который
+# приходилось дополнять вручную каждый раз, когда проверка задевала
+# новую часть игры: связи тянутся далеко (диалог -> квесты ->
+# прогрессия -> предметы), и список дорос до четырёх десятков строк,
+# а его пополнение выглядело как ошибка линковки, а не как задача.
+#
+# Конфликта точек входа нет: игра начинается с android_main, а main
+# есть только в самих тестах.
 echo "==> Тесты..."
-TEST_SRCS=(
-    "$PROJ/tools/hostcheck/tests.cpp"
-    "$SRC_DIR/world/noise.cpp"
-    "$SRC_DIR/world/terrain.cpp"
-    "$SRC_DIR/world/biome.cpp"
-    "$SRC_DIR/world/block.cpp"
-    "$SRC_DIR/world/chunk.cpp"
-    "$SRC_DIR/world/features.cpp"
-    "$SRC_DIR/world/chunk_manager.cpp"
-    "$SRC_DIR/render/mesh_builder.cpp"
-    "$SRC_DIR/core/crashlog.cpp"
-    "$SRC_DIR/core/job_system.cpp"
-    "$SRC_DIR/mobs/mob_def.cpp"
-    "$SRC_DIR/vk/vk_buffer.cpp"
-    "$SRC_DIR/vk/vk_texture.cpp"
-)
 if ! "$CXX" -std=c++20 -O1 -g0 \
         -D__ANDROID__ -DVK_USE_PLATFORM_ANDROID_KHR \
         -DGLM_FORCE_DEPTH_ZERO_TO_ONE -DGLM_ENABLE_EXPERIMENTAL -DENTT_NO_ETO -DHOSTCHECK=1 \
         -I "$SRC_DIR" -I "$PROJ/tools/hostcheck/include" \
         -isystem "$TP/glm" -isystem "$TP/entt/include" -isystem "$TP/Vulkan-Headers/include" \
-        -o "$OUT/tests" "${TEST_SRCS[@]}" "$OUT/obj/_stubs.o" -lpthread -ldl \
+        -o "$OUT/tests" "$PROJ/tools/hostcheck/tests.cpp" "$OUT"/obj/*.o \
+        -lz -lpthread -ldl \
         2> "$OUT/tests-build.err"; then
     echo "✗ Тесты не собрались:"
     head -30 "$OUT/tests-build.err" | sed 's/^/    /'

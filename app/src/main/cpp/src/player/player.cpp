@@ -38,7 +38,6 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
     ecs::Attributes attrs{};
     reg.add(entity_, attrs);
 
-    reg.add(entity_, ecs::Experience{});
 
     ecs::Collider col;
     col.halfExtents = glm::vec3(0.30f, 0.90f, 0.30f);

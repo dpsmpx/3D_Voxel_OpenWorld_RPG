@@ -138,7 +138,16 @@ bool deserializeInventory(ByteReader& r, ecs::Registry& reg, ecs::Entity player)
 
 void serializePickups(ByteWriter& w, ecs::Registry& reg) {
     auto& pool = reg.pool<items::ItemPickup>();
-    w.varU32((u32)pool.size());
+
+    // Сначала считаем, потом пишем: цикл ниже пропускает предметы без
+    // положения в мире, а число записей уже было бы объявлено. Читатель
+    // верит числу — и вычитывает за границу своих данных.
+    u32 count = 0;
+    for (usize i = 0; i < pool.size(); ++i) {
+        ecs::Entity e = pool.entityAt((u32)i);
+        if (pool.get(e) && reg.get<Transform>(e)) ++count;
+    }
+    w.varU32(count);
 
     for (usize i = 0; i < pool.size(); ++i) {
         ecs::Entity e = pool.entityAt((u32)i);

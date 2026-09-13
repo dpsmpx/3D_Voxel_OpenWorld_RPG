@@ -24,11 +24,15 @@ bool overlapsSolid(world::ChunkManager& world,
     i32 z0 = (i32)std::floor(bmin.z + EPS);
     i32 z1 = (i32)std::floor(bmax.z - EPS);
 
+    // Курсор, а не getVoxel на каждый воксель: коробка почти всегда
+    // целиком в одном чанке, а поиск чанка и два захвата замков стоят
+    // в полсотни раз дороже самого чтения.
     auto& reg = world::blocks();
+    world::VoxelReader rd(world);
     for (i32 y = y0; y <= y1; ++y)
         for (i32 z = z0; z <= z1; ++z)
             for (i32 x = x0; x <= x1; ++x)
-                if (reg.isSolid(world.getVoxel(x, y, z))) return true;
+                if (reg.isSolid(rd.at(x, y, z))) return true;
     return false;
 }
 
@@ -58,11 +62,12 @@ static bool moveAxis(world::ChunkManager& world,
     bool found = false;
     i32 bestCoord = 0;
     auto& reg = world::blocks();
+    world::VoxelReader rd(world);
 
     for (i32 y = y0; y <= y1; ++y) {
         for (i32 z = z0; z <= z1; ++z) {
             for (i32 x = x0; x <= x1; ++x) {
-                if (!reg.isSolid(world.getVoxel(x, y, z))) continue;
+                if (!reg.isSolid(rd.at(x, y, z))) continue;
                 i32 c = (axis == 0) ? x : (axis == 1) ? y : z;
                 if (!found) { bestCoord = c; found = true; }
                 else if (delta > 0) { if (c < bestCoord) bestCoord = c; }
