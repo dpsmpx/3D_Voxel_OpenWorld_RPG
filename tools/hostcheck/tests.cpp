@@ -22,6 +22,8 @@
 #include "mobs/mob_def.h"
 #include "ui/ui_context.h"
 #include "world/features.h"
+#include "world/ai/pathfinding.h"
+#include "core/job_system.h"
 
 #include <atomic>
 #include <cmath>
@@ -30,6 +32,8 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <thread>
+#include <chrono>
 
 namespace {
 
@@ -935,6 +939,137 @@ void testMeshFitsPacking() {
     check(world::CHUNK_SIZE_Y <= 255, "высота чанка влезает в восемь бит");
 }
 
+
+// ------------------------------------------------------------
+// Курсор чтения вокселей обязан отвечать ровно то же, что
+// ChunkManager::getVoxel. Он ускоряет чтение вдесятеро, и вся его
+// ценность держится на том, что правила краёв мира, незагруженных
+// чанков и перехода через границу чанка у него те же самые.
+// ------------------------------------------------------------
+void testVoxelReader() {
+    group("world::VoxelReader");
+
+    world::blocks();
+    world::ChunkManager mgr(777, 2);
+
+    // Набор точек, задевающий все особые случаи: над миром, под миром,
+    // далеко за пределами загруженного, и проход через границы чанков
+    // по обеим осям, включая отрицательные координаты.
+    const i32 pts[][3] = {
+        { 0, 0, 0 }, { 0, -1, 0 }, { 0, -500, 0 },
+        { 0, world::CHUNK_SIZE_Y, 0 }, { 0, world::CHUNK_SIZE_Y + 50, 0 },
+        { 31, 40, 31 }, { 32, 40, 32 }, { 33, 40, 33 },
+        { -1, 40, -1 }, { -32, 40, -32 }, { -33, 40, -33 },
+        { 1'000'000, 32, 1'000'000 }, { -1'000'000, 32, -1'000'000 },
+    };
+
+    bool same = true;
+    {
+        world::VoxelReader rd(mgr);
+        for (const auto& p : pts)
+            if (rd.at(p[0], p[1], p[2]) != mgr.getVoxel(p[0], p[1], p[2])) same = false;
+    }
+    check(same, "ответ совпадает с getVoxel в особых точках");
+
+    // Длинный проход по нескольким чанкам подряд: именно здесь курсор
+    // переоткрывает чанк, и именно здесь легче всего разойтись.
+    bool sameRun = true;
+    {
+        world::VoxelReader rd(mgr);
+        for (i32 x = -70; x <= 70; x += 7)
+            for (i32 z = -70; z <= 70; z += 7)
+                for (i32 y = 0; y < world::CHUNK_SIZE_Y; y += 17)
+                    if (rd.at(x, y, z) != mgr.getVoxel(x, y, z)) sameRun = false;
+    }
+    check(sameRun, "ответ совпадает при переходах через границы чанков");
+
+    // Два курсора подряд по одним и тем же точкам дают одно и то же:
+    // состояние курсора не должно влиять на ответ.
+    bool stable = true;
+    {
+        world::VoxelReader a(mgr), b(mgr);
+        for (i32 y = 0; y < world::CHUNK_SIZE_Y; y += 5) {
+            (void)b.at(999, y, 999);          // уводим второй курсор в другой чанк
+            if (a.at(4, y, 4) != b.at(4, y, 4)) stable = false;
+        }
+    }
+    check(stable, "ответ не зависит от истории обращений курсора");
+
+    // isSolid — та же таблица блоков, что у мира.
+    bool solidSame = true;
+    {
+        world::VoxelReader rd(mgr);
+        auto& reg = world::blocks();
+        for (i32 y = -2; y < world::CHUNK_SIZE_Y + 2; y += 11)
+            if (rd.isSolid(5, y, 5) != reg.isSolid(mgr.getVoxel(5, y, 5))) solidSame = false;
+    }
+    check(solidSame, "isSolid согласован с таблицей блоков");
+}
+
+
+// ------------------------------------------------------------
+// Форма пути.
+//
+// A* хранил в узле собственный индекс, а записывал его как индекс
+// родителя «предпоследнего добавленного» узла. Путь из-за этого
+// собирался из чужой ветки поиска: восемь блоков превращались в
+// четыре тысячи точек, моб шёл зигзагом, а сглаживание потом
+// перебирало эти тысячи точек попарно с проверкой видимости.
+//
+// Ни один тест этого не ловил, потому что путь «находился». Ловит
+// свойство: соседние точки пути обязаны быть соседними клетками.
+// ------------------------------------------------------------
+void testPathShape() {
+    group("world::ai::findPath");
+
+    world::blocks();
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager mgr(31337, 2);
+        // Ждём настоящий рельеф: без него весь мир — сплошной камень,
+        // и путей не существует ни у правильного A*, ни у сломанного.
+        bool ready = false;
+        for (int i = 0; i < 500 && !ready; ++i) {
+            mgr.update({ 8.f, 70.f, 8.f });
+            ready = mgr.getVoxel(8, world::CHUNK_SIZE_Y - 1, 8) == world::AIR &&
+                    mgr.getVoxel(8, 0, 8) == world::BEDROCK;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир для поиска пути сгенерирован");
+
+        if (ready) {
+            const i32 sy = mgr.generator().surfaceHeight(8, 8);
+            const i32 gy = mgr.generator().surfaceHeight(20, 20);
+            world::ai::MoveParams mp;
+            auto r = world::ai::findPath(mgr, { 8, sy, 8 }, { 20, gy, 20 }, mp, 2000);
+
+            check(r.ok, "путь до точки в двенадцати блоках найден");
+            if (r.ok && !r.waypoints.empty()) {
+                check(r.waypoints.front() == glm::ivec3(8, sy, 8),
+                      "путь начинается в стартовой клетке");
+                check(r.waypoints.back() == glm::ivec3(20, gy, 20),
+                      "путь заканчивается в целевой клетке");
+
+                // Главное свойство: соседние точки — соседние клетки.
+                bool adjacent = true;
+                for (usize i = 1; i < r.waypoints.size(); ++i) {
+                    const glm::ivec3 d = r.waypoints[i] - r.waypoints[i - 1];
+                    const i32 stepXZ = std::abs(d.x) + std::abs(d.z);
+                    if (stepXZ != 1) adjacent = false;          // ровно один шаг по горизонтали
+                    if (d.y > 1 || d.y < -3) adjacent = false;  // прыжок на 1, падение до 3
+                }
+                check(adjacent, "соседние точки пути — соседние клетки");
+
+                // Длина пути соразмерна расстоянию. Сломанная сборка
+                // давала тысячи точек на дюжину блоков.
+                check(r.waypoints.size() < 200,
+                      "путь не разрастается в тысячи точек");
+            }
+        }
+    }
+    jobs::gJobs.stop();
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -952,6 +1087,8 @@ int main() {
     testUiGeometry();
     testMeshFitsPacking();
     testWorldQueries();
+    testVoxelReader();
+    testPathShape();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);
     if (g_failed) {

@@ -48,13 +48,14 @@ glm::vec3 moveMob(world::ChunkManager& world,
 {
     glm::vec3 np = pos;
     auto& reg = world::blocks();
+    world::VoxelReader rd(world);
 
     auto blocked = [&](const glm::vec3& p) {
         for (f32 h = 0.1f; h < height; h += 0.4f) {
             i32 x = (i32)std::floor(p.x);
             i32 y = (i32)std::floor(p.y + h);
             i32 z = (i32)std::floor(p.z);
-            if (reg.isSolid(world.getVoxel(x, y, z))) return true;
+            if (reg.isSolid(rd.at(x, y, z))) return true;
         }
         return false;
     };
@@ -79,13 +80,14 @@ bool hasLOS(world::ChunkManager& world,
     d /= dist;
 
     auto& reg = world::blocks();
+    world::VoxelReader rd(world);
     const f32 step = 0.4f;
     for (f32 t = 0.4f; t < dist; t += step) {
         glm::vec3 p = from + d * t;
         i32 x = (i32)std::floor(p.x);
         i32 y = (i32)std::floor(p.y);
         i32 z = (i32)std::floor(p.z);
-        if (reg.isSolid(world.getVoxel(x, y, z))) return false;
+        if (reg.isSolid(rd.at(x, y, z))) return false;
     }
     return true;
 }

@@ -31,7 +31,28 @@ ChunkManager::~ChunkManager() {
         std::unique_lock lk(chunksMtx_);
         for (auto& [_, c] : chunks_) c->removed.store(true, std::memory_order_release);
     }
+    // Ждать можно только пока планировщик жив: после его остановки
+    // очередь никто не разберёт, счётчик не сдвинется, и ожидание
+    // станет вечным. На Android это выглядит как зависшее при выходе
+    // приложение, которое система убивает за неотвечающий поток —
+    // и настоящая причина выхода теряется.
+    //
+    // Такой порядок (остановить планировщик, потом разрушить мир)
+    // считается ошибкой вызывающего, поэтому о нём говорим вслух.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (jobsInFlight_.load(std::memory_order_acquire) > 0) {
+        if (!jobs::gJobs.running()) {
+            LOGE("ChunkManager разрушается при остановленном планировщике: "
+                 "%u задач не выполнится никогда",
+                 jobsInFlight_.load(std::memory_order_acquire));
+            break;
+        }
+        if (std::chrono::steady_clock::now() > deadline) {
+            LOGE("ChunkManager: фоновые задачи не завершились за 5 с, "
+                 "осталось %u — продолжаем разрушение",
+                 jobsInFlight_.load(std::memory_order_acquire));
+            break;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
@@ -101,10 +122,18 @@ void ChunkManager::jobGenerate(void* data) {
     ChunkManager* mgr = ctx->mgr;
     Chunk* c = ctx->chunk.get();
 
-    if (c->removed.load(std::memory_order_acquire)) {
-        mgr->jobsInFlight_.fetch_sub(1, std::memory_order_acq_rel);
-        return;
-    }
+    // Счётчик снимаем последним — как и в jobMesh. Раньше он снимался
+    // сразу после генерации вокселей, а дальше задача ещё дважды
+    // обращалась к менеджеру: за уровнем детализации и за постановкой
+    // мешей соседям. Если эта задача была последней, деструктор
+    // менеджера в этот момент переставал ждать и уничтожал его — и
+    // обращения уходили в освобождённую память.
+    struct InFlight {
+        std::atomic<u32>& n;
+        ~InFlight() { n.fetch_sub(1, std::memory_order_acq_rel); }
+    } guard{ mgr->jobsInFlight_ };
+
+    if (c->removed.load(std::memory_order_acquire)) return;
 
     const auto& terrain = mgr->gen_;
     // Колонки считаются один раз и переиспользуются фичами: без этого
@@ -121,8 +150,6 @@ void ChunkManager::jobGenerate(void* data) {
 
     c->version.fetch_add(1, std::memory_order_release);
     c->generated.store(true, std::memory_order_release);
-
-    mgr->jobsInFlight_.fetch_sub(1, std::memory_order_acq_rel);
 
     // Соседи рисуют свои граничные грани по нашим вокселям — перестроим их.
     // Сразу выбираем детализацию по расстоянию: иначе дальний чанк
@@ -383,6 +410,43 @@ void ChunkManager::setVoxel(i32 wx, i32 wy, i32 wz, u16 block) {
     if (lx == CHUNK_SIZE - 1) enqueueMesh({cx + 1, cz});
     if (lz == 0)              enqueueMesh({cx, cz - 1});
     if (lz == CHUNK_SIZE - 1) enqueueMesh({cx, cz + 1});
+}
+
+// ============================================================
+// Курсор чтения вокселей: см. VoxelReader в заголовке.
+// ============================================================
+void VoxelReader::reopen(i32 cx, i32 cz) {
+    // Старый замок отпускаем первым: держать два чанка разом незачем,
+    // а лишний удерживаемый замок откладывал бы правки блоков.
+    lk_ = std::shared_lock<std::shared_mutex>{};
+    chunk_.reset();
+    cx_ = cx; cz_ = cz;
+    valid_ = true;
+    haveChunk_ = false;
+
+    chunk_ = mgr_->findChunk(cx, cz);
+    if (!chunk_) return;
+    if (!chunk_->generated.load(std::memory_order_acquire)) { chunk_.reset(); return; }
+    lk_ = std::shared_lock<std::shared_mutex>(chunk_->voxelMutex);
+    haveChunk_ = true;
+}
+
+u16 VoxelReader::at(i32 wx, i32 wy, i32 wz) {
+    // Те же правила краёв, что у ChunkManager::getVoxel: выше мира
+    // воздух, ниже — дно, незагруженное считается твёрдым.
+    if (wy >= CHUNK_SIZE_Y) return AIR;
+    if (wy < 0) return BEDROCK;
+
+    const i32 cx = wx >> 5, cz = wz >> 5;
+    if (!valid_ || cx != cx_ || cz != cz_) reopen(cx, cz);
+    if (!haveChunk_) return BEDROCK;
+
+    const i32 lx = wx & 31, lz = wz & 31;
+    return chunk_->voxels[chunkIndex(lx, wy, lz)];
+}
+
+bool VoxelReader::isSolid(i32 wx, i32 wy, i32 wz) {
+    return blocks().isSolid(at(wx, wy, wz));
 }
 
 u16 ChunkManager::getVoxel(i32 wx, i32 wy, i32 wz) const {

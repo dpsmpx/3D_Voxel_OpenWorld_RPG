@@ -264,6 +264,7 @@ TEST_SRCS=(
     "$SRC_DIR/world/chunk.cpp"
     "$SRC_DIR/world/features.cpp"
     "$SRC_DIR/world/chunk_manager.cpp"
+    "$SRC_DIR/world/ai/pathfinding.cpp"
     "$SRC_DIR/render/mesh_builder.cpp"
     "$SRC_DIR/core/crashlog.cpp"
     "$SRC_DIR/core/job_system.cpp"

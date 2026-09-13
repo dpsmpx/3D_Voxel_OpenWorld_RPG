@@ -61,6 +61,11 @@ public:
                      const std::function<void(u32,u32)>& fn);
 
     u32 workerCount() const { return (u32)workers_.size(); }
+
+    /// Крутятся ли воркеры. Тот, кто ждёт завершения своих задач,
+    /// обязан это спрашивать: после stop() очередь никто не разберёт,
+    /// и ожидание стало бы вечным.
+    bool running() const { return running_.load(std::memory_order_acquire); }
     u32 currentWorkerId() const;   // UINT32_MAX для внешних потоков
 
 public:
