@@ -96,28 +96,45 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
     // отличить «граней не построилось» от «построились, но ушли не в
     // тот проход»: и то и другое выглядит как мир, вывернутый
     // наизнанку. А по числам — можно.
+    //
+    // Раньше здесь печатались только границы «небо min..max»: на целый
+    // чанк они почти всегда 0..7 и не значат ничего. Считать нужно
+    // РАСПРЕДЕЛЕНИЕ, и считать по верхним граням — это они видны с
+    // поверхности. Открытая земля обязана давать небо 7; если её
+    // грани уходят в младшие значения, освещение всего мира
+    // проваливается ровно во столько раз, во сколько мал множитель
+    // 0.18 + 0.82 * небо/7, а из общего сумрака торчат отдельные
+    // правильно посчитанные блоки.
     {
         static int logged = 0;
         if (logged < 6) {
             ++logged;
-            u8 skyMin = 7, skyMax = 0, aoMin = 3, aoMax = 0;
-            usize blended = 0;
+            usize skyHist[8] = {}, aoHist[4] = {};
+            usize topSky[8] = {}, topCount = 0;
             std::lock_guard lk(chunk.meshMutex);
             for (const auto& q : chunk.meshes[lod].quads) {
-                for (u8 v : q.sky) { skyMin = v < skyMin ? v : skyMin;
-                                     skyMax = v > skyMax ? v : skyMax; }
-                for (u8 v : q.ao)  { aoMin = v < aoMin ? v : aoMin;
-                                     aoMax = v > aoMax ? v : aoMax; }
+                const bool up = (q.v0.face == 2);   // +Y, см. world::FACES
+                for (u8 v : q.sky) {
+                    ++skyHist[v & 7];
+                    if (up) { ++topSky[v & 7]; ++topCount; }
+                }
+                for (u8 v : q.ao) ++aoHist[v & 3];
             }
             LOGI("меш чанка %d,%d ур.%u: квадов %zu, вершин %zu, индексов %zu "
-                 "(непрозрачных %u, полупрозрачных %zu), небо %u..%u, AO %u..%u",
+                 "(непрозрачных %u, полупрозрачных %zu)",
                  chunk.coord.x, chunk.coord.z, (unsigned)lod,
                  chunk.meshes[lod].quads.size(), scratchVerts_.size(),
                  scratchIndices_.size(), gm.opaqueIndices,
-                 scratchIndices_.size() - gm.opaqueIndices,
-                 (unsigned)skyMin, (unsigned)skyMax,
-                 (unsigned)aoMin, (unsigned)aoMax);
-            (void)blended;
+                 scratchIndices_.size() - gm.opaqueIndices);
+            LOGI("  небо 0..7: %zu %zu %zu %zu %zu %zu %zu %zu; AO 0..3: %zu %zu %zu %zu",
+                 skyHist[0], skyHist[1], skyHist[2], skyHist[3],
+                 skyHist[4], skyHist[5], skyHist[6], skyHist[7],
+                 aoHist[0], aoHist[1], aoHist[2], aoHist[3]);
+            LOGI("  верхние грани, небо 0..7: %zu %zu %zu %zu %zu %zu %zu %zu"
+                 " (углов %zu, доля открытых %.2f)",
+                 topSky[0], topSky[1], topSky[2], topSky[3],
+                 topSky[4], topSky[5], topSky[6], topSky[7], topCount,
+                 topCount ? (double)topSky[7] / (double)topCount : 0.0);
         }
     }
 

@@ -21,7 +21,7 @@ PAIRS = [
     ('src/render/voxel_pipeline.cpp',      'voxel.vert'),
     ('src/ui/ui_renderer.cpp',            'ui.vert'),
     ('src/render/block_outline.cpp',      'outline.vert'),
-    ('src/render/instanced_renderer.cpp', 'grass.vert'),
+    ('src/render/grass_pipeline.cpp', 'grass.vert'),
     ('src/render/mob_renderer.cpp',       'mob.vert'),
     ('src/render/npc_renderer.cpp',       'mob.vert'),
     ('src/render/projectile_renderer.cpp','projectile.vert'),

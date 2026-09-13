@@ -111,6 +111,7 @@ add_library(native-lib SHARED
     src/render/projectile_renderer.cpp
     src/render/render_system.cpp
     src/render/voxel_pipeline.cpp
+    src/render/grass_pipeline.cpp
     src/render/skybox.cpp
 
     # Физика
