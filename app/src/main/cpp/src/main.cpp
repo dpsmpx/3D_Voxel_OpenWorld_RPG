@@ -1374,7 +1374,7 @@ extern "C" void android_main(android_app* app) {
                 LOGI("кадры: показано %llu (%.1f/с), показ=%d, цепочка %llu | камера %.1f %.1f %.1f "
                      "| чанки: загружено %zu, нарисовано %u, индексов %u, "
                      "дыр %u (ждут меша %u), LOD %u/%u/%u/%u "
-                     "| трава %u, мобы %u, NPC %u "
+                     "| трава %u, мобы %u, NPC %u, предметы %u, снаряды %u "
                      "| интерфейс: вершин %u, нарисовано %u, экран %d "
                      "| мс: логика %.1f, подготовка %.1f, рисование %.1f",
                      (unsigned long long)presented, (double)fps,
@@ -1393,6 +1393,13 @@ extern "C" void android_main(android_app* app) {
                      eng.render ? eng.render->grassCount() : 0u,
                      eng.render ? eng.render->mobInstances() : 0u,
                      eng.render ? eng.render->npcInstances() : 0u,
+                     // Выпавшие предметы и снаряды в сводке не
+                     // печатались вовсе. А это кубы 0.35 блока,
+                     // которые рисуются поверх уже готового ландшафта:
+                     // по картинке сотня таких кубиков неотличима от
+                     // артефакта рендера, по числу — сразу видна.
+                     eng.render ? eng.render->itemInstances() : 0u,
+                     eng.render ? eng.render->projInstances() : 0u,
                      eng.ui ? eng.ui->lastVertices() : 0u,
                      eng.ui ? eng.ui->lastDrawn() : 0u,
                      eng.ui ? (int)eng.ui->screen : -1,
