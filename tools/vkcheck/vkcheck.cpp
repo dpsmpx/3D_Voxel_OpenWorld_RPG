@@ -21,6 +21,8 @@
 #include "render/mesh_builder.h"
 #include "render/camera.h"
 #include "render/voxel_pipeline.h"
+#include "render/grass_pipeline.h"
+#include "render/instanced_renderer.h"
 #include "world/chunk.h"
 #include "world/block.h"
 #include "world/terrain.h"
@@ -117,6 +119,7 @@ int main(int argc, char** argv) {
     u64   seed = 12648430;
     float px = 33.6f, pz = -2.7f, height = 5.f, yaw = 1.2f, pitch = -0.10f;
     int   lod = 0;
+    int   viewDist = 7;          // чанков, как в настройках игры
     int   debugMode = -1;
     const char* cull = "";
     int   oneTri = -1;
@@ -134,7 +137,11 @@ int main(int argc, char** argv) {
         else if (a == "--height") height = (float)atof(next());
         else if (a == "--yaw")    yaw = (float)atof(next());
         else if (a == "--pitch")  pitch = (float)atof(next());
-        else if (a == "--lod")    lod = atoi(next());
+        else if (a == "--lod") {
+            const std::string v = next();
+            lod = (v == "auto") ? -1 : atoi(v.c_str());   // auto — по расстоянию
+        }
+        else if (a == "--viewdist") viewDist = atoi(next());
         else if (a == "--out")    out = next();
         else if (a == "--assets") g_assetRoot = std::string(next()) + "/";
         else if (a == "--debug-assets") g_debugRoot = std::string(next()) + "/";
@@ -285,10 +292,42 @@ int main(int argc, char** argv) {
         if (!blendPipe.create(dev, shaders, d)) { std::printf("vkcheck: конвейер (вода)\n"); return 1; }
     }
 
+    // ---- трава: тот же конвейер и та же геометрия ----
+    vk::GraphicsPipeline grassPipe;
+    vk::Buffer grassVb, grassIb, grassInst;
+    u32 grassIdxCount = 0, grassInstCount = 0;
+    {
+        vk::PipelineDesc gd = render::grassPipelineDesc(rp, desc.layout(), DEPTH);
+        if (!grassPipe.create(dev, shaders, gd)) {
+            std::printf("vkcheck: конвейер травы\n"); return 1;
+        }
+        u32 vc = 0, ic = 0;
+        const render::GrassVertex* gv = render::grassVerts(vc);
+        const u32* gi = render::grassIndices(ic);
+        grassIdxCount = ic;
+        if (!grassVb.create(dev, phys, (u64)vc * sizeof(render::GrassVertex),
+                            vk::BufferUsage::Vertex, true)) return 1;
+        if (!grassIb.create(dev, phys, (u64)ic * sizeof(u32),
+                            vk::BufferUsage::Index, true)) return 1;
+        grassVb.write(gv, (u64)vc * sizeof(render::GrassVertex));
+        grassIb.write(gi, (u64)ic * sizeof(u32));
+    }
+
     // ---- мир: тот же генератор и тот же мешер ----
     world::blocks();
     world::TerrainGenerator gen(seed);
     const int R = 4;
+    // Границы LOD — те же, что ставит ChunkRenderer::setViewDistanceBlocks
+    // при дальности прорисовки viewDist чанков. Раньше инструмент
+    // строил ВСЕ чанки на одном уровне, а игра мешает уровни в одном
+    // кадре — и ровно на стыках уровней её картинка отличалась от
+    // проверочной.
+    const f32 vdBlocks = (f32)viewDist * (f32)world::CHUNK_SIZE;
+    f32 lodB0 = vdBlocks * 0.35f < 64.f  ? 64.f  : vdBlocks * 0.35f;
+    f32 lodB1 = vdBlocks * 0.62f < 140.f ? 140.f : vdBlocks * 0.62f;
+    f32 lodB2 = vdBlocks * 0.90f;
+    if (lodB1 < lodB0 * 1.2f) lodB1 = lodB0 * 1.2f;
+    if (lodB2 < lodB1 * 1.2f) lodB2 = lodB1 * 1.2f;
     struct Mesh { vk::Buffer vb, ib; u32 opaque = 0, total = 0; glm::vec3 origin{0}; };
     std::vector<Mesh> meshes;
     std::vector<std::shared_ptr<world::Chunk>> chunks;
@@ -315,6 +354,7 @@ int main(int argc, char** argv) {
     usize totalQuads = 0;
     // Статистика по ВСЕМ чанкам: то, что реально уходит на GPU.
     usize aoHist[4] = {}, skyHist[8] = {}, faceHist[8] = {}, vertTotal = 0;
+    usize lodUsed[4] = {};
     usize bySky[6][8] = {};
     std::map<u32, usize> colorHist;
     for (auto& c : chunks) {
@@ -323,7 +363,21 @@ int main(int argc, char** argv) {
         nb.px = findChunk(c->coord.x + 1, c->coord.z);
         nb.nz = findChunk(c->coord.x, c->coord.z - 1);
         nb.pz = findChunk(c->coord.x, c->coord.z + 1);
-        world::buildGreedyMesh(*c, nb, quads, (world::Lod)lod);
+        // Уровень детализации этого чанка. При lod < 0 он выбирается
+        // по расстоянию — ровно как в ChunkRenderer::render, включая
+        // то, что центр чанка берётся по всей его высоте.
+        i32 useLod = lod;
+        if (lod < 0) {
+            const f32 ccx = (f32)c->coord.x * world::CHUNK_SIZE + world::CHUNK_SIZE * 0.5f;
+            const f32 ccz = (f32)c->coord.z * world::CHUNK_SIZE + world::CHUNK_SIZE * 0.5f;
+            const f32 ccy = world::CHUNK_SIZE_Y * 0.5f;
+            const f32 ey  = (f32)gen.surfaceHeight((i32)px, (i32)pz) + height;
+            const f32 ddx = ccx - px, ddy = ccy - ey, ddz = ccz - pz;
+            const f32 dd  = std::sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+            useLod = dd < lodB0 ? 0 : (dd < lodB1 ? 1 : (dd < lodB2 ? 2 : 3));
+        }
+        lodUsed[useLod & 3]++;
+        world::buildGreedyMesh(*c, nb, quads, (world::Lod)useLod);
         u32 opaque = 0;
         render::buildChunkVertices(*c, quads, verts, idx, opaque);
         totalQuads += quads.size();
@@ -352,6 +406,9 @@ int main(int argc, char** argv) {
     }
     std::printf("vkcheck: чанков %zu, квадов %zu, мешей %zu, уровень %d\n",
                 chunks.size(), totalQuads, meshes.size(), lod);
+    std::printf("  чанков по уровням: 0:%zu 1:%zu 2:%zu 3:%zu (границы %.0f/%.0f/%.0f)\n",
+                lodUsed[0], lodUsed[1], lodUsed[2], lodUsed[3],
+                (double)lodB0, (double)lodB1, (double)lodB2);
     {
         std::printf("  вершин всего %zu\n", vertTotal);
         std::printf("  AO   :"); for (int i = 0; i < 4; ++i) std::printf(" %zu", aoHist[i]);
@@ -371,6 +428,73 @@ int main(int argc, char** argv) {
         for (usize i = 0; i < top.size() && i < 8; ++i)
             std::printf("    #%06X  %zu (%.1f%%)\n", top[i].second, top[i].first,
                         100.0 * (double)top[i].first / (double)vertTotal);
+    }
+
+    // Инстансы травы по тем же правилам, что populateGrass: 24 пробы
+    // на чанк, детерминированный хеш, только на траве и песке.
+    {
+        std::vector<render::GrassInstance> gi;
+        auto hash = [](i32 x, i32 z) -> u32 {
+            u32 h = (u32)x * 374761393u + (u32)z * 668265263u;
+            h = (h ^ (h >> 13)) * 1274126177u;
+            return h ^ (h >> 16);
+        };
+        auto voxelAt = [&](i32 x, i32 y, i32 z) -> u16 {
+            const i32 ccx = (i32)std::floor((float)x / world::CHUNK_SIZE);
+            const i32 ccz = (i32)std::floor((float)z / world::CHUNK_SIZE);
+            const world::Chunk* c = findChunk(ccx, ccz);
+            if (!c) return world::AIR;
+            return c->at(x - ccx * world::CHUNK_SIZE, y, z - ccz * world::CHUNK_SIZE);
+        };
+        for (i32 cz = pcz - 2; cz <= pcz + 2; ++cz)
+            for (i32 cx = pcx - 2; cx <= pcx + 2; ++cx)
+                for (i32 i = 0; i < 24; ++i) {
+                    const u32 h = hash(cx * 100 + i, cz * 31 + i * 7);
+                    const i32 wx = cx * world::CHUNK_SIZE + (i32)(h % world::CHUNK_SIZE);
+                    const i32 wz = cz * world::CHUNK_SIZE + (i32)((h >> 8) % world::CHUNK_SIZE);
+                    const f32 ddx = (f32)wx - px, ddz = (f32)wz - pz;
+                    if (ddx*ddx + ddz*ddz > 40.f*40.f) continue;
+                    const i32 surf = gen.surfaceHeight(wx, wz);
+                    const u16 ground = voxelAt(wx, surf - 1, wz);
+                    if (ground != world::GRASS && ground != world::SAND) continue;
+                    if (voxelAt(wx, surf, wz) != world::AIR) continue;
+                    const f32 dist = std::sqrt(ddx * ddx + ddz * ddz);
+                    const f32 fade = (40.f - dist) / (40.f * render::GRASS_FADE);
+                    const f32 k = fade < 0.f ? 0.f : (fade > 1.f ? 1.f : fade);
+                    if (k < 0.2f) continue;
+                    render::GrassInstance in{};
+                    in.pos   = { (f32)wx + 0.5f, (f32)surf, (f32)wz + 0.5f };
+                    in.scale = (0.6f + (f32)(h % 40) / 100.f) * k;
+                    in.r = 90; in.g = 170; in.b = 70; in.a = 255;
+                    in.yaw = (f32)(h % 628) / 100.f;
+                    gi.push_back(in);
+                }
+        grassInstCount = (u32)gi.size();
+        if (grassInstCount) {
+            if (!grassInst.create(dev, phys,
+                                  (u64)grassInstCount * sizeof(render::GrassInstance),
+                                  vk::BufferUsage::Vertex, true)) return 1;
+            grassInst.write(gi.data(), (u64)grassInstCount * sizeof(render::GrassInstance));
+        }
+        std::printf("vkcheck: пучков травы %u\n", grassInstCount);
+        // Ближайшие пучки — чтобы можно было навести камеру вплотную
+        // и посмотреть, читается ли лист как трава, а не как конус.
+        {
+            std::vector<const render::GrassInstance*> near;
+            for (const auto& g : gi) near.push_back(&g);
+            std::sort(near.begin(), near.end(),
+                      [&](const render::GrassInstance* a, const render::GrassInstance* b) {
+                          const f32 da = (a->pos.x - px) * (a->pos.x - px)
+                                       + (a->pos.z - pz) * (a->pos.z - pz);
+                          const f32 db = (b->pos.x - px) * (b->pos.x - px)
+                                       + (b->pos.z - pz) * (b->pos.z - pz);
+                          return da < db;
+                      });
+            for (usize i = 0; i < near.size() && i < 3; ++i)
+                std::printf("vkcheck:   пучок %zu at %.1f %.1f %.1f scale %.2f\n",
+                            i, (double)near[i]->pos.x, (double)near[i]->pos.y,
+                            (double)near[i]->pos.z, (double)near[i]->scale);
+        }
     }
 
     // ---- камера: тот же класс, что в игре ----
@@ -576,6 +700,16 @@ int main(int argc, char** argv) {
     } else {
         drawAll(opaquePipe, false);
         drawAll(blendPipe,  true);
+        if (grassInstCount) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, grassPipe.handle());
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    grassPipe.layout(), 0, 1, &set, 0, nullptr);
+            VkBuffer gbs[2] = { grassVb.handle(), grassInst.handle() };
+            VkDeviceSize goff[2] = { 0, 0 };
+            vkCmdBindVertexBuffers(cmd, 0, 2, gbs, goff);
+            vkCmdBindIndexBuffer(cmd, grassIb.handle(), 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, grassIdxCount, grassInstCount, 0, 0, 0);
+        }
     }
 
     vkCmdEndRenderPass(cmd);
@@ -653,5 +787,26 @@ int main(int argc, char** argv) {
     if (hollow)
         std::printf("vkcheck: ПРОВАЛ — земля под ногами тёмная: видна изнанка мира, "
                     "наружные грани отсекаются\n");
-    return (g_validationErrors || hollow) ? 1 : 0;
+
+    // Открытость неба у верхних граней.
+    //
+    // Множитель освещения в voxel.frag — 0.18 + 0.82 * небо/7, и
+    // прямое солнце включается только с smoothstep(0.35, 0.85, небо/7).
+    // Если верхние грани открытой земли уходят из семёрки, весь мир
+    // темнеет втрое, а из сумрака торчат отдельные блоки, посчитанные
+    // правильно. По картинке это читается как «облако точек на
+    // поверхности», по числам — как перекос вот этой гистограммы.
+    bool darkTop = false;
+    if (assertSolid) {
+        usize top = 0;
+        for (int k = 0; k < 8; ++k) top += bySky[2][k];
+        const double open = top ? (double)bySky[2][7] / (double)top : 0.0;
+        std::printf("vkcheck: верхних граней %zu, доля с открытым небом %.3f\n",
+                    top, open);
+        darkTop = (top > 0 && open < 0.45);
+        if (darkTop)
+            std::printf("vkcheck: ПРОВАЛ — верхние грани почти не видят неба: "
+                        "мир будет освещён втрое слабее положенного\n");
+    }
+    return (g_validationErrors || hollow || darkTop) ? 1 : 0;
 }

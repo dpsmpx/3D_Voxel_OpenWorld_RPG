@@ -3,6 +3,7 @@
  * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
  */
 #include "instanced_renderer.h"
+#include "grass_pipeline.h"
 #include "../core/log.h"
 #include "../world/block.h"
 #include <glm/gtc/matrix_transform.hpp>
@@ -11,45 +12,9 @@
 
 namespace render {
 
-// Вершинный формат: перекрещенные трапеции + инстанс GrassInstance.
-static const vk::VertexBinding kBindings[2] = {
-    { 12,                      false },   // vec3 pos
-    { sizeof(GrassInstance),   true  },
-};
-static const vk::VertexAttr kAttrs[5] = {
-    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // inPos
-    { 1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // iPos
-    { 2, 1, VK_FORMAT_R32_SFLOAT,       12 },   // iScale
-    { 3, 1, VK_FORMAT_R8G8B8A8_UNORM,   16 },   // iColor
-    { 4, 1, VK_FORMAT_R32_SFLOAT,       20 },   // iYaw
-};
 
 namespace {
 
-// Пучок травы: две перекрещённые трапеции, широкие у земли и узкие
-// кверху. Текстуры нет, поэтому форму должна задавать геометрия:
-// прямоугольник без текстуры читается как торчащий из земли лист
-// бумаги, а сужающийся клин — как трава.
-struct Vtx { glm::vec3 p; };
-
-constexpr f32 BASE = 0.5f;    // полуширина у земли
-constexpr f32 TIP  = 0.07f;   // полуширина у верхушки
-
-const Vtx CROSS_VERTS[8] = {
-    { {-BASE, 0.f,  0.f  } },   // 1: низ слева
-    { { BASE, 0.f,  0.f  } },   // 1: низ справа
-    { { TIP,  1.f,  0.f  } },   // 1: верх справа
-    { {-TIP,  1.f,  0.f  } },   // 1: верх слева
-    { { 0.f,  0.f, -BASE } },   // 2: низ слева
-    { { 0.f,  0.f,  BASE } },   // 2: низ справа
-    { { 0.f,  1.f,  TIP  } },   // 2: верх справа
-    { { 0.f,  1.f, -TIP  } },   // 2: верх слева
-};
-
-const u32 CROSS_INDICES[12] = {
-    0, 1, 2, 0, 2, 3,     // трапеция 1
-    4, 5, 6, 4, 6, 7,     // трапеция 2
-};
 
 } // namespace
 
@@ -58,27 +23,15 @@ bool InstancedRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorS
     instances_.init(dev_, ctx.physicalDevice());
     shaders_.init(dev_, mgr);
 
-    vk::PipelineDesc d{};
-    d.renderPass  = ctx.renderPass();
-    d.descLayout  = descLayout;
-    d.vertName    = "shaders/grass.vert.spv";
-    d.fragName    = "shaders/grass.frag.spv";
-    d.depthFormat = ctx.depthFormat();
-    d.cullMode    = VK_CULL_MODE_NONE;   // биллборд — рисуем с обеих сторон
-    d.depthTest   = true;
-    d.depthWrite  = true;
-    // Текстуры с альфой больше нет, значит и смешивание не нужно:
-    // трава пишет глубину как обычная геометрия, и её не приходится
-    // сортировать — заодно пропал целый класс артефактов порядка.
-    d.blend       = false;
-    d.bindings     = kBindings;
-    d.bindingCount = 2;
-    d.attrs        = kAttrs;
-    d.attrCount    = 5;
+    vk::PipelineDesc d = grassPipelineDesc(ctx.renderPass(), descLayout,
+                                           ctx.depthFormat());
     if (!pipeline_.create(dev_, shaders_, d)) return false;
 
     // VBO
-    u64 vbBytes = sizeof(CROSS_VERTS);
+    u32 crossVertCount = 0, crossIdxCount = 0;
+    const GrassVertex* CROSS_VERTS = grassVerts(crossVertCount);
+    const u32* CROSS_INDICES = grassIndices(crossIdxCount);
+    u64 vbBytes = (u64)crossVertCount * sizeof(GrassVertex);
     if (!vbo_.create(dev_, ctx.physicalDevice(), vbBytes, vk::BufferUsage::Vertex, false)) return false;
     auto* sVb = new vk::Buffer();
     sVb->create(dev_, ctx.physicalDevice(), vbBytes, vk::BufferUsage::Staging, true);
@@ -90,7 +43,7 @@ bool InstancedRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorS
     sVb->destroy(); delete sVb;
 
     // IBO
-    u64 ibBytes = sizeof(CROSS_INDICES);
+    u64 ibBytes = (u64)crossIdxCount * sizeof(u32);
     if (!ibo_.create(dev_, ctx.physicalDevice(), ibBytes, vk::BufferUsage::Index, false)) return false;
     auto* sIb = new vk::Buffer();
     sIb->create(dev_, ctx.physicalDevice(), ibBytes, vk::BufferUsage::Staging, true);
@@ -101,7 +54,7 @@ bool InstancedRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorS
     });
     sIb->destroy(); delete sIb;
 
-    indexCount_ = 12;
+    indexCount_ = crossIdxCount;
     LOGI("InstancedRenderer готов");
     return true;
 }
@@ -168,9 +121,23 @@ void InstancedRenderer::populateGrass(const world::ChunkManager& world,
                     return (u8)(r < 0 ? 0 : (r > 255 ? 255 : r));
                 };
 
+                // Пучок сходит на нет к краю радиуса.
+                //
+                // Без этого трава обрывается ступенькой, а у самой
+                // границы каждый пучок занимает считанные пиксели:
+                // непрозрачная геометрия меньше пикселя не
+                // сглаживается ничем и превращается в облако мерцающих
+                // точек — ровно то, на что жаловались. Уменьшая пучок
+                // до нуля, мы убираем и ступеньку, и точки, и лишние
+                // треугольники разом.
+                const f32 dist = std::sqrt(ddx * ddx + ddz * ddz);
+                const f32 fade = (radius - dist) / (radius * GRASS_FADE);
+                const f32 k = fade < 0.f ? 0.f : (fade > 1.f ? 1.f : fade);
+                if (k < 0.2f) continue;
+
                 GrassInstance inst{};
                 inst.pos = { (f32)wx + 0.5f, (f32)sy, (f32)wz + 0.5f };
-                inst.scale = 0.6f + (f32)(h % 40) / 100.f;
+                inst.scale = (0.6f + (f32)(h % 40) / 100.f) * k;
                 inst.r = ch(24, 0.82f);
                 inst.g = ch(16, 1.04f);
                 inst.b = ch( 8, 0.72f);

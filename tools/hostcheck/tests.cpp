@@ -40,6 +40,7 @@
 #include "world/day_cycle.h"
 #include "mobs/mob_ai.h"
 #include "mobs/mob_def.h"
+#include "save/save_manager.h"
 #include "ui/ui_context.h"
 #include "world/features.h"
 #include "world/ai/pathfinding.h"
@@ -1243,6 +1244,92 @@ void testMeshWindingFacesOutward() {
     if (!rs.empty())
         check(rs.find("VK_FRONT_FACE_CLOCKWISE") == std::string::npos,
               "рендереры не переопределяют сторону по-своему");
+}
+
+// ------------------------------------------------------------
+// Сейв записан и прочитан обратно ФАЙЛОМ.
+//
+// Проверки выше гоняли тело сейва через ByteWriter/ByteReader и
+// ничего не знали про заголовок файла. А сломан был именно он:
+// писатель складывал поля и писал 48 байт, загрузчик верил
+// комментарию «44 байта фиксированные» и читал 44. Контрольная сумма
+// лежит в последних четырёх байтах — до загрузчика она не доезжала и
+// оставалась нулём, а тело он начинал читать на четыре байта раньше
+// начала. Любая загрузка кончалась «CRC mismatch (expected=0)», и ни
+// одна проверка этого не видела, потому что ни одна не открывала
+// файл.
+// ------------------------------------------------------------
+void testSaveFileRoundTrip() {
+    group("save: файл записан и прочитан обратно");
+
+    check(save::SAVE_HEADER_SIZE == 48,
+          "размер заголовка посчитан из полей, а не записан числом");
+
+    items::items();
+    world::blocks();
+
+    // init() создаёт подкаталог saves внутри переданного; сам
+    // переданный каталог обязан существовать — во время проверки это
+    // рабочий каталог сборки.
+    save::SaveManager mgr;
+    mgr.init("build/hostcheck");
+    const save::SaveSlot slot = mgr.slots().slot(0, 0);
+    std::remove(slot.dataPath().c_str());
+
+    constexpr u64 SEED = 0xC0FFEEULL;
+    world::ChunkManager world(SEED, 2);
+    world::DayCycle day;
+    save::WorldDeltaStore deltas;
+
+    ecs::Registry reg;
+    const ecs::Entity player = reg.create();
+    ecs::Transform tf;
+    tf.position = { 12.5f, 40.f, -7.25f };
+    reg.add(player, tf);
+    items::Wallet wal;
+    wal.gold = 4321;
+    reg.add(player, wal);
+
+    const save::SaveStatus ws = mgr.save(slot, world, reg, player, deltas,
+                                         SEED, 777, day);
+    if (ws != save::SaveStatus::Ok)
+        std::printf("    (статус записи: %d, путь: %s)\n",
+                    (int)ws, slot.dataPath().c_str());
+    check(ws == save::SaveStatus::Ok, "сейв записан");
+
+    // Файл на диске обязан начинаться с заголовка полного размера.
+    std::FILE* f = std::fopen(slot.dataPath().c_str(), "rb");
+    check(f != nullptr, "файл сейва появился");
+    if (f) {
+        std::fseek(f, 0, SEEK_END);
+        const long sz = std::ftell(f);
+        std::fclose(f);
+        check(sz > (long)save::SAVE_HEADER_SIZE,
+              "в файле есть заголовок и тело");
+    }
+
+    // И прочитан обратно тем же менеджером.
+    ecs::Registry reg2;
+    const ecs::Entity player2 = reg2.create();
+    reg2.add(player2, ecs::Transform{});
+    reg2.add(player2, items::Wallet{});
+    world::ChunkManager world2(SEED, 2);
+    save::WorldDeltaStore deltas2;
+    u64 outSeed = 0; u32 outPlay = 0;
+    world::DayCycle day2;
+
+    const save::SaveStatus rs = mgr.load(slot, world2, reg2, player2, deltas2,
+                                         &outSeed, &outPlay, &day2);
+    check(rs == save::SaveStatus::Ok, "сейв прочитан обратно");
+    check(outSeed == SEED, "зерно мира дошло целым");
+    check(outPlay == 777, "наигранное время дошло целым");
+    if (auto* w2 = reg2.get<items::Wallet>(player2))
+        check(w2->gold == 4321, "кошелёк дошёл целым");
+    if (auto* t2 = reg2.get<ecs::Transform>(player2))
+        check(std::fabs(t2->position.x - 12.5f) < 0.001f,
+              "положение игрока дошло целым");
+
+    std::remove(slot.dataPath().c_str());
 }
 
 void testVulkanGuards() {
@@ -2575,6 +2662,7 @@ int main() {
     testPathShape();
     testAudioMixer();
     testSaveRoundTrip();
+    testSaveFileRoundTrip();
     testWorldDeltaRoundTrip();
     testPlayerSaveRoundTrip();
     testQuestProgress();
