@@ -730,6 +730,108 @@ void testBossPhases() {
 // свой буфер, передав нулевое физическое устройство.
 // ------------------------------------------------------------
 // ------------------------------------------------------------
+// Часть договоров о работе с Vulkan проверяется по исходному
+// тексту: настоящего VkDevice на хосте нет, а заглушки не выделяют
+// памяти и ничего не синхронизируют. Читаем файл целиком; пустая
+// строка означает «запустили не из корня проекта».
+// ------------------------------------------------------------
+static std::string readSource(const char* path) {
+    std::FILE* f = std::fopen(path, "rb");
+    if (!f) return {};
+    std::string out;
+    char buf[4096];
+    usize n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+    std::fclose(f);
+    return out;
+}
+
+// ------------------------------------------------------------
+// Синхронизация прохода рендера.
+//
+// Буфер глубины в движке ОДИН на всю цепочку показа, а кадров в
+// работе два. Значит порядок доступа к нему держится исключительно
+// на зависимости подпрохода от VK_SUBPASS_EXTERNAL — а она была
+// неполной сразу трижды: не ждала позднюю стадию тестов глубины
+// (именно на ней глубина дописывается), не делала прошлые записи
+// доступными (нулевой srcAccessMask) и не упоминала чтений, хотя
+// тест глубины читает. На экране это выглядело как «видно сквозь
+// блоки»: глубина одного кадра проверялась против остатков другого.
+// ------------------------------------------------------------
+void testRenderPassSync() {
+    group("vk: зависимость прохода рендера");
+
+    const std::string src = readSource("app/src/main/cpp/src/vk/vk_context.cpp");
+    if (src.empty()) {
+        check(true, "исходник vk_context.cpp не найден, проверка пропущена");
+        return;
+    }
+
+    const usize beg = src.find("bool Context::createRenderPass()");
+    check(beg != std::string::npos, "createRenderPass на месте");
+    if (beg == std::string::npos) return;
+    const usize end = src.find("\nbool Context::", beg + 10);
+    const std::string body = src.substr(beg, end - beg);
+
+    const usize dep = body.find("VkSubpassDependency dep{}");
+    check(dep != std::string::npos, "зависимость подпрохода объявлена");
+    if (dep == std::string::npos) return;
+    const std::string d = body.substr(dep);
+
+    const usize src_ = d.find("dep.srcStageMask");
+    const usize dst_ = d.find("dep.dstStageMask");
+    check(src_ != std::string::npos && dst_ != std::string::npos && src_ < dst_,
+          "обе половины зависимости заданы");
+    if (src_ == std::string::npos || dst_ == std::string::npos) return;
+
+    const std::string srcHalf = d.substr(src_, dst_ - src_);
+    check(srcHalf.find("LATE_FRAGMENT_TESTS") != std::string::npos,
+          "ждём позднюю стадию тестов глубины прошлого кадра");
+    check(srcHalf.find("VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT") != std::string::npos,
+          "и делаем его записи глубины доступными");
+    check(srcHalf.find("VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT") != std::string::npos,
+          "то же для цвета");
+
+    const std::string dstHalf = d.substr(dst_);
+    check(dstHalf.find("VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT") != std::string::npos,
+          "тест глубины читает — чтение указано во второй половине");
+
+    // --- Отвергнутая отправка не должна оборачиваться зависанием ---
+    //
+    // Забор кадра подаёт vkQueueSubmit. Если отправку отвергли, его не
+    // подадут никогда, а ждут его без срока: приложение замирает без
+    // единой строки в журнале. И показывать после провала отправки
+    // нельзя — показ ждёт семафор, которого тоже никто не подаст.
+    const usize efb = src.find("void Context::endFrame()");
+    check(efb != std::string::npos, "endFrame на месте");
+    if (efb != std::string::npos) {
+        const std::string ef = src.substr(efb);
+        const usize fail = ef.find("if (sub != VK_SUCCESS)");
+        const usize pres = ef.find("vkQueuePresentKHR");
+        check(fail != std::string::npos && pres != std::string::npos && fail < pres,
+              "неудача отправки разбирается до показа");
+        if (fail != std::string::npos && pres != std::string::npos && fail < pres) {
+            const std::string branch = ef.substr(fail, pres - fail);
+            check(branch.find("return;") != std::string::npos,
+                  "после отвергнутой отправки кадр не показывается");
+        }
+    }
+
+    check(src.find("if (framePending_[currentFrame_])") != std::string::npos,
+          "забор ждут, только если его кто-то обещал подать");
+
+    // --- Слой проверки включается сам, если он есть ---
+    check(src.find("instanceLayerPresent(\"VK_LAYER_KHRONOS_validation\")")
+              != std::string::npos,
+          "наличие слоя проверки спрашивают у загрузчика");
+    check(src.find("(void)layers;") == std::string::npos,
+          "и не выбрасывают список слоёв, не дойдя до vkCreateInstance");
+    check(src.find("ci.enabledLayerCount       = (u32)layers.size();")
+              != std::string::npos,
+          "найденный слой попадает в VkInstanceCreateInfo");
+}
+
+// ------------------------------------------------------------
 // Договор vk::Buffer::map().
 //
 // map() возвращал сохранённый при создании указатель, а unmap() его
@@ -2156,6 +2258,7 @@ int main() {
     testBossPhases();
 
     testVulkanGuards();
+    testRenderPassSync();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

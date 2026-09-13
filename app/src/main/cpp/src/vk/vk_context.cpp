@@ -43,6 +43,53 @@ u32 findMemoryType(VkPhysicalDevice dev, u32 typeBits, VkMemoryPropertyFlags pro
     return 0;
 }
 
+/// Есть ли слой среди тех, что предлагает загрузчик.
+bool instanceLayerPresent(const char* name) {
+    u32 n = 0;
+    if (vkEnumerateInstanceLayerProperties(&n, nullptr) != VK_SUCCESS || n == 0)
+        return false;
+    std::vector<VkLayerProperties> ls(n);
+    if (vkEnumerateInstanceLayerProperties(&n, ls.data()) != VK_SUCCESS)
+        return false;
+    for (const auto& l : ls)
+        if (std::strcmp(l.layerName, name) == 0) return true;
+    return false;
+}
+
+bool instanceExtensionPresent(const char* name) {
+    u32 n = 0;
+    if (vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr) != VK_SUCCESS || n == 0)
+        return false;
+    std::vector<VkExtensionProperties> es(n);
+    if (vkEnumerateInstanceExtensionProperties(nullptr, &n, es.data()) != VK_SUCCESS)
+        return false;
+    for (const auto& e : es)
+        if (std::strcmp(e.extensionName, name) == 0) return true;
+    return false;
+}
+
+/// Сообщение слоя проверки уходит в тот же журнал, что и всё
+/// остальное. Это важнее, чем кажется: logcat чужого приложения на
+/// телефоне без отладчика недоступен, а файл читается из Termux.
+VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
+        VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+        VkDebugUtilsMessageTypeFlagsEXT /*types*/,
+        const VkDebugUtilsMessengerCallbackDataEXT* data,
+        void* /*user*/)
+{
+    const char* id  = (data && data->pMessageIdName) ? data->pMessageIdName : "?";
+    const char* msg = (data && data->pMessage)       ? data->pMessage       : "";
+    if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+        LOGE("[vk] %s: %s", id, msg);
+    else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+        LOGW("[vk] %s: %s", id, msg);
+    else
+        LOGI("[vk] %s: %s", id, msg);
+    // VK_FALSE: вызов, на который пожаловались, всё равно выполняется.
+    // Слой здесь — наблюдатель, а не цензор.
+    return VK_FALSE;
+}
+
 } // namespace
 
 bool Context::init(ANativeWindow* window) {
@@ -63,9 +110,35 @@ bool Context::init(ANativeWindow* window) {
     return true;
 }
 
+// Слой проверки включается САМ, если он есть на устройстве.
+//
+// Все ошибки этого движка, найденные за последние круги, — перепутанный
+// семафор показа, запись в буфер под читающим его GPU, неполная
+// зависимость подпрохода по глубине — слой называет вслух и сразу же.
+// Искать их по картинке на экране стоило дней.
+//
+// На обычном телефоне слоя нет: vkEnumerateInstanceLayerProperties
+// возвращает пустой список, и всё происходит ровно как раньше, без
+// единого лишнего вызова. Чтобы он появился, достаточно положить
+// libVkLayer_khronos_validation.so в jniLibs/arm64-v8a (он есть в NDK,
+// в toolchains/llvm/.../lib/linux/arm64) и пересобрать APK. Поэтому
+// проверка «есть ли слой» и есть выключатель: отдельного флага
+// сборки не нужно, а забыть его переключить невозможно.
 bool Context::createInstance() {
-    const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
-    const char* exts[]   = { "VK_KHR_surface", "VK_KHR_android_surface" };
+    std::vector<const char*> exts   = { "VK_KHR_surface", "VK_KHR_android_surface" };
+    std::vector<const char*> layers;
+
+    const bool haveValidation = instanceLayerPresent("VK_LAYER_KHRONOS_validation");
+    const bool haveDebugUtils = instanceExtensionPresent(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    if (haveValidation) {
+        layers.push_back("VK_LAYER_KHRONOS_validation");
+        if (haveDebugUtils) exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        LOGI("Vulkan: слой проверки найден и включён%s",
+             haveDebugUtils ? " (сообщения пойдут в этот журнал)"
+                            : " (VK_EXT_debug_utils нет — сообщения только в logcat)");
+    } else {
+        LOGI("Vulkan: слоя проверки на устройстве нет — работаем без него");
+    }
 
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName   = "VoxelRPG";
@@ -75,12 +148,33 @@ bool Context::createInstance() {
 
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo        = &app;
-    ci.enabledExtensionCount   = 2;
-    ci.ppEnabledExtensionNames = exts;
-    // Без слоёв в релизе; включить для отладки
-    (void)layers;
+    ci.enabledExtensionCount   = (u32)exts.size();
+    ci.ppEnabledExtensionNames = exts.data();
+    ci.enabledLayerCount       = (u32)layers.size();
+    ci.ppEnabledLayerNames     = layers.empty() ? nullptr : layers.data();
+
+    // Ошибки самого vkCreateInstance слой сообщить не успеет: его ещё
+    // нет. Цепляем обработчик прямо к созданию через pNext.
+    VkDebugUtilsMessengerCreateInfoEXT dbg{
+        VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+    dbg.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                          VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    dbg.messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                          VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                          VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    dbg.pfnUserCallback = debugCallback;
+    if (haveValidation && haveDebugUtils) ci.pNext = &dbg;
 
     VKCHECK(vkCreateInstance(&ci, nullptr, &instance_));
+
+    if (haveValidation && haveDebugUtils) {
+        auto create = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+            instance_, "vkCreateDebugUtilsMessengerEXT");
+        if (create && create(instance_, &dbg, nullptr, &debugMessenger_) != VK_SUCCESS) {
+            debugMessenger_ = VK_NULL_HANDLE;
+            LOGW("Vulkan: обработчик сообщений слоя не создан");
+        }
+    }
     return true;
 }
 
@@ -179,13 +273,20 @@ bool Context::createLogicalDevice() {
 }
 
 bool Context::createSwapchain() {
-    VkSurfaceCapabilitiesKHR caps;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_, surface_, &caps);
+    // Ответ обязательно проверяем: при неудаче caps остаётся мусором
+    // из стека, и из него получаются и размер цепочки, и число
+    // изображений, и preTransform.
+    VkSurfaceCapabilitiesKHR caps{};
+    VKCHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_, surface_, &caps));
 
     u32 fmtCount = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(physical_, surface_, &fmtCount, nullptr);
     std::vector<VkSurfaceFormatKHR> fmts(fmtCount);
     vkGetPhysicalDeviceSurfaceFormatsKHR(physical_, surface_, &fmtCount, fmts.data());
+    // Пустой список означает, что поверхность уже недействительна
+    // (окно свернули между проверкой и запросом). fmts[0] на пустом
+    // векторе — чтение за границей, и падает оно далеко от причины.
+    if (fmts.empty()) { LOGE("Поверхность не предлагает ни одного формата"); return false; }
 
     VkSurfaceFormatKHR chosen = fmts[0];
     for (auto& f : fmts) {
@@ -230,6 +331,12 @@ bool Context::createSwapchain() {
     suboptimalPresents_ = 0;
 
     swapExtent_ = caps.currentExtent;
+    // Свёрнутое окно: цепочка нулевого размера не создаётся, а
+    // ошибка vkCreateSwapchainKHR об этом не скажет ничего внятного.
+    if (swapExtent_.width == 0 || swapExtent_.height == 0) {
+        LOGW("Свопчейн: окно нулевого размера, цепочка не создаётся");
+        return false;
+    }
     if (swapExtent_.width == UINT32_MAX) {
         swapExtent_.width  = std::clamp(1080u, caps.minImageExtent.width,  caps.maxImageExtent.width);
         swapExtent_.height = std::clamp(1920u, caps.minImageExtent.height, caps.maxImageExtent.height);
@@ -356,15 +463,45 @@ bool Context::createRenderPass() {
     sub.pColorAttachments       = &colorRef;
     sub.pDepthStencilAttachment = &depthRef;
 
+    // Зависимость от всего, что отправлено в очередь раньше.
+    //
+    // Буфер глубины в движке ОДИН на всю цепочку показа, а кадров в
+    // работе два: пока показывается один, процессор уже записывает
+    // команды следующего, и оба пишут в одну и ту же глубину. Прежняя
+    // зависимость этого не закрывала:
+    //
+    //   * srcStageMask не включал LATE_FRAGMENT_TESTS. Глубина
+    //     пишется на двух стадиях — ранней и поздней, — и ждать
+    //     только раннюю значит не ждать ничего: прошлый кадр
+    //     дописывает глубину поздней стадией уже после того, как
+    //     следующий её очистил;
+    //
+    //   * srcAccessMask был нулевым, то есть барьер вовсе не делал
+    //     прошлые записи доступными. Порядок «запись после записи»
+    //     требует и выполнения, и памяти; без второго кэш вложения
+    //     мог не дойти до памяти к моменту очистки;
+    //
+    //   * dstAccessMask не упоминал чтения, а тест глубины именно
+    //     читает.
+    //
+    // Итог на экране — ровно то, на что жаловались: глубина одного
+    // кадра проверялась против остатков другого, и сквозь ближние
+    // блоки просвечивало то, что за ними.
     VkSubpassDependency dep{};
     dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
     dep.dstSubpass    = 0;
     dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
 
     std::array<VkAttachmentDescription, 2> attachments = { color, depth };
 
@@ -501,7 +638,27 @@ bool Context::beginFrame() {
         return false;
     }
 
-    vkWaitForFences(device_, 1, &inFlight_[currentFrame_], VK_TRUE, UINT64_MAX);
+    // Пересоздание цепочки могло не удаться — тогда рисовать не во
+    // что. vkAcquireNextImageKHR нулевую цепочку не проверяет, а
+    // разыменовывает: процесс падает внутри libvulkan, где от нашего
+    // кода не остаётся ни имени функции, ни строки.
+    if (swapchain_ == VK_NULL_HANDLE || framebuffers_.empty()) return false;
+    if (imgAvailable_[currentFrame_] == VK_NULL_HANDLE) {
+        // Слот остался без семафора после отвергнутой отправки —
+        // пробуем вернуть его в строй, а не выбывать навсегда.
+        VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        if (vkCreateSemaphore(device_, &si, nullptr,
+                              &imgAvailable_[currentFrame_]) != VK_SUCCESS) {
+            imgAvailable_[currentFrame_] = VK_NULL_HANDLE;
+            return false;
+        }
+    }
+
+    // Ждём забор, только если кто-то обещал его подать. Без этой
+    // проверки слот, чью отправку очередь отвергла, вставал бы здесь
+    // навсегда: забор так и остался неподанным, а ждём мы без срока.
+    if (framePending_[currentFrame_])
+        vkWaitForFences(device_, 1, &inFlight_[currentFrame_], VK_TRUE, UINT64_MAX);
 
     VkResult r = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
                                        imgAvailable_[currentFrame_], VK_NULL_HANDLE, &imgIdx_);
@@ -525,6 +682,7 @@ bool Context::beginFrame() {
         imagesInFlight_[imgIdx_] = inFlight_[currentFrame_];
 
     vkResetFences(device_, 1, &inFlight_[currentFrame_]);
+    framePending_[currentFrame_] = false;
     vkResetCommandBuffer(cmdBuffers_[currentFrame_], 0);
 
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -547,6 +705,42 @@ bool Context::beginFrame() {
     return true;
 }
 
+// Кадр обрывается, не дойдя до показа.
+//
+// После него остаются две мины. Забор слота никто не подаст — и
+// следующий заход в этот слот встанет на бессрочном ожидании: телефон
+// выглядит зависшим, а в журнале ни строки. Семафор изображения,
+// наоборот, уже подан захватом, и ждать его теперь некому — следующий
+// захват подал бы сигнал на уже поданный семафор.
+//
+// Пустая отправка снимает обе разом: она забирает семафор и подаёт
+// забор. Если очередь не принимает даже её, остаётся дождаться
+// простоя устройства и снять отметки честно: забор считаем
+// неподанным, изображение — свободным, а семафор создаём заново.
+void Context::discardAcquiredFrame() {
+    VkPipelineStageFlags stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores    = &imgAvailable_[currentFrame_];
+    si.pWaitDstStageMask  = &stage;
+    if (vkQueueSubmit(gfxQueue_, 1, &si, inFlight_[currentFrame_]) == VK_SUCCESS) {
+        framePending_[currentFrame_] = true;
+        return;
+    }
+
+    vkDeviceWaitIdle(device_);
+    framePending_[currentFrame_] = false;
+    if (imgIdx_ < imagesInFlight_.size())
+        imagesInFlight_[imgIdx_] = VK_NULL_HANDLE;
+    vkDestroySemaphore(device_, imgAvailable_[currentFrame_], nullptr);
+    VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    if (vkCreateSemaphore(device_, &sci, nullptr,
+                          &imgAvailable_[currentFrame_]) != VK_SUCCESS) {
+        imgAvailable_[currentFrame_] = VK_NULL_HANDLE;
+        LOGE("discardAcquiredFrame: семафор изображения не пересоздан");
+    }
+}
+
 void Context::endFrame() {
     if (!frameStarted_) return;
     // Семафоры привязаны к изображениям цепочки; если пересоздание
@@ -557,6 +751,7 @@ void Context::endFrame() {
              imgIdx_, renderFinished_.size());
         vkCmdEndRenderPass(cmdBuffers_[currentFrame_]);
         vkEndCommandBuffer(cmdBuffers_[currentFrame_]);
+        discardAcquiredFrame();
         frameStarted_ = false;
         needsResize_ = true;
         return;
@@ -581,7 +776,21 @@ void Context::endFrame() {
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = sigSem;
     const VkResult sub = vkQueueSubmit(gfxQueue_, 1, &si, inFlight_[currentFrame_]);
-    if (sub != VK_SUCCESS) LOGE("vkQueueSubmit: %d", (int)sub);
+    if (sub != VK_SUCCESS) {
+        // Семафор «дорисовано» тоже не будет подан, а показ его
+        // ждёт: показывать после отвергнутой отправки нельзя вовсе.
+        // Остальное — забор слота и семафор изображения — разбирает
+        // discardAcquiredFrame().
+        LOGE("vkQueueSubmit: %d — кадр потерян", (int)sub);
+        discardAcquiredFrame();
+        lastPresent_  = sub;
+        needsResize_  = true;
+        currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES;
+        frameStarted_ = false;
+        return;
+    }
+
+    framePending_[currentFrame_] = true;
 
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.waitSemaphoreCount = 1;
@@ -659,6 +868,12 @@ void Context::shutdown() {
         vkDestroyDevice(device_, nullptr);
     }
     if (surface_)  vkDestroySurfaceKHR(instance_, surface_, nullptr);
+    if (debugMessenger_ != VK_NULL_HANDLE) {
+        auto destroy = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+            instance_, "vkDestroyDebugUtilsMessengerEXT");
+        if (destroy) destroy(instance_, debugMessenger_, nullptr);
+        debugMessenger_ = VK_NULL_HANDLE;
+    }
     if (instance_) vkDestroyInstance(instance_, nullptr);
     instance_ = VK_NULL_HANDLE;
     device_   = VK_NULL_HANDLE;
