@@ -13,6 +13,7 @@
 #include "items/item_def.h"
 #include "combat/components.h"
 #include "trade/trade.h"
+#include "ecs/components.h"
 #include "npc/dialogue.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
@@ -1698,6 +1699,42 @@ void testDialogueOpensScreens() {
     npc::applyChoice(reg, dlg, bye);
     check(dlg.pendingAction == npc::DialogueAction::None,
           "прощание не открывает никаких экранов");
+
+    // --- Целитель берёт деньги ---
+    // В самом варианте ответа написано «за 50 золотых», а списания не
+    // было вовсе: полное здоровье бесплатно и сколько угодно раз.
+    {
+        const ecs::Entity p = reg.create();
+        reg.add(p, ecs::Health{ 100.f, 100.f, 0.f, 0.f });
+        reg.add(p, items::Wallet{ 120 });
+        auto* hp = reg.get<ecs::Health>(p);
+        auto* w  = reg.get<items::Wallet>(p);
+        hp->current = 10.f;
+
+        npc::ActiveDialogue hd;
+        hd.active = true;
+        hd.playerEntity = (u32)p;
+        npc::DialogueChoice heal;
+        heal.action = npc::DialogueAction::Heal;
+
+        npc::applyChoice(reg, hd, heal);
+        check(hp->current == hp->max, "целитель восстанавливает здоровье");
+        check(w->gold < 120, "и берёт за это деньги");
+        const u64 afterFirst = w->gold;
+
+        // Полностью здоровому лечиться незачем — и платить тоже.
+        hd.active = true;
+        npc::applyChoice(reg, hd, heal);
+        check(w->gold == afterFirst, "со здорового денег не берут");
+
+        // Без денег не лечат.
+        hp->current = 5.f;
+        w->gold = 1;
+        hd.active = true;
+        npc::applyChoice(reg, hd, heal);
+        check(hp->current == 5.f, "без денег не лечат");
+        check(w->gold == 1, "и денег не списывают");
+    }
 }
 
 int main() {

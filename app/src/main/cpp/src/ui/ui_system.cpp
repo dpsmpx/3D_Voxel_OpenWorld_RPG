@@ -617,19 +617,6 @@ void UiSystem::drawPauseMenu(player::Player& player) {
 
     ui_.text(T(StrKey::Menu_Pause), cx + 100.f, cy - 60.f, 3.f, COL_WHITE);
 
-    auto menuBtn = [&](const char* label, float y, UiColor bg,
-                       std::function<void()> onClick)
-    {
-        Rect r{ cx, y, cw, ch };
-        ui_.pushInteractiveRect(r, std::move(onClick));
-        int idx = (int)ui_.screenWidth(); // заглушка, используем button
-        (void)idx;
-
-        // Используем button для отрисовки + обработки
-        // Нам нужен idx, но push уже сделал работу. Поэтому
-        // перепишем: сначала запомним idx.
-        // (Реализация ниже)
-    };
 
     // Прямые кнопки
     {
@@ -711,7 +698,6 @@ void UiSystem::drawPauseMenu(player::Player& player) {
         }
     }
 
-    (void)menuBtn;
 }
 
 // ============================================================
