@@ -8,6 +8,10 @@
 #include "core/job_system.h"
 #include "audio/audio_engine.h"
 #include "audio/sound_registry.h"
+#include "save/save_inventory.h"
+#include "save/world_delta.h"
+#include "items/item_def.h"
+#include "combat/components.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
 #include "save/save_format.h"
@@ -1250,6 +1254,145 @@ void testAudioMixer() {
 }
 
 
+
+// ------------------------------------------------------------
+// Сохранение и загрузка состояния игрока.
+//
+// До сих пор проверялся только байтовый поток — что u32 читается тем
+// же u32. А теряются данные не там: когда в структуру добавили поле,
+// а в запись или в чтение его внести забыли, либо когда порядок
+// записи и чтения разошёлся. Такой дефект тихо стирает прогресс
+// игрока, и заметен он только через сутки игры.
+//
+// Проверяем свойство: что записали — то и прочли, включая края
+// (полный инвентарь, максимальные значения, зачарования).
+// ------------------------------------------------------------
+void testSaveRoundTrip() {
+    group("save: состояние игрока туда-обратно");
+
+    items::items();   // таблица предметов нужна для maxStack
+
+    ecs::Registry reg;
+    const ecs::Entity player = reg.create();
+
+    items::Inventory inv;
+    inv.activeHotbar = 3;
+    // Заполняем ВСЕ слоты: так ловится и потеря последнего, и сдвиг
+    // на единицу, и обрыв на границе категорий.
+    for (u32 i = 0; i < items::INV_TOTAL_SLOTS; ++i) {
+        inv.slots[i].itemId = (u16)(1 + i);
+        inv.slots[i].count  = (u16)(1 + (i % 7));
+        inv.slots[i].enchant.id    = (combat::EnchantmentId)(i % 4);
+        inv.slots[i].enchant.level = (u8)(1 + (i % 3));
+    }
+    reg.add(player, inv);
+
+    items::Wallet wal;
+    wal.gold = 0xFFFFFFFFFFULL;      // заведомо больше 32 бит
+    reg.add(player, wal);
+
+    combat::EquippedWeapon eq;
+    eq.weaponId = 4321;
+    eq.enchant.id = (combat::EnchantmentId)2;
+    eq.enchant.level = 3;
+    reg.add(player, eq);
+
+    save::ByteWriter w;
+    save::serializeInventory(w, reg, player);
+
+    // Читаем в чистый реестр — как при загрузке сохранения.
+    ecs::Registry reg2;
+    const ecs::Entity player2 = reg2.create();
+    reg2.add(player2, items::Inventory{});
+    reg2.add(player2, items::Wallet{});
+    reg2.add(player2, combat::EquippedWeapon{});
+
+    save::ByteReader r(w.data());
+    check(save::deserializeInventory(r, reg2, player2), "инвентарь читается");
+    check(r.ok(), "чтение инвентаря без ошибок");
+    check(r.remaining() == 0, "прочитано ровно столько, сколько записано");
+
+    auto* inv2 = reg2.get<items::Inventory>(player2);
+    check(inv2 != nullptr, "инвентарь на месте");
+    if (inv2) {
+        check(inv2->activeHotbar == 3, "выбранный слот пояса сохранился");
+        bool allSame = true;
+        for (u32 i = 0; i < items::INV_TOTAL_SLOTS; ++i) {
+            const auto& a = inv.slots[i];
+            const auto& b = inv2->slots[i];
+            if (a.itemId != b.itemId || a.count != b.count ||
+                a.enchant.id != b.enchant.id || a.enchant.level != b.enchant.level)
+                allSame = false;
+        }
+        check(allSame, "все 42 слота совпадают до последнего поля");
+    }
+
+    auto* wal2 = reg2.get<items::Wallet>(player2);
+    check(wal2 && wal2->gold == 0xFFFFFFFFFFULL, "золото не теряет старшие биты");
+
+    auto* eq2 = reg2.get<combat::EquippedWeapon>(player2);
+    check(eq2 && eq2->weaponId == 4321 &&
+          eq2->enchant.id == (combat::EnchantmentId)2 &&
+          eq2->enchant.level == 3, "оружие с зачарованием сохранилось");
+
+    // Обрезанный сейв не должен ни падать, ни делать вид, что всё цело.
+    {
+        ecs::Registry reg3;
+        const ecs::Entity p3 = reg3.create();
+        reg3.add(p3, items::Inventory{});
+        save::ByteReader cut(w.data().data(), w.data().size() / 3);
+        const bool ok = save::deserializeInventory(cut, reg3, p3);
+        check(!ok || !cut.ok(), "обрезанный сейв распознаётся как повреждённый");
+    }
+}
+
+// ------------------------------------------------------------
+// Изменения мира игроком: то, что отличает его мир от сгенерированного.
+// Потерять их — значит стереть всё, что он построил.
+// ------------------------------------------------------------
+void testWorldDeltaRoundTrip() {
+    group("save: правки мира туда-обратно");
+
+    save::WorldDeltaStore store;
+    // Несколько чанков, включая отрицательные координаты, и правки
+    // на границах чанка.
+    const i32 coords[][3] = {
+        { 0, 64, 0 }, { 31, 70, 31 }, { 32, 12, 32 },
+        { -1, 5, -1 }, { -32, 100, -33 }, { 1000, 1, -1000 },
+    };
+    u16 id = 3;
+    for (const auto& c : coords) store.recordBlock(c[0], c[1], c[2], id++);
+
+    const usize modsBefore = store.totalMods();
+    const usize chunksBefore = store.chunkCount();
+    check(modsBefore == 6, "записаны все правки");
+
+    save::ByteWriter w;
+    store.write(w);
+
+    save::WorldDeltaStore loaded;
+    save::ByteReader r(w.data());
+    check(loaded.read(r), "правки мира читаются");
+    check(r.ok() && r.remaining() == 0, "прочитано ровно столько, сколько записано");
+    check(loaded.totalMods() == modsBefore, "число правок совпадает");
+    check(loaded.chunkCount() == chunksBefore, "число затронутых чанков совпадает");
+
+    // Повторная правка той же клетки должна заменять, а не копиться:
+    // иначе сейв растёт без предела у игрока, который что-то строит.
+    save::WorldDeltaStore rep;
+    for (int i = 0; i < 50; ++i) rep.recordBlock(5, 5, 5, (u16)(i + 1));
+    check(rep.totalMods() == 1, "повторная правка клетки не копится");
+
+    // Мусор вместо сейва не должен ни падать, ни притворяться успехом.
+    {
+        const u8 junk[] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+        save::WorldDeltaStore bad;
+        save::ByteReader br(junk, sizeof(junk));
+        const bool ok = bad.read(br);
+        check(!ok || !br.ok(), "мусор вместо правок распознаётся");
+    }
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -1270,6 +1413,8 @@ int main() {
     testVoxelReader();
     testPathShape();
     testAudioMixer();
+    testSaveRoundTrip();
+    testWorldDeltaRoundTrip();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);
     if (g_failed) {
