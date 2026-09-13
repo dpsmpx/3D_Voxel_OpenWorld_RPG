@@ -541,16 +541,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Камера сцены задана в world/debug_scene.h и одинакова на хосте
-    // и на устройстве — иначе кадры сравнивать не с чем. Явные ключи
-    // командной строки её перекрывают.
-    if (minimalScene && !camGiven) {
-        px    = world::SCENE_EYE_X;
-        pz    = world::SCENE_EYE_Z;
-        height = world::SCENE_EYE_Y - (float)gen.surfaceHeight((i32)px, (i32)pz);
-        yaw   = world::SCENE_YAW;
-        pitch = world::SCENE_PITCH;
-    }
 
     // ---- камера: тот же класс, что в игре ----
     render::Camera cam;
@@ -559,33 +549,52 @@ int main(int argc, char** argv) {
     // Те же числа, что ставит RenderSystem::prepareFrame при дальности
     // прорисовки 7 чанков — иначе туман в проверке гуще, чем в игре.
     {
-        const float vdBlocks = 7.f * (float)world::CHUNK_SIZE;
+        // Дальность берётся из ключа, а не из вшитой семёрки: игра
+        // считает туман по своей настройке, и они обязаны совпадать.
+        const float vdBlocks = (float)viewDist * (float)world::CHUNK_SIZE;
         cam.setFog(vdBlocks * 0.55f, vdBlocks * 0.94f);
     }
-    cam.setSunDir(glm::vec3(0.35f, 0.78f, 0.25f));
-    cam.setSky(glm::vec3(0.55f, 0.72f, 0.92f), 1.f, 0.3f);
-    cam.setFirstPerson(true);
-    cam.setFirstPersonEye(height);
-    cam.setTargetPosition(glm::vec3(px, (float)gen.surfaceHeight((i32)px, (i32)pz), pz));
-    cam.setYawPitch(yaw, pitch);
-    {
-        world::ChunkManager* noWorld = nullptr;
-        (void)noWorld;
-        // followTarget требует мир для третьего лица; от первого лица
-        // достаточно позиции глаз, её и ставим напрямую.
+    // Освещение — те же константы, что прибивает игра в отладочной
+    // сцене. Вшитые здесь числа уже однажды разошлись бы молча.
+    cam.setSunDir(glm::vec3(world::SCENE_SUN_X, world::SCENE_SUN_Y,
+                            world::SCENE_SUN_Z));
+    cam.setSky(glm::vec3(world::SCENE_SKY_R, world::SCENE_SKY_G,
+                         world::SCENE_SKY_B),
+               world::SCENE_SKY_LIGHT, world::SCENE_TIME_OF_DAY);
+    // Камера ставится ТЕМ ЖЕ вызовом, что в игре.
+    //
+    // Раньше здесь матрица вида собиралась вручную рядом с классом
+    // камеры — второй владелец на хосте, и разойтись с игрой они могли
+    // молча. Теперь и там и там setDebugCamera, а матрицы считает
+    // Camera::toUbo.
+    //
+    // В сцене глаз задан абсолютной высотой из debug_scene.h; в
+    // обычном режиме --height по-прежнему отсчитывается от рельефа.
+    glm::vec3 eye;
+    if (minimalScene && !camGiven) {
+        eye   = { world::SCENE_EYE_X, world::SCENE_EYE_Y, world::SCENE_EYE_Z };
+        yaw   = world::SCENE_YAW;
+        pitch = world::SCENE_PITCH;
+    } else {
+        eye = { px, (float)gen.surfaceHeight((i32)px, (i32)pz) + height, pz };
     }
-    render::CameraUbo u = cam.toUbo(0.f);
-    // Первое лицо: позиция камеры считается в followTarget, здесь
-    // подставляем её сами — мир для трассировки не нужен.
-    {
-        const glm::vec3 eye{ px, (float)gen.surfaceHeight((i32)px, (i32)pz) + height, pz };
-        glm::mat4 view = glm::lookAt(eye, eye + cam.forward(), glm::vec3(0, 1, 0));
-        u.viewProj    = cam.projection() * view;
-        u.invViewProj = glm::inverse(u.viewProj);
-        u.cameraPos   = glm::vec4(eye, 1.f);
-        u.screenSize  = glm::vec4((float)W, (float)H, (float)shading, 0.f);
-    }
+    cam.setDebugCamera(eye, yaw, pitch);
+
+    render::CameraUbo u = cam.toUbo(world::SCENE_TIME_SEC);
+    u.screenSize = glm::vec4((float)W, (float)H, (float)shading, 0.f);
     ubo.write(&u, sizeof(u));
+
+    if (minimalScene) {
+        // Та же строка, что печатает игра: числа обязаны сойтись.
+        std::printf("vkcheck: debug_scene=true | камера %.3f %.3f %.3f, "
+                    "yaw %.4f pitch %.4f | время мира %.3f, шаг кадра %.4f | "
+                    "мобы 0, NPC 0, предметы 0, снаряды 0 | "
+                    "чанков загружено %zu, нарисовано %zu\n",
+                    (double)eye.x, (double)eye.y, (double)eye.z,
+                    (double)yaw, (double)pitch,
+                    (double)world::SCENE_TIME_SEC, (double)world::SCENE_FIXED_DT,
+                    chunks.size(), meshes.size());
+    }
 
     // Знак площади в координатах кадра — на тех же матрицах и тех же
     // треугольниках, что уходят на GPU. По спецификации Vulkan

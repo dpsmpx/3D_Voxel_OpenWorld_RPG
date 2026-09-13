@@ -46,6 +46,10 @@ constexpr f32 SCENE_SKY_B   = 0.92f;
 constexpr f32 SCENE_SKY_LIGHT   = 1.0f;
 constexpr f32 SCENE_TIME_OF_DAY = 0.3f;
 constexpr f32 SCENE_TIME_SEC    = 0.0f;
+/// Фиксированный шаг кадра. Настоящий dt пляшет от загрузки телефона,
+/// и любая система, которая на него смотрит, делала бы сцену разной от
+/// запуска к запуску.
+constexpr f32 SCENE_FIXED_DT    = 1.0f / 60.0f;
 
 /// Отметки сцены — на них ссылается разбор кадра.
 constexpr i32 SCENE_GROUND_Y = 32;     ///< верх ровной земли
