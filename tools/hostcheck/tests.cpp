@@ -15,6 +15,11 @@
 #include "trade/trade.h"
 #include "ecs/components.h"
 #include "npc/dialogue.h"
+#include "save/save_player.h"
+#include "progression/skill_tree.h"
+#include "progression/progression.h"
+#include "factions/faction.h"
+#include "quests/quest.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
 #include "save/save_format.h"
@@ -1737,6 +1742,151 @@ void testDialogueOpensScreens() {
     }
 }
 
+
+// ------------------------------------------------------------
+// Сохранение игрока: прогресс, навыки, квесты, репутация.
+//
+// Отдельно — инвариант формата: сколько записей объявлено, столько и
+// должно быть записано. Оба места, где число бралось из размера
+// списка, а цикл под ним умел пропускать записи, разъезжали поток:
+// читатель верит числу и уходит вычитывать чужие данные. Это не
+// «часть сейва потерялась», это сейв, испорченный целиком начиная с
+// середины.
+// ------------------------------------------------------------
+void testPlayerSaveRoundTrip() {
+    group("save: прогресс игрока туда-обратно");
+
+    items::items();
+    ecs::Registry reg;
+    const ecs::Entity player = reg.create();
+
+    reg.add(player, ecs::Transform{ glm::vec3(12.5f, 70.25f, -33.75f) });
+    reg.add(player, ecs::Health{ 42.f, 155.f, 1.5f, 0.f });
+    reg.add(player, ecs::Mana{ 7.f, 99.f, 2.5f });
+    reg.add(player, ecs::Stamina{ 33.f, 120.f, 9.f });
+    reg.add(player, ecs::Attributes{ 17, 13, 21, 11 });
+
+    progression::Progression prog;
+    prog.xp = 123456;
+    prog.level = 9;
+    prog.availableAttrPoints = 4;
+    reg.add(player, prog);
+
+    progression::SkillTree tree;
+    tree.unspentPoints = 3;
+    tree.totalPointsEarned = 11;
+    for (u16 i = 0; i < progression::SKILL_NODE_COUNT; ++i)
+        tree.ranks[i] = (u8)(i % 3);
+    reg.add(player, tree);
+
+    factions::Reputation rep;
+    for (u8 i = 0; i < (u8)factions::FactionId::Count; ++i)
+        rep.values[i] = 100 - (i32)i * 37;
+    reg.add(player, rep);
+
+    combat::EquippedWeapon eq;
+    eq.weaponId = 77;
+    eq.enchant.id = (combat::EnchantmentId)1;
+    eq.enchant.level = 2;
+    reg.add(player, eq);
+
+    reg.add(player, combat::Combatant{});
+    reg.add(player, combat::ResonanceState{});
+
+    // Журнал квестов: один живой квест и одна запись истории.
+    quests::QuestLog qlog;
+    const ecs::Entity questEnt = reg.create();
+    quests::Quest q{};
+    q.id = 555;
+    q.progress = 3;
+    q.timeRemaining = 61.5f;
+    q.rewards.xp = 900;
+    q.rewards.gold = 250;
+    std::snprintf(q.title, sizeof(q.title), "Найти пропажу");
+    reg.add(questEnt, q);
+    qlog.activeQuests.push_back(questEnt);
+    qlog.addHistory(111, quests::QuestState::TurnedIn, "Старое дело");
+    reg.add(player, qlog);
+
+    save::ByteWriter w;
+    save::serializePlayer(w, reg, player);
+
+    ecs::Registry reg2;
+    const ecs::Entity p2 = reg2.create();
+    save::ByteReader r(w.data());
+    check(save::deserializePlayer(r, reg2, p2), "сохранение игрока читается");
+    check(r.ok(), "чтение без ошибок");
+    check(r.remaining() == 0, "прочитано ровно столько, сколько записано");
+
+    auto* h2 = reg2.get<ecs::Health>(p2);
+    check(h2 && h2->current == 42.f && h2->max == 155.f, "здоровье сохранилось");
+
+    auto* a2 = reg2.get<ecs::Attributes>(p2);
+    check(a2 && a2->strength == 17 && a2->agility == 13 &&
+          a2->intelligence == 21 && a2->endurance == 11, "атрибуты сохранились");
+
+    auto* pr2 = reg2.get<progression::Progression>(p2);
+    check(pr2 && pr2->xp == 123456 && pr2->level == 9 &&
+          pr2->availableAttrPoints == 4, "уровень и опыт сохранились");
+
+    auto* t2 = reg2.get<progression::SkillTree>(p2);
+    bool ranksSame = t2 != nullptr;
+    if (t2) {
+        if (t2->unspentPoints != 3 || t2->totalPointsEarned != 11) ranksSame = false;
+        for (u16 i = 0; i < progression::SKILL_NODE_COUNT; ++i)
+            if (t2->ranks[i] != (u8)(i % 3)) ranksSame = false;
+    }
+    check(ranksSame, "вложенные очки навыков сохранились до последнего узла");
+
+    auto* rp2 = reg2.get<factions::Reputation>(p2);
+    bool repSame = rp2 != nullptr;
+    if (rp2)
+        for (u8 i = 0; i < (u8)factions::FactionId::Count; ++i)
+            if (rp2->values[i] != 100 - (i32)i * 37) repSame = false;
+    check(repSame, "репутация по всем фракциям сохранилась");
+
+    auto* ql2 = reg2.get<quests::QuestLog>(p2);
+    check(ql2 && ql2->activeQuests.size() == 1, "активный квест сохранился");
+    check(ql2 && ql2->history.size() == 1, "история квестов сохранилась");
+    if (ql2 && !ql2->activeQuests.empty()) {
+        auto* q2 = reg2.get<quests::Quest>(ql2->activeQuests[0]);
+        check(q2 && q2->id == 555 && q2->progress == 3,
+              "прогресс квеста сохранился");
+    }
+
+    // --- Инвариант формата ---
+    // В журнале остался дескриптор квеста, у которого компонента уже
+    // нет: так бывает после сдачи квеста. Запись о нём пропускается —
+    // и если число записей взято из размера списка, поток разъедется.
+    {
+        auto* ql = reg.get<quests::QuestLog>(player);
+        check(ql != nullptr, "журнал квестов на месте");
+        if (ql) {
+            ql->activeQuests.push_back(reg.create());   // сущность без Quest
+            ql->activeQuests.push_back(reg.create());
+
+            save::ByteWriter w2;
+            save::serializePlayer(w2, reg, player);
+
+            ecs::Registry reg3;
+            const ecs::Entity p3 = reg3.create();
+            save::ByteReader r2(w2.data());
+            const bool okRead = save::deserializePlayer(r2, reg3, p3);
+            check(okRead && r2.ok(),
+                  "пропущенная запись квеста не ломает чтение");
+            check(r2.remaining() == 0,
+                  "поток не разъезжается: прочитано ровно записанное");
+
+            auto* rep3 = reg3.get<factions::Reputation>(p3);
+            bool repOk = rep3 != nullptr;
+            if (rep3)
+                for (u8 i = 0; i < (u8)factions::FactionId::Count; ++i)
+                    if (rep3->values[i] != 100 - (i32)i * 37) repOk = false;
+            check(repOk, "репутация после пропущенного квеста не испорчена");
+        }
+    }
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -1759,6 +1909,7 @@ int main() {
     testAudioMixer();
     testSaveRoundTrip();
     testWorldDeltaRoundTrip();
+    testPlayerSaveRoundTrip();
     testInventoryInvariants();
     testTrade();
     testDialogueOpensScreens();

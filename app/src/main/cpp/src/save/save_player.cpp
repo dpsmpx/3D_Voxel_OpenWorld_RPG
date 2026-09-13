@@ -131,7 +131,17 @@ void serializePlayer(ByteWriter& w, ecs::Registry& reg, ecs::Entity player) {
 
     if (auto* ql = reg.get<quests::QuestLog>(player)) {
         w.writeU8(1);
-        w.varU32((u32)ql->activeQuests.size());
+        // Считаем сначала, пишем потом. Внизу цикл пропускает записи,
+        // у которых не нашлось компонента квеста, — а число уже
+        // объявлено. Читатель верит числу и вычитывает столько
+        // записей, сколько обещано: не найдя их, он уходит в данные
+        // истории, репутации и всего, что записано следом. Сейв
+        // разъезжается целиком, и виновата одна пропущенная запись.
+        u32 activeCount = 0;
+        for (auto qe : ql->activeQuests)
+            if (reg.get<quests::Quest>(qe)) ++activeCount;
+
+        w.varU32(activeCount);
         for (auto qe : ql->activeQuests) {
             auto* q = reg.get<quests::Quest>(qe);
             if (!q) continue;
