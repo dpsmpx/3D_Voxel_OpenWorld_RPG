@@ -32,6 +32,7 @@ bool Skybox::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout de
 }
 
 void Skybox::render(vk::Context& ctx, VkDescriptorSet set) {
+    if (!pipeline_.valid()) return;
     VkCommandBuffer cmd = ctx.currentCmd();
 
     VkViewport vp{};

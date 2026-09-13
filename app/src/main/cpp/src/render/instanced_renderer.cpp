@@ -195,7 +195,7 @@ void InstancedRenderer::upload(vk::Context& ctx) {
 }
 
 void InstancedRenderer::render(vk::Context& ctx, VkDescriptorSet set, const math::Frustum&) {
-    if (instanceCount_ == 0 || !instances_.handle()) return;
+    if (instanceCount_ == 0 || !instances_.handle() || !pipeline_.valid()) return;
     VkCommandBuffer cmd = ctx.currentCmd();
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
