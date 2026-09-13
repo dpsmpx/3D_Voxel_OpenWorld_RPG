@@ -20,6 +20,14 @@ void UiContext::init(UiRenderer* r, i32 w, i32 h) {
     pendingTaps_.reserve(8);
 }
 
+// Один и тот же прямоугольник на соседних кадрах. Числа приходят из
+// одних и тех же выражений, поэтому совпадают побитно; допуск нужен
+// только на случай, когда размер экрана поменялся между кадрами.
+bool UiContext::sameRect(const Rect& a, const Rect& b) {
+    auto eq = [](float p, float q) { return std::fabs(p - q) < 0.5f; };
+    return eq(a.x, b.x) && eq(a.y, b.y) && eq(a.w, b.w) && eq(a.h, b.h);
+}
+
 void UiContext::beginFrame() {
     interactives_.clear();
     pendingTaps_.clear();
@@ -154,6 +162,13 @@ int UiContext::pushInteractiveRect(Rect r, std::function<void()> onTap) {
     Interactive it;
     it.rect = r;
     it.onTap = std::move(onTap);
+    // Нажатие началось на прошлом кадре, а список с тех пор собран
+    // заново. Восстанавливаем подсветку по геометрии: прямоугольник
+    // одной и той же кнопки от кадра к кадру не меняется.
+    if (capture_.active && sameRect(capture_.rect, r)) {
+        it.ownerTouch = capture_.touchId;
+        it.pressed    = capture_.inside;
+    }
     interactives_.push_back(std::move(it));
     return idx;
 }
@@ -212,43 +227,46 @@ bool UiContext::handleTouch(i32 id, float px, float py, int phase) {
     }
 
     // Логика интерактивных прямоугольников.
+    //
+    // Нажатое запоминаем в capture_, а не в самом списке: список
+    // пересобирается каждым кадром, а палец держат дольше кадра.
     if (phase == 0) {
+        if (capture_.active) return false;   // одно нажатие за раз
         for (int i = (int)interactives_.size() - 1; i >= 0; --i) {
             auto& it = interactives_[i];
-            if (it.rect.contains(px, py)) {
-                it.ownerTouch = id;
-                it.pressed = true;
-                return true;
-            }
+            if (!it.rect.contains(px, py)) continue;
+            it.ownerTouch   = id;
+            it.pressed      = true;
+            capture_.active  = true;
+            capture_.touchId = id;
+            capture_.rect    = it.rect;
+            capture_.onTap   = it.onTap;
+            capture_.inside  = true;
+            return true;
         }
         return false;
     }
 
     if (phase == 2) {
-        bool handled = false;
-        for (auto& it : interactives_) {
-            if (it.ownerTouch == id) {
-                it.pressed = it.rect.contains(px, py);
-                handled = true;
-            }
-        }
-        return handled;
+        if (!capture_.active || capture_.touchId != id) return false;
+        capture_.inside = capture_.rect.contains(px, py);
+        for (auto& it : interactives_)
+            if (sameRect(it.rect, capture_.rect)) it.pressed = capture_.inside;
+        return true;
     }
 
     if (phase == 1) {
-        for (auto& it : interactives_) {
-            if (it.ownerTouch == id) {
-                bool inside = it.rect.contains(px, py);
-                it.pressed = false;
-                it.ownerTouch = -1;
-                if (inside) {
-                    pendingTaps_.push_back({ px, py, false });
-                    if (it.onTap) it.onTap();
-                }
-                return true;
-            }
+        if (!capture_.active || capture_.touchId != id) return false;
+        const bool inside = capture_.rect.contains(px, py);
+        auto onTap = std::move(capture_.onTap);
+        for (auto& it : interactives_)
+            if (sameRect(it.rect, capture_.rect)) { it.pressed = false; it.ownerTouch = -1; }
+        capture_ = Capture{};
+        if (inside) {
+            pendingTaps_.push_back({ px, py, false });
+            if (onTap) onTap();
         }
-        return false;
+        return true;
     }
 
     return false;

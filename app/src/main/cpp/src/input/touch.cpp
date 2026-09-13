@@ -100,6 +100,14 @@ bool TouchInput::isButtonHeld(u32 id) const {
     return b && b->pressed;
 }
 
+void TouchInput::setButtonCenter(u32 id, glm::vec2 centerNdc) {
+    if (Button* b = findButton(id)) b->center = centerNdc;
+}
+
+void TouchInput::setButtonRadius(u32 id, f32 radiusPx) {
+    if (Button* b = findButton(id)) b->radiusPx = radiusPx;
+}
+
 void TouchInput::setButtonOffset(u32 id, glm::vec2 offsetNdc) {
     if (Button* b = findButton(id)) b->userOffset = offsetNdc;
 }

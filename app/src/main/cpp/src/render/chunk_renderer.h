@@ -70,6 +70,8 @@ public:
     u32 lastDrawnChunks() const { return lastDrawnChunks_; }
     u32 lastDrawnIndices() const { return lastDrawnIndices_; }
     u32 lastLodCounts(int lod) const { return lodCounts_[lod]; }
+    u32 lastEmptyChunks() const   { return lastEmptyChunks_; }
+    u32 lastWaitingChunks() const { return lastWaitingChunks_; }
 
 private:
     struct GpuMesh {
@@ -98,6 +100,13 @@ private:
         /// один и тот же уровень каждый кадр, пока задача считается,
         /// и очередь забивается дублями.
         u8                             requestedLod = 0xFF;
+        /// И когда заказан. Отметка без срока годности превращала
+        /// любую потерянную задачу в вечную дыру: заказ считался
+        /// сделанным, меш не приезжал никогда, а повторить было
+        /// некому. Задача теряется законно — например, если воксели
+        /// изменились между постановкой и запуском, и задача вышла
+        /// как устаревшая.
+        u64                            requestedFrame = 0;
     };
 
     /// Отложенный запрос детализации: render() обнаружил, что нужного
@@ -118,6 +127,12 @@ private:
     /// Сколько догрузок LOD обслуживаем за кадр — ограничивает пик
     /// нагрузки при быстром перемещении игрока.
     static constexpr u32 MAX_LOD_UPLOADS_PER_FRAME = 8;
+
+    /// Через сколько показанных кадров повторить заказ уровня, если
+    /// меш так и не приехал. Около двух секунд: достаточно редко,
+    /// чтобы не забивать очередь, и достаточно часто, чтобы дыра не
+    /// пережила поворот головы.
+    static constexpr u64 LOD_REQUEST_RETRY = 120;
 
     u8 lodForDistanceSq(f32 distSq) const {
         if (distSq < lod0_ * lod0_) return 0;
@@ -186,6 +201,13 @@ private:
     u32 lastDrawnChunks_  = 0;
     u32 lastDrawnIndices_ = 0;
     u32 lodCounts_[4]     = {0, 0, 0, 0};
+    /// Чанки, попавшие в пирамиду видимости, но не нарисованные: ни на
+    /// одном уровне нет геометрии. Ровно это и видно на экране как
+    /// дыра в ландшафте, и по картинке «дыра» неотличима от «за этим
+    /// чанком просто нет мира». По числу — отличима.
+    u32 lastEmptyChunks_  = 0;
+    /// Из них те, чей меш ещё заказан и ожидается.
+    u32 lastWaitingChunks_ = 0;
 };
 
 } // namespace render

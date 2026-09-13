@@ -233,9 +233,23 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx, world::ChunkManager& world,
         }
         if (have) {
             if (servable_.size() < MAX_LOD_UPLOADS_PER_FRAME) servable_.push_back(req);
-        } else if (it->second.requestedLod != req.lod) {
-            world.requestLod(req.coord, req.lod);
-            it->second.requestedLod = req.lod;
+        } else {
+            // Заказ повторяем, если прежний так и не приехал.
+            //
+            // Отметка «этот уровень уже заказан» раньше не имела срока
+            // годности, и любая потерянная задача превращалась в
+            // вечную дыру: рендер каждый кадр просил уровень, а здесь
+            // видел, что он «уже заказан», и не делал ничего. Задача
+            // теряется законно — например, если воксели изменились
+            // между постановкой и запуском, и она вышла как
+            // устаревшая, а новую поставить было некому.
+            const bool fresh = it->second.requestedLod == req.lod &&
+                               frameNo_ < it->second.requestedFrame + LOD_REQUEST_RETRY;
+            if (!fresh) {
+                world.requestLod(req.coord, req.lod);
+                it->second.requestedLod   = req.lod;
+                it->second.requestedFrame = frameNo_;
+            }
         }
     }
     lodRequests_.clear();
@@ -351,8 +365,10 @@ void ChunkRenderer::render(vk::Context& ctx,
     VkRect2D sc{}; sc.extent = ctx.extent();
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
-    lastDrawnChunks_  = 0;
-    lastDrawnIndices_ = 0;
+    lastDrawnChunks_   = 0;
+    lastDrawnIndices_  = 0;
+    lastEmptyChunks_   = 0;
+    lastWaitingChunks_ = 0;
     for (auto& l : lodCounts_) l = 0;
 
     constexpr f32 CH = (f32)world::CHUNK_SIZE;
@@ -394,7 +410,14 @@ void ChunkRenderer::render(vk::Context& ctx,
                 }
             }
         }
-        if (!chosen) continue;
+        if (!chosen) {
+            // Чанк в кадре, но рисовать нечем ни на одном уровне —
+            // это и есть дыра в ландшафте. По картинке она неотличима
+            // от «за этим чанком просто нет мира», по числу — вполне.
+            ++lastEmptyChunks_;
+            if (cm.requestedLod != 0xFF) ++lastWaitingChunks_;
+            continue;
+        }
 
         visible_.push_back({ chosen, cmin, distSq });
         ++lastDrawnChunks_;

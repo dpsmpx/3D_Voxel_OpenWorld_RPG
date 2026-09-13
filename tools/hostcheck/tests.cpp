@@ -50,6 +50,8 @@
 #include <cstdio>
 #include <cstring>
 #include <set>
+#include "ui/hud_layout.h"
+#include "input/touch_layout.h"
 #include <string>
 #include <vector>
 #include <thread>
@@ -938,6 +940,240 @@ void testBufferMapContract() {
               "и не по слоту кадра");
         check(vc.find("imagesInFlight_[imgIdx_]") != std::string::npos,
               "занятость изображения отслеживается отдельно от слота кадра");
+    }
+}
+
+// ------------------------------------------------------------
+// Нажатие интерфейса переживает перерисовку.
+//
+// Интерфейс здесь immediate-mode: список интерактивных
+// прямоугольников собирается заново каждым кадром, а beginFrame()
+// очищает его. Пометка «этот прямоугольник держит палец номер N»
+// лежала внутри списка — и стиралась первой же перерисовкой. Палец
+// держат сотню миллисекунд, то есть пять-семь кадров; к моменту
+// отпускания владельца уже не существовало, и обработчик не
+// вызывался НИКОГДА, кроме случая, когда палец успевал подняться в
+// том же кадре.
+//
+// Снаружи это выглядело как «многие кнопки не работают»: круглые
+// кнопки экранного управления живут в TouchInput и работали, а все
+// прямоугольные — меню, инвентарь, настройки, торговля — молчали.
+// ------------------------------------------------------------
+void testUiTapSurvivesRedraw() {
+    group("ui: нажатие переживает перерисовку");
+
+    ui::UiContext ctx;
+    ctx.init(nullptr, 1000, 500);   // без рендерера: рисование само себя гасит
+
+    int taps = 0;
+    const ui::Rect r{ 100.f, 100.f, 200.f, 80.f };
+    auto frame = [&]() {
+        ctx.beginFrame();
+        const int idx = ctx.pushInteractiveRect(r, [&]() { ++taps; });
+        ctx.endFrame();
+        return idx;
+    };
+
+    frame();
+    check(ctx.handleTouch(1, 150.f, 140.f, 0), "нажатие попало в кнопку");
+
+    const int idx = frame();   // вот здесь список и пересобирается
+    check(ctx.isInteractivePressed(idx),
+          "кнопка осталась нажатой после перерисовки");
+
+    check(ctx.handleTouch(1, 150.f, 140.f, 1), "отпускание принято");
+    check(taps == 1, "обработчик вызван ровно один раз");
+
+    // Палец увели за пределы кнопки — нажатия нет.
+    frame();
+    ctx.handleTouch(2, 150.f, 140.f, 0);
+    frame();
+    ctx.handleTouch(2, 900.f, 400.f, 2);
+    const int idx2 = frame();
+    check(!ctx.isInteractivePressed(idx2), "уведённый палец снимает подсветку");
+    ctx.handleTouch(2, 900.f, 400.f, 1);
+    check(taps == 1, "и кнопку не нажимает");
+
+    // Касание мимо всего интерфейс не забирает: иначе оно не дойдёт
+    // ни до джойстика, ни до экранных кнопок.
+    frame();
+    check(!ctx.handleTouch(3, 900.f, 400.f, 0),
+          "касание мимо кнопок интерфейс не перехватывает");
+}
+
+// ------------------------------------------------------------
+// HUD и экранные кнопки делят один экран.
+//
+// Столбец меню стоял в пикселях от правого края, круглые кнопки — в
+// NDC, и каждая сторона знала только свои числа. На экране 2306x1080
+// кнопка «CAM» пришлась ровно на «ATT»; касание при этом доставалось
+// HUD, потому что интерфейс проверяется первым, — то есть «CAM» не
+// работала вовсе, а «ATT» нажималась не там, где нарисована.
+//
+// Обе раскладки теперь лежат в заголовках (ui/hud_layout.h,
+// input/touch_layout.h), и их можно сверить, не собирая приложение.
+// ------------------------------------------------------------
+void testHudAndButtonsDoNotOverlap() {
+    group("раскладка: HUD и экранные кнопки не налезают");
+
+    struct Size { f32 w, h; const char* name; };
+    const Size sizes[] = {
+        { 2306.f, 1080.f, "2306x1080" },   // тот самый телефон
+        { 2400.f, 1080.f, "2400x1080" },
+        { 1920.f, 1080.f, "1920x1080" },
+        { 1280.f,  720.f, "1280x720"  },
+        { 2560.f, 1600.f, "2560x1600" },   // планшет
+    };
+
+    // Ближайшая точка прямоугольника к центру круга: если она ближе
+    // радиуса, фигуры пересекаются.
+    auto circleHitsRect = [](f32 cx, f32 cy, f32 rad, const ui::HudRect& r) {
+        const f32 nx = cx < r.x ? r.x : (cx > r.x + r.w ? r.x + r.w : cx);
+        const f32 ny = cy < r.y ? r.y : (cy > r.y + r.h ? r.y + r.h : cy);
+        const f32 dx = nx - cx, dy = ny - cy;
+        return dx * dx + dy * dy < rad * rad;
+    };
+
+    int collisions = 0;
+    for (const auto& s : sizes) {
+        // Все прямоугольники HUD, которые всегда на экране.
+        std::vector<std::pair<const char*, ui::HudRect>> rects;
+        static const char* MENU[ui::HUD_MENU_COUNT] =
+            { "|||", "INV", "SKL", "ATT", "QST", "REP", "SAV" };
+        for (u32 i = 0; i < ui::HUD_MENU_COUNT; ++i)
+            rects.push_back({ MENU[i], ui::hudMenuRect(i, s.w, s.h) });
+        rects.push_back({ "миникарта", ui::minimapRect(s.w, s.h) });
+        rects.push_back({ "пояс",      ui::hotbarRect(s.w, s.h) });
+
+        // Оба варианта: обычный и зеркальный для левшей — TouchInput
+        // отражает центр по горизонтали, а HUD остаётся на месте.
+        for (int mirror = 0; mirror < 2; ++mirror) {
+            auto centerOf = [&](const input::ButtonLayout& L) {
+                glm::vec2 c = input::buttonCenterPx(L, s.w, s.h);
+                if (mirror) c.x = s.w - c.x;
+                return c;
+            };
+            const char* mode = mirror ? " (левша)" : "";
+
+            for (u32 b = 0; b < input::DEFAULT_BUTTON_COUNT; ++b) {
+                const auto& L = input::DEFAULT_BUTTONS[b];
+                const glm::vec2 c = centerOf(L);
+                const f32 rad = input::buttonRadiusPx(L, s.h);
+                if (c.x - rad < 0.f || c.y - rad < 0.f ||
+                    c.x + rad > s.w || c.y + rad > s.h) {
+                    ++collisions;
+                    char msg[160];
+                    std::snprintf(msg, sizeof(msg), "%s%s: кнопка %s за краем экрана",
+                                  s.name, mode, L.label);
+                    check(false, msg);
+                }
+                for (const auto& [name, r] : rects) {
+                    if (!circleHitsRect(c.x, c.y, rad, r)) continue;
+                    ++collisions;
+                    char msg[160];
+                    std::snprintf(msg, sizeof(msg), "%s%s: кнопка %s накрывает %s",
+                                  s.name, mode, L.label, name);
+                    check(false, msg);
+                }
+            }
+
+            // И сами круглые кнопки не должны налезать друг на друга.
+            for (u32 a = 0; a < input::DEFAULT_BUTTON_COUNT; ++a)
+                for (u32 b = a + 1; b < input::DEFAULT_BUTTON_COUNT; ++b) {
+                    const auto& A = input::DEFAULT_BUTTONS[a];
+                    const auto& B = input::DEFAULT_BUTTONS[b];
+                    const glm::vec2 ca = centerOf(A), cb = centerOf(B);
+                    const f32 dx = ca.x - cb.x, dy = ca.y - cb.y;
+                    const f32 rr = input::buttonRadiusPx(A, s.h)
+                                 + input::buttonRadiusPx(B, s.h);
+                    if (dx * dx + dy * dy >= rr * rr) continue;
+                    ++collisions;
+                    char msg[160];
+                    std::snprintf(msg, sizeof(msg), "%s%s: кнопки %s и %s налезают",
+                                  s.name, mode, A.label, B.label);
+                    check(false, msg);
+                }
+        }
+    }
+    check(collisions == 0, "ни одного наложения на проверенных экранах");
+}
+
+// ------------------------------------------------------------
+// Огрублённые уровни детализации не дырявят землю.
+//
+// Именно за это их и подозревают в первую очередь, когда в мире
+// появляются дыры: коэффициент огрубления, сведение куба вокселей в
+// клетку, рамка соседей — ошибиться есть где, а на экране LOD виден
+// только вдали, где всё и так нечётко.
+//
+// Проверка прямая: для каждой из 1024 колонок чанка должна найтись
+// верхняя грань, и она не должна оказаться НИЖЕ настоящей поверхности
+// — иначе сквозь неё будет видно то, что под землёй.
+//
+// Заодно это ответ на подозрение, с которого начинался разбор дыр на
+// устройстве: мешер чист на всех четырёх уровнях, дело не в нём.
+// ------------------------------------------------------------
+void testLodCoversGround() {
+    group("world: огрублённые уровни не дырявят землю");
+
+    world::blocks();
+    auto chunk = std::make_unique<world::Chunk>();
+    chunk->coord = {0, 0, 0};
+
+    // Ступенчатый рельеф: ровная земля такую ошибку не поймает, а
+    // склоны и уступы — как раз то, на чём огрубление и спотыкается.
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            const i32 h = 30 + (x / 3) % 7 + (z / 5) % 5 + ((x + z) % 3);
+            for (i32 y = 0; y <= h; ++y)
+                chunk->setUnlocked(x, y, z, y == h ? world::GRASS : world::STONE);
+        }
+
+    std::vector<i32> surf((usize)world::CHUNK_SIZE * world::CHUNK_SIZE, -1);
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+            for (i32 y = world::CHUNK_SIZE_Y - 1; y >= 0; --y)
+                if (chunk->at(x, y, z) != world::AIR) {
+                    surf[(usize)z * world::CHUNK_SIZE + x] = y;
+                    break;
+                }
+
+    world::ChunkNeighbors nb;
+    std::vector<world::Quad> quads;
+
+    for (u8 lod = 0; lod < 4; ++lod) {
+        world::buildGreedyMesh(*chunk, nb, quads, (world::Lod)lod);
+
+        std::vector<i32> cover((usize)world::CHUNK_SIZE * world::CHUNK_SIZE, -1);
+        for (const auto& q : quads) {
+            if (q.v0.face != 2) continue;             // только верхние грани
+            const i32 x0 = (i32)q.v0.pos.x, z0 = (i32)q.v0.pos.z;
+            const i32 y  = (i32)q.v0.pos.y;
+            const i32 wx = (i32)(q.du.x + q.dv.x);
+            const i32 wz = (i32)(q.du.z + q.dv.z);
+            for (i32 z = z0; z < z0 + (wz ? wz : 1); ++z)
+                for (i32 x = x0; x < x0 + (wx ? wx : 1); ++x) {
+                    if ((u32)x >= (u32)world::CHUNK_SIZE ||
+                        (u32)z >= (u32)world::CHUNK_SIZE) continue;
+                    i32& cv = cover[(usize)z * world::CHUNK_SIZE + x];
+                    if (y > cv) cv = y;
+                }
+        }
+
+        int uncovered = 0, sunken = 0;
+        for (usize i = 0; i < cover.size(); ++i) {
+            if (cover[i] < 0) { ++uncovered; continue; }
+            if (cover[i] < surf[i] + 1) ++sunken;
+        }
+        char msg[128];
+        std::snprintf(msg, sizeof(msg),
+                      "ур.%u: все 1024 колонки накрыты сверху (без крыши %d)",
+                      (unsigned)lod, uncovered);
+        check(uncovered == 0, msg);
+        std::snprintf(msg, sizeof(msg),
+                      "ур.%u: крыша не проваливается под поверхность (провалов %d)",
+                      (unsigned)lod, sunken);
+        check(sunken == 0, msg);
     }
 }
 
@@ -2253,12 +2489,15 @@ int main() {
     testJobSystem();
     testSaveFormat();
     testGreedyMesh();
+    testLodCoversGround();
     testVoxelShading();
     testDayCycle();
     testBossPhases();
 
     testVulkanGuards();
     testRenderPassSync();
+    testUiTapSurvivesRedraw();
+    testHudAndButtonsDoNotOverlap();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

@@ -45,6 +45,7 @@ int   W = 900, H = 560;
 int   g_lod = 0;
 int   g_debug = 0;           // 1 небо, 2 затенение, 3 нормали, 4 материал
 float g_yaw = 0.6f, g_pitch = -0.25f, g_height = 1.7f;
+float g_px = 0.5f, g_pz = 0.5f;   ///< где стоит камера по горизонтали
 int   g_radius = 3;          // чанков в каждую сторону
 const char* g_out = "preview.ppm";
 
@@ -125,8 +126,52 @@ glm::vec3 shade(const Vtx& v, const glm::vec3& wp, float ao01, float sky01) {
     return toSrgb(glm::mix(lit, fogColor, fogAmt));
 }
 
+/// Линейная смесь двух вершин. Плоские атрибуты (грань, зерно,
+/// подкраска, цвет) берём у первой: внутри квада они одинаковы.
+Vtx lerpVtx(const Vtx& p, const Vtx& q, float t) {
+    Vtx r = p;
+    r.clip  = p.clip  + (q.clip  - p.clip)  * t;
+    r.world = p.world + (q.world - p.world) * t;
+    r.ao    = p.ao    + (q.ao    - p.ao)    * t;
+    r.sky   = p.sky   + (q.sky   - p.sky)   * t;
+    return r;
+}
+
+void rasterize(const Vtx& a, const Vtx& b, const Vtx& c);
+
+/// Отсечение по ближней плоскости.
+///
+/// Раньше треугольник, у которого хоть одна вершина оказалась позади
+/// камеры, выбрасывался целиком. На полном разрешении это почти
+/// незаметно: под ногами пропадала пара мелких граней. Но жадное
+/// слияние на огрублённых уровнях собирает пол-чанка в один квад — и
+/// достаточно одному его углу уйти за спину, чтобы исчез весь. Земля
+/// под камерой пропадала пластами, а в небе оставались обрывки
+/// соседних квадов: ровно та картинка, которую ищут как ошибку
+/// мешера. Инструмент врал именно там, где он нужнее всего.
 void triangle(const Vtx& a, const Vtx& b, const Vtx& c) {
-    if (a.clip.w <= 0.001f || b.clip.w <= 0.001f || c.clip.w <= 0.001f) return;
+    constexpr float EPS = 1e-4f;
+    const Vtx* in[3] = { &a, &b, &c };
+
+    Vtx poly[4];
+    int n = 0;
+    for (int i = 0; i < 3; ++i) {
+        const Vtx& cur = *in[i];
+        const Vtx& nxt = *in[(i + 1) % 3];
+        const bool curIn = cur.clip.w > EPS;
+        const bool nxtIn = nxt.clip.w > EPS;
+        if (curIn) poly[n++] = cur;
+        if (curIn != nxtIn) {
+            const float t = (EPS - cur.clip.w) / (nxt.clip.w - cur.clip.w);
+            poly[n++] = lerpVtx(cur, nxt, t);
+        }
+    }
+    if (n < 3) return;
+    rasterize(poly[0], poly[1], poly[2]);
+    if (n == 4) rasterize(poly[0], poly[2], poly[3]);
+}
+
+void rasterize(const Vtx& a, const Vtx& b, const Vtx& c) {
     const glm::vec3 A = glm::vec3(a.clip)/a.clip.w;
     const glm::vec3 B = glm::vec3(b.clip)/b.clip.w;
     const glm::vec3 C = glm::vec3(c.clip)/c.clip.w;
@@ -194,6 +239,7 @@ int main(int argc, char** argv) {
         else if (a == "--height") g_height = (float)atof(next());
         else if (a == "--radius") g_radius = atoi(next());
         else if (a == "--seed")   seed = (u64)strtoull(next(), nullptr, 10);
+        else if (a == "--pos")    { g_px = (float)atof(next()); g_pz = (float)atof(next()); }
         else if (a == "--size")   { W = atoi(next()); H = atoi(next()); }
         else if (a == "--out")    g_out = next();
         else if (a == "--debug") {
@@ -214,7 +260,9 @@ int main(int argc, char** argv) {
         for (i32 cx = -g_radius; cx <= g_radius; ++cx)
             map[{cx,cz}] = makeChunk(gen, seed, cx, cz);
 
-    camPos   = { 0.5f, (f32)gen.surfaceHeight(0,0) + g_height, 0.5f };
+    // Встать там же, где стоял игрок: журнал с устройства печатает
+    // положение камеры, и сравнивать картинки надо с одной точки.
+    camPos   = { g_px, (f32)gen.surfaceHeight((i32)g_px, (i32)g_pz) + g_height, g_pz };
     sunDir   = glm::normalize(glm::vec3(0.35f, 0.78f, 0.25f));
     skyColor = { 0.55f, 0.72f, 0.92f };
     const float vd = (float)(g_radius * CHUNK_SIZE);
