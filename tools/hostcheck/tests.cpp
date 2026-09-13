@@ -1393,6 +1393,135 @@ void testWorldDeltaRoundTrip() {
     }
 }
 
+
+// ------------------------------------------------------------
+// Инвентарь: свойства, а не отдельные случаи.
+//
+// Здесь живёт самый неприятный класс игровых дефектов — размножение
+// и пропажа предметов. Замечают их поздно, а исправить задним числом
+// уже нельзя: чужие сейвы уже испорчены. Поэтому проверяем не «вот
+// этот случай работает», а инварианты, которые обязаны держаться
+// всегда.
+// ------------------------------------------------------------
+void testInventoryInvariants() {
+    group("items::Inventory");
+
+    auto& defs = items::items();
+
+    auto totalCount = [](const items::Inventory& inv) {
+        u32 n = 0;
+        for (u32 i = 0; i < items::INV_TOTAL_SLOTS; ++i)
+            if (!inv.slots[i].empty()) n += inv.slots[i].count;
+        return n;
+    };
+
+    // Подбираем предмет, который вообще складывается в стопки.
+    u16 stackable = 0, maxS = 0;
+    for (u16 id = 1; id < 200 && !stackable; ++id) {
+        const u16 m = defs.maxStack(id);
+        if (m > 1) { stackable = id; maxS = m; }
+    }
+    check(stackable != 0, "в таблице есть складываемый предмет");
+    if (!stackable) return;
+
+    // --- 1. Ничего не теряется и не возникает ---
+    bool balanced = true, noOverflow = true;
+    {
+        items::Inventory inv;
+        u32 expected = 0;
+        // Кладём порциями разного размера, пока не переполним.
+        for (int i = 0; i < 200; ++i) {
+            const u16 want = (u16)(1 + (i * 7) % (maxS * 2 + 3));
+            items::ItemStack in;
+            in.itemId = stackable;
+            in.count  = want;
+            const auto res = inv.addStack(in);
+
+            if ((u32)res.added + (u32)res.leftover != want) balanced = false;
+            expected += res.added;
+            if (totalCount(inv) != expected) balanced = false;
+
+            for (u32 k = 0; k < items::INV_TOTAL_SLOTS; ++k) {
+                const auto& sl = inv.slots[k];
+                if (!sl.empty() && sl.count > defs.maxStack(sl.itemId)) noOverflow = false;
+            }
+        }
+    }
+    check(balanced, "добавлено плюс остаток всегда равно тому, что клали");
+    check(noOverflow, "ни один стек не перерастает свой предел");
+
+    // --- 2. Полный инвентарь ничего не принимает и не портит ---
+    {
+        items::Inventory inv;
+        for (u32 i = 0; i < items::INV_TOTAL_SLOTS; ++i) {
+            inv.slots[i].itemId = stackable;
+            inv.slots[i].count  = maxS;
+        }
+        const u32 before = totalCount(inv);
+        items::ItemStack in;
+        in.itemId = stackable;
+        in.count  = 10;
+        const auto res = inv.addStack(in);
+        check(res.added == 0 && res.leftover == 10,
+              "в полный инвентарь ничего не влезает");
+        check(totalCount(inv) == before, "полный инвентарь не изменился");
+    }
+
+    // --- 3. Зачарованные предметы не сливаются в один стек ---
+    {
+        items::Inventory inv;
+        items::ItemStack a;
+        a.itemId = stackable;
+        a.count  = 1;
+        a.enchant.id = (combat::EnchantmentId)1;
+        a.enchant.level = 1;
+
+        items::ItemStack b = a;
+        b.enchant.level = 3;
+
+        inv.addStack(a);
+        inv.addStack(b);
+
+        u32 occupied = 0;
+        for (u32 i = 0; i < items::INV_TOTAL_SLOTS; ++i)
+            if (!inv.slots[i].empty()) ++occupied;
+        check(occupied == 2, "два зачарования не сливаются в один стек");
+        check(totalCount(inv) == 2, "при этом ничего не потерялось");
+    }
+
+    // --- 4. Кладём в конкретный слот ---
+    {
+        items::Inventory inv;
+        items::ItemStack in;
+        in.itemId = stackable;
+        in.count  = (u16)(maxS + 5);
+
+        const auto res = inv.putStack(0, in);
+        check((u32)res.added + (u32)res.leftover == in.count,
+              "в слот: добавлено плюс остаток равно тому, что клали");
+        check(inv.slots[0].count <= maxS, "слот не перерастает предел");
+
+        const auto bad = inv.putStack(items::INV_TOTAL_SLOTS + 7, in);
+        check(bad.added == 0 && bad.leftover == in.count,
+              "слот за пределами инвентаря ничего не принимает");
+    }
+
+    // --- 5. Взять стек — значит убрать его, а не скопировать ---
+    {
+        items::Inventory inv;
+        items::ItemStack in;
+        in.itemId = stackable;
+        in.count  = 3;
+        inv.putStack(5, in);
+        const u32 before = totalCount(inv);
+        const items::ItemStack taken = inv.takeStack(5);
+        check(taken.count == 3, "взятое равно тому, что лежало");
+        check(inv.slots[5].empty(), "слот освободился");
+        check(totalCount(inv) + taken.count == before,
+              "взятое ушло из инвентаря, а не размножилось");
+    }
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -1415,6 +1544,7 @@ int main() {
     testAudioMixer();
     testSaveRoundTrip();
     testWorldDeltaRoundTrip();
+    testInventoryInvariants();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);
     if (g_failed) {
