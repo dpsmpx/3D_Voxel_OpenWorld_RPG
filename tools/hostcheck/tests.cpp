@@ -1098,6 +1098,85 @@ void testHudAndButtonsDoNotOverlap() {
     check(collisions == 0, "ни одного наложения на проверенных экранах");
 }
 
+// ------------------------------------------------------------
+// Огрублённые уровни детализации не дырявят землю.
+//
+// Именно за это их и подозревают в первую очередь, когда в мире
+// появляются дыры: коэффициент огрубления, сведение куба вокселей в
+// клетку, рамка соседей — ошибиться есть где, а на экране LOD виден
+// только вдали, где всё и так нечётко.
+//
+// Проверка прямая: для каждой из 1024 колонок чанка должна найтись
+// верхняя грань, и она не должна оказаться НИЖЕ настоящей поверхности
+// — иначе сквозь неё будет видно то, что под землёй.
+//
+// Заодно это ответ на подозрение, с которого начинался разбор дыр на
+// устройстве: мешер чист на всех четырёх уровнях, дело не в нём.
+// ------------------------------------------------------------
+void testLodCoversGround() {
+    group("world: огрублённые уровни не дырявят землю");
+
+    world::blocks();
+    auto chunk = std::make_unique<world::Chunk>();
+    chunk->coord = {0, 0, 0};
+
+    // Ступенчатый рельеф: ровная земля такую ошибку не поймает, а
+    // склоны и уступы — как раз то, на чём огрубление и спотыкается.
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            const i32 h = 30 + (x / 3) % 7 + (z / 5) % 5 + ((x + z) % 3);
+            for (i32 y = 0; y <= h; ++y)
+                chunk->setUnlocked(x, y, z, y == h ? world::GRASS : world::STONE);
+        }
+
+    std::vector<i32> surf((usize)world::CHUNK_SIZE * world::CHUNK_SIZE, -1);
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+            for (i32 y = world::CHUNK_SIZE_Y - 1; y >= 0; --y)
+                if (chunk->at(x, y, z) != world::AIR) {
+                    surf[(usize)z * world::CHUNK_SIZE + x] = y;
+                    break;
+                }
+
+    world::ChunkNeighbors nb;
+    std::vector<world::Quad> quads;
+
+    for (u8 lod = 0; lod < 4; ++lod) {
+        world::buildGreedyMesh(*chunk, nb, quads, (world::Lod)lod);
+
+        std::vector<i32> cover((usize)world::CHUNK_SIZE * world::CHUNK_SIZE, -1);
+        for (const auto& q : quads) {
+            if (q.v0.face != 2) continue;             // только верхние грани
+            const i32 x0 = (i32)q.v0.pos.x, z0 = (i32)q.v0.pos.z;
+            const i32 y  = (i32)q.v0.pos.y;
+            const i32 wx = (i32)(q.du.x + q.dv.x);
+            const i32 wz = (i32)(q.du.z + q.dv.z);
+            for (i32 z = z0; z < z0 + (wz ? wz : 1); ++z)
+                for (i32 x = x0; x < x0 + (wx ? wx : 1); ++x) {
+                    if ((u32)x >= (u32)world::CHUNK_SIZE ||
+                        (u32)z >= (u32)world::CHUNK_SIZE) continue;
+                    i32& cv = cover[(usize)z * world::CHUNK_SIZE + x];
+                    if (y > cv) cv = y;
+                }
+        }
+
+        int uncovered = 0, sunken = 0;
+        for (usize i = 0; i < cover.size(); ++i) {
+            if (cover[i] < 0) { ++uncovered; continue; }
+            if (cover[i] < surf[i] + 1) ++sunken;
+        }
+        char msg[128];
+        std::snprintf(msg, sizeof(msg),
+                      "ур.%u: все 1024 колонки накрыты сверху (без крыши %d)",
+                      (unsigned)lod, uncovered);
+        check(uncovered == 0, msg);
+        std::snprintf(msg, sizeof(msg),
+                      "ур.%u: крыша не проваливается под поверхность (провалов %d)",
+                      (unsigned)lod, sunken);
+        check(sunken == 0, msg);
+    }
+}
+
 void testVulkanGuards() {
     group("vk: защита от нулевых дескрипторов");
 
@@ -2410,6 +2489,7 @@ int main() {
     testJobSystem();
     testSaveFormat();
     testGreedyMesh();
+    testLodCoversGround();
     testVoxelShading();
     testDayCycle();
     testBossPhases();

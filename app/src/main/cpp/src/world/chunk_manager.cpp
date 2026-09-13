@@ -283,10 +283,17 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::pollMeshesReady(usize maxCount
             meshesReady_.erase(meshesReady_.begin(),
                                meshesReady_.begin() + (long)maxCount);
         }
+        // Отметку снимаем ПОД ТЕМ ЖЕ ЗАМКОМ, что и изъятие из очереди.
+        //
+        // Снаружи между «вынули» и «сняли отметку» открывалось окно:
+        // задача меширования, добравшаяся до конца ровно в нём, видела
+        // отметку ещё поставленной, считала чанк уже стоящим в очереди
+        // и выходила молча. Меш при этом построен, но в очередь не
+        // попал — и на экране оставалась дыра ровно до тех пор, пока
+        // тот же уровень не закажут заново.
+        for (const auto& c : out)
+            if (c) c->queuedForUpload.store(false, std::memory_order_release);
     }
-    // Вне очереди — значит можно ставить снова.
-    for (const auto& c : out)
-        if (c) c->queuedForUpload.store(false, std::memory_order_release);
     return out;
 }
 

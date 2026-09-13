@@ -58,6 +58,9 @@ public:
     u32 drawnChunks()   const { return chunkRenderer_.lastDrawnChunks(); }
     u32 drawnIndices()  const { return chunkRenderer_.lastDrawnIndices(); }
     u32 lodCount(u32 l) const { return chunkRenderer_.lastLodCounts((int)l); }
+    /// Чанки в кадре, которым нечем рисоваться, — это и есть дыры.
+    u32 emptyChunks()   const { return chunkRenderer_.lastEmptyChunks(); }
+    u32 waitingChunks() const { return chunkRenderer_.lastWaitingChunks(); }
     u32 grassCount()    const { return grass_.instanceCount(); }
     u32 mobInstances()  const { return mobRenderer_.instanceCount(); }
     u32 projInstances() const { return projRenderer_.instanceCount(); }
