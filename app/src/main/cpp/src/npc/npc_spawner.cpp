@@ -7,10 +7,13 @@
 #include "npc_ai.h"
 #include "../ecs/components.h"
 #include "../combat/components.h"
+#include "../trade/trade.h"
+#include "../items/currency.h"
 #include "../world/block.h"
 #include "../core/log.h"
 #include <cmath>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace npc {
@@ -206,6 +209,32 @@ void NpcSpawner::update(world::ChunkManager& world,
                     ai.homePos = s.pos;
                     ai.state   = NpcAI::Idle;
                     reg.add(e, ai);
+
+                    // Торговцу — прилавок. Без него trade::buy и
+                    // trade::sell всегда отвечали «нет такой позиции»:
+                    // компонент TradeInventory не добавлялся никому,
+                    // а значит вся торговля — цены, репутация, запас,
+                    // ежедневное обновление ассортимента и целый экран
+                    // интерфейса — была недостижима.
+                    //
+                    // Зерно — от координат деревни и типа NPC: у
+                    // одного и того же торговца ассортимент один и тот
+                    // же от запуска к запуску.
+                    if (def.role == NpcRole::Trader ||
+                        def.role == NpcRole::Blacksmith)
+                    {
+                        trade::TradeInventory shop;
+                        const u64 shopSeed = worldSeed
+                            ^ ((u64)(u32)sx * 0x9E3779B97F4A7C15ull)
+                            ^ ((u64)(u32)sz * 0xC4CEB9FE1A85EC53ull)
+                            ^ ((u64)s.typeId * 0xFF51AFD7ED558CCDull);
+                        trade::generateTraderInventory(shop, shopSeed);
+                        reg.add(e, std::move(shop));
+                        // Кошелёк торговца: без него продажа проходила
+                        // бы вообще без проверки, хватает ли у него
+                        // денег, — золото бралось бы из ниоткуда.
+                        reg.add(e, items::Wallet{ shop.gold });
+                    }
 
                     ++activeCount_;
                 }

@@ -770,6 +770,21 @@ struct Engine {
         bool dialogueActive = dlg && dlg->active;
         if (ui) ui->setDialogueActive(dialogueActive);
 
+        // Диалог мог попросить открыть экран — сам он этого не умеет,
+        // об интерфейсе он не знает. Раньше выбор «покажи товар»
+        // просто закрывал диалог, и торговля оставалась недостижимой.
+        if (dlg && ui && dlg->pendingAction != npc::DialogueAction::None) {
+            const auto act = dlg->pendingAction;
+            dlg->pendingAction = npc::DialogueAction::None;
+            if (act == npc::DialogueAction::OpenTrade) {
+                ui->openTrade(dlg->npcEntity);
+            } else if (act == npc::DialogueAction::OpenCraft) {
+                // Кузнец работает как переносная мастерская: свой
+                // станок рядом с ним искать не надо.
+                ui->openCrafting(crafting::StationType::Anvil);
+            }
+        }
+
         // Phase 15: обновляем spatial hash раз в кадр (лениво).
         spatialHash.tick();
 

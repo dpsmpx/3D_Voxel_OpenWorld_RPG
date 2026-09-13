@@ -12,6 +12,8 @@
 #include "save/world_delta.h"
 #include "items/item_def.h"
 #include "combat/components.h"
+#include "trade/trade.h"
+#include "npc/dialogue.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
 #include "save/save_format.h"
@@ -1563,6 +1565,141 @@ void testInventoryInvariants() {
     }
 }
 
+
+// ------------------------------------------------------------
+// Торговля.
+//
+// Система была собрана целиком — цены с учётом репутации, запас,
+// ежедневное обновление ассортимента, экран интерфейса, обработчики
+// покупки и продажи — и при этом недостижима: компонент
+// TradeInventory не добавлялся ни одной сущности, а выбор в диалоге
+// «покажи товар» просто закрывал диалог. Обе связи теперь есть, и
+// проверки стерегут именно их, а заодно главный инвариант экономики:
+// золото не возникает и не пропадает.
+// ------------------------------------------------------------
+void testTrade() {
+    group("trade: покупка и продажа");
+
+    items::items();
+    ecs::Registry reg;
+
+    const ecs::Entity player = reg.create();
+    reg.add(player, items::Inventory{});
+    reg.add(player, items::Wallet{ 100000 });
+
+    const ecs::Entity trader = reg.create();
+    trade::TradeInventory shop;
+    trade::generateTraderInventory(shop, 0xC0FFEEull);
+    check(!shop.entries.empty(), "ассортимент торговца не пуст");
+    if (shop.entries.empty()) return;
+
+    const u64 shopGold = shop.gold;
+    reg.add(trader, shop);
+    reg.add(trader, items::Wallet{ shopGold });
+
+    auto* tinv = reg.get<trade::TradeInventory>(trader);
+    auto* pwal = reg.get<items::Wallet>(player);
+    auto* twal = reg.get<items::Wallet>(trader);
+    auto* pinv = reg.get<items::Inventory>(player);
+    check(tinv && pwal && twal && pinv, "компоненты на месте");
+    if (!tinv || !pwal || !twal || !pinv) return;
+
+    auto totalGold = [&]() { return pwal->gold + twal->gold; };
+    const u64 goldAtStart = totalGold();
+
+    // Ищем позицию, которую можно купить и у которой есть запас.
+    trade::TradeEntry* buyable = nullptr;
+    for (auto& e : tinv->entries)
+        if (e.isBuyable && e.stock > 0) { buyable = &e; break; }
+    check(buyable != nullptr, "есть что купить");
+    if (!buyable) return;
+
+    const u16 itemId = buyable->itemId;
+    const u16 stockBefore = buyable->stock;
+    const u32 haveBefore  = pinv->countOf(itemId);
+
+    const auto res = trade::buy(reg, player, trader, itemId, 1);
+    check(res == trade::TradeResult::Ok, "покупка проходит");
+    check(pinv->countOf(itemId) == haveBefore + 1, "предмет попал в инвентарь");
+    check(tinv->entries[0].stock <= stockBefore || buyable->stock == stockBefore - 1,
+          "запас торговца уменьшился");
+    check(totalGold() == goldAtStart, "покупка не создаёт и не уничтожает золото");
+
+    // Продажа обратно.
+    trade::TradeEntry* sellable = nullptr;
+    for (auto& e : tinv->entries)
+        if (e.isSellable && e.itemId == itemId) { sellable = &e; break; }
+    if (sellable) {
+        const u64 before = totalGold();
+        const auto sres = trade::sell(reg, player, trader, itemId, 1);
+        check(sres == trade::TradeResult::Ok, "продажа проходит");
+        check(pinv->countOf(itemId) == haveBefore, "предмет ушёл из инвентаря");
+        check(totalGold() == before, "продажа не создаёт и не уничтожает золото");
+    }
+
+    // Нельзя купить больше, чем есть в запасе.
+    {
+        const auto over = trade::buy(reg, player, trader, itemId,
+                                     (u16)(buyable->stock + 50));
+        check(over != trade::TradeResult::Ok, "сверх запаса купить нельзя");
+    }
+
+    // Нельзя продать то, чего нет.
+    {
+        const auto none = trade::sell(reg, player, trader, itemId, 9999);
+        check(none != trade::TradeResult::Ok, "продать несуществующее нельзя");
+    }
+
+    // Торговцу без денег продать нельзя. Раньше проверка стояла под
+    // условием «если у торговца есть кошелёк», а кошелька ему никто
+    // не выдавал — золото бралось бы из ниоткуда.
+    {
+        pinv->addItem(itemId, 5);
+        twal->gold = 0;
+        const u64 playerBefore = pwal->gold;
+        const auto broke = trade::sell(reg, player, trader, itemId, 5);
+        check(broke != trade::TradeResult::Ok, "у торговца без денег не купят");
+        check(pwal->gold == playerBefore, "золото игроку при этом не начислено");
+    }
+}
+
+// ------------------------------------------------------------
+// Диалог: выбор, который открывает экран.
+// ------------------------------------------------------------
+void testDialogueOpensScreens() {
+    group("npc: диалог просит открыть экран");
+
+    ecs::Registry reg;
+    npc::ActiveDialogue dlg;
+    dlg.active = true;
+    dlg.npcEntity = 7;
+
+    npc::DialogueChoice trade;
+    trade.action = npc::DialogueAction::OpenTrade;
+    npc::applyChoice(reg, dlg, trade);
+    check(dlg.pendingAction == npc::DialogueAction::OpenTrade,
+          "выбор «покажи товар» оставляет намерение открыть торговлю");
+    check(!dlg.active, "диалог при этом закрывается");
+
+    dlg = npc::ActiveDialogue{};
+    dlg.active = true;
+    npc::DialogueChoice craft;
+    craft.action = npc::DialogueAction::OpenCraft;
+    npc::applyChoice(reg, dlg, craft);
+    check(dlg.pendingAction == npc::DialogueAction::OpenCraft,
+          "выбор «скуй мне» оставляет намерение открыть крафт");
+
+    // Обычный выбор намерения не оставляет — иначе экран открывался бы
+    // на ровном месте.
+    dlg = npc::ActiveDialogue{};
+    dlg.active = true;
+    npc::DialogueChoice bye;
+    bye.action = npc::DialogueAction::EndDialogue;
+    npc::applyChoice(reg, dlg, bye);
+    check(dlg.pendingAction == npc::DialogueAction::None,
+          "прощание не открывает никаких экранов");
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -1586,6 +1723,8 @@ int main() {
     testSaveRoundTrip();
     testWorldDeltaRoundTrip();
     testInventoryInvariants();
+    testTrade();
+    testDialogueOpensScreens();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);
     if (g_failed) {

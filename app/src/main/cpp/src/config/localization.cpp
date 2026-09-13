@@ -84,6 +84,7 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Trade_Buy */         "BUY",
     /* Trade_Sell */        "SELL",
     /* Trade_Price */       "Price",
+    /* Trade_NothingToBuy */ "Nothing for sale",
 
     /* Quest_Title */       "QUEST LOG",
     /* Quest_Active */      "Active Quests",
@@ -216,6 +217,7 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Trade_Buy */         "КУПИТЬ",
     /* Trade_Sell */        "ПРОДАТЬ",
     /* Trade_Price */       "Цена",
+    /* Trade_NothingToBuy */ "Торговать нечем",
 
     /* Quest_Title */       "ЖУРНАЛ КВЕСТОВ",
     /* Quest_Active */      "Активные",

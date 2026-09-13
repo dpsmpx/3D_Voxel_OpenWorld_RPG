@@ -399,12 +399,9 @@ bool applyChoice(ecs::Registry& reg,
     }
 
     case DialogueAction::OpenTrade:
-        // Phase 12
-        dlg.active = false;
-        return false;
-
     case DialogueAction::OpenCraft:
-        // Phase 12
+        // Экран открывает главный цикл: диалог не знает об интерфейсе.
+        dlg.pendingAction = choice.action;
         dlg.active = false;
         return false;
 

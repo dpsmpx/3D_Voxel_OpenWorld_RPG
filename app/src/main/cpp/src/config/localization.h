@@ -38,7 +38,7 @@ enum class StrKey : u16 {
     Craft_Ingredients, Craft_Required, Craft_Button, Craft_Select,
 
     // --- Торговля ---
-    Trade_Title, Trade_Buy, Trade_Sell, Trade_Price,
+    Trade_Title, Trade_Buy, Trade_Sell, Trade_Price, Trade_NothingToBuy,
 
     // --- Квесты ---
     Quest_Title, Quest_Active, Quest_Completed, Quest_None,

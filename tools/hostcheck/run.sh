@@ -254,50 +254,24 @@ if ! python3 "$PROJ/tools/hostcheck/check_android_api.py"; then
 fi
 
 # ---- тесты логики ----
+#
+# Линкуемся с теми же объектными файлами, которые уже собраны выше для
+# libnative-lib. Раньше здесь жил список исходников, который
+# приходилось дополнять вручную каждый раз, когда проверка задевала
+# новую часть игры: связи тянутся далеко (диалог -> квесты ->
+# прогрессия -> предметы), и список дорос до четырёх десятков строк,
+# а его пополнение выглядело как ошибка линковки, а не как задача.
+#
+# Конфликта точек входа нет: игра начинается с android_main, а main
+# есть только в самих тестах.
 echo "==> Тесты..."
-TEST_SRCS=(
-    "$PROJ/tools/hostcheck/tests.cpp"
-    "$SRC_DIR/world/noise.cpp"
-    "$SRC_DIR/world/terrain.cpp"
-    "$SRC_DIR/world/biome.cpp"
-    "$SRC_DIR/world/block.cpp"
-    "$SRC_DIR/world/chunk.cpp"
-    "$SRC_DIR/world/features.cpp"
-    "$SRC_DIR/world/chunk_manager.cpp"
-    "$SRC_DIR/world/ai/pathfinding.cpp"
-    "$SRC_DIR/audio/audio_engine.cpp"
-    "$SRC_DIR/audio/sound_registry.cpp"
-    "$SRC_DIR/save/save_inventory.cpp"
-    "$SRC_DIR/save/world_delta.cpp"
-    "$SRC_DIR/items/inventory.cpp"
-    "$SRC_DIR/items/item_def.cpp"
-    "$SRC_DIR/items/item_stack.cpp"
-    "$SRC_DIR/items/item_pickup.cpp"
-    "$SRC_DIR/physics/raycast.cpp"
-    "$SRC_DIR/items/currency.cpp"
-    "$SRC_DIR/combat/components.cpp"
-    "$SRC_DIR/combat/enchantment.cpp"
-    "$SRC_DIR/render/mesh_builder.cpp"
-    "$SRC_DIR/core/crashlog.cpp"
-    "$SRC_DIR/core/job_system.cpp"
-    "$SRC_DIR/mobs/mob_def.cpp"
-    "$SRC_DIR/vk/vk_buffer.cpp"
-    "$SRC_DIR/vk/vk_texture.cpp"
-    "$SRC_DIR/vk/vk_shader.cpp"
-    "$SRC_DIR/vk/vk_pipeline.cpp"
-    "$SRC_DIR/vk/vk_descriptors.cpp"
-    "$SRC_DIR/ui/ui_renderer.cpp"
-    "$SRC_DIR/ui/ui_context.cpp"
-    "$SRC_DIR/ui/ui_atlas.cpp"
-    "$SRC_DIR/config/localization.cpp"
-    "$SRC_DIR/config/settings.cpp"
-)
 if ! "$CXX" -std=c++20 -O1 -g0 \
         -D__ANDROID__ -DVK_USE_PLATFORM_ANDROID_KHR \
         -DGLM_FORCE_DEPTH_ZERO_TO_ONE -DGLM_ENABLE_EXPERIMENTAL -DENTT_NO_ETO -DHOSTCHECK=1 \
         -I "$SRC_DIR" -I "$PROJ/tools/hostcheck/include" \
         -isystem "$TP/glm" -isystem "$TP/entt/include" -isystem "$TP/Vulkan-Headers/include" \
-        -o "$OUT/tests" "${TEST_SRCS[@]}" "$OUT/obj/_stubs.o" -lpthread -ldl \
+        -o "$OUT/tests" "$PROJ/tools/hostcheck/tests.cpp" "$OUT"/obj/*.o \
+        -lz -lpthread -ldl \
         2> "$OUT/tests-build.err"; then
     echo "✗ Тесты не собрались:"
     head -30 "$OUT/tests-build.err" | sed 's/^/    /'
