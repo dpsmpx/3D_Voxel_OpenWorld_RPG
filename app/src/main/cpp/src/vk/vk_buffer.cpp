@@ -117,7 +117,26 @@ void Buffer::destroy() {
     dev_ = VK_NULL_HANDLE;
 }
 
-void* Buffer::map() { return mapped_; }
+void* Buffer::map() {
+    // Отображение живёт от создания буфера до его уничтожения, и
+    // map() раньше просто возвращал сохранённый указатель. Но unmap()
+    // этот указатель обнулял — и второй map() отдавал nullptr, ничего
+    // об этом не сообщая. Вызывающий видел «не удалось отобразить» и
+    // молча пропускал кадр; интерфейс из-за этого рисовался ровно два
+    // первых кадра за весь запуск.
+    //
+    // Теперь map() делает то, что обещает именем: если отображения
+    // нет, оно создаётся.
+    if (!mapped_ && dev_ && mem_ && hostVisible_) {
+        if (vkMapMemory(dev_, mem_, 0, size_, 0, &mapped_) != VK_SUCCESS) {
+            LOGE("Buffer::map: не удалось отобразить %llu байт",
+                 (unsigned long long)size_);
+            mapped_ = nullptr;
+        }
+    }
+    return mapped_;
+}
+
 void  Buffer::unmap() {
     if (dev_ && mapped_) { vkUnmapMemory(dev_, mem_); mapped_ = nullptr; }
 }

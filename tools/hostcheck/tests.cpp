@@ -729,6 +729,94 @@ void testBossPhases() {
 // строки. Ровно так игра падала при первом кадре — интерфейс дорастил
 // свой буфер, передав нулевое физическое устройство.
 // ------------------------------------------------------------
+// ------------------------------------------------------------
+// Договор vk::Buffer::map().
+//
+// map() возвращал сохранённый при создании указатель, а unmap() его
+// обнулял — и второй map() отдавал nullptr, ничего об этом не
+// сообщая. Единственный, кто этим пользовался, — интерфейс: он писал
+// вершины, снимал отображение и на следующем кадре получал nullptr,
+// молча пропуская отрисовку. Интерфейс жил ровно два первых кадра за
+// весь запуск; в журнале это выглядело как «вершин 3468,
+// нарисовано 0» и держалось много сборок подряд.
+//
+// Заглушки Vulkan на хосте не выделяют настоящей памяти, поэтому
+// проверяем то, что от них не зависит: договор о том, что map()
+// после unmap() обязан вернуть отображение, а не тишину.
+// ------------------------------------------------------------
+void testBufferMapContract() {
+    group("vk::Buffer: отображение памяти");
+
+    // Смотрим на исходный текст: на хосте настоящий VkDevice создать
+    // нечем, а договор проверить надо.
+    const char* path = "app/src/main/cpp/src/vk/vk_buffer.cpp";
+    std::FILE* f = std::fopen(path, "rb");
+    if (!f) {   // запуск не из корня проекта — проверку пропускаем
+        check(true, "исходник vk_buffer.cpp не найден, проверка пропущена");
+        return;
+    }
+    std::string src;
+    char buf[4096];
+    usize n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) src.append(buf, n);
+    std::fclose(f);
+
+    const usize mapPos = src.find("void* Buffer::map()");
+    check(mapPos != std::string::npos, "map() на месте");
+    if (mapPos == std::string::npos) return;
+
+    const usize mapEnd = src.find("\n}", mapPos);
+    const std::string body = src.substr(mapPos, mapEnd - mapPos);
+
+    check(body.find("vkMapMemory") != std::string::npos,
+          "map() создаёт отображение, если его нет, а не возвращает тишину");
+
+    // И тот, кто этим пользуется, отображение больше не снимает.
+    std::FILE* uf = std::fopen("app/src/main/cpp/src/ui/ui_renderer.cpp", "rb");
+    check(uf != nullptr, "исходник ui_renderer.cpp на месте");
+    if (uf) {
+        std::string ui;
+        while ((n = std::fread(buf, 1, sizeof(buf), uf)) > 0) ui.append(buf, n);
+        std::fclose(uf);
+        check(ui.find(".unmap()") == std::string::npos,
+              "интерфейс не снимает отображение своих вершинных буферов");
+    }
+
+    // --- Данные кадра пишутся после ожидания на заборе ---
+    //
+    // Буферов камеры столько же, сколько кадров в работе, и выбираются
+    // они по номеру кадра. Слот, в который пишем сейчас, последний раз
+    // читался кадром, отправленным двумя кадрами назад; дождаться его
+    // можно только на заборе, а забор ждёт beginFrame(). Значит писать
+    // в такой буфер из prepareFrame(), который идёт ДО beginFrame(),
+    // нельзя: процессор перепишет матрицы прямо во время того, как GPU
+    // рисует ими предыдущий кадр, и геометрия перестанет сходиться
+    // сама с собой.
+    std::FILE* rf = std::fopen("app/src/main/cpp/src/render/render_system.cpp", "rb");
+    check(rf != nullptr, "исходник render_system.cpp на месте");
+    if (rf) {
+        std::string rs;
+        while ((n = std::fread(buf, 1, sizeof(buf), rf)) > 0) rs.append(buf, n);
+        std::fclose(rf);
+
+        const usize prep = rs.find("void RenderSystem::prepareFrame");
+        const usize rend = rs.find("void RenderSystem::render(");
+        check(prep != std::string::npos && rend != std::string::npos &&
+              prep < rend, "prepareFrame и render на месте");
+
+        if (prep != std::string::npos && rend != std::string::npos && prep < rend) {
+            const std::string prepBody = rs.substr(prep, rend - prep);
+            check(prepBody.find("uboBuffers_[") == std::string::npos ||
+                  prepBody.find("uboBuffers_[frame].write") == std::string::npos,
+                  "prepareFrame не пишет в буфер камеры: забор ещё не дождан");
+
+            const std::string rendBody = rs.substr(rend);
+            check(rendBody.find("uboBuffers_[frame].write") != std::string::npos,
+                  "render пишет камеру сам — после ожидания на заборе");
+        }
+    }
+}
+
 void testVulkanGuards() {
     group("vk: защита от нулевых дескрипторов");
 
@@ -2046,6 +2134,7 @@ int main() {
     testBossPhases();
 
     testVulkanGuards();
+    testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();
     testWorldQueries();
