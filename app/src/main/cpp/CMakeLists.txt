@@ -235,6 +235,20 @@ target_compile_options(native-lib PRIVATE
 
 target_compile_definitions(native-lib PRIVATE VOXEL_BUILD_SHA="${VOXEL_BUILD_SHA}")
 
+# Диагностическая сборка: -DVOXEL_DEBUG_SCENE=ON.
+#
+# Включает минимальную детерминированную сцену НА УРОВНЕ СБОРКИ. На
+# свежем устройстве settings.cfg отсутствует, и полагаться на его
+# ручную правку нельзя; а уже существующий файл с debug_scene = false
+# не должен уметь выключить диагностический APK обратно.
+#
+# По умолчанию выключено: обычные сборки остаются обычной игрой.
+option(VOXEL_DEBUG_SCENE "Собрать диагностический APK с минимальной сценой" OFF)
+if(VOXEL_DEBUG_SCENE)
+    target_compile_definitions(native-lib PRIVATE VOXEL_DEBUG_SCENE=1)
+    message(STATUS "VoxelRPG: диагностическая сборка, debug_scene=true")
+endif()
+
 if(TARGET native_app_glue)
     target_link_libraries(native-lib native_app_glue)
 

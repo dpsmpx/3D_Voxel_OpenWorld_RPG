@@ -154,6 +154,61 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
+      # Диагностический APK: то же приложение, собранное с
+      # -DVOXEL_DEBUG_SCENE=ON. У типа сборки diagnostic своя папка
+      # native-сборки, поэтому обычный APK выше пересобирать не нужно.
+      - name: gradle assembleDiagnostic
+        run: ./gradlew assembleDiagnostic --no-daemon --stacktrace
+
+      # APK без флага выглядит точно так же и запускает обычную игру —
+      # отличить их можно только по символам в библиотеке.
+      - name: Проверка диагностического APK
+        run: |
+          set -e
+          APK="$(ls app/build/outputs/apk/diagnostic/*.apk | head -1)"
+          echo "диагностический APK: $APK ($(stat -c%s "$APK") байт)"
+
+          rm -rf /tmp/diagso && mkdir -p /tmp/diagso
+          unzip -q -o "$APK" 'lib/arm64-v8a/libnative-lib.so' -d /tmp/diagso
+          SO=/tmp/diagso/lib/arm64-v8a/libnative-lib.so
+
+          if ! strings -a "$SO" | grep -q 'debug_scene=true (build diagnostic mode)'; then
+              echo "✗ в диагностическом APK нет объявления режима:"
+              echo "  значит VOXEL_DEBUG_SCENE до компилятора не доехал."
+              exit 1
+          fi
+
+          # И симметрично: обычный APK обязан остаться обычным.
+          rm -rf /tmp/normso && mkdir -p /tmp/normso
+          unzip -q -o "$(ls app/build/outputs/apk/debug/*.apk | head -1)" \
+                'lib/arm64-v8a/libnative-lib.so' -d /tmp/normso
+          if strings -a /tmp/normso/lib/arm64-v8a/libnative-lib.so \
+             | grep -q 'debug_scene=true (build diagnostic mode)'; then
+              echo "✗ обычный APK тоже собран диагностическим"
+              exit 1
+          fi
+          echo "✓ диагностический APK объявляет режим, обычный — нет"
+
+          # Неподписанный APK собирается молча и не ставится на
+          # устройство: у своего типа сборки нет автоматического
+          # отладочного ключа.
+          APKSIGNER="$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | tail -1)"
+          if [ -n "$APKSIGNER" ]; then
+              "$APKSIGNER" verify --print-certs "$APK" > /tmp/diagsig.txt 2>&1 \
+                  || { echo "✗ диагностический APK не подписан:";
+                       cat /tmp/diagsig.txt; exit 1; }
+              echo "✓ диагностический APK подписан"
+          else
+              echo "apksigner не найден — подпись не проверена"
+          fi
+
+      - name: Выгрузка диагностического APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoxelRPG-diagnostic
+          path: app/build/outputs/apk/diagnostic/*.apk
+          if-no-files-found: error
+
       # Несжатая библиотека нужна, чтобы расшифровать адреса из отчёта
       # о падении: tools/symbolize.sh работает именно по ней.
       - name: Выгрузка неурезанной библиотеки
@@ -181,6 +236,11 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: VoxelRPG-diagnostic
+          path: diag
+
+      - uses: actions/download-artifact@v4
+        with:
           name: VoxelRPG-symbols
           path: symbols
         continue-on-error: true
@@ -191,7 +251,8 @@ jobs:
         run: |
           set -e
           mv dist/*.apk VoxelRPG-debug.apk
-          FILES="VoxelRPG-debug.apk"
+          mv diag/*.apk VoxelRPG-diagnostic.apk
+          FILES="VoxelRPG-debug.apk VoxelRPG-diagnostic.apk"
           SO="$(find symbols -name 'libnative-lib.so' 2>/dev/null | head -1)"
           if [ -n "$SO" ]; then
               cp "$SO" libnative-lib-unstripped.so
@@ -204,10 +265,18 @@ jobs:
           Ветка: ${{ github.ref_name }}
           Коммит: ${{ github.sha }}
 
-          Скачать в Termux:
+          Обычная игра:
 
               curl -L -o VoxelRPG.apk https://github.com/${{ github.repository }}/releases/download/latest-apk/VoxelRPG-debug.apk
               termux-open VoxelRPG.apk
+
+          Диагностическая сцена — запускается сразу, settings.cfg править не нужно:
+
+              curl -L -o VoxelRPG-diag.apk https://github.com/${{ github.repository }}/releases/download/latest-apk/VoxelRPG-diagnostic.apk
+              termux-open VoxelRPG-diag.apk
+
+          Диагностический APK видно по первой же строке журнала:
+          'debug_scene=true (build diagnostic mode)'.
 
           Рядом лежит неурезанная библиотека для tools/symbolize.sh."
 
@@ -222,5 +291,6 @@ jobs:
                   --prerelease
           fi
 
-          echo "Прямая ссылка:"
-          echo "  https://github.com/${{ github.repository }}/releases/download/latest-apk/VoxelRPG-debug.apk"
+          echo "Прямые ссылки:"
+          echo "  обычная игра:  https://github.com/${{ github.repository }}/releases/download/latest-apk/VoxelRPG-debug.apk"
+          echo "  диагностика:   https://github.com/${{ github.repository }}/releases/download/latest-apk/VoxelRPG-diagnostic.apk"

@@ -291,6 +291,32 @@ if ! "$OUT/tests"; then
     exit 1
 fi
 
+# ---- две конфигурации сборки ----
+#
+# debug_scene включается флагом времени компиляции, значит проверить
+# обе стороны в одном бинарнике нельзя: нужно собрать дважды.
+echo "==> Конфигурации сборки..."
+for DIAG in 0 1; do
+    DEF=""
+    [ "$DIAG" = "1" ] && DEF="-DVOXEL_DEBUG_SCENE=1"
+    if ! "$CXX" -std=c++20 -O0 -g0 $DEF \
+            -D__ANDROID__ -DHOSTCHECK=1 \
+            -I "$SRC_DIR" -I "$PROJ/tools/hostcheck/include" -isystem "$TP/glm" \
+            -o "$OUT/diagcheck" \
+            "$PROJ/tools/hostcheck/diag_build_check.cpp" \
+            "$SRC_DIR/config/settings.cpp" "$SRC_DIR/core/crashlog.cpp" \
+            "$OUT/obj/_stubs.o" -lpthread -ldl \
+            > "$OUT/diagcheck.err" 2>&1; then
+        echo "✗ Проверка конфигураций не собралась:"
+        head -20 "$OUT/diagcheck.err" | sed 's/^/    /'
+        exit 1
+    fi
+    if ! "$OUT/diagcheck"; then
+        echo "✗ Конфигурация сборки ведёт себя не так, как объявлено"
+        exit 1
+    fi
+done
+
 # ---- кадр настоящим Vulkan ----
 #
 # Всё, что выше, проверяет данные и исходный текст. Ни одна из этих

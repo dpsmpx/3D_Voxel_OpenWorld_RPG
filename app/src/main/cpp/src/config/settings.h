@@ -39,6 +39,19 @@ const char* languageName(Language l);
 
 /// Настройки игрока. Живут вне ECS — сохраняются отдельно
 /// в файле settings.cfg, чтобы не зависеть от слота.
+/// Собран ли этот бинарник как диагностический.
+///
+/// Флаг времени компиляции (-DVOXEL_DEBUG_SCENE=ON в CMake, тип сборки
+/// `diagnostic` в gradle). Настройкой такое включать нельзя: на свежем
+/// устройстве settings.cfg отсутствует, и до первого запуска его
+/// физически некому написать.
+constexpr bool DIAGNOSTIC_BUILD =
+#ifdef VOXEL_DEBUG_SCENE
+    true;
+#else
+    false;
+#endif
+
 struct Settings {
     /// --- Управление (ТЗ 5.2) ---
     f32  cameraSensitivity  = 1.2f;    // 0.1 .. 5.0
@@ -103,7 +116,7 @@ struct Settings {
     /// и ровно ту же сцену рисует tools/vkcheck --scene minimal. Пока
     /// два кадра не сойдутся, сравнивать что-то на полном мире
     /// бессмысленно. Ставится в settings.cfg ключом debug_scene.
-    bool debugScene         = false;
+    bool debugScene         = DIAGNOSTIC_BUILD;
 
     /// ---- Валидация/нормализация ----
     void clamp();

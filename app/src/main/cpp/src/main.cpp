@@ -1350,6 +1350,11 @@ extern "C" void android_main(android_app* app) {
 #ifdef VOXEL_BUILD_SHA
     LOGI(" сборка: %s", VOXEL_BUILD_SHA);
 #endif
+    // Диагностический APK обязан объявляться сам, до всего остального:
+    // иначе по журналу не отличить его от обычного, и снимок экрана
+    // приписывается не тому режиму.
+    if (cfg::DIAGNOSTIC_BUILD)
+        LOGI(" debug_scene=true (build diagnostic mode)");
     LOGI("================================================");
     if (crash::logPath()[0])       LOGI("журнал: %s", crash::logPath());
     if (crash::sharedLogPath()[0]) LOGI("журнал (читается из Termux): %s",
