@@ -763,17 +763,20 @@ static std::string readSource(const char* path) {
 void testRenderPassSync() {
     group("vk: зависимость прохода рендера");
 
+    // Проход рендера живёт в отдельном модуле: его же строит
+    // офлайн-проверка графики tools/vkcheck, а vk_context.cpp тянет
+    // за собой окно Android.
+    const std::string rp = readSource("app/src/main/cpp/src/vk/vk_renderpass.cpp");
     const std::string src = readSource("app/src/main/cpp/src/vk/vk_context.cpp");
-    if (src.empty()) {
-        check(true, "исходник vk_context.cpp не найден, проверка пропущена");
+    if (src.empty() || rp.empty()) {
+        check(true, "исходники vk не найдены, проверка пропущена");
         return;
     }
 
-    const usize beg = src.find("bool Context::createRenderPass()");
-    check(beg != std::string::npos, "createRenderPass на месте");
+    const usize beg = rp.find("bool createVoxelRenderPass(");
+    check(beg != std::string::npos, "createVoxelRenderPass на месте");
     if (beg == std::string::npos) return;
-    const usize end = src.find("\nbool Context::", beg + 10);
-    const std::string body = src.substr(beg, end - beg);
+    const std::string body = rp.substr(beg);
 
     const usize dep = body.find("VkSubpassDependency dep{}");
     check(dep != std::string::npos, "зависимость подпрохода объявлена");
@@ -1175,6 +1178,71 @@ void testLodCoversGround() {
                       (unsigned)lod, sunken);
         check(sunken == 0, msg);
     }
+}
+
+// ------------------------------------------------------------
+// Обход граней чанка смотрит наружу.
+//
+// check_winding.py стережёт таблицы кубов мобов и предметов, а
+// геометрию мира строит мешер — и его обход не проверял никто. Цена
+// ошибки здесь ровно та же и даже хуже: при отсечении задних граней
+// отсекаются наружные, и мир виден изнутри. Именно этим и оказалась
+// поломка графики, только пришла она с другой стороны — из
+// объявления конвейера.
+//
+// Требование то же, что к кубам: нормаль, посчитанная по обходу
+// первого треугольника квада, обязана совпадать по направлению с
+// нормалью его грани.
+// ------------------------------------------------------------
+void testMeshWindingFacesOutward() {
+    group("render: обход граней чанка смотрит наружу");
+
+    world::blocks();
+    auto chunk = std::make_unique<world::Chunk>();
+    chunk->coord = {0, 0, 0};
+    // Одинокий блок в воздухе: у него видны все шесть граней сразу.
+    chunk->setUnlocked(16, 40, 16, world::STONE);
+
+    world::ChunkNeighbors nb;
+    std::vector<world::Quad> quads;
+    world::buildGreedyMesh(*chunk, nb, quads, world::Lod::Full);
+
+    std::vector<render::VoxelVertex> verts;
+    std::vector<u32> idx;
+    u32 opaque = 0;
+    render::buildChunkVertices(*chunk, quads, verts, idx, opaque);
+    check(opaque == 36, "у одинокого блока шесть граней, тридцать шесть индексов");
+
+    auto posOf = [&](u32 i) {
+        const u32 p = verts[i].packed;
+        return glm::vec3((f32)(p & 63u), (f32)((p >> 6) & 255u), (f32)((p >> 14) & 63u));
+    };
+
+    bool seen[6] = {};
+    int inward = 0;
+    for (u32 t = 0; t * 3 + 2 < opaque; ++t) {
+        const u32 ia = idx[t*3], ib = idx[t*3+1], ic = idx[t*3+2];
+        const u32 face = (verts[ia].packed >> 20) & 7u;
+        if (face > 5) { ++inward; continue; }
+        seen[face] = true;
+        const glm::vec3 n = glm::cross(posOf(ib) - posOf(ia), posOf(ic) - posOf(ia));
+        if (glm::dot(n, glm::vec3(render::FACE_NORMAL[face])) <= 0.f) ++inward;
+    }
+    check(inward == 0, "ни один треугольник не намотан внутрь");
+    bool all = true;
+    for (bool s2 : seen) all = all && s2;
+    check(all, "все шесть граней построены");
+
+    // И конвейер объявляет ту сторону, которая из этого следует.
+    const std::string pipe = readSource("app/src/main/cpp/src/vk/vk_pipeline.h");
+    if (!pipe.empty()) {
+        check(pipe.find("frontFace  = VK_FRONT_FACE_COUNTER_CLOCKWISE") != std::string::npos,
+              "конвейер считает лицевой грань, обойдённую против часовой стрелки");
+    }
+    const std::string rs = readSource("app/src/main/cpp/src/render/mob_renderer.cpp");
+    if (!rs.empty())
+        check(rs.find("VK_FRONT_FACE_CLOCKWISE") == std::string::npos,
+              "рендереры не переопределяют сторону по-своему");
 }
 
 void testVulkanGuards() {
@@ -2490,6 +2558,7 @@ int main() {
     testSaveFormat();
     testGreedyMesh();
     testLodCoversGround();
+    testMeshWindingFacesOutward();
     testVoxelShading();
     testDayCycle();
     testBossPhases();

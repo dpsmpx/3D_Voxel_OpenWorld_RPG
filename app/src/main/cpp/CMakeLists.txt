@@ -82,6 +82,7 @@ add_library(native-lib SHARED
     # Vulkan: контекст, буферы, пайплайны
     src/vk/vk_buffer.cpp
     src/vk/vk_context.cpp
+    src/vk/vk_renderpass.cpp
     src/vk/vk_descriptors.cpp
     src/vk/vk_pipeline.cpp
     src/vk/vk_shader.cpp
@@ -109,6 +110,7 @@ add_library(native-lib SHARED
     src/render/npc_renderer.cpp
     src/render/projectile_renderer.cpp
     src/render/render_system.cpp
+    src/render/voxel_pipeline.cpp
     src/render/skybox.cpp
 
     # Физика

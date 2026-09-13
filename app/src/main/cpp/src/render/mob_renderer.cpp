@@ -135,7 +135,6 @@ bool MobRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayo
     d.fragName    = "shaders/mob.frag.spv";
     d.depthFormat = ctx.depthFormat();
     d.cullMode    = VK_CULL_MODE_BACK_BIT;
-    d.frontFace   = VK_FRONT_FACE_CLOCKWISE;   // см. PipelineDesc: Y-flip проекции
     d.depthTest   = true;
     d.depthWrite  = true;
     d.blend       = false;

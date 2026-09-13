@@ -3,18 +3,12 @@
  * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
  */
 #include "render_system.h"
+#include "voxel_pipeline.h"
 #include "../core/log.h"
 #include "../config/settings.h"
 #include <glm/glm.hpp>
 
 namespace render {
-
-// Вершинный формат террейна — см. VoxelVertex в mesh_builder.h.
-static const vk::VertexBinding kVoxelBindings[1] = { { sizeof(VoxelVertex), false } };
-static const vk::VertexAttr kVoxelAttrs[2] = {
-    { 0, 0, VK_FORMAT_R32_UINT,       0 },   // inPacked: позиция, грань, AO, зерно
-    { 1, 0, VK_FORMAT_R8G8B8A8_UNORM, 4 },   // inColor: цвет материала грани
-};
 
 bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
     dev_ = ctx.device();
@@ -33,31 +27,10 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
     }
 
     {
-        vk::PipelineDesc d{};
-        d.renderPass  = ctx.renderPass();
-        d.descLayout  = descriptors_.layout();
-        d.vertName    = "shaders/voxel.vert.spv";
-        d.fragName    = "shaders/voxel.frag.spv";
-        d.depthFormat = ctx.depthFormat();
-        d.cullMode    = VK_CULL_MODE_BACK_BIT;
-        d.depthTest   = true;
-        d.depthWrite  = true;
-        d.blend       = false;
-        d.bindings     = kVoxelBindings;
-        d.bindingCount = 1;
-        d.attrs        = kVoxelAttrs;
-        d.attrCount    = 2;
-        d.pushConstantSize  = sizeof(ChunkPush);
-        d.pushConstantStage = VK_SHADER_STAGE_VERTEX_BIT;
+        vk::PipelineDesc d = voxelPipelineDesc(ctx.renderPass(), descriptors_.layout(),
+                                               ctx.depthFormat());
         if (!voxelPipeline_.create(dev_, shaders_, d)) return false;
-
-        // Полупрозрачный проход. Глубину читаем, но не пишем: две
-        // поверхности воды подряд иначе вырезают друг друга, и в
-        // озере появляются дыры. Грани не отсекаем — на поверхность
-        // воды смотрят и снизу.
-        d.blend      = true;
-        d.depthWrite = false;
-        d.cullMode   = VK_CULL_MODE_NONE;
+        makeVoxelBlendDesc(d);
         if (!voxelBlendPipeline_.create(dev_, shaders_, d)) return false;
     }
 

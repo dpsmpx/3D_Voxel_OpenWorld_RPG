@@ -1,0 +1,657 @@
+/**
+ * @file vkcheck.cpp
+ * @brief Настоящий Vulkan на хосте: те же шейдеры и тот же конвейер,
+ *        что в APK, только без устройства и без экрана.
+ *
+ * Зачем отдельный инструмент. tools/preview — программный растеризатор:
+ * он проверяет мешер и ничего не знает ни про SPIR-V, ни про формат
+ * вершины, ни про состояние конвейера. То есть ровно про ту половину
+ * рендера, где ошибки и живут, он молчит. Здесь наоборот: берутся
+ * настоящие .spv из assets, настоящий vk::GraphicsPipeline, настоящий
+ * проход рендера и настоящая раскладка вершин, а кадр рисуется в
+ * память через программную реализацию Vulkan (lavapipe).
+ *
+ * Слой проверки включён всегда: каждое его сообщение — провал.
+ */
+#include "vk/vk_context.h"
+#include "vk/vk_buffer.h"
+#include "vk/vk_pipeline.h"
+#include "vk/vk_shader.h"
+#include "vk/vk_descriptors.h"
+#include "render/mesh_builder.h"
+#include "render/camera.h"
+#include "render/voxel_pipeline.h"
+#include "world/chunk.h"
+#include "world/block.h"
+#include "world/terrain.h"
+#include "world/features.h"
+
+#include <cstdio>
+#include <cstdarg>
+#include <cstring>
+#include <cmath>
+#include <cstdlib>
+#include <algorithm>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+// ------------------------------------------------------------
+// Ассеты: ShaderCache открывает их через AAssetManager. На хосте
+// подменяем его чтением из каталога assets, чтобы путь загрузки
+// шейдера был тот же самый, что в игре.
+// ------------------------------------------------------------
+struct AAsset { std::vector<char> data; };
+static std::string g_assetRoot = "app/src/main/assets/";
+static std::string g_debugRoot;   ///< шейдеры самого инструмента
+
+extern "C" {
+// Журнал Android на хосте: строки идут в stdout. Настоящие стволы
+// hostcheck брать нельзя — там заглушен и весь Vulkan.
+int __android_log_print(int, const char* tag, const char* fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    std::printf("  [%s] ", tag);
+    std::vprintf(fmt, ap);
+    std::printf("\n");
+    va_end(ap);
+    return 0;
+}
+
+AAsset* AAssetManager_open(AAssetManager*, const char* name, int) {
+    std::FILE* f = std::fopen((g_assetRoot + name).c_str(), "rb");
+    if (!f && !g_debugRoot.empty())
+        f = std::fopen((g_debugRoot + name).c_str(), "rb");
+    if (!f) return nullptr;
+    std::fseek(f, 0, SEEK_END);
+    const long n = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    auto* a = new AAsset{};
+    a->data.resize((size_t)n);
+    if (std::fread(a->data.data(), 1, (size_t)n, f) != (size_t)n) { /* пусто */ }
+    std::fclose(f);
+    return a;
+}
+off_t       AAsset_getLength(AAsset* a) { return (off_t)a->data.size(); }
+long        AAsset_getLength64(AAsset* a) { return (long)a->data.size(); }
+const void* AAsset_getBuffer(AAsset* a) { return a->data.data(); }
+int         AAsset_read(AAsset*, void*, size_t) { return 0; }
+void        AAsset_close(AAsset* a) { delete a; }
+}
+
+// ------------------------------------------------------------
+namespace {
+
+int g_validationErrors = 0;
+
+VKAPI_ATTR VkBool32 VKAPI_CALL dbgCb(
+        VkDebugUtilsMessageSeverityFlagBitsEXT sev,
+        VkDebugUtilsMessageTypeFlagsEXT,
+        const VkDebugUtilsMessengerCallbackDataEXT* d, void*)
+{
+    if (sev & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+               VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)) {
+        ++g_validationErrors;
+        std::printf("  [слой] %s: %s\n",
+                    d->pMessageIdName ? d->pMessageIdName : "?", d->pMessage);
+    }
+    return VK_FALSE;
+}
+
+#define VKOK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { \
+    std::printf("vkcheck: %s -> %d (%s:%d)\n", #x, (int)r_, __FILE__, __LINE__); \
+    return 1; } } while (0)
+
+u32 memType(VkPhysicalDevice p, u32 bits, VkMemoryPropertyFlags want) {
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(p, &mp);
+    for (u32 i = 0; i < mp.memoryTypeCount; ++i)
+        if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & want) == want) return i;
+    return 0xFFFFFFFFu;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    int   W = 900, H = 560;
+    u64   seed = 12648430;
+    float px = 33.6f, pz = -2.7f, height = 5.f, yaw = 1.2f, pitch = -0.10f;
+    int   lod = 0;
+    int   debugMode = -1;
+    const char* cull = "";
+    int   oneTri = -1;
+    bool  assertSolid = false;
+    int   bestTri = -1, bestMesh = -1;
+    float bestArea = 0.f;
+    u32   bestFace = 0;
+    const char* out = "build/vkcheck/frame.ppm";
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        auto next = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : "0"; };
+        if      (a == "--size")   { W = atoi(next()); H = atoi(next()); }
+        else if (a == "--seed")   seed = (u64)strtoull(next(), nullptr, 10);
+        else if (a == "--pos")    { px = (float)atof(next()); pz = (float)atof(next()); }
+        else if (a == "--height") height = (float)atof(next());
+        else if (a == "--yaw")    yaw = (float)atof(next());
+        else if (a == "--pitch")  pitch = (float)atof(next());
+        else if (a == "--lod")    lod = atoi(next());
+        else if (a == "--out")    out = next();
+        else if (a == "--assets") g_assetRoot = std::string(next()) + "/";
+        else if (a == "--debug-assets") g_debugRoot = std::string(next()) + "/";
+        else if (a == "--debug") debugMode = atoi(next());
+        else if (a == "--cull")  cull = next();
+        else if (a == "--onetri") oneTri = atoi(next());
+        else if (a == "--assert-solid") assertSolid = true;
+        else { std::printf("vkcheck: неизвестный ключ %s\n", a.c_str()); return 2; }
+    }
+
+    // ---- инстанс со слоем проверки ----
+    const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
+    const char* exts[]   = { VK_EXT_DEBUG_UTILS_EXTENSION_NAME };
+
+    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    app.pApplicationName = "vkcheck";
+    app.apiVersion       = VK_API_VERSION_1_1;   // та же версия, что просит игра
+
+    VkDebugUtilsMessengerCreateInfoEXT dbg{
+        VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+    dbg.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                          VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    dbg.messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                          VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                          VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    dbg.pfnUserCallback = dbgCb;
+
+    VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    ici.pApplicationInfo        = &app;
+    ici.enabledLayerCount       = 1;
+    ici.ppEnabledLayerNames     = layers;
+    ici.enabledExtensionCount   = 1;
+    ici.ppEnabledExtensionNames = exts;
+    ici.pNext                   = &dbg;
+
+    VkInstance inst;
+    VKOK(vkCreateInstance(&ici, nullptr, &inst));
+    {
+        auto mk = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+            inst, "vkCreateDebugUtilsMessengerEXT");
+        VkDebugUtilsMessengerEXT m;
+        if (mk) mk(inst, &dbg, nullptr, &m);
+    }
+
+    u32 n = 0;
+    vkEnumeratePhysicalDevices(inst, &n, nullptr);
+    if (!n) { std::printf("vkcheck: нет устройств Vulkan\n"); return 1; }
+    std::vector<VkPhysicalDevice> devs(n);
+    vkEnumeratePhysicalDevices(inst, &n, devs.data());
+    VkPhysicalDevice phys = devs[0];
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(phys, &props);
+    std::printf("vkcheck: %s (API %u.%u)\n", props.deviceName,
+                VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion));
+
+    u32 qn = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(phys, &qn, nullptr);
+    std::vector<VkQueueFamilyProperties> qs(qn);
+    vkGetPhysicalDeviceQueueFamilyProperties(phys, &qn, qs.data());
+    u32 fam = 0;
+    for (u32 i = 0; i < qn; ++i) if (qs[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { fam = i; break; }
+
+    float prio = 1.f;
+    VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    qci.queueFamilyIndex = fam; qci.queueCount = 1; qci.pQueuePriorities = &prio;
+    VkPhysicalDeviceFeatures feats{};
+    feats.samplerAnisotropy = VK_TRUE;
+    feats.fillModeNonSolid  = VK_TRUE;
+    VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    dci.queueCreateInfoCount = 1; dci.pQueueCreateInfos = &qci;
+    dci.pEnabledFeatures = &feats;
+    VkDevice dev;
+    VKOK(vkCreateDevice(phys, &dci, nullptr, &dev));
+    VkQueue queue;
+    vkGetDeviceQueue(dev, fam, 0, &queue);
+
+    // ---- цели вывода: те же форматы, что на устройстве ----
+    const VkFormat COLOR = VK_FORMAT_R8G8B8A8_UNORM;
+    const VkFormat DEPTH = VK_FORMAT_D32_SFLOAT;
+
+    auto makeImage = [&](VkFormat fmt, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+                         VkImage& img, VkDeviceMemory& mem, VkImageView& view) -> bool {
+        VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ii.imageType = VK_IMAGE_TYPE_2D; ii.format = fmt;
+        ii.extent = { (u32)W, (u32)H, 1 };
+        ii.mipLevels = 1; ii.arrayLayers = 1;
+        ii.samples = VK_SAMPLE_COUNT_1_BIT; ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ii.usage = usage; ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(dev, &ii, nullptr, &img) != VK_SUCCESS) return false;
+        VkMemoryRequirements req; vkGetImageMemoryRequirements(dev, img, &req);
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ai.allocationSize = req.size;
+        ai.memoryTypeIndex = memType(phys, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(dev, &ai, nullptr, &mem) != VK_SUCCESS) return false;
+        vkBindImageMemory(dev, img, mem, 0);
+        VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vi.image = img; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = fmt;
+        vi.subresourceRange.aspectMask = aspect;
+        vi.subresourceRange.levelCount = 1; vi.subresourceRange.layerCount = 1;
+        return vkCreateImageView(dev, &vi, nullptr, &view) == VK_SUCCESS;
+    };
+
+    VkImage colorImg, depthImg; VkDeviceMemory colorMem, depthMem;
+    VkImageView colorView, depthView;
+    if (!makeImage(COLOR, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT, colorImg, colorMem, colorView)) return 1;
+    if (!makeImage(DEPTH, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                   VK_IMAGE_ASPECT_DEPTH_BIT, depthImg, depthMem, depthView)) return 1;
+
+    // ---- проход рендера: ровно тот, что строит vk::Context ----
+    VkRenderPass rp;
+    if (!vk::createVoxelRenderPass(dev, COLOR, DEPTH, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, &rp)) {
+        std::printf("vkcheck: проход рендера не создан\n"); return 1;
+    }
+
+    VkImageView atts[2] = { colorView, depthView };
+    VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fbi.renderPass = rp; fbi.attachmentCount = 2; fbi.pAttachments = atts;
+    fbi.width = (u32)W; fbi.height = (u32)H; fbi.layers = 1;
+    VkFramebuffer fb;
+    VKOK(vkCreateFramebuffer(dev, &fbi, nullptr, &fb));
+
+    // ---- конвейер: настоящие шейдеры и настоящее описание ----
+    vk::ShaderCache shaders;
+    shaders.init(dev, nullptr);
+    vk::DescriptorSet desc;
+    if (!desc.create(dev, 1)) { std::printf("vkcheck: дескрипторы\n"); return 1; }
+
+    vk::Buffer ubo;
+    if (!ubo.create(dev, phys, sizeof(render::CameraUbo), vk::BufferUsage::Uniform, true)) return 1;
+    desc.bindUbo(0, ubo.handle(), sizeof(render::CameraUbo));
+
+    vk::GraphicsPipeline opaquePipe, blendPipe;
+    {
+        vk::PipelineDesc d = render::voxelPipelineDesc(rp, desc.layout(), DEPTH);
+        if (!std::strcmp(cull, "none"))  d.cullMode = VK_CULL_MODE_NONE;
+        if (!std::strcmp(cull, "front")) d.cullMode = VK_CULL_MODE_FRONT_BIT;
+        if (!std::strcmp(cull, "back"))  d.cullMode = VK_CULL_MODE_BACK_BIT;
+        if (!std::strcmp(cull, "ccw"))   d.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        char dbgName[64];
+        if (debugMode >= 0) {
+            std::snprintf(dbgName, sizeof(dbgName), "shaders/debug%d.frag.spv", debugMode);
+            d.fragName = dbgName;   // вершинный шейдер остаётся игровым
+        }
+        if (!opaquePipe.create(dev, shaders, d)) { std::printf("vkcheck: конвейер\n"); return 1; }
+        render::makeVoxelBlendDesc(d);
+        if (!blendPipe.create(dev, shaders, d)) { std::printf("vkcheck: конвейер (вода)\n"); return 1; }
+    }
+
+    // ---- мир: тот же генератор и тот же мешер ----
+    world::blocks();
+    world::TerrainGenerator gen(seed);
+    const int R = 4;
+    struct Mesh { vk::Buffer vb, ib; u32 opaque = 0, total = 0; glm::vec3 origin{0}; };
+    std::vector<Mesh> meshes;
+    std::vector<std::shared_ptr<world::Chunk>> chunks;
+    std::vector<world::TerrainGenerator::Column> cols;
+    const i32 pcx = (i32)std::floor(px / (float)world::CHUNK_SIZE);
+    const i32 pcz = (i32)std::floor(pz / (float)world::CHUNK_SIZE);
+    for (i32 cz = pcz - R; cz <= pcz + R; ++cz)
+        for (i32 cx = pcx - R; cx <= pcx + R; ++cx) {
+            auto c = std::make_shared<world::Chunk>();
+            c->coord = { cx, 0, cz };
+            world::computeChunkColumns(gen, cx, cz, cols);
+            world::generateChunkVoxels(*c, gen, cols.data(), seed);
+            c->generated.store(true);
+            chunks.push_back(c);
+        }
+    auto findChunk = [&](i32 cx, i32 cz) -> const world::Chunk* {
+        for (auto& c : chunks) if (c->coord.x == cx && c->coord.z == cz) return c.get();
+        return nullptr;
+    };
+
+    std::vector<world::Quad> quads;
+    std::vector<render::VoxelVertex> verts;
+    std::vector<u32> idx;
+    usize totalQuads = 0;
+    // Статистика по ВСЕМ чанкам: то, что реально уходит на GPU.
+    usize aoHist[4] = {}, skyHist[8] = {}, faceHist[8] = {}, vertTotal = 0;
+    usize bySky[6][8] = {};
+    std::map<u32, usize> colorHist;
+    for (auto& c : chunks) {
+        world::ChunkNeighbors nb{};
+        nb.nx = findChunk(c->coord.x - 1, c->coord.z);
+        nb.px = findChunk(c->coord.x + 1, c->coord.z);
+        nb.nz = findChunk(c->coord.x, c->coord.z - 1);
+        nb.pz = findChunk(c->coord.x, c->coord.z + 1);
+        world::buildGreedyMesh(*c, nb, quads, (world::Lod)lod);
+        u32 opaque = 0;
+        render::buildChunkVertices(*c, quads, verts, idx, opaque);
+        totalQuads += quads.size();
+        for (const auto& v : verts) {
+            ++aoHist[(v.packed >> 23) & 3u];
+            ++skyHist[(v.packed >> 25) & 7u];
+            ++faceHist[(v.packed >> 20) & 7u];
+            ++bySky[(v.packed >> 20) & 7u][(v.packed >> 25) & 7u];
+            ++colorHist[((u32)v.r << 16) | ((u32)v.g << 8) | v.b];
+            ++vertTotal;
+        }
+        if (idx.empty()) continue;
+
+        Mesh m;
+        m.origin = { (float)c->coord.x * world::CHUNK_SIZE, 0.f,
+                     (float)c->coord.z * world::CHUNK_SIZE };
+        m.opaque = opaque;
+        m.total  = (u32)idx.size();
+        if (!m.vb.create(dev, phys, verts.size() * sizeof(render::VoxelVertex),
+                         vk::BufferUsage::Vertex, true)) return 1;
+        if (!m.ib.create(dev, phys, idx.size() * sizeof(u32),
+                         vk::BufferUsage::Index, true)) return 1;
+        m.vb.write(verts.data(), verts.size() * sizeof(render::VoxelVertex));
+        m.ib.write(idx.data(), idx.size() * sizeof(u32));
+        meshes.push_back(std::move(m));
+    }
+    std::printf("vkcheck: чанков %zu, квадов %zu, мешей %zu, уровень %d\n",
+                chunks.size(), totalQuads, meshes.size(), lod);
+    {
+        std::printf("  вершин всего %zu\n", vertTotal);
+        std::printf("  AO   :"); for (int i = 0; i < 4; ++i) std::printf(" %zu", aoHist[i]);
+        std::printf("\n  небо :"); for (int i = 0; i < 8; ++i) std::printf(" %zu", skyHist[i]);
+        std::printf("\n  грань:"); for (int i = 0; i < 6; ++i) std::printf(" %zu", faceHist[i]);
+        std::printf("\n");
+        static const char* FACE_NAME[6] = { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
+        for (int f = 0; f < 6; ++f) {
+            std::printf("  %s небо:", FACE_NAME[f]);
+            for (int k = 0; k < 8; ++k) std::printf(" %zu", bySky[f][k]);
+            std::printf("\n");
+        }
+        std::vector<std::pair<usize,u32>> top;
+        for (auto& [c, k] : colorHist) top.push_back({ k, c });
+        std::sort(top.rbegin(), top.rend());
+        std::printf("  цвета вершин, по убыванию:\n");
+        for (usize i = 0; i < top.size() && i < 8; ++i)
+            std::printf("    #%06X  %zu (%.1f%%)\n", top[i].second, top[i].first,
+                        100.0 * (double)top[i].first / (double)vertTotal);
+    }
+
+    // ---- камера: тот же класс, что в игре ----
+    render::Camera cam;
+    cam.setAspect((float)W / (float)H);
+    cam.setViewport((u32)W, (u32)H);
+    // Те же числа, что ставит RenderSystem::prepareFrame при дальности
+    // прорисовки 7 чанков — иначе туман в проверке гуще, чем в игре.
+    {
+        const float vdBlocks = 7.f * (float)world::CHUNK_SIZE;
+        cam.setFog(vdBlocks * 0.55f, vdBlocks * 0.94f);
+    }
+    cam.setSunDir(glm::vec3(0.35f, 0.78f, 0.25f));
+    cam.setSky(glm::vec3(0.55f, 0.72f, 0.92f), 1.f, 0.3f);
+    cam.setFirstPerson(true);
+    cam.setFirstPersonEye(height);
+    cam.setTargetPosition(glm::vec3(px, (float)gen.surfaceHeight((i32)px, (i32)pz), pz));
+    cam.setYawPitch(yaw, pitch);
+    {
+        world::ChunkManager* noWorld = nullptr;
+        (void)noWorld;
+        // followTarget требует мир для третьего лица; от первого лица
+        // достаточно позиции глаз, её и ставим напрямую.
+    }
+    render::CameraUbo u = cam.toUbo(0.f);
+    // Первое лицо: позиция камеры считается в followTarget, здесь
+    // подставляем её сами — мир для трассировки не нужен.
+    {
+        const glm::vec3 eye{ px, (float)gen.surfaceHeight((i32)px, (i32)pz) + height, pz };
+        glm::mat4 view = glm::lookAt(eye, eye + cam.forward(), glm::vec3(0, 1, 0));
+        u.viewProj    = cam.projection() * view;
+        u.invViewProj = glm::inverse(u.viewProj);
+        u.cameraPos   = glm::vec4(eye, 1.f);
+    }
+    ubo.write(&u, sizeof(u));
+
+    // Знак площади в координатах кадра — на тех же матрицах и тех же
+    // треугольниках, что уходят на GPU. По спецификации Vulkan
+    // (Basic Polygon Rasterization) лицевой считается отрицательная
+    // площадь при VK_FRONT_FACE_CLOCKWISE и положительная при
+    // COUNTER_CLOCKWISE. Верхняя грань (+Y) при взгляде сверху вниз
+    // обращена к камере наружу: её знак и есть знак лицевой грани.
+    {
+        usize pos[6] = {}, neg[6] = {};
+        std::vector<world::Quad> q2;
+        std::vector<render::VoxelVertex> v2;
+        std::vector<u32> i2;
+        u32 op2 = 0;
+        for (auto& c : chunks) {
+            world::ChunkNeighbors nb{};
+            nb.nx = findChunk(c->coord.x - 1, c->coord.z);
+            nb.px = findChunk(c->coord.x + 1, c->coord.z);
+            nb.nz = findChunk(c->coord.x, c->coord.z - 1);
+            nb.pz = findChunk(c->coord.x, c->coord.z + 1);
+            world::buildGreedyMesh(*c, nb, q2, (world::Lod)lod);
+            render::buildChunkVertices(*c, q2, v2, i2, op2);
+            const glm::vec3 org{ (float)c->coord.x * world::CHUNK_SIZE, 0.f,
+                                 (float)c->coord.z * world::CHUNK_SIZE };
+            auto fb = [&](const render::VoxelVertex& v) {
+                const u32 p = v.packed;
+                const glm::vec3 w = org + glm::vec3((float)(p & 63u),
+                                                    (float)((p >> 6) & 255u),
+                                                    (float)((p >> 14) & 63u));
+                const glm::vec4 cl = u.viewProj * glm::vec4(w, 1.f);
+                const glm::vec3 nd = glm::vec3(cl) / cl.w;
+                return glm::vec2{ (nd.x * 0.5f + 0.5f) * (float)W,
+                                  (nd.y * 0.5f + 0.5f) * (float)H };
+            };
+            for (u32 k = 0; k + 2 < op2; k += 3) {
+                const auto& A = v2[i2[k]]; const auto& B = v2[i2[k+1]];
+                const auto& C = v2[i2[k+2]];
+                const u32 face = (A.packed >> 20) & 7u;
+                if (face > 5) continue;
+                const glm::vec4 ca = u.viewProj * glm::vec4(org + glm::vec3(
+                    (float)(A.packed & 63u), (float)((A.packed >> 6) & 255u),
+                    (float)((A.packed >> 14) & 63u)), 1.f);
+                if (ca.w <= 0.f) continue;   // за камерой — знак не определён
+                const glm::vec2 a = fb(A), b = fb(B), d2 = fb(C);
+                const float area = 0.5f * ((a.x*b.y - b.x*a.y) + (b.x*d2.y - d2.x*b.y)
+                                         + (d2.x*a.y - a.x*d2.y));
+                if (area > 0.f) ++pos[face]; else if (area < 0.f) ++neg[face];
+            }
+        }
+        // Самый крупный треугольник, целиком попавший на экран: на нём
+        // и проводим очную ставку спецификации с драйвером.
+        {
+            usize mi = 0;
+            for (auto& c : chunks) {
+                world::ChunkNeighbors nb0{};
+                nb0.nx = findChunk(c->coord.x - 1, c->coord.z);
+                nb0.px = findChunk(c->coord.x + 1, c->coord.z);
+                nb0.nz = findChunk(c->coord.x, c->coord.z - 1);
+                nb0.pz = findChunk(c->coord.x, c->coord.z + 1);
+                world::buildGreedyMesh(*c, nb0, q2, (world::Lod)lod);
+                render::buildChunkVertices(*c, q2, v2, i2, op2);
+                if (i2.empty()) continue;
+                const glm::vec3 org{ (float)c->coord.x * world::CHUNK_SIZE, 0.f,
+                                     (float)c->coord.z * world::CHUNK_SIZE };
+                for (u32 t = 0; (t * 3 + 2) < op2; ++t) {
+                    glm::vec2 sp[3];
+                    bool okTri = true;
+                    for (int k = 0; k < 3; ++k) {
+                        const u32 pk = v2[i2[t*3+k]].packed;
+                        const glm::vec3 w = org + glm::vec3((float)(pk & 63u),
+                                                            (float)((pk >> 6) & 255u),
+                                                            (float)((pk >> 14) & 63u));
+                        const glm::vec4 cl = u.viewProj * glm::vec4(w, 1.f);
+                        if (cl.w <= 0.01f) { okTri = false; break; }
+                        const glm::vec3 nd = glm::vec3(cl) / cl.w;
+                        sp[k] = { (nd.x * 0.5f + 0.5f) * (float)W,
+                                  (nd.y * 0.5f + 0.5f) * (float)H };
+                        if (sp[k].x < 0 || sp[k].x > (float)W ||
+                            sp[k].y < 0 || sp[k].y > (float)H) { okTri = false; break; }
+                    }
+                    if (!okTri) continue;
+                    const float area = 0.5f *
+                        ((sp[0].x*sp[1].y - sp[1].x*sp[0].y) +
+                         (sp[1].x*sp[2].y - sp[2].x*sp[1].y) +
+                         (sp[2].x*sp[0].y - sp[0].x*sp[2].y));
+                    if (std::fabs(area) > std::fabs(bestArea)) {
+                        bestArea = area; bestTri = (int)t; bestMesh = (int)mi;
+                        bestFace = (v2[i2[t*3]].packed >> 20) & 7u;
+                    }
+                }
+                ++mi;
+            }
+            std::printf("  самый крупный видимый треугольник: меш %d, номер %d, "
+                        "грань %u, площадь кадра %.1f\n",
+                        bestMesh, bestTri, bestFace, (double)bestArea);
+        }
+        static const char* NM[6] = { "+X","-X","+Y","-Y","+Z","-Z" };
+        std::printf("  знак площади в кадре (та же матрица, что у GPU):\n");
+        for (int f = 0; f < 6; ++f)
+            std::printf("    %s: >0 %zu, <0 %zu\n", NM[f], pos[f], neg[f]);
+    }
+
+    // ---- запись и отправка кадра ----
+    VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pci.queueFamilyIndex = fam;
+    VkCommandPool pool; VKOK(vkCreateCommandPool(dev, &pci, nullptr, &pool));
+    VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cai.commandPool = pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1;
+    VkCommandBuffer cmd; VKOK(vkAllocateCommandBuffers(dev, &cai, &cmd));
+
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VKOK(vkBeginCommandBuffer(cmd, &bi));
+
+    VkClearValue clears[2];
+    clears[0].color = {{ 0.45f, 0.62f, 0.85f, 1.0f }};
+    clears[1].depthStencil = { 1.0f, 0 };
+    VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    rbi.renderPass = rp; rbi.framebuffer = fb;
+    rbi.renderArea.extent = { (u32)W, (u32)H };
+    rbi.clearValueCount = 2; rbi.pClearValues = clears;
+    vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport vp{}; vp.width = (float)W; vp.height = (float)H; vp.maxDepth = 1.f;
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    VkRect2D sc{}; sc.extent = { (u32)W, (u32)H };
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+
+    VkDescriptorSet set = desc.set(0);
+    // Один треугольник с заранее посчитанным знаком площади: это и
+    // есть очная ставка спецификации с драйвером. Если треугольник с
+    // отрицательной площадью при VK_FRONT_FACE_CLOCKWISE и отсечении
+    // задних граней не даёт ни одного пикселя, значит лицевой
+    // считается не та сторона, на которую рассчитывал код.
+    auto drawOne = [&](vk::GraphicsPipeline& pipe, int meshIdx, int tri) {
+        if (meshIdx < 0 || (usize)meshIdx >= meshes.size()) return;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.handle());
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.layout(),
+                                0, 1, &set, 0, nullptr);
+        auto& m = meshes[(usize)meshIdx];
+        const render::ChunkPush push{ glm::vec4(m.origin, 0.f) };
+        vkCmdPushConstants(cmd, pipe.layout(), VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(push), &push);
+        VkBuffer vb = m.vb.handle(); VkDeviceSize off = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
+        vkCmdBindIndexBuffer(cmd, m.ib.handle(), 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, 3, 1, (u32)tri * 3, 0, 0);
+    };
+
+    auto drawAll = [&](vk::GraphicsPipeline& pipe, bool blended) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.handle());
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.layout(),
+                                0, 1, &set, 0, nullptr);
+        for (auto& m : meshes) {
+            const u32 first = blended ? m.opaque : 0;
+            const u32 count = blended ? m.total - m.opaque : m.opaque;
+            if (!count) continue;
+            const render::ChunkPush push{ glm::vec4(m.origin, 0.f) };
+            vkCmdPushConstants(cmd, pipe.layout(), VK_SHADER_STAGE_VERTEX_BIT,
+                               0, sizeof(push), &push);
+            VkBuffer vb = m.vb.handle(); VkDeviceSize off = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
+            vkCmdBindIndexBuffer(cmd, m.ib.handle(), 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, count, 1, first, 0, 0);
+        }
+    };
+    if (oneTri >= 0) {
+        drawOne(opaquePipe, bestMesh, bestTri);
+    } else {
+        drawAll(opaquePipe, false);
+        drawAll(blendPipe,  true);
+    }
+
+    vkCmdEndRenderPass(cmd);
+
+    // Копия в буфер для чтения.
+    const VkDeviceSize bytes = (VkDeviceSize)W * H * 4;
+    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bci.size = bytes; bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkBuffer readBuf; VKOK(vkCreateBuffer(dev, &bci, nullptr, &readBuf));
+    VkMemoryRequirements br; vkGetBufferMemoryRequirements(dev, readBuf, &br);
+    VkMemoryAllocateInfo bai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    bai.allocationSize = br.size;
+    bai.memoryTypeIndex = memType(phys, br.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkDeviceMemory readMem; VKOK(vkAllocateMemory(dev, &bai, nullptr, &readMem));
+    vkBindBufferMemory(dev, readBuf, readMem, 0);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = { (u32)W, (u32)H, 1 };
+    vkCmdCopyImageToBuffer(cmd, colorImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           readBuf, 1, &region);
+    VKOK(vkEndCommandBuffer(cmd));
+
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
+    VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence; VKOK(vkCreateFence(dev, &fi, nullptr, &fence));
+    VKOK(vkQueueSubmit(queue, 1, &si, fence));
+    VKOK(vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX));
+
+    void* mapped = nullptr;
+    VKOK(vkMapMemory(dev, readMem, 0, bytes, 0, &mapped));
+    const u8* pix = (const u8*)mapped;
+    std::FILE* f = std::fopen(out, "wb");
+    if (!f) { std::printf("vkcheck: не открыть %s\n", out); return 1; }
+    std::fprintf(f, "P6\n%d %d\n255\n", W, H);
+    for (int i = 0; i < W * H; ++i) std::fwrite(pix + (usize)i * 4, 1, 3, f);
+    std::fclose(f);
+    vkUnmapMemory(dev, readMem);
+
+    // Признак вывернутого наизнанку мира — не дыры, а темнота.
+    //
+    // Отсекая наружные грани, мы показываем изнанку: у неё открытость
+    // неба ноль, потому что она и правда закрыта землёй. Освещение
+    // честно считает такую поверхность почти чёрной. Земля под ногами
+    // при этом никуда не девается — она просто чёрная, — поэтому
+    // «сколько видно фона» ничего не различает, а средняя яркость
+    // нижней половины кадра различает с запасом в разы.
+    double lumaBelow = 0.0;
+    {
+        usize drawn = 0, half = 0;
+        double sum = 0.0;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                const u8* p2 = pix + ((usize)y * (usize)W + (usize)x) * 4;
+                if (p2[0] != 115 || p2[1] != 158 || p2[2] != 217) ++drawn;
+                if (y >= H / 2) {
+                    ++half;
+                    sum += (0.2126 * p2[0] + 0.7152 * p2[1] + 0.0722 * p2[2]) / 255.0;
+                }
+            }
+        lumaBelow = half ? sum / (double)half : 0.0;
+        std::printf("vkcheck: пикселей отличных от фона: %zu; средняя яркость "
+                    "нижней половины кадра: %.3f\n", drawn, lumaBelow);
+    }
+    std::printf("vkcheck: кадр -> %s (%dx%d), сообщений слоя проверки: %d\n",
+                out, W, H, g_validationErrors);
+    vkDeviceWaitIdle(dev);
+
+    // Порог с большим запасом: у целого мира в этом виде фона внизу
+    // ноль, у вывернутого — больше половины.
+    const bool hollow = assertSolid && lumaBelow < 0.25;
+    if (hollow)
+        std::printf("vkcheck: ПРОВАЛ — земля под ногами тёмная: видна изнанка мира, "
+                    "наружные грани отсекаются\n");
+    return (g_validationErrors || hollow) ? 1 : 0;
+}

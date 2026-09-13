@@ -18,7 +18,7 @@ SHADERS = os.path.join(CPP, 'shaders')
 
 # Какой .cpp объявляет формат для какого вершинного шейдера.
 PAIRS = [
-    ('src/render/render_system.cpp',      'voxel.vert'),
+    ('src/render/voxel_pipeline.cpp',      'voxel.vert'),
     ('src/ui/ui_renderer.cpp',            'ui.vert'),
     ('src/render/block_outline.cpp',      'outline.vert'),
     ('src/render/instanced_renderer.cpp', 'grass.vert'),

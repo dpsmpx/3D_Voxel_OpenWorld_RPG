@@ -11,6 +11,20 @@
 
 namespace vk {
 
+/// Проход рендера мира — одно описание на игру и на проверку.
+///
+/// Вынесено из Context затем, что офлайн-проверка графики
+/// (tools/vkcheck) обязана строить ТОТ ЖЕ проход: зависимости
+/// подпрохода, операции загрузки и раскладки вложений — это ровно то
+/// место, где ошибка видна только на устройстве. Пока числа жили
+/// внутри Context, проверить их было нечем: Context требует окна
+/// Android и цепочки показа, а проверка идёт без экрана.
+///
+/// finalColorLayout — единственное, чем два случая отличаются: игра
+/// отдаёт изображение показу, проверка — копированию.
+bool createVoxelRenderPass(VkDevice dev, VkFormat color, VkFormat depth,
+                           VkImageLayout finalColorLayout, VkRenderPass* out);
+
 class Context {
 public:
     bool init(ANativeWindow* window);
