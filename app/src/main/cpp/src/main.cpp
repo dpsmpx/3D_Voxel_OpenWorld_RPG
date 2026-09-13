@@ -127,6 +127,9 @@ struct Engine {
     std::string internalDataPath;
 
     glm::vec2 cameraYawPitch{ 0.f, -0.35f };
+    /// Счётчики отладочной сцены — только для доказательства изоляции.
+    f32 debugSceneTimer_  = 0.f;
+    u64 debugSceneFrames_ = 0;
     glm::vec3 playerSpawn{ 4.5f, 60.f, 4.5f };
 
     u32 btnJump_    = 0;
@@ -465,7 +468,9 @@ struct Engine {
     void releaseWorld() { world.reset(); }
 
     void onWindowTerm() {
-        if (initialized && player && world) {
+        // Отладочная сцена — не мир игрока: записать её в автосейв
+        // значит затереть настоящее сохранение ровной землёй.
+        if (initialized && player && world && !cfg::settingsConst().debugScene) {
             LOGI("Автосейв при выходе...");
             doSave(save::SaveManager::AUTOSAVE_PROFILE,
                    save::SaveManager::AUTOSAVE_SLOT);
@@ -732,8 +737,82 @@ struct Engine {
         if (ui) ui->setSurfaceRotation(vk.surfaceRotationDegrees());
     }
 
+    /// Кадр отладочной сцены: камера, подгрузка чанков и больше ничего.
+    void updateDebugScene(f32 timeSec) {
+        (void)timeSec;
+        const glm::vec3 eye{ world::SCENE_EYE_X, world::SCENE_EYE_Y,
+                             world::SCENE_EYE_Z };
+
+        auto& cam = render->camera();
+        cam.setDebugCamera(eye, world::SCENE_YAW, world::SCENE_PITCH);
+        cam.setSunDir({ world::SCENE_SUN_X, world::SCENE_SUN_Y, world::SCENE_SUN_Z });
+        cam.setSky({ world::SCENE_SKY_R, world::SCENE_SKY_G, world::SCENE_SKY_B },
+                   world::SCENE_SKY_LIGHT, world::SCENE_TIME_OF_DAY);
+
+        // Чанки грузятся вокруг камеры, а не вокруг игрока: игрок в
+        // этом режиме не двигается и не существует для сцены.
+        world->update(eye);
+
+        // Игрока держим ровно под камерой и неподвижным: его позицию
+        // читают подсистемы, которые здесь не работают, но пусть она
+        // будет осмысленной, а не той, где его оставил генератор.
+        player->controller.setPosition(eye);
+
+        // Касания принимаются, но никуда не идут: буферы всё равно
+        // надо закрывать покадрово, иначе состояние пальцев копится.
+        evJump_ = evBreak_ = evPlace_ = evAttack_ = evFinish_ =
+            evInteract_ = evUseItem_ = false;
+        touch.endFrame();
+
+        debugSceneLog();
+    }
+
+    /// Доказательство изоляции. Печатается раз в секунду: если хоть
+    /// одно число поедет между кадрами, стенд негоден и это видно
+    /// сразу, а не после сравнения картинок.
+    void debugSceneLog() {
+        debugSceneTimer_ += world::SCENE_FIXED_DT;
+        if (debugSceneTimer_ < 1.f && debugSceneFrames_ != 0) {
+            ++debugSceneFrames_;
+            return;
+        }
+        debugSceneTimer_ = 0.f;
+        ++debugSceneFrames_;
+
+        const glm::vec3 p = render->camera().position();
+        LOGI("debug_scene=true кадр %llu | камера %.3f %.3f %.3f, "
+             "yaw %.4f pitch %.4f | время мира %.3f, шаг кадра %.4f | "
+             "мобы %zu, NPC %zu, предметы %zu, снаряды %zu | "
+             "чанков загружено %zu, нарисовано %u",
+             (unsigned long long)debugSceneFrames_,
+             (double)p.x, (double)p.y, (double)p.z,
+             (double)render->camera().yaw(), (double)render->camera().pitch(),
+             (double)world::SCENE_TIME_SEC, (double)world::SCENE_FIXED_DT,
+             registry.pool<mobs::MobAI>().size(),
+             registry.pool<npc::NpcAI>().size(),
+             registry.pool<items::ItemPickup>().size(),
+             registry.pool<combat::Projectile>().size(),
+             world->loadedChunks(),
+             render->drawnChunks());
+    }
+
     void update(f32 dt, f32 timeSec) {
         if (!player || !world || !render) return;
+
+        // Отладочная сцена — отдельный, очень короткий путь.
+        //
+        // Стенд считается пригодным, только если в нём НИЧЕГО не
+        // шевелится само: иначе два кадра нельзя сравнить, а
+        // расхождение нельзя приписать рендеру. Поэтому здесь не
+        // выполняется ни одна игровая система — ни ввод, ни физика
+        // игрока, ни сутки, ни появление мобов и NPC, ни их ИИ, ни
+        // предметы, ни снаряды, ни бой, ни задания, ни автосейв.
+        // Остаётся ровно то, без чего сцены не будет: подгрузка
+        // чанков вокруг неподвижной камеры.
+        if (cfg::settingsConst().debugScene) {
+            updateDebugScene(timeSec);
+            return;
+        }
 
         playtime.tick(dt);
         dayCycle.tick(dt);
@@ -1339,10 +1418,18 @@ extern "C" void android_main(android_app* app) {
             if (dt > 0.1f) dt = 0.1f;
             if (dt < 0.f)  dt = 0.f;
 
+            // Отладочная сцена живёт на постоянном шаге: настоящий dt
+            // пляшет от загрузки телефона, и всё, что на него смотрит,
+            // делало бы кадр разным от запуска к запуску.
+            const bool dbgScene = cfg::settingsConst().debugScene;
+            if (dbgScene) dt = world::SCENE_FIXED_DT;
+
             // Время отсчитывается от старта приложения: секунды от
             // эпохи (~1.75e9) во float дают шаг дискретизации ~128 с,
             // из-за чего ломался цикл дня и ночи и анимация в шейдерах.
-            const f32 timeSec = std::chrono::duration<f32>(now - startTime).count();
+            f32 timeSec = std::chrono::duration<f32>(now - startTime).count();
+            // И на постоянном времени: по нему качается трава в шейдере.
+            if (dbgScene) timeSec = world::SCENE_TIME_SEC;
 
             // Покадровая раскладка по этапам. Без неё «15 кадров в
             // секунду» ничего не говорит: узкое место может быть в

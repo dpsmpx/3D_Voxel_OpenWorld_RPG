@@ -42,20 +42,56 @@ public:
     }
     const glm::vec3& skyColor() const { return skyColor_; }
 
-    void setYawPitch(f32 y, f32 p)        { yaw_ = y; pitch_ = glm::clamp(p, -1.5f, 1.5f); }
+    void setYawPitch(f32 y, f32 p) {
+        if (debugCamera_) return;              // см. setDebugCamera
+        yaw_ = y; pitch_ = glm::clamp(p, -1.5f, 1.5f);
+    }
     f32  yaw()   const { return yaw_; }
     f32  pitch() const { return pitch_; }
 
     /// Камера-таргет (позиция ступней игрока)
-    void setTargetPosition(const glm::vec3& t) { targetPos_ = t; }
-    void setFirstPerson(bool fp)               { firstPerson_ = fp; }
-    void setFirstPersonEye(f32 e)              { firstEyeH_ = e; }
-    void setThirdPersonDistance(f32 d)         { thirdDist_ = d; }
-    void setThirdPersonHeight(f32 h)           { thirdOff_ = h; }
-    void setHeadBob(f32 phase, f32 amount)     { bobPhase_ = phase; bobAmount_ = amount; }
+    void setTargetPosition(const glm::vec3& t) {
+        if (debugCamera_) return;              // см. setDebugCamera
+        targetPos_ = t;
+    }
+    // Все, кто двигает камеру, обязаны молчать при прибитой камере:
+    // владелец у неё в отладочном режиме ровно один, см. setDebugCamera.
+    void setFirstPerson(bool fp)       { if (!debugCamera_) firstPerson_ = fp; }
+    void setFirstPersonEye(f32 e)      { if (!debugCamera_) firstEyeH_ = e; }
+    void setThirdPersonDistance(f32 d) { if (!debugCamera_) thirdDist_ = d; }
+    void setThirdPersonHeight(f32 h)   { if (!debugCamera_) thirdOff_ = h; }
+    void setHeadBob(f32 phase, f32 amount) {
+        if (debugCamera_) return;
+        bobPhase_ = phase; bobAmount_ = amount;
+    }
 
-    /// Вычислить позицию камеры с учётом коллизии. Вызывается после setTargetPosition.
+    /// Прибивает камеру намертво: ни followTarget, ни покачивание
+    /// головы, ни ввод её больше не двигают.
+    ///
+    /// Владелец у камеры в отладочном режиме обязан быть ровно один.
+    /// Раньше отладочные значения ставились ДО followTarget, и та
+    /// пересчитывала position_ заново — совпадение держалось только на
+    /// том, что рост глаз и тряска обнулены. Достаточно кому-нибудь
+    /// поставить рост глаз позже, и сцена тихо разъезжается.
+    void setDebugCamera(const glm::vec3& eye, f32 yaw, f32 pitch) {
+        debugCamera_ = true;
+        position_    = eye;
+        targetPos_   = eye;
+        yaw_         = yaw;
+        pitch_       = pitch;
+        bobPhase_    = 0.f;
+        bobAmount_   = 0.f;
+        firstEyeH_   = 0.f;
+        firstPerson_ = true;
+    }
+    bool debugCamera() const { return debugCamera_; }
+
+    /// Вычислить позицию камеры с учётом коллизии. Вызывается после
+    /// setTargetPosition.
     void followTarget(world::ChunkManager& world, const glm::vec3& aimDir) {
+        // Прибитую камеру не двигает никто.
+        if (debugCamera_) return;
+
         /// Сглаженная цель (чуть выше ступней для третьего лица)
         glm::vec3 pivot = targetPos_ + glm::vec3(0, thirdOff_, 0);
 
@@ -167,6 +203,7 @@ private:
     // равно не подходит: её не пускают столкновения.
     f32 near_ = 0.1f, far_ = 512.f;
     i32 debugShading_ = 0;
+    bool debugCamera_ = false;
     u32 screenW_ = 1080, screenH_ = 1920;
     u32 surfaceRot_ = 0;
     f32 fogStart_ = 150.f, fogEnd_ = 400.f;

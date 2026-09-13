@@ -34,6 +34,7 @@
 #include "world/debug_scene.h"
 #include "world/chunk_manager.h"
 #include "render/mesh_builder.h"
+#include "render/camera.h"
 #include "vk/vk_buffer.h"
 #include "vk/vk_texture.h"
 #include "world/noise.h"
@@ -762,6 +763,126 @@ static std::string readSource(const char* path) {
 // тест глубины читает. На экране это выглядело как «видно сквозь
 // блоки»: глубина одного кадра проверялась против остатков другого.
 // ------------------------------------------------------------
+void testDebugSceneIsolated() {
+    group("сцена: стенд изолирован");
+
+    // 1. Камера. Прибитую камеру не должен двигать никто: ни
+    //    followTarget, ни ввод, ни покачивание головы.
+    render::Camera cam;
+    cam.setDebugCamera({ world::SCENE_EYE_X, world::SCENE_EYE_Y,
+                         world::SCENE_EYE_Z },
+                       world::SCENE_YAW, world::SCENE_PITCH);
+    const glm::vec3 eye0 = cam.position();
+    const f32 yaw0 = cam.yaw(), pitch0 = cam.pitch();
+
+    cam.setTargetPosition({ 1.f, 2.f, 3.f });
+    cam.setYawPitch(1.234f, 0.5f);
+    cam.setHeadBob(3.f, 0.4f);
+    cam.setFirstPersonEye(1.7f);
+    cam.setThirdPersonDistance(5.f);
+    cam.setFirstPerson(false);
+
+    check(cam.position() == eye0, "положение прибитой камеры не сдвинуть");
+    check(cam.yaw() == yaw0 && cam.pitch() == pitch0,
+          "поворот прибитой камеры не сбить");
+
+    // followTarget — тот самый вызов, который раньше переписывал
+    // отладочные значения обратно.
+    {
+        world::ChunkManager w(12648430, 2);
+        cam.followTarget(w, glm::vec3(0.f, 0.f, 1.f));
+    }
+    check(cam.position() == eye0, "после followTarget камера на месте");
+    check(cam.debugCamera(), "признак прибитой камеры держится");
+
+    // Обычная камера обязана остаться подвижной.
+    render::Camera live;
+    live.setYawPitch(0.7f, -0.2f);
+    check(live.yaw() == 0.7f, "обычную камеру по-прежнему можно повернуть");
+    check(!live.debugCamera(), "обычная камера не помечена отладочной");
+
+    // Заслон в самом followTarget поведением не проверить: остальные
+    // заслоны уже обнулили всё, из чего она считает положение, и
+    // снятие любого ОДНОГО заслона картинку не меняет. Это хорошо для
+    // надёжности и плохо для проверки, поэтому наличие заслона
+    // подтверждаем по исходнику.
+    {
+        const std::string ch = readSource("app/src/main/cpp/src/render/camera.h");
+        const usize ft = ch.find("void followTarget(");
+        check(ft != std::string::npos, "followTarget на месте");
+        if (ft != std::string::npos)
+            check(ch.substr(ft, 200).find("if (debugCamera_) return;") != std::string::npos,
+                  "followTarget сама отказывается двигать прибитую камеру");
+    }
+
+    // 2. Игровые системы. В отладочном кадре не должно выполняться ни
+    //    одной из них — проверяем по исходнику, что развилка стоит
+    //    ДО них и выходит из функции.
+    const std::string m = readSource("app/src/main/cpp/src/main.cpp");
+    if (m.empty()) { check(true, "main.cpp не найден, проверка пропущена"); return; }
+
+    const usize upd = m.find("void update(f32 dt, f32 timeSec)");
+    check(upd != std::string::npos, "update на месте");
+    if (upd == std::string::npos) return;
+
+    const usize gate = m.find("updateDebugScene(timeSec)", upd);
+    check(gate != std::string::npos, "развилка отладочной сцены в update есть");
+    if (gate == std::string::npos) return;
+
+    // Всё, что шевелит мир, обязано идти ПОСЛЕ развилки.
+    static const char* SYSTEMS[] = {
+        "dayCycle.tick", "playtime.tick", "spawner->update",
+        "mobs::updateMobs", "npcSpawner->update", "npc::updateNpcs",
+        "items::updatePickups", "combat::updateProjectiles",
+        "combat::tickStatuses", "quests::tickQuestTime",
+        "player->updateWithHash", "cameraYawPitch.x -=",
+        "autosaveTimer +=",
+    };
+    bool allAfter = true;
+    for (const char* sys : SYSTEMS) {
+        const usize at = m.find(sys, upd);
+        if (at == std::string::npos || at < gate) { allAfter = false; break; }
+    }
+    check(allAfter, "ни одна игровая система не выполняется до развилки");
+
+    // И развилка обязана возвращать управление, а не проваливаться дальше.
+    const std::string tail = m.substr(gate, 120);
+    check(tail.find("return;") != std::string::npos,
+          "после отладочного кадра управление возвращается");
+
+    // 3. Автосейв не затирает настоящее сохранение отладочным миром.
+    const usize term = m.find("void onWindowTerm()");
+    check(term != std::string::npos, "onWindowTerm на месте");
+    if (term != std::string::npos)
+        check(m.substr(term, 600).find("!cfg::settingsConst().debugScene")
+                  != std::string::npos,
+              "при отладочной сцене автосейв на выходе не пишется");
+
+    // 4. Постоянные шаг кадра и время мира.
+    check(m.find("dt = world::SCENE_FIXED_DT") != std::string::npos,
+          "шаг кадра в отладочном режиме постоянный");
+    check(m.find("timeSec = world::SCENE_TIME_SEC") != std::string::npos,
+          "время мира в отладочном режиме постоянное");
+
+    // 5. Доказательство изоляции печатается.
+    check(m.find("debug_scene=true кадр") != std::string::npos,
+          "строка доказательства изоляции печатается");
+
+    // 6. Хост берёт освещение и время из тех же констант, а камеру
+    //    ставит тем же вызовом.
+    const std::string v = readSource("tools/vkcheck/vkcheck.cpp");
+    if (!v.empty()) {
+        check(v.find("world::SCENE_SUN_X") != std::string::npos,
+              "хост берёт солнце из констант сцены");
+        check(v.find("cam.toUbo(world::SCENE_TIME_SEC)") != std::string::npos,
+              "хост берёт время из констант сцены");
+        check(v.find("cam.setDebugCamera(eye, yaw, pitch)") != std::string::npos,
+              "хост ставит камеру тем же вызовом, что игра");
+        check(v.find("glm::lookAt(eye, eye + cam.forward()") == std::string::npos,
+              "второго владельца камеры на хосте не осталось");
+    }
+}
+
 void testMinimalScene() {
     group("сцена: минимальная детерминированная");
 
@@ -2761,6 +2882,7 @@ int main() {
     testRenderPassSync();
     testDebugShadingWired();
     testMinimalScene();
+    testDebugSceneIsolated();
     testUiTapSurvivesRedraw();
     testHudAndButtonsDoNotOverlap();
     testBufferMapContract();
