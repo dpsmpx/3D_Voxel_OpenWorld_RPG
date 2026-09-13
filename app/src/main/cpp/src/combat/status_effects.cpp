@@ -8,6 +8,7 @@
 #include "../mobs/mob_def.h"
 #include "../mobs/mob_ai.h"
 #include "../progression/progression.h"
+#include "../quests/quest.h"
 #include <algorithm>
 
 namespace combat {
@@ -53,6 +54,16 @@ static void onTargetDeath(ecs::Registry& reg,
     if (auto* tag = reg.get<mobs::MobTag>(target)) {
         const auto& def = mobs::mobRegistry().get(tag->id);
         xpReward = def.xpReward;
+
+        // Цели вида «убить N таких-то» отмечаются здесь же, где
+        // начисляется опыт: это единственное место, которое знает и
+        // убийцу, и вид убитого, и срабатывает ровно один раз.
+        // Функция quests::notifyMobKilled существовала, но её никто
+        // не вызывал — а на такие цели приходится большинство
+        // выдаваемых квестов, и счётчик у них навсегда оставался в
+        // нуле. Проверка на Progression выше заодно отсекает мобов,
+        // убивающих друг друга: квесты считают только игрока.
+        quests::notifyMobKilled(reg, killerEntity, tag->id);
     }
 
     if (xpReward > 0) {

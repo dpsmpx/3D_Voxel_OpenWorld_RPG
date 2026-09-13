@@ -3,6 +3,7 @@
  * @brief Предметы: определения, инвентарь, лут, подбор, использование.
  */
 #include "item_pickup.h"
+#include "../quests/quest.h"
 #include "../ecs/components.h"
 #include "../physics/raycast.h"
 #include "../world/block.h"
@@ -131,12 +132,20 @@ void updatePickups(world::ChunkManager& world,
         f32 d2 = glm::dot(d, d);
         if (d2 > p->pickupRadius * p->pickupRadius) continue;
 
+        // Вид предмета запоминаем до того, как стек опустеет.
+        const u16 pickedId = p->stack.itemId;
         auto res = inv->addStack(p->stack);
         if (res.added > 0) {
             p->stack.count -= res.added;
             if (p->stack.empty() || p->stack.count == 0) {
                 toRemove.push_back(e);
             }
+            // Цели вида «принести N таких-то». Функция
+            // quests::notifyItemCollected существовала, но её никто не
+            // вызывал: такие квесты можно было взять, набить полный
+            // рюкзак нужного — и счётчик оставался в нуле.
+            quests::notifyItemCollected(reg, (u32)playerEntity,
+                                        pickedId, (i32)res.added);
         }
     }
 

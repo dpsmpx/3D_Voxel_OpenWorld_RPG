@@ -20,6 +20,11 @@
 #include "progression/progression.h"
 #include "factions/faction.h"
 #include "quests/quest.h"
+#include "quests/quest_def.h"
+#include "combat/status_effects.h"
+#include "combat/damage.h"
+#include "mobs/mob_def.h"
+#include "mobs/mob_ai.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
 #include "save/save_format.h"
@@ -1887,6 +1892,107 @@ void testPlayerSaveRoundTrip() {
     }
 }
 
+
+// ------------------------------------------------------------
+// Прогресс квестов.
+//
+// Функции notifyMobKilled и notifyItemCollected существовали, были
+// написаны правильно — и их никто не вызывал. А на цели «убить N
+// таких-то» и «принести N таких-то» приходится большинство
+// выдаваемых квестов: генератор берёт их с весами 5 и 4 из 13.
+// То есть примерно у семи квестов из десяти счётчик навсегда
+// оставался в нуле. Взял квест, перебил всех — ничего не произошло.
+//
+// Проверяем НЕ сами notify-функции (они и раньше работали), а путь
+// целиком: от удара по мобу до счётчика в журнале. Пропущенная связь
+// ловится только так.
+// ------------------------------------------------------------
+void testQuestProgress() {
+    group("quests: прогресс целей");
+
+    mobs::mobRegistry();
+    ecs::Registry reg;
+
+    // Игрок с журналом и взятым квестом «убить двух».
+    const ecs::Entity player = reg.create();
+    reg.add(player, ecs::Health{ 100.f, 100.f, 0.f, 0.f });
+    reg.add(player, progression::Progression{});
+
+    const u16 mobId = 1;
+    const ecs::Entity questEnt = reg.create();
+    quests::Quest q{};
+    q.id = 1;
+    q.tmpl.type = quests::QuestType::Kill;
+    q.tmpl.targetMobId = mobId;
+    q.tmpl.requiredCount = 2;
+    q.state = quests::QuestState::Active;
+    q.ownerEntity = (u32)player;
+    reg.add(questEnt, q);
+
+    quests::QuestLog qlog;
+    qlog.activeQuests.push_back(questEnt);
+    reg.add(player, qlog);
+
+    // Моб, которого сейчас убьют ударом от игрока.
+    auto spawnMob = [&]() {
+        const ecs::Entity m = reg.create();
+        reg.add(m, ecs::Health{ 5.f, 5.f, 0.f, 0.f });
+        reg.add(m, ecs::AIAgent{});
+        reg.add(m, mobs::MobTag{ mobId });
+        reg.add(m, combat::StatusEffects{});
+        return m;
+    };
+
+    auto killByPlayer = [&](ecs::Entity m) {
+        combat::DamageInstance dmg;
+        dmg.amount = 999.f;
+        dmg.sourceEntity = (u32)player;
+        dmg.targetEntity = (u32)m;
+        combat::applyDamage(reg, m, dmg);
+    };
+
+    auto* liveQuest = reg.get<quests::Quest>(questEnt);
+    check(liveQuest && liveQuest->progress == 0, "счётчик начинается с нуля");
+
+    killByPlayer(spawnMob());
+    check(liveQuest && liveQuest->progress == 1,
+          "убийство подходящего моба двигает счётчик");
+
+    killByPlayer(spawnMob());
+    check(liveQuest && liveQuest->progress == 2, "второе убийство тоже");
+    check(liveQuest && liveQuest->state == quests::QuestState::Completed,
+          "набрав требуемое, квест становится выполненным");
+
+    // Чужой вид не засчитывается.
+    {
+        auto* q2 = reg.get<quests::Quest>(questEnt);
+        q2->state = quests::QuestState::Active;
+        q2->progress = 0;
+        const ecs::Entity other = reg.create();
+        reg.add(other, ecs::Health{ 5.f, 5.f, 0.f, 0.f });
+        reg.add(other, ecs::AIAgent{});
+        reg.add(other, mobs::MobTag{ (u16)(mobId + 1) });
+        reg.add(other, combat::StatusEffects{});
+        killByPlayer(other);
+        check(q2->progress == 0, "убийство чужого вида не засчитывается");
+    }
+
+    // Убийство не игроком не засчитывается: у моба нет прогрессии,
+    // и квесты считают только игрока.
+    {
+        auto* q2 = reg.get<quests::Quest>(questEnt);
+        q2->progress = 0;
+        const ecs::Entity killer = reg.create();   // моб без Progression
+        const ecs::Entity victim = spawnMob();
+        combat::DamageInstance dmg;
+        dmg.amount = 999.f;
+        dmg.sourceEntity = (u32)killer;
+        dmg.targetEntity = (u32)victim;
+        combat::applyDamage(reg, victim, dmg);
+        check(q2->progress == 0, "чужое убийство игроку не засчитывается");
+    }
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -1910,6 +2016,7 @@ int main() {
     testSaveRoundTrip();
     testWorldDeltaRoundTrip();
     testPlayerSaveRoundTrip();
+    testQuestProgress();
     testInventoryInvariants();
     testTrade();
     testDialogueOpensScreens();
