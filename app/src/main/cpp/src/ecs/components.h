@@ -53,12 +53,10 @@ struct Attributes {
     i32 endurance    = 10;
 };
 
-struct Experience {
-    u64 current = 0;
-    u32 level   = 1;
-    /// Таблица опыта для уровня: level^2 * 100
-    u64 xpForNext() const { return (u64)level * level * 100; }
-};
+// Experience удалён: он добавлялся игроку и больше нигде не
+// упоминался — ни чтения, ни записи, ни сохранения. Опыт и уровень
+// живут в progression::Progression, там же таблица уровней. Два
+// хранилища одного и того же — приглашение разойтись.
 
 /// — Что за сущность
 enum class EntityKind : u8 {
@@ -90,17 +88,11 @@ struct Collider {
     bool      isStatic = false;
 };
 
-/// — Ссылка на модель / блок для рендера
-struct Renderable {
-    u32 meshId = 0;
-    u32 textureId = 0;
-    glm::vec4 tint{1};
-    bool visible = true;
-};
-
-/// — Идентификатор для сохранения/сериализации
-struct PersistentId {
-    u64 value = 0;
-};
+// Здесь были Renderable (meshId/textureId/tint) и PersistentId: ни
+// один из них никогда не добавлялся ни одной сущности и не читался ни
+// откуда. Renderable к тому же описывал модели и текстуры, которых в
+// проекте нет вовсе — рендер воксельный, материал задаётся цветом
+// грани. Такие объявления не безобидны: по ним пытаются понять, как
+// устроен рендер, и понимают неправильно.
 
 } // namespace ecs
