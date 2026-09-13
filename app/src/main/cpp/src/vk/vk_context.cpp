@@ -668,6 +668,17 @@ bool Context::beginFrame() {
     }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return false;
 
+    // Пересоздание цепочки могло оборваться на полпути — тогда кадровый
+    // буфер для этой картинки есть в списке, но нулевой. Нулевой
+    // дескриптор драйвер не проверяет, а разыменовывает.
+    if (imgIdx_ >= framebuffers_.size() || framebuffers_[imgIdx_] == VK_NULL_HANDLE) {
+        LOGE("beginFrame: нет кадрового буфера для изображения %u из %zu",
+             imgIdx_, framebuffers_.size());
+        discardAcquiredFrame();
+        needsResize_ = true;
+        return false;
+    }
+
     // Забор слота кадра сказал только, что освободился СЛОТ. Какое
     // изображение вернёт vkAcquireNextImageKHR — заранее неизвестно, и
     // оно может быть занято другим кадром, ещё не дорисованным.
