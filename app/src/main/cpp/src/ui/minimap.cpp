@@ -5,6 +5,7 @@
 #include "minimap.h"
 #include "../world/block.h"
 #include "../core/log.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -76,51 +77,95 @@ void Minimap::destroy() {
     dev_ = VK_NULL_HANDLE;
 }
 
+// ============================================================
+// Перерисовка миникарты — по строкам, а не целиком.
+//
+// Полный проход по 128x128 — это шестнадцать тысяч расчётов высоты
+// поверхности, а каждый расчёт прогоняет все шумовые поля колонки.
+// Замер на хосте: двенадцать миллисекунд, из них одиннадцать с
+// половиной — именно высоты. На телефоне заметно больше. Раз в
+// секунду это ровный провал кадра, причём ровно такой, который
+// невозможно объяснить глядя на рендер.
+//
+// Поэтому проход разбит на порции строк и растянут на полтора
+// десятка кадров, а начинается он только когда игрок заметно
+// сдвинулся (или давно не обновлялись). Пока идёт проход, карта на
+// экране показывает прошлый снимок целиком: рисуем в отдельный
+// буфер и меняем местами в самом конце. Иначе половина карты была бы
+// от старого положения игрока, половина от нового.
+// ============================================================
 void Minimap::update(world::ChunkManager& world,
                      const glm::vec3& playerPos,
-                     f32 radiusBlocks)
+                     f32 radiusBlocks,
+                     f32 dt)
 {
     if (size_ == 0) return;
     if (radiusBlocks < 8.f) radiusBlocks = 8.f;
 
-    center_ = playerPos;
-    blocksPerPixel_ = (radiusBlocks * 2.f) / (f32)size_;
+    sincePass_ += dt;
+
+    if (!passActive_) {
+        const f32 dx = playerPos.x - passCenter_.x;
+        const f32 dz = playerPos.z - passCenter_.z;
+        const bool moved = dx * dx + dz * dz > MOVE_THRESHOLD * MOVE_THRESHOLD;
+        const bool stale = sincePass_ >= REFRESH_SECONDS;
+        if (!moved && !stale && !pixels_.empty() && everDrawn_) return;
+
+        passActive_  = true;
+        rowCursor_   = 0;
+        sincePass_   = 0.f;
+        passCenter_  = playerPos;
+        passScale_   = (radiusBlocks * 2.f) / (f32)size_;
+        scratch_.assign((usize)size_ * size_ * 4, 0);
+    }
 
     const f32 half = (f32)size_ * 0.5f;
     const auto& gen = world.generator();
+    // Курсор: вертикальный проход по каждой колонке читает соседние
+    // воксели одного чанка, и строка карты идёт вдоль чанка.
+    world::VoxelReader rd(world);
 
-    for (u32 py = 0; py < size_; ++py) {
+    const u32 rowEnd = std::min(size_, rowCursor_ + ROWS_PER_CALL);
+    for (; rowCursor_ < rowEnd; ++rowCursor_) {
+        const u32 py = rowCursor_;
         for (u32 px = 0; px < size_; ++px) {
-            f32 dxBlocks = ((f32)px - half) * blocksPerPixel_;
-            f32 dzBlocks = ((f32)py - half) * blocksPerPixel_;
+            const f32 dxBlocks = ((f32)px - half) * passScale_;
+            const f32 dzBlocks = ((f32)py - half) * passScale_;
 
-            i32 wx = (i32)std::floor(playerPos.x + dxBlocks);
-            i32 wz = (i32)std::floor(playerPos.z + dzBlocks);
+            const i32 wx = (i32)std::floor(passCenter_.x + dxBlocks);
+            const i32 wz = (i32)std::floor(passCenter_.z + dzBlocks);
 
-            i32 surfaceY = gen.surfaceHeight(wx, wz);
+            const i32 surfaceY = gen.surfaceHeight(wx, wz);
 
             u16 found = world::AIR;
-            i32 yStart = surfaceY + 4;
-            i32 yEnd = (surfaceY - 8 < 1) ? 1 : (surfaceY - 8);
+            const i32 yStart = surfaceY + 4;
+            const i32 yEnd = (surfaceY - 8 < 1) ? 1 : (surfaceY - 8);
 
             for (i32 y = yStart; y >= yEnd; --y) {
-                u16 b = world.getVoxel(wx, y, wz);
+                const u16 b = rd.at(wx, y, wz);
                 if (b == world::AIR) continue;
                 found = b;
                 if (b == world::WATER) continue;
                 break;
             }
 
-            MapColor c = mapColorFor(found);
-            usize idx = ((usize)py * size_ + (usize)px) * 4;
-            pixels_[idx + 0] = c.r;
-            pixels_[idx + 1] = c.g;
-            pixels_[idx + 2] = c.b;
-            pixels_[idx + 3] = c.a;
+            const MapColor c = mapColorFor(found);
+            const usize idx = ((usize)py * size_ + (usize)px) * 4;
+            scratch_[idx + 0] = c.r;
+            scratch_[idx + 1] = c.g;
+            scratch_[idx + 2] = c.b;
+            scratch_[idx + 3] = c.a;
         }
     }
 
-    dirty_ = true;
+    if (rowCursor_ < size_) return;   // проход ещё не закончен
+
+    pixels_.swap(scratch_);
+    center_          = passCenter_;
+    blocksPerPixel_  = passScale_;
+    passActive_      = false;
+    everDrawn_       = true;
+    dirty_           = true;
 }
 
 void Minimap::flushUpload(vk::Context& ctx) {

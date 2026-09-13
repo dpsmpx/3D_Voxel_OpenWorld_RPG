@@ -169,7 +169,6 @@ struct Engine {
     f32  ambienceTimer_    = 1e9f;   ///< музыкальный контекст, 4 раза в секунду
     f32  loadProgressTimer_= 1e9f;   ///< индикатор загрузки, 4 раза в секунду
     f32  locCheckTimer_    = 0.f;    ///< цели квестов «дойти до места»
-    f32  minimapTimer_     = 1e9f;   ///< перерисовка миникарты
     i32  cachedHostiles_   = 0;
     bool cachedUnderground_= false;
 
@@ -985,14 +984,14 @@ struct Engine {
                                           { (i32)p.x, (i32)p.y, (i32)p.z });
         }
 
-        // Миникарта (раз в сек)
+        // Миникарта. Перерисовка растянута по строкам на полтора
+        // десятка кадров, поэтому зовём её каждый кадр: она сама
+        // решает, начинать ли новый проход. Раньше здесь стоял
+        // таймер на секунду, и вся перерисовка — около дюжины
+        // миллисекунд — приходилась на один кадр из шестидесяти.
         if (ui && ui->minimap.size() > 0) {
-            minimapTimer_ += dt;
-            if (minimapTimer_ >= 1.0f) {
-                minimapTimer_ = 0.f;
-                ui->minimap.update(*world, player->controller.state().position, 64.f);
-                ui->minimap.flushUpload(vk);
-            }
+            ui->minimap.update(*world, player->controller.state().position, 64.f, dt);
+            if (ui->minimap.dirty()) ui->minimap.flushUpload(vk);
         }
 
         // Phase 14: audio update
