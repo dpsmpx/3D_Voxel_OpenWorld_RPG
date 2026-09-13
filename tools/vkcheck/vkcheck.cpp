@@ -22,6 +22,7 @@
 #include "render/camera.h"
 #include "render/voxel_pipeline.h"
 #include "render/grass_pipeline.h"
+#include "world/debug_scene.h"
 #include "render/instanced_renderer.h"
 #include "world/chunk.h"
 #include "world/block.h"
@@ -124,6 +125,20 @@ int main(int argc, char** argv) {
     const char* cull = "";
     int   oneTri = -1;
     bool  assertSolid = false;
+    // Мобильный GPU исполняет mediump как 16-битное число, а
+    // программная реализация — как 32-битное. Ключ включает настоящую
+    // половинную точность: шейдеры подсовываются пропущенные через
+    // spirv-opt --convert-relaxed-to-half, а устройство должно уметь
+    // shaderFloat16.
+    bool  fp16 = false;
+    // Тот же отладочный вид, что включается в игре ключом
+    // debug_shading: номер едет в свободной компоненте screenSize.z,
+    // и шейдер игры разбирает его сам.
+    int   shading = 0;
+    // Минимальная детерминированная сцена вместо генератора: та же
+    // функция строит её и в игре, см. world/debug_scene.
+    bool  minimalScene = false;
+    bool  camGiven = false;
     int   bestTri = -1, bestMesh = -1;
     float bestArea = 0.f;
     u32   bestFace = 0;
@@ -133,10 +148,10 @@ int main(int argc, char** argv) {
         auto next = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : "0"; };
         if      (a == "--size")   { W = atoi(next()); H = atoi(next()); }
         else if (a == "--seed")   seed = (u64)strtoull(next(), nullptr, 10);
-        else if (a == "--pos")    { px = (float)atof(next()); pz = (float)atof(next()); }
-        else if (a == "--height") height = (float)atof(next());
-        else if (a == "--yaw")    yaw = (float)atof(next());
-        else if (a == "--pitch")  pitch = (float)atof(next());
+        else if (a == "--pos")    { px = (float)atof(next()); pz = (float)atof(next()); camGiven = true; }
+        else if (a == "--height") { height = (float)atof(next()); camGiven = true; }
+        else if (a == "--yaw")    { yaw = (float)atof(next()); camGiven = true; }
+        else if (a == "--pitch")  { pitch = (float)atof(next()); camGiven = true; }
         else if (a == "--lod") {
             const std::string v = next();
             lod = (v == "auto") ? -1 : atoi(v.c_str());   // auto — по расстоянию
@@ -149,6 +164,13 @@ int main(int argc, char** argv) {
         else if (a == "--cull")  cull = next();
         else if (a == "--onetri") oneTri = atoi(next());
         else if (a == "--assert-solid") assertSolid = true;
+        else if (a == "--fp16") fp16 = true;
+        else if (a == "--shading") shading = atoi(next());
+        else if (a == "--scene") {
+            const std::string v = next();
+            if (v == "minimal") minimalScene = true;
+            else { std::printf("vkcheck: неизвестная сцена %s\n", v.c_str()); return 2; }
+        }
         else { std::printf("vkcheck: неизвестный ключ %s\n", a.c_str()); return 2; }
     }
 
@@ -213,6 +235,15 @@ int main(int argc, char** argv) {
     VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     dci.queueCreateInfoCount = 1; dci.pQueueCreateInfos = &qci;
     dci.pEnabledFeatures = &feats;
+    VkPhysicalDeviceShaderFloat16Int8FeaturesKHR f16{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR};
+    const char* f16Exts[] = { VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME };
+    if (fp16) {
+        f16.shaderFloat16 = VK_TRUE;
+        dci.pNext = &f16;
+        dci.enabledExtensionCount   = 1;
+        dci.ppEnabledExtensionNames = f16Exts;
+    }
     VkDevice dev;
     VKOK(vkCreateDevice(phys, &dci, nullptr, &dev));
     VkQueue queue;
@@ -316,7 +347,11 @@ int main(int argc, char** argv) {
     // ---- мир: тот же генератор и тот же мешер ----
     world::blocks();
     world::TerrainGenerator gen(seed);
-    const int R = 4;
+    // Радиус в чанках — как дальность прорисовки в игре. Раньше стояло
+    // жёсткое 4: до огрублённых уровней (LOD 2 начинается со 140
+    // блоков, LOD 3 — с 202) проверка попросту не доставала, а игра
+    // рисует их десятками.
+    const int R = viewDist;
     // Границы LOD — те же, что ставит ChunkRenderer::setViewDistanceBlocks
     // при дальности прорисовки viewDist чанков. Раньше инструмент
     // строил ВСЕ чанки на одном уровне, а игра мешает уровни в одном
@@ -338,8 +373,12 @@ int main(int argc, char** argv) {
         for (i32 cx = pcx - R; cx <= pcx + R; ++cx) {
             auto c = std::make_shared<world::Chunk>();
             c->coord = { cx, 0, cz };
-            world::computeChunkColumns(gen, cx, cz, cols);
-            world::generateChunkVoxels(*c, gen, cols.data(), seed);
+            if (minimalScene) {
+                world::buildMinimalScene(*c);
+            } else {
+                world::computeChunkColumns(gen, cx, cz, cols);
+                world::generateChunkVoxels(*c, gen, cols.data(), seed);
+            }
             c->generated.store(true);
             chunks.push_back(c);
         }
@@ -454,7 +493,12 @@ int main(int argc, char** argv) {
                     const i32 wz = cz * world::CHUNK_SIZE + (i32)((h >> 8) % world::CHUNK_SIZE);
                     const f32 ddx = (f32)wx - px, ddz = (f32)wz - pz;
                     if (ddx*ddx + ddz*ddz > 40.f*40.f) continue;
-                    const i32 surf = gen.surfaceHeight(wx, wz);
+                    // В минимальной сцене высота задана сценой, а не
+                    // генератором: populateGrass в игре спрашивает
+                    // генератор, поэтому сцена обязана подставить ту
+                    // же величину, иначе трава разойдётся.
+                    const i32 surf = minimalScene ? world::SCENE_GROUND_Y
+                                                  : gen.surfaceHeight(wx, wz);
                     const u16 ground = voxelAt(wx, surf - 1, wz);
                     if (ground != world::GRASS && ground != world::SAND) continue;
                     if (voxelAt(wx, surf, wz) != world::AIR) continue;
@@ -497,6 +541,17 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Камера сцены задана в world/debug_scene.h и одинакова на хосте
+    // и на устройстве — иначе кадры сравнивать не с чем. Явные ключи
+    // командной строки её перекрывают.
+    if (minimalScene && !camGiven) {
+        px    = world::SCENE_EYE_X;
+        pz    = world::SCENE_EYE_Z;
+        height = world::SCENE_EYE_Y - (float)gen.surfaceHeight((i32)px, (i32)pz);
+        yaw   = world::SCENE_YAW;
+        pitch = world::SCENE_PITCH;
+    }
+
     // ---- камера: тот же класс, что в игре ----
     render::Camera cam;
     cam.setAspect((float)W / (float)H);
@@ -528,6 +583,7 @@ int main(int argc, char** argv) {
         u.viewProj    = cam.projection() * view;
         u.invViewProj = glm::inverse(u.viewProj);
         u.cameraPos   = glm::vec4(eye, 1.f);
+        u.screenSize  = glm::vec4((float)W, (float)H, (float)shading, 0.f);
     }
     ubo.write(&u, sizeof(u));
 
