@@ -815,6 +815,28 @@ void testBufferMapContract() {
                   "render пишет камеру сам — после ожидания на заборе");
         }
     }
+
+    // --- Семафор показа принадлежит изображению, а не слоту кадра ---
+    //
+    // renderFinished_ ждёт vkQueuePresentKHR, а показ асинхронный: он
+    // может быть ещё не выполнен, когда очередь кадров вернётся к тому
+    // же слоту. Выбирая семафор по номеру кадра, мы подавали сигнал на
+    // семафор, которого кто-то ещё ждёт, — а это неопределённое
+    // поведение, из которого на экран попадает недорисованное.
+    std::FILE* vf = std::fopen("app/src/main/cpp/src/vk/vk_context.cpp", "rb");
+    check(vf != nullptr, "исходник vk_context.cpp на месте");
+    if (vf) {
+        std::string vc;
+        while ((n = std::fread(buf, 1, sizeof(buf), vf)) > 0) vc.append(buf, n);
+        std::fclose(vf);
+
+        check(vc.find("renderFinished_[imgIdx_]") != std::string::npos,
+              "семафор показа выбирается по изображению");
+        check(vc.find("renderFinished_[currentFrame_]") == std::string::npos,
+              "и не по слоту кадра");
+        check(vc.find("imagesInFlight_[imgIdx_]") != std::string::npos,
+              "занятость изображения отслеживается отдельно от слота кадра");
+    }
 }
 
 void testVulkanGuards() {

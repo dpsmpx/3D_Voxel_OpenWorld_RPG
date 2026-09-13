@@ -416,7 +416,6 @@ bool Context::createCommandBuffers() {
 
 bool Context::createSyncObjects() {
     imgAvailable_.resize(MAX_FRAMES);
-    renderFinished_.resize(MAX_FRAMES);
     inFlight_.resize(MAX_FRAMES);
 
     VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -425,10 +424,33 @@ bool Context::createSyncObjects() {
 
     for (u32 i = 0; i < MAX_FRAMES; ++i) {
         VKCHECK(vkCreateSemaphore(device_, &si, nullptr, &imgAvailable_[i]));
-        VKCHECK(vkCreateSemaphore(device_, &si, nullptr, &renderFinished_[i]));
         VKCHECK(vkCreateFence    (device_, &fi, nullptr, &inFlight_[i]));
     }
+    return createSwapchainSync();
+}
+
+// Семафор «кадр дорисован» обязан принадлежать ИЗОБРАЖЕНИЮ, а не
+// слоту кадра: его ждёт показ, а показ асинхронный и может быть ещё
+// не выполнен, когда очередь кадров вернётся к тому же слоту.
+bool Context::createSwapchainSync() {
+    destroySwapchainSync();
+
+    renderFinished_.resize(swapImages_.size());
+    VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    for (auto& sem : renderFinished_)
+        VKCHECK(vkCreateSemaphore(device_, &si, nullptr, &sem));
+
+    // Заборы здесь чужие — те же, что в inFlight_. Мы их не создаём и
+    // не уничтожаем, только запоминаем, кто держит какое изображение.
+    imagesInFlight_.assign(swapImages_.size(), VK_NULL_HANDLE);
     return true;
+}
+
+void Context::destroySwapchainSync() {
+    for (auto sem : renderFinished_)
+        if (sem != VK_NULL_HANDLE) vkDestroySemaphore(device_, sem, nullptr);
+    renderFinished_.clear();
+    imagesInFlight_.clear();
 }
 
 void Context::destroySwapchain() {
@@ -458,6 +480,9 @@ bool Context::surfaceExtentChanged() const {
 void Context::onResize(ANativeWindow* /*window*/) {
     destroySwapchain();
     if (!createSwapchain())    { LOGE("resize: swapchain"); return; }
+    // Число изображений при пересоздании может измениться, а семафоры
+    // «дорисовано» привязаны именно к ним.
+    if (!createSwapchainSync()){ LOGE("resize: sync"); return; }
     if (!createImageViews())   { LOGE("resize: image views"); return; }
     if (!createDepthResources()){ LOGE("resize: depth"); return; }
     if (!createFramebuffers()) { LOGE("resize: framebuffers"); return; }
@@ -486,6 +511,19 @@ bool Context::beginFrame() {
     }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return false;
 
+    // Забор слота кадра сказал только, что освободился СЛОТ. Какое
+    // изображение вернёт vkAcquireNextImageKHR — заранее неизвестно, и
+    // оно может быть занято другим кадром, ещё не дорисованным.
+    // Изображений в цепочке обычно три, кадров в работе два: рано или
+    // поздно очередь выдаёт картинку, в которую ещё пишут.
+    if (imgIdx_ < imagesInFlight_.size() &&
+        imagesInFlight_[imgIdx_] != VK_NULL_HANDLE)
+    {
+        vkWaitForFences(device_, 1, &imagesInFlight_[imgIdx_], VK_TRUE, UINT64_MAX);
+    }
+    if (imgIdx_ < imagesInFlight_.size())
+        imagesInFlight_[imgIdx_] = inFlight_[currentFrame_];
+
     vkResetFences(device_, 1, &inFlight_[currentFrame_]);
     vkResetCommandBuffer(cmdBuffers_[currentFrame_], 0);
 
@@ -511,13 +549,30 @@ bool Context::beginFrame() {
 
 void Context::endFrame() {
     if (!frameStarted_) return;
+    // Семафоры привязаны к изображениям цепочки; если пересоздание
+    // цепочки не довело дело до конца, лучше потерять кадр, чем выйти
+    // за границы массива.
+    if (imgIdx_ >= renderFinished_.size()) {
+        LOGE("endFrame: нет семафора для изображения %u из %zu",
+             imgIdx_, renderFinished_.size());
+        vkCmdEndRenderPass(cmdBuffers_[currentFrame_]);
+        vkEndCommandBuffer(cmdBuffers_[currentFrame_]);
+        frameStarted_ = false;
+        needsResize_ = true;
+        return;
+    }
     vkCmdEndRenderPass(cmdBuffers_[currentFrame_]);
     vkEndCommandBuffer(cmdBuffers_[currentFrame_]);
 
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     VkSemaphore waitSem[]   = { imgAvailable_[currentFrame_] };
     VkPipelineStageFlags ws[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-    VkSemaphore sigSem[]    = { renderFinished_[currentFrame_] };
+    // Семафор «дорисовано» берём по ИЗОБРАЖЕНИЮ, а не по слоту кадра:
+    // его ждёт показ, а показ может быть ещё не выполнен, когда слот
+    // пойдёт на второй круг. Подавать сигнал на семафор, которого
+    // кто-то ещё ждёт, нельзя — драйвер вправе перепутать, чей это
+    // сигнал, и показать недорисованное.
+    VkSemaphore sigSem[]    = { renderFinished_[imgIdx_] };
     si.waitSemaphoreCount = 1;
     si.pWaitSemaphores = waitSem;
     si.pWaitDstStageMask = ws;
@@ -593,9 +648,9 @@ void Context::shutdown() {
                 vkDestroyFence(device_, slot.fence, nullptr);
             slot = TransferSlot{};
         }
+        destroySwapchainSync();
         for (u32 i = 0; i < MAX_FRAMES; ++i) {
             vkDestroySemaphore(device_, imgAvailable_[i], nullptr);
-            vkDestroySemaphore(device_, renderFinished_[i], nullptr);
             vkDestroyFence(device_, inFlight_[i], nullptr);
         }
         destroySwapchain();
