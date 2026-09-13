@@ -86,6 +86,17 @@ SaveStatus SaveManager::save(const SaveSlot& slot,
         return SaveStatus::WriteError;
     }
 
+    // Заголовок обязан быть ровно той длины, которую ждёт загрузчик:
+    // разойдясь на четыре байта, они уже однажды сделали все сейвы
+    // нечитаемыми.
+    if (header.size() != SAVE_HEADER_SIZE) {
+        LOGE("Save: заголовок %zu байт вместо %u", header.size(),
+             (unsigned)SAVE_HEADER_SIZE);
+        std::fclose(f);
+        std::remove(path.c_str());
+        return SaveStatus::WriteError;
+    }
+
     bool ok = true;
     ok = ok && std::fwrite(header.data().data(), 1, header.size(), f) == header.size();
     ok = ok && std::fwrite(compressed.data(), 1, compressed.size(), f) == compressed.size();
@@ -140,13 +151,13 @@ SaveStatus SaveManager::load(const SaveSlot& slot,
         return SaveStatus::FileNotFound;
     }
 
-    u8 headBuf[44];
-    if (std::fread(headBuf, 1, 44, f) != 44) {
+    u8 headBuf[SAVE_HEADER_SIZE];
+    if (std::fread(headBuf, 1, SAVE_HEADER_SIZE, f) != SAVE_HEADER_SIZE) {
         std::fclose(f);
         return SaveStatus::ReadError;
     }
 
-    ByteReader hr(headBuf, 44);
+    ByteReader hr(headBuf, SAVE_HEADER_SIZE);
 
     u32 magic = 0, version = 0, profile = 0, slotId = 0;
     u64 seed = 0, ts = 0;
@@ -157,14 +168,23 @@ SaveStatus SaveManager::load(const SaveSlot& slot,
     if (!hr.u32v(version))       { std::fclose(f); return SaveStatus::ReadError; }
     if (version != SAVE_VERSION) { std::fclose(f); return SaveStatus::UnsupportedVersion; }
 
-    hr.u32v(profile);
-    hr.u32v(slotId);
-    hr.u64v(seed);
-    hr.u64v(ts);
-    hr.u32v(playtime);
-    hr.u32v(origSize);
-    hr.u32v(compSize);
-    hr.u32v(checksum);
+    // Результат каждого чтения проверяем. Раньше он отбрасывался, и
+    // не дочитанная контрольная сумма молча оставалась нулём —
+    // ошибка выглядела как «файл битый», а бит был загрузчик.
+    bool head = true;
+    head = head && hr.u32v(profile);
+    head = head && hr.u32v(slotId);
+    head = head && hr.u64v(seed);
+    head = head && hr.u64v(ts);
+    head = head && hr.u32v(playtime);
+    head = head && hr.u32v(origSize);
+    head = head && hr.u32v(compSize);
+    head = head && hr.u32v(checksum);
+    if (!head) {
+        LOGE("Load: заголовок не дочитан");
+        std::fclose(f);
+        return SaveStatus::ReadError;
+    }
 
     (void)profile; (void)slotId; (void)ts;
 
