@@ -854,6 +854,27 @@ static std::string readSource(const char* path) {
 
 /// Убирает строчные комментарии: в них слова «pow» и «smoothstep»
 /// встречаются как раз там, где объясняется, почему их там нет.
+/// Строка без ведущих и хвостовых пробелов.
+static std::string trimmed(const std::string& t) {
+    const usize b = t.find_first_not_of(" \t\r");
+    if (b == std::string::npos) return std::string();
+    const usize e = t.find_last_not_of(" \t\r");
+    return t.substr(b, e - b + 1);
+}
+
+/// Разбивает текст на строки.
+static std::vector<std::string> splitLines(const std::string& s) {
+    std::vector<std::string> out;
+    usize b = 0;
+    while (b <= s.size()) {
+        const usize e = s.find('\n', b);
+        if (e == std::string::npos) { out.push_back(s.substr(b)); break; }
+        out.push_back(s.substr(b, e - b));
+        b = e + 1;
+    }
+    return out;
+}
+
 static std::string stripComments(const std::string& s) {
     std::string out;
     out.reserve(s.size());
@@ -1209,75 +1230,179 @@ void testFaceShadingHasSingleSource() {
 void testWorldSharesOneLightingModel() {
     group("шейдеры: мир освещён по одной модели");
 
+    // Раньше здесь сверялось, что одна и та же формула написана
+    // ДОСЛОВНО в трёх шейдерах. Теперь она написана в одном месте, на
+    // процессоре, и это сильнее: сверять больше нечего, потому что
+    // копий нет.
+    //
+    // Повод был не только архитектурный. Всё, что зависит только от
+    // времени суток — цвет солнца по высоте, перевод цвета неба в
+    // линейное пространство, нормировка оттенка рассеянного света с
+    // делением, сила света, — пересчитывалось для КАЖДОГО фрагмента.
+    // Замер (tools/gpubench, полноэкранный проход настоящим
+    // voxel.frag, 2306x1080): 6.12 -> 5.57 мс, 9% шейдера. На
+    // устройстве математика фрагмента ландшафта была 5.99 мс из
+    // 11.00 мс кадра.
+    const std::string cam = readSource("app/src/main/cpp/src/render/camera.h");
+    if (cam.empty()) { check(true, "camera.h не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    // ---- 1. Формула живёт на процессоре ----
+    check(cam.find("glm::vec3(1.00f, 0.52f, 0.26f)") != NONE,
+          "цвет солнца по высоте считается в camera.h");
+    check(cam.find("skyLin / skyMax") != NONE,
+          "оттенок рассеянного света — там же");
+    check(cam.find("glm::mix(0.14f, 0.60f, day)") != NONE,
+          "и сила рассеянного света — там же");
+    check(cam.find("u.sunLight") != NONE && cam.find("u.ambLight") != NONE &&
+          cam.find("u.skyLinear") != NONE,
+          "результат кладётся в CameraUbo");
+
+    // ---- 2. В шейдерах её больше нет ----
     struct Src { const char* name; std::string text; };
-    Src files[] = {
+    Src shaders[] = {
         { "voxel.frag", stripComments(readSource("app/src/main/cpp/shaders/voxel.frag")) },
         { "grass.frag", stripComments(readSource("app/src/main/cpp/shaders/grass.frag")) },
         { "mob.frag",   stripComments(readSource("app/src/main/cpp/shaders/mob.frag"))   },
+        { "sky.frag",   stripComments(readSource("app/src/main/cpp/shaders/sky.frag"))   },
     };
-    for (const auto& f : files)
+    for (const auto& f : shaders) {
         if (f.text.empty()) { check(true, "шейдеры не найдены, проверка пропущена"); return; }
-
-    // Каждая строка ниже — кусок выражения, который обязан стоять во
-    // всех трёх файлах ДОСЛОВНО. Разойдётся число — тест назовёт файл.
-    struct Rule { const char* what; const char* needle; };
-    const Rule shared[] = {
-        { "цвет солнца по высоте",
-          "mix(vec3(1.00, 0.52, 0.26), vec3(1.00, 0.97, 0.92)" },
-        { "порог «солнце над горизонтом»",   "smoothstep(-0.10, 0.06, cam.sunDir.y)" },
-        { "оттенок рассеянного света",       "mix(vec3(1.0), skyLin / skyMax, 0.55)" },
-        { "сила рассеянного света день/ночь","mix(0.14, 0.60, day)" },
-        { "сила солнца",                     "0.46 * day * above" },
-        { "вес солнечного оттенка в тумане", "0.30 * above" },
-        { "перевод в линейное пространство", "vec3 toLinear(vec3 c) { return c * c; }" },
-    };
-    for (const auto& r : shared) {
-        for (const auto& f : files) {
-            if (f.text.find(r.needle) == std::string::npos) {
-                std::printf("       в %s нет «%s»\n", f.name, r.needle);
-                check(false, r.what);
+        for (const char* dup : { "mix(vec3(1.00, 0.52, 0.26)",
+                                 "smoothstep(-0.10, 0.06, cam.sunDir.y)",
+                                 "skyLin / skyMax",
+                                 "mix(0.14, 0.60" }) {
+            if (f.text.find(dup) != NONE) {
+                std::printf("       в %s осталась копия: «%s»\n", f.name, dup);
+                check(false, "копий формулы света в шейдерах не осталось");
                 return;
             }
         }
-        check(true, r.what);
     }
+    check(true, "копий формулы света в шейдерах не осталось");
 
-    // Полусферы по нормали не осталось ни в одном: наклон по граням
-    // задаёт таблица, и он ровно один.
-    for (const auto& f : files) {
-        if (f.text.find("0.5 + 0.5 * N.y") != std::string::npos) {
-            std::printf("       в %s осталась полусфера по нормали\n", f.name);
-            check(false, "второго наклона по нормали нет нигде");
+    // ---- 3. Все четыре читают готовое ----
+    for (const auto& f : shaders)
+        if (f.text.find("cam.sunLight") == NONE) {
+            std::printf("       %s не берёт готовый свет\n", f.name);
+            check(false, "все четыре шейдера берут свет из CameraUbo");
+            return;
+        }
+    check(true, "все четыре шейдера берут свет из CameraUbo");
+
+    // ---- 4. Блок CameraUbo одинаков во ВСЕХ шейдерах ----
+    //
+    // Это не косметика: смещения полей считаются по порядку
+    // объявления, и шейдер с устаревшим блоком молча читает чужие
+    // байты. Компилятор такого не видит, слой проверки тоже —
+    // размер набора дескрипторов сходится.
+    const char* files[] = {
+        "voxel.vert", "voxel.frag", "sky.frag", "grass.vert", "grass.frag",
+        "mob.vert", "mob.frag", "projectile.vert", "projectile.frag",
+        "outline.vert",
+    };
+    std::string reference;
+    const char* referenceName = nullptr;
+    usize checked = 0;
+    for (const char* n : files) {
+        const std::string src =
+            readSource((std::string("app/src/main/cpp/shaders/") + n).c_str());
+        if (src.empty()) continue;
+        const usize b = src.find("uniform CameraUbo");
+        if (b == NONE) continue;
+        const usize e = src.find("} cam;", b);
+        if (e == NONE) continue;
+        // Сверяем только объявления полей: комментарии внутри блока
+        // различаться вправе.
+        std::string decl;
+        for (const std::string& line : splitLines(stripComments(src.substr(b, e - b)))) {
+            const std::string t = trimmed(line);
+            if (!t.empty() && t.find("uniform CameraUbo") == NONE) decl += t + "\n";
+        }
+        ++checked;
+        if (!referenceName) { reference = decl; referenceName = n; continue; }
+        if (decl != reference) {
+            std::printf("       %s объявляет CameraUbo не так, как %s\n", n, referenceName);
+            check(false, "блок CameraUbo одинаков во всех шейдерах");
             return;
         }
     }
-    check(true, "второго наклона по нормали нет нигде");
+    check(checked >= 8, "блок CameraUbo найден во всех шейдерах");
+    check(true, "блок CameraUbo одинаков во всех шейдерах");
 
-    // Существа собраны из кубов, и их грани обязаны попадать в тот же
-    // ряд оттенков, что блоки: те же четыре числа, что в FACE_LIGHT.
-    const std::string& mob = files[2].text;
-    check(mob.find("faceLight") != std::string::npos,
-          "у существ освещённость грани тоже считается");
-    for (const char* v : { "0.76", "0.88", "0.50", "1.00" })
-        if (mob.find(std::string("mix(") + v) == std::string::npos &&
-            mob.find(std::string(", ") + v) == std::string::npos) {
-            std::printf("       в mob.frag нет множителя %s\n", v);
-            check(false, "и берёт те же четыре числа, что таблица террейна");
-            return;
+    // ---- 5. И совпадает с C++ по составу и порядку ----
+    //
+    // Сверяется ВЕСЬ список полей, а не горсть ожидаемых имён.
+    // Проверка «все известные поля идут в том же порядке» пропускала
+    // худший случай: новое поле, добавленное в C++ в СЕРЕДИНУ блока и
+    // забытое в шейдерах. Относительный порядок известных имён при
+    // этом не меняется, а смещения всех полей после него уезжают, и
+    // каждый шейдер начинает читать чужие байты.
+    auto fieldNames = [](const std::string& text) {
+        std::vector<std::string> out;
+        for (const std::string& line : splitLines(stripComments(text))) {
+            const std::string t = trimmed(line);
+            const usize semi = t.find(';');
+            if (semi == std::string::npos || semi == 0) continue;
+            const usize sp = t.find_last_of(" \t*&", semi - 1);
+            if (sp == std::string::npos) continue;
+            const std::string name = t.substr(sp + 1, semi - sp - 1);
+            if (!name.empty()) out.push_back(name);
         }
-    check(true, "и берёт те же четыре числа, что таблица террейна");
+        return out;
+    };
+    auto sameFields = [&](const std::vector<std::string>& a,
+                          const std::vector<std::string>& b,
+                          const char* whoA, const char* whoB) {
+        for (usize i = 0; i < std::max(a.size(), b.size()); ++i) {
+            const std::string x = i < a.size() ? a[i] : std::string("(нет)");
+            const std::string y = i < b.size() ? b[i] : std::string("(нет)");
+            if (x != y) {
+                std::printf("       поле %zu: у %s «%s», у %s «%s»\n",
+                            i, whoA, x.c_str(), whoB, y.c_str());
+                return false;
+            }
+        }
+        return true;
+    };
 
-    // Итоговый цвет ограничен во всех трёх: за туманом раньше вылезал
-    // NaN, и ограничение — единственное, что его ловит.
-    for (const auto& f : files) {
-        if (f.text.find("clamp(toSrgb(") == std::string::npos) {
-            std::printf("       в %s итоговый цвет не ограничен\n", f.name);
-            check(false, "итоговый цвет ограничен [0,1] везде");
-            return;
+    const usize st = cam.find("struct CameraUbo {");
+    check(st != NONE, "структура CameraUbo объявлена в C++");
+    if (st != NONE) {
+        const std::string body = cam.substr(st, cam.find("\n};", st) - st);
+        const std::vector<std::string> cppFields  = fieldNames(body);
+        const std::vector<std::string> glslFields = fieldNames(reference);
+
+        check(cppFields.size() >= 10, "в C++ объявлены все поля CameraUbo");
+        check(sameFields(cppFields, glslFields, "C++", "шейдеров"),
+              "состав и порядок CameraUbo совпадают у C++ и шейдеров");
+
+        // Поля света должны быть на месте, а не просто совпадать: без
+        // них негде хранить посчитанный раз в кадр свет.
+        for (const char* f : { "sunLight", "ambLight", "skyLinear" })
+            if (std::find(cppFields.begin(), cppFields.end(), f) == cppFields.end()) {
+                std::printf("       поля «%s» нет\n", f);
+                check(false, "поля посчитанного света объявлены");
+                return;
+            }
+        check(true, "поля посчитанного света объявлены");
+
+        // Инструмент замера гоняет НАСТОЯЩИЕ шейдеры игры. Устаревшая
+        // структура у него означает, что они читают чужие байты, и
+        // мерить он будет мусор — молча, с правдоподобными числами.
+        const std::string gb = readSource("tools/gpubench/gpubench.cpp");
+        if (!gb.empty()) {
+            const usize g = gb.find("struct CameraUbo {");
+            check(g != NONE, "у gpubench есть своя копия CameraUbo");
+            if (g != NONE) {
+                const std::string gbody = gb.substr(g, gb.find("\n};", g) - g);
+                check(sameFields(fieldNames(gbody), cppFields, "gpubench", "игры"),
+                      "и она совпадает с игровой по составу и порядку");
+            }
         }
     }
-    check(true, "итоговый цвет ограничен [0,1] везде");
 }
+
 
 void testDistantGrassIsNotSubPixel() {
     group("трава: субпиксельных пучков не бывает");

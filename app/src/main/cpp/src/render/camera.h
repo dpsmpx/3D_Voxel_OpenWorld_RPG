@@ -16,6 +16,30 @@
 namespace render {
 
 /// Раскладка обязана совпадать с блоком CameraUbo во всех шейдерах.
+///
+/// Последние три поля — свет суток, посчитанный ОДИН раз за кадр.
+///
+/// Раньше их считал каждый фрагментный шейдер сам: цвет солнца по
+/// высоте (смешивание плюс smoothstep), перевод цвета неба в линейное
+/// пространство, нормировка оттенка рассеянного света с делением, сила
+/// света по времени суток. Всё это зависит ТОЛЬКО от uniform — то есть
+/// одинаково для всех пикселей кадра, — и пересчитывалось для каждого
+/// из полутора миллионов фрагментов ландшафта.
+///
+/// Замер (tools/gpubench, полноэкранный проход настоящим voxel.frag,
+/// 2306x1080, два круга): было 6.09 и 6.15 мс, стало 5.62 и 5.51 —
+/// 0.55 мс, 9% шейдера. Потолок здесь 1.23 мс (4.91 и 4.86 мс, если
+/// подставить готовые ЧИСЛА прямо в текст шейдера), но он недостижим:
+/// из uniform-буфера значения приходят непрозрачными для компилятора,
+/// и свернуть с ними дальнейшие выражения он уже не может.
+///
+/// Числа хоста переносятся только как отношение (см. предупреждение
+/// самого gpubench). На устройстве мерить нужно то же место:
+/// математика фрагмента ландшафта была 5.99 мс из 11.00 мс кадра —
+/// больше половины всего кадра.
+///
+/// Заодно это единственный способ не иметь четырёх копий одной
+/// формулы: voxel, grass, mob и sky считали её каждый по-своему.
 struct CameraUbo {
     glm::mat4 viewProj;
     glm::mat4 invViewProj;
@@ -23,7 +47,10 @@ struct CameraUbo {
     glm::vec4 screenSize;
     glm::vec4 sunDir;      ///< xyz — направление на солнце, w — освещённость неба
     glm::vec4 fogParams;   ///< start, end, время суток [0,1), время в секундах
-    glm::vec4 skyColor;    ///< цвет неба и тумана текущего времени суток
+    glm::vec4 skyColor;    ///< цвет неба, sRGB; w — доля дня, 0 ночь, 1 день
+    glm::vec4 sunLight;    ///< rgb — цвет солнца, линейный; w — день × над горизонтом
+    glm::vec4 ambLight;    ///< rgb — оттенок рассеянного света; w — его сила
+    glm::vec4 skyLinear;   ///< rgb — цвет неба, линейный; w — солнце над горизонтом
 };
 
 class Camera {
@@ -187,7 +214,29 @@ public:
                                   (f32)debugShading_, 0.f);
         u.sunDir      = glm::vec4(sunDir_, skyLight_);
         u.fogParams   = glm::vec4(fogStart_, fogEnd_, timeOfDay_, timeSec);
-        u.skyColor    = glm::vec4(skyColor_, 1.f);
+
+        // ---- свет суток: считается здесь и только здесь ----
+        //
+        // Ровно те же выражения, что стояли во фрагментных шейдерах, —
+        // но раз в кадр вместо раза на пиксель. См. комментарий к
+        // CameraUbo.
+        auto toLin = [](const glm::vec3& c) { return c * c; };
+
+        const f32 day   = glm::clamp(skyLight_, 0.f, 1.f);
+        const f32 above = glm::smoothstep(-0.10f, 0.06f, sunDir_.y);
+        const glm::vec3 sunTint =
+            toLin(glm::mix(glm::vec3(1.00f, 0.52f, 0.26f),
+                           glm::vec3(1.00f, 0.97f, 0.92f),
+                           glm::smoothstep(0.f, 0.30f, sunDir_.y)));
+        const glm::vec3 skyLin = toLin(skyColor_);
+        const f32 skyMax = glm::max(glm::max(skyLin.r, skyLin.g),
+                                    glm::max(skyLin.b, 0.001f));
+        const glm::vec3 ambTint = glm::mix(glm::vec3(1.f), skyLin / skyMax, 0.55f);
+
+        u.skyColor  = glm::vec4(skyColor_, day);
+        u.sunLight  = glm::vec4(sunTint, day * above);
+        u.ambLight  = glm::vec4(ambTint, glm::mix(0.14f, 0.60f, day));
+        u.skyLinear = glm::vec4(skyLin, above);
         return u;
     }
 

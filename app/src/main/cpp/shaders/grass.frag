@@ -10,8 +10,14 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 cameraPos;
     vec4 screenSize;
     vec4 sunDir;
-    vec4 fogParams;
-    vec4 skyColor;
+    vec4 fogParams;   // start, end, timeOfDay, time
+    vec4 skyColor;     // цвет неба, sRGB; w — доля дня, 0 ночь, 1 день
+    // Свет суток, посчитанный ОДИН раз за кадр в render::Camera::toUbo.
+    // Раньше каждый фрагментный шейдер считал это сам, на каждый
+    // пиксель, хотя зависит оно только от uniform. См. CameraUbo.
+    vec4 sunLight;     // rgb — цвет солнца, линейный; w — день x над горизонтом
+    vec4 ambLight;     // rgb — оттенок рассеянного света; w — его сила
+    vec4 skyLinear;    // rgb — цвет неба, линейный; w — солнце над горизонтом
 } cam;
 
 layout(location = 0) out vec4 outColor;
@@ -35,18 +41,18 @@ void main() {
     // самого skyLin, у террейна — от приглушённого к белому, и сила
     // солнца отличалась в полтора раза. За тем, чтобы числа снова не
     // разошлись, следит тест «мир освещён по одной модели».
-    float day    = clamp(cam.sunDir.w, 0.0, 1.0);
-    float above  = smoothstep(-0.10, 0.06, cam.sunDir.y);
-    vec3  sunTint = toLinear(mix(vec3(1.00, 0.52, 0.26), vec3(1.00, 0.97, 0.92),
-                                 smoothstep(0.0, 0.30, cam.sunDir.y)));
-    vec3  skyLin  = toLinear(cam.skyColor.rgb);
-    float skyMax  = max(max(skyLin.r, skyLin.g), max(skyLin.b, 0.001));
-    vec3  ambTint = mix(vec3(1.0), skyLin / skyMax, 0.55);
+    // Свет суток приходит готовым из CameraUbo: считает его
+    // render::Camera::toUbo, раз в кадр, теми же выражениями, что
+    // стояли здесь. Одна формула на террейн, траву, существ и небо.
+    vec3  sunTint = cam.sunLight.rgb;
+    float sunUp   = cam.sunLight.w;      // день x над горизонтом
+    vec3  skyLin  = cam.skyLinear.rgb;
+    float above   = cam.skyLinear.w;
 
     // Пучок — билборд без своей нормали: считаем его открытым небу и
     // освещённым, как верхняя грань блока.
-    vec3 ambient = ambTint * mix(0.14, 0.60, day);
-    vec3 sun     = sunTint * (0.46 * day * above);
+    vec3 ambient = cam.ambLight.rgb * cam.ambLight.w;
+    vec3 sun     = sunTint * (0.46 * sunUp);
 
     vec3 lit = albedo * (ambient + sun);
 

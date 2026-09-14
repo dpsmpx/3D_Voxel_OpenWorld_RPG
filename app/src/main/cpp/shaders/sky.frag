@@ -7,7 +7,13 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 screenSize;
     vec4 sunDir;
     vec4 fogParams;
-    vec4 skyColor;
+    vec4 skyColor;     // цвет неба, sRGB; w — доля дня, 0 ночь, 1 день
+    // Свет суток, посчитанный ОДИН раз за кадр в render::Camera::toUbo.
+    // Раньше каждый фрагментный шейдер считал это сам, на каждый
+    // пиксель, хотя зависит оно только от uniform. См. CameraUbo.
+    vec4 sunLight;     // rgb — цвет солнца, линейный; w — день x над горизонтом
+    vec4 ambLight;     // rgb — оттенок рассеянного света; w — его сила
+    vec4 skyLinear;    // rgb — цвет неба, линейный; w — солнце над горизонтом
 } cam;
 
 layout(location = 0) out vec4 outColor;
@@ -43,17 +49,17 @@ void main() {
     vec4 farH  = cam.invViewProj * vec4(ndc, 1.0, 1.0);
     vec3 dir = normalize(farH.xyz / farH.w - nearH.xyz / nearH.w);
 
-    float day   = clamp(cam.sunDir.w, 0.0, 1.0);
-    float night = 1.0 - day;
-    float above = smoothstep(-0.10, 0.06, cam.sunDir.y);
-    vec3  sunTint = toLinear(mix(vec3(1.00, 0.52, 0.26), vec3(1.00, 0.97, 0.92),
-                                 smoothstep(0.0, 0.30, cam.sunDir.y)));
+    // Свет суток приходит готовым: считает его render::Camera::toUbo,
+    // раз в кадр, и одинаково для неба, ландшафта, травы и существ.
+    float night   = 1.0 - cam.skyColor.w;
+    float above   = cam.skyLinear.w;
+    vec3  sunTint = cam.sunLight.rgb;
 
     // Градиент от горизонта к зениту. Базовый цвет приходит из
     // world::DayCycle, поэтому небо само меняется от ночного индиго
     // к рассветному янтарю и дневной лазури.
     float up = clamp(dir.y, -1.0, 1.0);
-    vec3 horizon = toLinear(cam.skyColor.rgb);
+    vec3 horizon = cam.skyLinear.rgb;
     vec3 zenith  = horizon * vec3(0.42, 0.60, 1.10);
     vec3 sky = mix(horizon, zenith, powSafe(clamp(up, 0.0, 1.0), 0.55));
 

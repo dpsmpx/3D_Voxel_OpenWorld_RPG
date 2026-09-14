@@ -10,7 +10,13 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 screenSize;
     vec4 sunDir;
     vec4 fogParams;
-    vec4 skyColor;
+    vec4 skyColor;     // цвет неба, sRGB; w — доля дня, 0 ночь, 1 день
+    // Свет суток, посчитанный ОДИН раз за кадр в render::Camera::toUbo.
+    // Раньше каждый фрагментный шейдер считал это сам, на каждый
+    // пиксель, хотя зависит оно только от uniform. См. CameraUbo.
+    vec4 sunLight;     // rgb — цвет солнца, линейный; w — день x над горизонтом
+    vec4 ambLight;     // rgb — оттенок рассеянного света; w — его сила
+    vec4 skyLinear;    // rgb — цвет неба, линейный; w — солнце над горизонтом
 } cam;
 
 layout(location = 0) out vec4 outColor;
@@ -37,13 +43,11 @@ void main() {
     // снова не разошлись, следит тест «мир освещён по одной модели».
     vec3 N = normalize(vNormal);
 
-    float day    = clamp(cam.sunDir.w, 0.0, 1.0);
-    float above  = smoothstep(-0.10, 0.06, cam.sunDir.y);
-    vec3  sunTint = toLinear(mix(vec3(1.00, 0.52, 0.26), vec3(1.00, 0.97, 0.92),
-                                 smoothstep(0.0, 0.30, cam.sunDir.y)));
-    vec3  skyLin  = toLinear(cam.skyColor.rgb);
-    float skyMax  = max(max(skyLin.r, skyLin.g), max(skyLin.b, 0.001));
-    vec3  ambTint = mix(vec3(1.0), skyLin / skyMax, 0.55);
+    vec3  sunTint = cam.sunLight.rgb;
+    float sunUp   = cam.sunLight.w;
+    vec3  skyLin  = cam.skyLinear.rgb;
+    float above   = cam.skyLinear.w;
+    vec3  ambTint = cam.ambLight.rgb;
 
     // Освещённость грани — та же таблица, что FACE_LIGHT в террейне,
     // только выбранная по нормали: модели существ собраны из кубов, и
@@ -54,8 +58,8 @@ void main() {
                           mix(0.50, 1.00, step(0.0, N.y)),
                           abs(N.y));
 
-    vec3 ambient = ambTint * mix(0.14, 0.60, day);
-    vec3 sun     = sunTint * (max(dot(N, cam.sunDir.xyz), 0.0) * 0.46 * day * above);
+    vec3 ambient = ambTint * cam.ambLight.w;
+    vec3 sun     = sunTint * (max(dot(N, cam.sunDir.xyz), 0.0) * 0.46 * sunUp);
 
     // Подсветка по краю силуэта: без неё тёмная фигура сливается с
     // тенью, и моба замечаешь только когда он уже бьёт.
