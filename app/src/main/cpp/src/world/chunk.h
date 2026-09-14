@@ -151,6 +151,14 @@ template<typename QuadContainer>
 u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                         QuadContainer& outQuads, Lod lod);
 
+/// Чтение вокселя с учётом границ чанка.
+///
+/// Возвращает три разных исхода, а не два: настоящий блок, AIR — и
+/// UNKNOWN, если соседнего чанка ещё нет. Мешер обязан их различать:
+/// по неизвестной стороне грань не строится. Объявлено здесь, чтобы
+/// договор можно было проверить, а не только прочитать.
+u16 sampleVoxel(const Chunk& c, const ChunkNeighbors& nb, i32 x, i32 y, i32 z);
+
 u32 buildGreedyMesh(const Chunk& chunk, const ChunkNeighbors& nb,
                     std::vector<Quad>& outQuads, Lod lod);
 u32 buildGreedyMesh(const Chunk& chunk, const ChunkNeighbors& nb,

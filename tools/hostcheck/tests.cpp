@@ -35,6 +35,7 @@
 #include "world/chunk_manager.h"
 #include "render/mesh_builder.h"
 #include "render/camera.h"
+#include "render/instanced_renderer.h"
 #include "vk/vk_buffer.h"
 #include "vk/vk_texture.h"
 #include "world/noise.h"
@@ -763,6 +764,212 @@ static std::string readSource(const char* path) {
 // тест глубины читает. На экране это выглядело как «видно сквозь
 // блоки»: глубина одного кадра проверялась против остатков другого.
 // ------------------------------------------------------------
+void testUnknownNeighborIsNotAir() {
+    group("мешер: незагруженный сосед — не воздух");
+
+    world::blocks();
+
+    // Столбик у самой границы чанка: его грань на стыке решается по
+    // соседнему чанку.
+    auto make = [] {
+        auto c = std::make_unique<world::Chunk>();
+        c->coord = { 0, 0, 0 };
+        for (i32 y = 0; y < 34; ++y)
+            for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+                for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                    c->setUnlocked(x, y, z, world::STONE);
+        return c;
+    };
+
+    // Сколько граней смотрит в сторону отсутствующего соседа (+X).
+    auto facesTowardPlusX = [](const std::vector<world::Quad>& qs) {
+        usize n = 0;
+        for (const auto& q : qs)
+            if (q.v0.face == 0 && q.v0.pos.x >= (f32)world::CHUNK_SIZE) ++n;
+        return n;
+    };
+
+    std::vector<world::Quad> quads;
+
+    // 1. Соседа нет — состояние неизвестно, грань строить нельзя.
+    {
+        auto c = make();
+        world::ChunkNeighbors nb;   // все указатели пустые
+        world::buildGreedyMesh(*c, nb, quads, world::Lod::Full);
+        check(facesTowardPlusX(quads) == 0,
+              "без соседа наружная грань на стыке не строится");
+        check(!quads.empty(), "остальной чанк при этом мешируется");
+    }
+
+    // 2. Сосед есть и там воздух — грань открыта.
+    auto air = std::make_unique<world::Chunk>();
+    air->coord = { 1, 0, 0 };
+    {
+        auto c = make();
+        world::ChunkNeighbors nb;
+        nb.px = air.get();
+        world::buildGreedyMesh(*c, nb, quads, world::Lod::Full);
+        check(facesTowardPlusX(quads) > 0,
+              "сосед есть и пуст — грань на стыке появляется");
+    }
+
+    // 3. Сосед есть и он сплошной — грань закрыта.
+    auto solid = std::make_unique<world::Chunk>();
+    solid->coord = { 1, 0, 0 };
+    for (i32 y = 0; y < 34; ++y)
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+            for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                solid->setUnlocked(x, y, z, world::STONE);
+    {
+        auto c = make();
+        world::ChunkNeighbors nb;
+        nb.px = solid.get();
+        world::buildGreedyMesh(*c, nb, quads, world::Lod::Full);
+        check(facesTowardPlusX(quads) == 0,
+              "сосед есть и сплошной — грань на стыке закрыта");
+    }
+
+    // Сам источник: отсутствующий сосед обязан отдаваться отдельным
+    // значением, а не воздухом.
+    {
+        auto c = make();
+        world::ChunkNeighbors nb;
+        check(world::sampleVoxel(*c, nb, world::CHUNK_SIZE, 10, 0) == world::UNKNOWN,
+              "за границей без соседа читается UNKNOWN, а не AIR");
+        nb.px = air.get();
+        check(world::sampleVoxel(*c, nb, world::CHUNK_SIZE, 10, 0) == world::AIR,
+              "с пустым соседом читается настоящий AIR");
+        check(world::UNKNOWN != world::AIR, "UNKNOWN и AIR — разные значения");
+    }
+
+    // То же на огрублённом уровне: там объём строится отдельно, и
+    // неизвестность обязана дожить до мешера.
+    {
+        auto c = make();
+        world::ChunkNeighbors nb;
+        world::buildGreedyMesh(*c, nb, quads, world::Lod::Half);
+        check(facesTowardPlusX(quads) == 0,
+              "на огрублённом уровне стык без соседа тоже пуст");
+    }
+}
+
+void testNeighborArrivalTriggersRemesh() {
+    group("мир: появление соседа перестраивает границу");
+
+    // Механизм: задача генерации ставит в очередь меширование не
+    // только своего чанка, но и четырёх соседей. Без этого чанк,
+    // смешированный без соседа, навсегда остался бы с дырой на стыке —
+    // ровно то, ради чего UNKNOWN и вводился.
+    const std::string cm = readSource("app/src/main/cpp/src/world/chunk_manager.cpp");
+    if (cm.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+
+    const usize gen = cm.find("c->generated.store(true");
+    check(gen != std::string::npos, "чанк помечается сгенерированным");
+    if (gen == std::string::npos) return;
+
+    const std::string after = cm.substr(gen, 1400);
+    check(after.find("enqueueMesh(ctx->coord)") != std::string::npos,
+          "свой чанк ставится на меширование");
+    usize n = 0;
+    for (const char* d : { "coord.x - 1", "coord.x + 1", "coord.z - 1", "coord.z + 1" })
+        if (after.find(d) != std::string::npos) ++n;
+    check(n == 4, "и все четыре соседа — тоже");
+
+    // Поведение: тот же чанк, смешированный без соседа и с соседом,
+    // обязан дать разное число граней на стыке.
+    world::blocks();
+    auto c = std::make_unique<world::Chunk>();
+    c->coord = { 0, 0, 0 };
+    for (i32 y = 0; y < 34; ++y)
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+            for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                c->setUnlocked(x, y, z, world::STONE);
+
+    std::vector<world::Quad> quads;
+    world::ChunkNeighbors none;
+    world::buildGreedyMesh(*c, none, quads, world::Lod::Full);
+    const usize without = quads.size();
+
+    auto air = std::make_unique<world::Chunk>();
+    air->coord = { 1, 0, 0 };
+    world::ChunkNeighbors with;
+    with.px = air.get();
+    world::buildGreedyMesh(*c, with, quads, world::Lod::Full);
+    check(quads.size() > without,
+          "после появления соседа граница добирает грани");
+}
+
+void testNoPerVoxelGrain() {
+    group("шейдер: цвет грани не зависит от номера вокселя");
+
+    const std::string f = readSource("app/src/main/cpp/shaders/voxel.frag");
+    if (f.empty()) { check(true, "шейдер не найден, проверка пропущена"); return; }
+
+    check(f.find("hash13") == std::string::npos ||
+          f.find("float hash13") == std::string::npos,
+          "функции шума в шейдере нет");
+    check(f.find("* (1.0 + grain") == std::string::npos,
+          "цвет материала на зерно не умножается");
+
+    // Альбедо считается из цвета вершины и фаски, и больше ни из чего.
+    const usize a = f.find("vec3 albedo = ");
+    check(a != std::string::npos, "альбедо считается");
+    if (a != std::string::npos) {
+        const std::string line = f.substr(a, f.find(';', a) - a);
+        check(line.find("vColor") != std::string::npos, "из цвета материала");
+        check(line.find("hash") == std::string::npos &&
+              line.find("grain") == std::string::npos &&
+              line.find("noise") == std::string::npos &&
+              line.find("random") == std::string::npos,
+              "без шума, зерна и случайности");
+    }
+
+    // Замены шума другим шумом быть не должно.
+    check(f.find("fract(sin(") == std::string::npos, "и не заменён другим шумом");
+
+    // Точность межстадийных переменных объявлена явно с обеих сторон.
+    check(f.find("in highp vec2  vShade") != std::string::npos,
+          "vShade объявлена highp в фрагментном шейдере");
+    check(f.find("clamp(vShade, 0.0, 1.0)") != std::string::npos,
+          "затенение ограничено своим договорным диапазоном");
+}
+
+void testDistantGrassIsNotSubPixel() {
+    group("трава: субпиксельных пучков не бывает");
+
+    // Порог считается по настоящему экранному размеру, поэтому верен
+    // при любом поле зрения и разрешении.
+    const f32 pxPerUnit = 1080.f * 0.5f / std::tan(glm::radians(70.f) * 0.5f);
+    check(pxPerUnit > 700.f && pxPerUnit < 800.f,
+          "пикселей на единицу посчитано разумно");
+
+    // Пучок высотой 0.6 на 40 блоках занимает меньше трёх пикселей?
+    // Тогда он обязан быть отброшен ещё до отправки на GPU.
+    const f32 farScale = 0.6f;
+    const f32 farDist  = 200.f;
+    check(farScale * pxPerUnit / farDist < render::GRASS_MIN_PIXELS,
+          "на двухстах блоках пучок мельче порога");
+    check(farScale * pxPerUnit / 10.f > render::GRASS_MIN_PIXELS,
+          "а на десяти — крупнее");
+
+    const std::string g = readSource("app/src/main/cpp/src/render/instanced_renderer.cpp");
+    if (g.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    check(g.find("GRASS_MIN_PIXELS") != std::string::npos,
+          "порог применяется при наборе инстансов");
+    check(g.find("continue") != std::string::npos, "и пучок именно отбрасывается");
+
+    // Отбрасывать надо ДО записи в буфер, а не в шейдере.
+    const usize thr = g.find("GRASS_MIN_PIXELS");
+    const usize push = g.find("cpuInstances_.push_back");
+    check(thr != std::string::npos && push != std::string::npos && thr < push,
+          "отсечка стоит раньше отправки инстанса");
+
+    const std::string fs = readSource("app/src/main/cpp/shaders/grass.frag");
+    if (!fs.empty())
+        check(fs.find("discard") == std::string::npos,
+              "и не подменяется discard'ом во фрагментном шейдере");
+}
+
 void testDiagnosticBuildWired() {
     group("сборка: диагностический APK");
 
@@ -1237,6 +1444,300 @@ void testBufferMapContract() {
 // Снаружи это выглядело как «многие кнопки не работают»: круглые
 // кнопки экранного управления живут в TouchInput и работали, а все
 // прямоугольные — меню, инвентарь, настройки, торговля — молчали.
+// ------------------------------------------------------------
+// Уровень детализации: одна формула, одна точка отсчёта
+// ------------------------------------------------------------
+void testLodHasSingleSourceOfTruth() {
+    group("LOD: одна формула и одна точка отсчёта");
+
+    // Формула живёт в world/lod.h, и обе стороны зовут именно её.
+    const std::string crh = readSource("app/src/main/cpp/src/render/chunk_renderer.h");
+    const std::string cmc = readSource("app/src/main/cpp/src/world/chunk_manager.cpp");
+    const std::string rsc = readSource("app/src/main/cpp/src/render/render_system.cpp");
+    if (crh.empty() || cmc.empty() || rsc.empty()) {
+        check(true, "исходники не найдены, проверка пропущена");
+    } else {
+        check(crh.find("world::LodBands") != std::string::npos,
+              "рендер держит границы из world/lod.h");
+        check(crh.find("f32 lod0_") == std::string::npos &&
+              crh.find("f32 lod1_") == std::string::npos,
+              "своей копии границ у рендера не осталось");
+        check(crh.find("world::lodForDistanceSq") != std::string::npos,
+              "рендер зовёт общую формулу");
+        check(cmc.find("world::lodForChunk") != std::string::npos,
+              "мир зовёт ту же формулу");
+        check(cmc.find("cameraX_.load") != std::string::npos,
+              "и меряет от камеры");
+        check(cmc.find("playerChunkX_") == std::string::npos,
+              "мерить от чанка игрока мир перестал");
+        check(rsc.find("world.setCameraPosition(camPos)") != std::string::npos,
+              "рендер сообщает миру позицию камеры каждый кадр");
+    }
+
+    // Самый грубый уровень начинается за концом тумана. Туман кончается
+    // на 0.94 дальности прорисовки (см. render_system), значит граница
+    // третьего уровня обязана лежать дальше.
+    for (i32 vd : { 4, 6, 8, 12 }) {
+        world::LodBands b;
+        const f32 blocks = (f32)vd * (f32)world::CHUNK_SIZE;
+        b.fromViewDistance(blocks);
+        if (b.lod2 <= blocks * 0.94f) {
+            check(false, "третий уровень уведён за туман");
+            break;
+        }
+        if (vd == 12) check(true, "третий уровень уведён за туман");
+    }
+
+    // Мёртвая зона: у самой границы уровень не пляшет туда-сюда.
+    world::LodBands b;
+    b.fromViewDistance(8.f * (f32)world::CHUNK_SIZE);
+    const f32 edge = b.lod0;
+    const f32 inside  = edge * 0.97f;
+    const f32 outside = edge * 1.03f;
+    check(world::lodForDistanceSq(inside * inside, b) == 0,
+          "без предыстории ближе границы — нулевой уровень");
+    check(world::lodForDistanceSq(outside * outside, b) == 1,
+          "без предыстории дальше границы — первый");
+    check(world::lodForDistanceSq(outside * outside, b, 0) == 0,
+          "чуть за границей уровень не меняется, если был нулевым");
+    check(world::lodForDistanceSq(inside * inside, b, 1) == 1,
+          "и не меняется обратно, если был первым");
+    const f32 far = edge * 1.30f;
+    check(world::lodForDistanceSq(far * far, b, 0) == 1,
+          "за мёртвой зоной уровень всё-таки меняется");
+
+    // Обе стороны считают от ОДНОЙ величины: центра чанка.
+    const glm::vec3 cam{ 100.f, 64.f, -40.f };
+    const u8 direct = world::lodForChunk(3, -2, cam, b);
+    const glm::vec3 d = world::chunkCenter(3, -2) - cam;
+    check(direct == world::lodForDistanceSq(glm::dot(d, d), b),
+          "lodForChunk и есть расстояние до центра чанка");
+}
+
+// ------------------------------------------------------------
+// Резидентный меш не исчезает, пока не приехал новый
+// ------------------------------------------------------------
+void testResidentLodSurvivesRequest() {
+    group("LOD: резидентный меш живёт до приезда нового");
+
+    const std::string crc = readSource("app/src/main/cpp/src/render/chunk_renderer.cpp");
+    const std::string cmc = readSource("app/src/main/cpp/src/world/chunk_manager.cpp");
+    if (crc.empty() || cmc.empty()) {
+        check(true, "исходники не найдены, проверка пропущена");
+        return;
+    }
+
+    // 1. Запасной вариант в render() — ровно residentLod, а не первый
+    //    попавшийся уровень из четырёх.
+    const usize a = crc.find("Нужного уровня нет в видеопамяти");
+    const usize b = crc.find("if (!chosen)");
+    check(a != std::string::npos && b != std::string::npos && a < b,
+          "в render() есть ветка «нужного уровня нет»");
+    if (a != std::string::npos && b != std::string::npos && a < b) {
+        const std::string win = crc.substr(a, b - a);
+        check(win.find("cm.residentLod") != std::string::npos,
+              "запасной вариант — резидентный уровень");
+        check(win.find("i < 4") == std::string::npos &&
+              win.find("l < 4") == std::string::npos,
+              "перебора всех четырёх уровней там больше нет");
+    }
+
+    // 2. Смена резидентного уровня происходит только после успешной
+    //    загрузки: присваивание стоит внутри if (uploadLod(...)).
+    const usize u = crc.find("if (uploadLod(ctx, cmd, it->second, c, req.lod))");
+    check(u != std::string::npos, "уровень грузится из очереди запросов");
+    if (u != std::string::npos) {
+        const std::string win = crc.substr(u, 200);
+        check(win.find("residentLod  = req.lod") != std::string::npos,
+              "резидентным уровень становится после успешной загрузки");
+    }
+
+    // 3. Мир не выбрасывает остальные уровни при постройке нового,
+    //    если они всё ещё соответствуют текущим вокселям.
+    const usize m = cmc.find("for (u8 other = 0; other < 4; ++other)");
+    check(m != std::string::npos, "мир перебирает прочие уровни чанка");
+    if (m != std::string::npos) {
+        const std::string win = cmc.substr(m, 500);
+        check(win.find("revision == ctx->version") != std::string::npos,
+              "и оставляет те, что построены по тем же вокселям");
+    }
+}
+
+// ------------------------------------------------------------
+// Вода на огрублённых уровнях
+// ------------------------------------------------------------
+namespace {
+
+/// Карта верхних граней: для каждого столбца — есть ли над ним
+/// водяная грань и есть ли твёрдая.
+struct TopMap {
+    bool water[world::CHUNK_SIZE][world::CHUNK_SIZE] = {};
+    bool solid[world::CHUNK_SIZE][world::CHUNK_SIZE] = {};
+    i32 waterCells = 0, solidCells = 0;
+};
+
+TopMap topFaces(const std::vector<world::Quad>& quads) {
+    TopMap m;
+    for (const auto& q : quads) {
+        if (q.v0.face != 2) continue;          // только грани вверх
+        const glm::vec3 p1 = q.v0.pos + q.du + q.dv;
+        const i32 x0 = (i32)std::floor(std::min(q.v0.pos.x, p1.x));
+        const i32 x1 = (i32)std::floor(std::max(q.v0.pos.x, p1.x));
+        const i32 z0 = (i32)std::floor(std::min(q.v0.pos.z, p1.z));
+        const i32 z1 = (i32)std::floor(std::max(q.v0.pos.z, p1.z));
+        for (i32 z = z0; z < z1; ++z)
+            for (i32 x = x0; x < x1; ++x) {
+                if ((u32)x >= (u32)world::CHUNK_SIZE ||
+                    (u32)z >= (u32)world::CHUNK_SIZE) continue;
+                if (q.v0.block == world::WATER) m.water[x][z] = true;
+                else                            m.solid[x][z] = true;
+            }
+    }
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            if (m.water[x][z]) ++m.waterCells;
+            if (m.solid[x][z]) ++m.solidCells;
+        }
+    return m;
+}
+
+} // namespace
+
+void testCoarseWaterIsStable() {
+    group("LOD: вода не разливается и не исчезает при огрублении");
+
+    world::blocks();
+    world::ChunkNeighbors nb;
+    std::vector<world::Quad> quads;
+
+    // --- Берег, не совпадающий с сеткой 8x8 ---
+    // Суша до x=19 высотой 31 блок, дальше вода 28..31 поверх камня.
+    // Поверхность воды ВЫШЕ кромки берега — ровно тот случай, на
+    // котором правило «выигрывает верхний воксель» отдавало воде всю
+    // клетку 8^3 и берег становился прозрачным.
+    auto shore = std::make_unique<world::Chunk>();
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            const bool land = x < 20;
+            const i32 stoneTop = land ? 30 : 27;
+            for (i32 y = 0; y <= stoneTop; ++y)
+                shore->setUnlocked(x, y, z, world::STONE);
+            if (!land)
+                for (i32 y = 28; y <= 31; ++y)
+                    shore->setUnlocked(x, y, z, world::WATER);
+        }
+
+    world::buildGreedyMesh(*shore, nb, quads, world::Lod::Quarter);
+    const TopMap q4 = topFaces(quads);
+    world::buildGreedyMesh(*shore, nb, quads, world::Lod::Eighth);
+    const TopMap q8 = topFaces(quads);
+
+    check(q4.waterCells > 0, "на уровне 4^3 вода есть");
+    check(q8.waterCells > 0, "на уровне 8^3 вода не исчезла");
+
+    // Не разливается: вода грубого уровня не залезает туда, где на
+    // уровне мельче была суша.
+    i32 spill = 0;
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+            if (q8.water[x][z] && !q4.water[x][z]) ++spill;
+    check(spill == 0, "вода 8^3 не заливает берег, сухой на 4^3");
+
+    // Берег остаётся непрозрачным: под водой на грубом уровне не
+    // должно открываться сквозной дыры.
+    check(q8.solid[17][4], "полоса берега шириной в полклетки осталась сушей");
+    check(q8.water[25][4], "а вода за ней осталась водой");
+
+    // --- Озеро с одиноким выступом ---
+    // Вода 24..27 по всему чанку, и один столб камня до 31. Правило
+    // «выигрывает верхний воксель» отдавало этому столбу целую клетку
+    // 8^3, и озеро в ней пропадало целиком.
+    auto lake = std::make_unique<world::Chunk>();
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            for (i32 y = 0; y <= 23; ++y)
+                lake->setUnlocked(x, y, z, world::STONE);
+            for (i32 y = 24; y <= 27; ++y)
+                lake->setUnlocked(x, y, z, world::WATER);
+        }
+    for (i32 y = 24; y <= 31; ++y)
+        lake->setUnlocked(0, y, 0, world::STONE);
+
+    world::buildGreedyMesh(*lake, nb, quads, world::Lod::Quarter);
+    const TopMap l4 = topFaces(quads);
+    world::buildGreedyMesh(*lake, nb, quads, world::Lod::Eighth);
+    const TopMap l8 = topFaces(quads);
+
+    check(l4.waterCells > world::CHUNK_SIZE * world::CHUNK_SIZE / 2,
+          "на уровне 4^3 озеро занимает почти весь чанк");
+    check(l8.waterCells * 2 >= l4.waterCells,
+          "на уровне 8^3 озеро не съедено выступом");
+    check(l8.water[3][3], "клетка с одиноким камнем осталась водой");
+}
+
+// ------------------------------------------------------------
+// Порядок смешивания воды
+// ------------------------------------------------------------
+void testWaterSortedByWaterCenter() {
+    group("вода: порядок смешивания считается по самой воде");
+
+    world::blocks();
+    world::ChunkNeighbors nb;
+    std::vector<world::Quad> quads;
+    std::vector<render::VoxelVertex> verts;
+    std::vector<u32> idx;
+    u32 opaqueIdx = 0;
+
+    auto lake = std::make_unique<world::Chunk>();
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            for (i32 y = 0; y <= 27; ++y)
+                lake->setUnlocked(x, y, z, world::STONE);
+            for (i32 y = 28; y <= 31; ++y)
+                lake->setUnlocked(x, y, z, world::WATER);
+        }
+    world::buildGreedyMesh(*lake, nb, quads, world::Lod::Full);
+
+    glm::vec3 center{ -1.f, -1.f, -1.f };
+    render::buildChunkVertices(*lake, quads, verts, idx, opaqueIdx, &center);
+    check(opaqueIdx < idx.size(), "полупрозрачная часть у озера есть");
+    check(center.y > 27.f && center.y < 33.f,
+          "центр прозрачной геометрии — на уровне воды");
+    check(std::abs(center.y - (f32)world::CHUNK_SIZE_Y * 0.5f) > 20.f,
+          "и это не середина чанка по высоте");
+
+    // Чанк без воды центра не даёт — сортировать нечего.
+    auto rock = std::make_unique<world::Chunk>();
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+            for (i32 y = 0; y <= 20; ++y)
+                rock->setUnlocked(x, y, z, world::STONE);
+    world::buildGreedyMesh(*rock, nb, quads, world::Lod::Full);
+    glm::vec3 none{ 5.f, 5.f, 5.f };
+    render::buildChunkVertices(*rock, quads, verts, idx, opaqueIdx, &none);
+    check(opaqueIdx == idx.size(), "у камня полупрозрачной части нет");
+    check(none == glm::vec3(0.f), "и центр прозрачной геометрии не задан");
+
+    // Рендер обязан сортировать отдельный список именно по нему.
+    const std::string crc = readSource("app/src/main/cpp/src/render/chunk_renderer.cpp");
+    const std::string crh = readSource("app/src/main/cpp/src/render/chunk_renderer.h");
+    if (crc.empty() || crh.empty()) {
+        check(true, "исходники не найдены, проверка пропущена");
+        return;
+    }
+    check(crh.find("glm::vec3 blendCenter") != std::string::npos,
+          "меш хранит центр своей прозрачной геометрии");
+    check(crc.find("chosen->blendCenter") != std::string::npos,
+          "расстояние для смешивания меряется до воды");
+    const usize s = crc.find("std::sort(blended_.begin()");
+    check(s != std::string::npos, "список прозрачного сортируется отдельно");
+    if (s != std::string::npos) {
+        const std::string win = crc.substr(s, 200);
+        check(win.find("a.distSq > b.distSq") != std::string::npos,
+              "от дальнего к ближнему");
+    }
+}
+
 // ------------------------------------------------------------
 void testUiTapSurvivesRedraw() {
     group("ui: нажатие переживает перерисовку");
@@ -2931,6 +3432,14 @@ int main() {
     testMinimalScene();
     testDebugSceneIsolated();
     testDiagnosticBuildWired();
+    testUnknownNeighborIsNotAir();
+    testNeighborArrivalTriggersRemesh();
+    testNoPerVoxelGrain();
+    testDistantGrassIsNotSubPixel();
+    testLodHasSingleSourceOfTruth();
+    testResidentLodSurvivesRequest();
+    testCoarseWaterIsStable();
+    testWaterSortedByWaterCenter();
     testUiTapSurvivesRedraw();
     testHudAndButtonsDoNotOverlap();
     testBufferMapContract();

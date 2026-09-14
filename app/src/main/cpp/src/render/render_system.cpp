@@ -111,7 +111,7 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
         (grassTimer_ > 0.5f && grassMoved) || grassTimer_ > 3.f) {
         grassTimer_  = 0.f;
         grassOrigin_ = camPos;
-        grass_.populateGrass(world, camPos, 40.f);
+        grass_.populateGrass(world, camPos, 40.f, camera_.pixelsPerUnit());
         grass_.upload(ctx);
     }
 
@@ -129,6 +129,12 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     camera_.setDebugShading(config::settingsConst().debugShading);
     world.setLodBands(chunkRenderer_.lodBand(0), chunkRenderer_.lodBand(1),
                       chunkRenderer_.lodBand(2));
+    // Уровень детализации мир и рендер считают от ОДНОЙ величины —
+    // от положения камеры. Раньше мир мерил от чанка, в котором стоит
+    // игрок, а рендер — от камеры до центра чанка: на границе уровня
+    // они расходились на половину чанка и спорили каждый кадр, отчего
+    // дальний рельеф перестраивался без остановки.
+    world.setCameraPosition(camPos);
 
     // Камера в буфер здесь НЕ пишется — см. render(). Эта функция
     // выполняется до vkWaitForFences на заборе текущего кадра, то есть

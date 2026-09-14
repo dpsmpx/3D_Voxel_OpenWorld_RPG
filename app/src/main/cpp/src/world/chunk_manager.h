@@ -4,6 +4,7 @@
  */
 #pragma once
 #include "chunk.h"
+#include "lod.h"
 #include "terrain.h"
 #include "features.h"
 #include "../core/job_system.h"
@@ -135,9 +136,19 @@ public:
     /// увидят, а не строился сперва в полном разрешении и тут же
     /// перестраивался.
     void setLodBands(f32 lod0, f32 lod1, f32 lod2) {
-        lodBand0_ = lod0; lodBand1_ = lod1; lodBand2_ = lod2;
+        bands_.lod0 = lod0; bands_.lod1 = lod1; bands_.lod2 = lod2;
     }
-    u8 lodForChunk(ChunkCoord c) const;
+    /// Положение камеры — единственный критерий выбора уровня.
+    /// Раньше мир мерил от чанка игрока, а рендер от камеры: у границы
+    /// уровня они спорили друг с другом каждый кадр.
+    void setCameraPosition(const glm::vec3& p) {
+        cameraX_.store(p.x, std::memory_order_relaxed);
+        cameraY_.store(p.y, std::memory_order_relaxed);
+        cameraZ_.store(p.z, std::memory_order_relaxed);
+        cameraKnown_.store(true, std::memory_order_release);
+    }
+    /// current — уровень, построенный сейчас; нужен для мёртвой зоны.
+    u8 lodForChunk(ChunkCoord c, u8 current = 0xFF) const;
 
     /// Просит перестроить чанк под нужный уровень детализации.
     /// Вызывает рендер, когда обнаружил, что готового меша для
@@ -170,11 +181,16 @@ private:
 
     u64 seed_;
     i32 viewDistance_;
-    f32 lodBand0_ = 64.f, lodBand1_ = 160.f, lodBand2_ = 320.f;
-    /// Последняя известная позиция игрока — по ней задача генерации
-    /// решает, какой уровень детализации строить.
-    std::atomic<i32> playerChunkX_{0};
-    std::atomic<i32> playerChunkZ_{0};
+    LodBands bands_;
+    /// Положение камеры: по нему задача генерации решает, какой
+    /// уровень детализации строить. Раньше здесь лежал чанк игрока —
+    /// величина грубее той, которой меряет рендер.
+    std::atomic<f32> cameraX_{0.f}, cameraY_{0.f}, cameraZ_{0.f};
+    /// Пока рендер не прислал камеру (первый кадр после загрузки),
+    /// её заменяет позиция игрока. Иначе весь стартовый круг чанков
+    /// мешируется по расстоянию от начала координат — то есть в самом
+    /// грубом уровне, и его тут же приходится перестраивать.
+    std::atomic<bool> cameraKnown_{false};
     TerrainGenerator gen_;
 
     std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash> chunks_;

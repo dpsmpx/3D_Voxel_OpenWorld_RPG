@@ -81,9 +81,11 @@ void buildChunkVertices(const world::Chunk& chunk,
                         const std::vector<world::Quad>& quads,
                         std::vector<VoxelVertex>& outVerts,
                         std::vector<u32>& outIndices,
-                        u32& outOpaqueIndices)
+                        u32& outOpaqueIndices,
+                        glm::vec3* outBlendCenter)
 {
     (void)chunk;   // позиции локальные: смещение чанка добавляет шейдер
+    if (outBlendCenter) *outBlendCenter = glm::vec3(0.f);
     outVerts.clear();
     outIndices.clear();
     outVerts.reserve(quads.size() * 4);
@@ -98,10 +100,22 @@ void buildChunkVertices(const world::Chunk& chunk,
         if (!faceIsBlended(def, q.v0.face)) emitQuad(q, def, outVerts, outIndices);
     }
     outOpaqueIndices = (u32)outIndices.size();
+    glm::dvec3 blendSum(0.0);
+    f64 blendArea = 0.0;
     for (const auto& q : quads) {
         const world::BlockDef& def = reg.get(q.v0.block);
-        if (faceIsBlended(def, q.v0.face)) emitQuad(q, def, outVerts, outIndices);
+        if (!faceIsBlended(def, q.v0.face)) continue;
+        emitQuad(q, def, outVerts, outIndices);
+        // Взвешиваем площадью: слитый greedy-квад в сотню блоков
+        // должен значить больше одинокого квада на краю пруда.
+        const glm::vec3 c = q.v0.pos + (q.du + q.dv) * 0.5f;
+        const f64 area = (f64)glm::length(glm::cross(q.du, q.dv));
+        const f64 w = area > 0.0 ? area : 1.0;
+        blendSum += glm::dvec3(c) * w;
+        blendArea += w;
     }
+    if (outBlendCenter && blendArea > 0.0)
+        *outBlendCenter = glm::vec3(blendSum / blendArea);
 }
 
 } // namespace render

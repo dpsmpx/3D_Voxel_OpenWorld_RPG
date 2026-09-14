@@ -25,6 +25,7 @@
 #include "world/debug_scene.h"
 #include "render/instanced_renderer.h"
 #include "world/chunk.h"
+#include "world/lod.h"
 #include "world/block.h"
 #include "world/terrain.h"
 #include "world/features.h"
@@ -357,12 +358,13 @@ int main(int argc, char** argv) {
     // строил ВСЕ чанки на одном уровне, а игра мешает уровни в одном
     // кадре — и ровно на стыках уровней её картинка отличалась от
     // проверочной.
+    // Формула не повторяется здесь заново: копия уже однажды разошлась
+    // с игрой (0.62 против 0.60, 0.90 против 0.98) и молча меняла
+    // картинку проверки. Берём ту же world::LodBands, что и рендер.
     const f32 vdBlocks = (f32)viewDist * (f32)world::CHUNK_SIZE;
-    f32 lodB0 = vdBlocks * 0.35f < 64.f  ? 64.f  : vdBlocks * 0.35f;
-    f32 lodB1 = vdBlocks * 0.62f < 140.f ? 140.f : vdBlocks * 0.62f;
-    f32 lodB2 = vdBlocks * 0.90f;
-    if (lodB1 < lodB0 * 1.2f) lodB1 = lodB0 * 1.2f;
-    if (lodB2 < lodB1 * 1.2f) lodB2 = lodB1 * 1.2f;
+    world::LodBands bands;
+    bands.fromViewDistance(vdBlocks);
+    const f32 lodB0 = bands.lod0, lodB1 = bands.lod1, lodB2 = bands.lod2;
     struct Mesh { vk::Buffer vb, ib; u32 opaque = 0, total = 0; glm::vec3 origin{0}; };
     std::vector<Mesh> meshes;
     std::vector<std::shared_ptr<world::Chunk>> chunks;
@@ -407,13 +409,9 @@ int main(int argc, char** argv) {
         // то, что центр чанка берётся по всей его высоте.
         i32 useLod = lod;
         if (lod < 0) {
-            const f32 ccx = (f32)c->coord.x * world::CHUNK_SIZE + world::CHUNK_SIZE * 0.5f;
-            const f32 ccz = (f32)c->coord.z * world::CHUNK_SIZE + world::CHUNK_SIZE * 0.5f;
-            const f32 ccy = world::CHUNK_SIZE_Y * 0.5f;
-            const f32 ey  = (f32)gen.surfaceHeight((i32)px, (i32)pz) + height;
-            const f32 ddx = ccx - px, ddy = ccy - ey, ddz = ccz - pz;
-            const f32 dd  = std::sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
-            useLod = dd < lodB0 ? 0 : (dd < lodB1 ? 1 : (dd < lodB2 ? 2 : 3));
+            const f32 ey = (f32)gen.surfaceHeight((i32)px, (i32)pz) + height;
+            useLod = (i32)world::lodForChunk(c->coord.x, c->coord.z,
+                                             glm::vec3(px, ey, pz), bands);
         }
         lodUsed[useLod & 3]++;
         world::buildGreedyMesh(*c, nb, quads, (world::Lod)useLod);
@@ -469,6 +467,14 @@ int main(int argc, char** argv) {
                         100.0 * (double)top[i].first / (double)vertTotal);
     }
 
+    // Положение глаз и пиксели на единицу нужны траве раньше, чем
+    // настраивается камера: порог по экранному размеру считается при
+    // наборе инстансов, как и в игре.
+    const float eyeY = (minimalScene && !camGiven)
+                     ? world::SCENE_EYE_Y
+                     : (float)gen.surfaceHeight((i32)px, (i32)pz) + height;
+    const float pxPerUnit = (float)H * 0.5f / std::tan(glm::radians(70.f) * 0.5f);
+
     // Инстансы травы по тем же правилам, что populateGrass: 24 пробы
     // на чанк, детерминированный хеш, только на траве и песке.
     {
@@ -505,10 +511,21 @@ int main(int argc, char** argv) {
                     const f32 dist = std::sqrt(ddx * ddx + ddz * ddz);
                     const f32 fade = (40.f - dist) / (40.f * render::GRASS_FADE);
                     const f32 k = fade < 0.f ? 0.f : (fade > 1.f ? 1.f : fade);
-                    if (k < 0.2f) continue;
+                    if (k <= 0.f) continue;
+                    const f32 gscale = (0.6f + (f32)(h % 40) / 100.f) * k;
+                    // Тот же порог по экранному размеру, что в игре.
+                    {
+                        const f32 ex = (f32)wx + 0.5f - px;
+                        const f32 ey = (f32)surf - eyeY;
+                        const f32 ez = (f32)wz + 0.5f - pz;
+                        const f32 ed = std::sqrt(ex*ex + ey*ey + ez*ez);
+                        if (ed > 0.001f &&
+                            gscale * pxPerUnit / ed < render::GRASS_MIN_PIXELS)
+                            continue;
+                    }
                     render::GrassInstance in{};
                     in.pos   = { (f32)wx + 0.5f, (f32)surf, (f32)wz + 0.5f };
-                    in.scale = (0.6f + (f32)(h % 40) / 100.f) * k;
+                    in.scale = gscale;
                     in.r = 90; in.g = 170; in.b = 70; in.a = 255;
                     in.yaw = (f32)(h % 628) / 100.f;
                     gi.push_back(in);

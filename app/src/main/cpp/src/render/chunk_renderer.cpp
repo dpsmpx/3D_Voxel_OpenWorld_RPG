@@ -88,7 +88,8 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
         std::lock_guard lk(chunk.meshMutex);
         if (!chunk.meshes[lod].built) return false;
         buildChunkVertices(chunk, chunk.meshes[lod].quads,
-                           scratchVerts_, scratchIndices_, gm.opaqueIndices);
+                           scratchVerts_, scratchIndices_, gm.opaqueIndices,
+                           &gm.blendCenter);
         chunk.meshes[lod].ready.store(false, std::memory_order_release);
     }
 
@@ -393,6 +394,7 @@ void ChunkRenderer::render(vk::Context& ctx,
 
     // ---- 1. Отбор ----
     visible_.clear();
+    blended_.clear();
     for (auto& [coord, cm] : meshes_) {
         const glm::vec3 cmin{ (f32)coord.x * CH, 0.f, (f32)coord.z * CH };
         const glm::vec3 cmax{ cmin.x + CH, CY, cmin.z + CH };
@@ -419,11 +421,22 @@ void ChunkRenderer::render(vk::Context& ctx,
             // Пустой чанк при этом помечен выгруженным и не заказывается.
             if (!cm.lod[want].uploaded && lodRequests_.size() < 256)
                 lodRequests_.push_back({ coord, want });
-            for (u8 i = 0; i < 4; ++i) {
-                if (cm.lod[i].valid && cm.lod[i].totalIndices > 0) {
-                    chosen = &cm.lod[i];
-                    usedLod = i;
-                    break;
+
+            // Пока нужный уровень не приехал — рисуем РЕЗИДЕНТНЫЙ, и
+            // только его.
+            //
+            // Здесь стоял перебор i = 0..3 с выбором первого годного.
+            // Набор годных уровней меняется во времени сам по себе, и
+            // выбор «первого попавшегося» дёргал чанк между
+            // представлениями: нужен третий, резидентен второй, а
+            // рисовался нулевой, если тот случайно ещё лежал в памяти.
+            // Резидентный — единственный уровень, про который известно,
+            // что он загружен целиком и соответствует текущим вокселям.
+            if (cm.residentLod < 4) {
+                GpuMesh& res = cm.lod[cm.residentLod];
+                if (res.valid && res.totalIndices > 0) {
+                    chosen  = &res;
+                    usedLod = cm.residentLod;
                 }
             }
         }
@@ -437,6 +450,16 @@ void ChunkRenderer::render(vk::Context& ctx,
         }
 
         visible_.push_back({ chosen, cmin, distSq });
+        if (chosen->totalIndices > chosen->opaqueIndices) {
+            // Расстояние до ВОДЫ, а не до центра чанка. Центр чанка
+            // лежит на половине высоты мира; для пруда на поверхности
+            // это шестьдесят с лишним блоков мимо, и порядок
+            // смешивания по нему выходил случайный — дальняя вода
+            // ложилась поверх ближней, и стык двух чанков с водой
+            // читался как ступенька.
+            const glm::vec3 wd = cmin + chosen->blendCenter - cameraPos;
+            blended_.push_back({ chosen, cmin, glm::dot(wd, wd) });
+        }
         ++lastDrawnChunks_;
         lastDrawnIndices_ += chosen->totalIndices;
         ++lodCounts_[usedLod];
@@ -468,17 +491,20 @@ void ChunkRenderer::render(vk::Context& ctx,
     // ---- 4. Полупрозрачное, от дальнего к ближнему ----
     // Обратный порядок — единственный, при котором смешивание даёт
     // верный результат: дальняя вода должна лечь под ближнюю.
-    bool blendBound = false;
-    for (auto it = visible_.rbegin(); it != visible_.rend(); ++it) {
-        const u32 count = it->mesh->totalIndices - it->mesh->opaqueIndices;
-        if (count == 0) continue;
-        if (!blendBound) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, blendPipe);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
-                                    0, 1, &set, 0, nullptr);
-            blendBound = true;
-        }
-        bindAndDraw(*it, it->mesh->opaqueIndices, count);
+    //
+    // Сортируется отдельный список: порядок непрозрачного прохода
+    // здесь не годится, он считан от центров чанков.
+    if (blended_.empty()) return;
+    std::sort(blended_.begin(), blended_.end(),
+              [](const Blended& a, const Blended& b) { return a.distSq > b.distSq; });
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, blendPipe);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
+                            0, 1, &set, 0, nullptr);
+    for (const auto& b : blended_) {
+        const Visible v{ b.mesh, b.origin, b.distSq };
+        bindAndDraw(v, b.mesh->opaqueIndices,
+                    b.mesh->totalIndices - b.mesh->opaqueIndices);
     }
 }
 

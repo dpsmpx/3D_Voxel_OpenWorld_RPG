@@ -66,10 +66,18 @@ constexpr glm::ivec3 FACE_NORMAL[6] = {
 /// непрозрачное идёт первым, и outOpaqueIndices говорит, где проходит
 /// граница. Так вода и лёд рисуются вторым проходом — со смешиванием
 /// и без записи глубины, — а буфер остаётся один и вершины общие.
+///
+/// outBlendCenter, если запрошен, получает центр полупрозрачной
+/// геометрии в координатах чанка. По нему сортируется проход со
+/// смешиванием: центр чанка для этого не годится — он лежит на
+/// половине высоты мира, в 64 блоках над водой, и пруд у ног
+/// оказывается «дальше» пруда за спиной. Если прозрачного нет,
+/// пишется нуль.
 void buildChunkVertices(const world::Chunk& chunk,
                         const std::vector<world::Quad>& quads,
                         std::vector<VoxelVertex>& outVerts,
                         std::vector<u32>& outIndices,
-                        u32& outOpaqueIndices);
+                        u32& outOpaqueIndices,
+                        glm::vec3* outBlendCenter = nullptr);
 
 } // namespace render

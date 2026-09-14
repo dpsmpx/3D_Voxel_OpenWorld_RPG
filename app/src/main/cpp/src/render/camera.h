@@ -163,6 +163,15 @@ public:
     }
     glm::mat4 viewProj() const { return projection() * view(); }
 
+    /// Сколько экранных пикселей занимает одна мировая единица на
+    /// расстоянии в одну единицу от камеры. Нужна тем, кто решает по
+    /// НАСТОЯЩЕМУ размеру на экране, а не по расстоянию: размер
+    /// зависит ещё и от поля зрения, и от разрешения.
+    f32 pixelsPerUnit() const {
+        const f32 half = std::tan(glm::radians(fov_) * 0.5f);
+        return half > 1e-6f ? (f32)screenH_ * 0.5f / half : 0.f;
+    }
+
     /// Отладочный вид террейна, 0 — обычная картинка. См. voxel.frag.
     void setDebugShading(i32 mode) { debugShading_ = mode; }
 
