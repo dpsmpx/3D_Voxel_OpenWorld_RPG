@@ -1568,8 +1568,20 @@ void testDebugShadingWired() {
 
     check(set.find("\"debug_shading\"") != std::string::npos,
           "ключ debug_shading читается и пишется в settings.cfg");
-    check(rs.find("setDebugShading(config::settingsConst().debugShading)") != std::string::npos,
-          "система рендера отдаёт номер вида камере");
+    // Настройка обязана доходить до камеры. Выражение с тех пор
+    // раздвоилось: пока идёт развёртка по проходам, вид задаёт она
+    // (одна из её ступеней меряет ландшафт с ранним выходом из
+    // фрагментного шейдера). Но вне развёртки источник по-прежнему
+    // один — settings.cfg.
+    {
+        const usize d = rs.find("setDebugShading");
+        check(d != std::string::npos, "система рендера ставит номер вида");
+        if (d != std::string::npos) {
+            const std::string w = rs.substr(d, 220);
+            check(w.find("config::settingsConst().debugShading") != std::string::npos,
+                  "и вне развёртки берёт его из настроек");
+        }
+    }
     check(cam.find("(f32)debugShading_") != std::string::npos,
           "камера кладёт номер в свободную компоненту screenSize.z");
     check(fr.find("cam.screenSize.z") != std::string::npos,
@@ -2693,6 +2705,36 @@ void testFrameGpuBreakdown() {
                   "ступени идут по возрастанию, каждая включает прошлую");
             check((0x01u & 0x09u) == 0x01u && (0x09u & 0x49u) == 0x09u,
                   "и маски вложены одна в другую");
+        }
+
+        // ---- Ландшафт разбит надвое ----
+        //
+        // Накопительная лестница показала: ландшафт стоит 8.43 мс из
+        // 9.95 мс всего рисования, то есть 85%. Дальше вопрос один —
+        // это растеризация или математика фрагмента, — и выключить
+        // «освещение, но не рисование» нечем. Зато есть ранний выход
+        // из voxel.frag по debug_shading: вид 1 отдаёт цвет вершины и
+        // ничего больше. Разность двух ступеней с одной маской и есть
+        // цена всей математики фрагмента.
+        check(sw.find("u8          shading;") != NONE,
+              "у ступени есть отладочный вид террейна");
+        check(sw.find("{ 0x01, 1,") != NONE && sw.find("{ 0x01, 0,") != NONE,
+              "ландшафт меряется дважды: с ранним выходом и целиком");
+        check(sw.find("{ 0x01, 1,") < sw.find("{ 0x01, 0,"),
+              "сначала без света, потом целиком");
+
+        // Во время развёртки вид задаёт она, а не settings.cfg:
+        // иначе ступень «без света» рисовала бы обычную картинку.
+        const std::string rss =
+            readSource("app/src/main/cpp/src/render/render_system.cpp");
+        if (!rss.empty()) {
+            const usize d = rss.find("setDebugShading");
+            check(d != NONE, "отладочный вид ставится");
+            if (d != NONE) {
+                const std::string w = rss.substr(d, 200);
+                check(w.find("passSweep_.active()") != NONE,
+                      "и во время развёртки его задаёт она");
+            }
         }
 
         // ---- Пустой кадр: нижний предел ----
