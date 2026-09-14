@@ -40,8 +40,6 @@ void emitQuad(const world::Quad& q, const world::BlockDef& def,
     const u8 cr = (u8)(rgba >> 24), cg = (u8)(rgba >> 16);
     const u8 cb = (u8)(rgba >>  8);
     const u8 ca = forceOpaque ? (u8)255 : (u8)(rgba);
-    const u32 grain = (u32)def.grain & 7u;   // и так 0..7
-    const u32 tint  = def.biomeTint ? 1u : 0u;
 
     const glm::vec3 corners[4] = {
         q.v0.pos,
@@ -60,7 +58,7 @@ void emitQuad(const world::Quad& q, const world::BlockDef& def,
         ao[i] = q.ao[c];
         verts.push_back({
             packVoxelPos((u32)p.x, (u32)p.y, (u32)p.z,
-                         q.v0.face, ao[i], q.sky[c], grain, tint),
+                         q.v0.face, ao[i], q.sky[c]),
             cr, cg, cb, ca });
     }
 

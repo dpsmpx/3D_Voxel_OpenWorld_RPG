@@ -26,7 +26,8 @@ fi
 mkdir -p "$OUT" "$PROJ/app/src/main/assets/shaders"
 
 # Шейдеры игры — те же, что уезжают в APK.
-for f in "$PROJ"/app/src/main/cpp/shaders/sky.vert "$PROJ"/app/src/main/cpp/shaders/sky.frag; do
+for f in "$PROJ"/app/src/main/cpp/shaders/sky.vert "$PROJ"/app/src/main/cpp/shaders/sky.frag \
+         "$PROJ"/app/src/main/cpp/shaders/voxel.frag; do
     glslc -O "$f" -o "$PROJ/app/src/main/assets/shaders/$(basename "$f").spv"
 done
 # Опорный шейдер кладётся в каталог сборки, а НЕ в ассеты игры.
@@ -35,6 +36,8 @@ done
 # пакует весь assets/shaders целиком. Инструмент не имеет права
 # добавлять файлы в поставку.
 glslc -O "$PROJ/tools/gpubench/flat.frag" -o "$OUT/gpubench_flat.frag.spv"
+glslc -O "$PROJ/tools/gpubench/voxel_probe.vert" -o "$OUT/gpubench_voxel_probe.vert.spv"
+glslc -O -DWATER "$PROJ/tools/gpubench/voxel_probe.vert" -o "$OUT/gpubench_water_probe.vert.spv"
 
 "$CXX" -std=c++20 -O2 -g0 \
     -DGLM_FORCE_DEPTH_ZERO_TO_ONE -DGLM_ENABLE_EXPERIMENTAL \

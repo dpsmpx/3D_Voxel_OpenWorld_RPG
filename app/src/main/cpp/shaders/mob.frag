@@ -26,10 +26,15 @@ vec3 shoulder(vec3 c) {
 }
 
 void main() {
-    // Та же модель освещения и то же цветовое пространство, что у
-    // террейна (voxel.frag). Иначе существа выглядят вырезанными из
-    // другой игры: свет у них считался бы по другой формуле, а цвет
-    // не проходил бы через линеаризацию.
+    // Та же модель освещения и те же числа, что у террейна
+    // (shaders/voxel.frag). Существа — такие же кубы, стоящие на тех
+    // же блоках: стоит освещению разойтись, и они выглядят вырезанными
+    // из другой игры.
+    //
+    // Заявлено это было и раньше, а на деле рассеянный свет считался
+    // от самого skyLin, солнце было вдвое сильнее террейнового, и
+    // полусфера по нормали жила только здесь. За тем, чтобы числа
+    // снова не разошлись, следит тест «мир освещён по одной модели».
     vec3 N = normalize(vNormal);
 
     float day    = clamp(cam.sunDir.w, 0.0, 1.0);
@@ -37,11 +42,20 @@ void main() {
     vec3  sunTint = toLinear(mix(vec3(1.00, 0.52, 0.26), vec3(1.00, 0.97, 0.92),
                                  smoothstep(0.0, 0.30, cam.sunDir.y)));
     vec3  skyLin  = toLinear(cam.skyColor.rgb);
-    float skyVis  = 0.5 + 0.5 * N.y;
+    float skyMax  = max(max(skyLin.r, skyLin.g), max(skyLin.b, 0.001));
+    vec3  ambTint = mix(vec3(1.0), skyLin / skyMax, 0.55);
 
-    vec3 ambient = skyLin * (0.16 + 0.34 * skyVis) * (0.25 + 0.75 * day);
-    vec3 sun     = sunTint * (max(dot(N, cam.sunDir.xyz), 0.0) * 0.85 * day * above);
-    vec3 moon    = vec3(0.04, 0.055, 0.11) * (1.0 - day) * (0.30 + 0.35 * skyVis);
+    // Освещённость грани — та же таблица, что FACE_LIGHT в террейне,
+    // только выбранная по нормали: модели существ собраны из кубов, и
+    // их грани обязаны ложиться в тот же ряд оттенков, что блоки под
+    // ногами. На осевой нормали выражение даёт ровно табличное
+    // значение: верх 1.00, низ 0.50, ±X 0.76, ±Z 0.88.
+    float faceLight = mix(mix(0.76, 0.88, abs(N.z)),
+                          mix(0.50, 1.00, step(0.0, N.y)),
+                          abs(N.y));
+
+    vec3 ambient = ambTint * mix(0.14, 0.60, day);
+    vec3 sun     = sunTint * (max(dot(N, cam.sunDir.xyz), 0.0) * 0.46 * day * above);
 
     // Подсветка по краю силуэта: без неё тёмная фигура сливается с
     // тенью, и моба замечаешь только когда он уже бьёт.
@@ -49,8 +63,10 @@ void main() {
     float rimB  = 1.0 - clamp(dot(N, normalize(toEye)), 0.0, 1.0);
     float rim   = rimB * rimB * rimB;
 
-    vec3 lit = toLinear(vColor.rgb) * (ambient + sun + moon + 0.02)
+    vec3 lit = toLinear(vColor.rgb) * (faceLight * (ambient + sun))
              + skyLin * rim * 0.22;
+    // Плечо нужно из-за подсветки края: она прибавляется поверх
+    // освещения и на светлой шкуре выбивает силуэт в белое пятно.
     lit = shoulder(lit);
 
     vec3  toFrag = vWorldPos - cam.cameraPos.xyz;
@@ -59,10 +75,11 @@ void main() {
                          max(cam.fogParams.y - cam.fogParams.x, 0.001), 0.0, 1.0);
     fogAmt = fogAmt * fogAmt * (3.0 - 2.0 * fogAmt);
 
-    float sunAmt   = max(dot(normalize(toFrag), cam.sunDir.xyz), 0.0);
+    float sunAmt = max(dot(normalize(toFrag), cam.sunDir.xyz), 0.0);
+    // Показатель и вес те же, что у тумана террейна.
     float s2 = sunAmt * sunAmt;
-    float s6 = s2 * s2 * s2;
-    vec3  fogColor = mix(skyLin, sunTint, clamp(s6 * 0.45 * above, 0.0, 1.0));
+    float s8 = s2 * s2 * s2 * s2;
+    vec3  fogColor = mix(skyLin, sunTint, clamp(s8 * 0.30 * above, 0.0, 1.0));
 
-    outColor = vec4(toSrgb(mix(lit, fogColor, fogAmt)), vColor.a);
+    outColor = vec4(clamp(toSrgb(mix(lit, fogColor, fogAmt)), 0.0, 1.0), vColor.a);
 }

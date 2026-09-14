@@ -318,11 +318,20 @@ int main(int argc, char** argv) {
         return p;
     };
 
-    VkShaderModule skyVs = loadShader(dev, "shaders/sky.vert.spv");
-    VkShaderModule skyFs = loadShader(dev, "shaders/sky.frag.spv");
+    VkShaderModule skyVs  = loadShader(dev, "shaders/sky.vert.spv");
+    VkShaderModule skyFs  = loadShader(dev, "shaders/sky.frag.spv");
     VkShaderModule flatFs = loadShader(dev, "gpubench_flat.frag.spv", true);
-    VkPipeline pSky  = makeFullscreen(skyVs, skyFs);
-    VkPipeline pFlat = makeFullscreen(skyVs, flatFs);
+    // Воксельный фрагментный шейдер — настоящий, из игры; вершинный к
+    // нему подаёт те же входы, что даёт voxel.vert (см. voxel_probe.vert).
+    VkShaderModule voxVs  = loadShader(dev, "gpubench_voxel_probe.vert.spv", true);
+    VkShaderModule watVs  = loadShader(dev, "gpubench_water_probe.vert.spv", true);
+    VkShaderModule voxFs  = loadShader(dev, "shaders/voxel.frag.spv");
+    VkPipeline pSky   = makeFullscreen(skyVs, skyFs);
+    VkPipeline pFlat  = makeFullscreen(skyVs, flatFs);
+    VkPipeline pVoxel = makeFullscreen(voxVs, voxFs);
+    // Тот же фрагментный шейдер, но с полупрозрачным цветом грани:
+    // меряем цену ветки воды, а не догадываемся о ней.
+    VkPipeline pWater = makeFullscreen(watVs, voxFs);
 
     VkCommandPool cp;
     {
@@ -377,13 +386,19 @@ int main(int argc, char** argv) {
     // Прогрев: первая отправка тащит за собой компиляцию и раскладку.
     measure(pFlat, 1);
     measure(pSky, 1);
+    measure(pVoxel, 1);
+    measure(pWater, 1);
 
-    double best_flat = 1e9, best_sky = 1e9;
+    double best_flat = 1e9, best_sky = 1e9, best_vox = 1e9, best_wat = 1e9;
     for (int r = 0; r < 3; ++r) {
         const double f = measure(pFlat, iters);
         const double s = measure(pSky, iters);
+        const double v = measure(pVoxel, iters);
+        const double w = measure(pWater, iters);
         if (f < best_flat) best_flat = f;
         if (s < best_sky)  best_sky  = s;
+        if (v < best_vox)  best_vox  = v;
+        if (w < best_wat)  best_wat  = w;
     }
 
     const double px = (double)W * H;
@@ -394,14 +409,29 @@ int main(int argc, char** argv) {
                 best_sky, best_sky * 1e6 / px);
     std::printf("  из них собственно небо         %8.2f мс   (%.1fx к ровному цвету)\n",
                 best_sky - best_flat, best_flat > 0 ? best_sky / best_flat : 0.0);
+    std::printf("  шейдер вокселей                %8.2f мс   %6.2f нс/пиксель\n",
+                best_vox, best_vox * 1e6 / px);
+    std::printf("  из них собственно воксели      %8.2f мс   (%.1fx к ровному цвету)\n",
+                best_vox - best_flat, best_flat > 0 ? best_vox / best_flat : 0.0);
+    std::printf("  он же на грани воды            %8.2f мс   %6.2f нс/пиксель\n",
+                best_wat, best_wat * 1e6 / px);
+    std::printf("  из них ветка блика и Френеля   %8.2f мс   (+%.0f%% к грани террейна)\n",
+                best_wat - best_vox,
+                best_vox > best_flat
+                    ? (best_wat - best_vox) / (best_vox - best_flat) * 100.0 : 0.0);
 
     // Главное число: журнал с устройства и кадр vkcheck говорят, что
     // геометрия закрывает 64% экрана. Ровно эта доля работы неба и
     // выбрасывается, пока небо рисуется ПЕРВЫМ.
+    // Террейн закрывает под две трети экрана (замер кадра vkcheck:
+    // 323777 пикселей геометрии из 504000), небо — остальное.
     const double covered = 0.64;
-    std::printf("\n  при 64%% экрана, закрытых геометрией (замер кадра vkcheck):\n");
-    std::printf("    впустую                      %8.2f мс за кадр\n",
-                (best_sky - best_flat) * covered);
+    std::printf("\n  кадр как он есть: %.0f%% экрана воксели, %.0f%% небо\n",
+                covered * 100.0, (1.0 - covered) * 100.0);
+    std::printf("    воксели                      %8.2f мс\n",
+                (best_vox - best_flat) * covered);
+    std::printf("    небо                         %8.2f мс\n",
+                (best_sky - best_flat) * (1.0 - covered));
 
     vkDeviceWaitIdle(dev);
     return 0;

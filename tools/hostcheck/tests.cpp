@@ -529,6 +529,97 @@ void testGreedyMesh() {
 }
 
 // ------------------------------------------------------------
+// Стык четырёх чанков вокруг начала координат
+// ------------------------------------------------------------
+//
+// Отрицательные координаты — классическое место ошибки: маска и сдвиг
+// ведут себя там не так, как деление, и чанк (-1,-1) легко получает
+// не тех соседей. Снаружи это выглядит как шов на ровном поле ровно
+// по нулевой линии — либо щель, либо двойная стенка внутри земли.
+//
+// Проверяем то, что видно: на стыке двух сплошных чанков внутренних
+// граней нет вовсе, а верхняя поверхность всех четырёх покрыта ровно
+// один раз — без дыр и без наложений.
+void testChunkSeamAcrossOrigin() {
+    group("меш: стык чанков через начало координат");
+
+    world::blocks();
+
+    // Четыре чанка вокруг нуля, все с одинаковым плоским рельефом.
+    struct Cell { i32 cx, cz; std::unique_ptr<world::Chunk> c; };
+    Cell cells[4] = {
+        { -1, -1, std::make_unique<world::Chunk>() },
+        { -1,  0, std::make_unique<world::Chunk>() },
+        {  0, -1, std::make_unique<world::Chunk>() },
+        {  0,  0, std::make_unique<world::Chunk>() },
+    };
+    for (auto& cell : cells) {
+        cell.c->coord = { cell.cx, 0, cell.cz };
+        fillFlat(*cell.c, 20, world::STONE);
+    }
+    auto find = [&](i32 cx, i32 cz) -> const world::Chunk* {
+        for (const auto& cell : cells)
+            if (cell.cx == cx && cell.cz == cz) return cell.c.get();
+        return nullptr;
+    };
+
+    // Собираем все четыре меша, каждый — со своими настоящими соседями.
+    std::vector<world::Quad> quads;
+    f64 topArea = 0.0;
+    usize innerFaces = 0;
+    i32 badX = 0, badZ = 0; u8 badFace = 0;
+    for (const auto& cell : cells) {
+        world::ChunkNeighbors nb;
+        nb.nx = find(cell.cx - 1, cell.cz);
+        nb.px = find(cell.cx + 1, cell.cz);
+        nb.nz = find(cell.cx, cell.cz - 1);
+        nb.pz = find(cell.cx, cell.cz + 1);
+        world::buildGreedyMesh(*cell.c, nb, quads, world::Lod::Full);
+
+        for (const auto& q : quads) {
+            const f32 w = glm::length(q.du), h = glm::length(q.dv);
+            if (q.v0.face == 2) topArea += (f64)(w * h);
+
+            // Грань, смотрящая в существующего соседа, который в этом
+            // месте сплошной, — это стенка внутри земли. Её быть не
+            // должно ни на одной из четырёх границ.
+            const bool atNegX = (q.v0.face == 1 && q.v0.pos.x == 0.f);
+            const bool atPosX = (q.v0.face == 0 && q.v0.pos.x == (f32)world::CHUNK_SIZE);
+            const bool atNegZ = (q.v0.face == 5 && q.v0.pos.z == 0.f);
+            const bool atPosZ = (q.v0.face == 4 && q.v0.pos.z == (f32)world::CHUNK_SIZE);
+            const bool haveNb = (atNegX && nb.nx) || (atPosX && nb.px)
+                             || (atNegZ && nb.nz) || (atPosZ && nb.pz);
+            // Выше рельефа стенка законна: там у соседа воздух.
+            const f32 y0 = q.v0.pos.y;
+            if (haveNb && y0 < 20.f) {
+                if (!innerFaces) { badX = cell.cx; badZ = cell.cz; badFace = q.v0.face; }
+                ++innerFaces;
+            }
+        }
+    }
+    if (innerFaces)
+        std::printf("       первая: чанк %d,%d грань %u; всего %zu\n",
+                    badX, badZ, (unsigned)badFace, innerFaces);
+    check(innerFaces == 0, "на стыке сплошных чанков внутренних граней нет");
+
+    const f64 want = 4.0 * (f64)world::CHUNK_SIZE * (f64)world::CHUNK_SIZE;
+    check(topArea == want, "верх четырёх чанков покрыт ровно один раз");
+
+    // Тот же стык, но у одного соседа его нет. Тогда грань на границе
+    // строить НЕЛЬЗЯ: иначе по краю ещё не загруженного чанка встаёт
+    // стена во всю толщу земли, и игрок смотрит в чёрный клин.
+    {
+        world::ChunkNeighbors lone;
+        lone.px = find(0, -1);      // сосед только с одной стороны
+        world::buildGreedyMesh(*cells[0].c, lone, quads, world::Lod::Full);
+        usize wall = 0;
+        for (const auto& q : quads)
+            if (q.v0.face == 1 && q.v0.pos.x == 0.f && q.v0.pos.y < 20.f) ++wall;
+        check(wall == 0, "по неизвестному соседу стена не строится");
+    }
+}
+
+// ------------------------------------------------------------
 // Затенение углов и упаковка вершины
 // ------------------------------------------------------------
 void testVoxelShading() {
@@ -574,20 +665,24 @@ void testVoxelShading() {
 
     // Упаковка вершины: всё достаётся обратно ровно так, как её
     // читает шейдер.
+    bool packOk = true, tailFree = true;
     for (u32 face = 0; face < 6; ++face) {
         const u32 p = render::packVoxelPos(32, 128, 31, face, face % 4,
-                                           (face + 2) % 8, 5, face & 1);
-        const bool ok = ( p        & 63u)  == 32
-                     && ((p >>  6) & 255u) == 128
-                     && ((p >> 14) & 63u)  == 31
-                     && ((p >> 20) & 7u)   == face
-                     && ((p >> 23) & 3u)   == (face % 4)
-                     && ((p >> 25) & 7u)   == ((face + 2) % 8)
-                     && ((p >> 28) & 7u)   == 5
-                     && ((p >> 31) & 1u)   == (face & 1);
-        if (!ok) { check(false, "упаковка вершины распаковывается обратно"); return; }
+                                           (face + 2) % 8);
+        packOk = packOk
+              && ( p        & 63u)  == 32
+              && ((p >>  6) & 255u) == 128
+              && ((p >> 14) & 63u)  == 31
+              && ((p >> 20) & 7u)   == face
+              && ((p >> 23) & 3u)   == (face % 4)
+              && ((p >> 25) & 7u)   == ((face + 2) % 8);
+        // Старшие четыре бита свободны и обязаны оставаться нулями:
+        // в них лежали крапчатость и подкраска по местности, которые
+        // шейдер давно перестал читать, а мешер продолжал собирать.
+        if ((p >> 28) != 0u) tailFree = false;
     }
-    check(true, "упаковка вершины распаковывается обратно");
+    check(packOk, "упаковка вершины распаковывается обратно");
+    check(tailFree, "старшие биты вершины свободны");
     check(sizeof(render::VoxelVertex) == 8, "вершина террейна весит 8 байт");
 
     // Геометрия из квадов: по четыре вершины и шесть индексов на квад,
@@ -757,6 +852,23 @@ static std::string readSource(const char* path) {
     return out;
 }
 
+/// Убирает строчные комментарии: в них слова «pow» и «smoothstep»
+/// встречаются как раз там, где объясняется, почему их там нет.
+static std::string stripComments(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (usize i = 0; i < s.size(); ) {
+        if (s[i] == '/' && i + 1 < s.size() && s[i + 1] == '/') {
+            while (i < s.size() && s[i] != '\n') ++i;
+        } else {
+            out.push_back(s[i]);
+            ++i;
+        }
+    }
+    return out;
+}
+
+
 // ------------------------------------------------------------
 // Синхронизация прохода рендера.
 //
@@ -908,39 +1020,263 @@ void testNeighborArrivalTriggersRemesh() {
           "после появления соседа граница добирает грани");
 }
 
-void testNoPerVoxelGrain() {
-    group("шейдер: цвет грани не зависит от номера вокселя");
+void testVoxelColorIsPlaceIndependent() {
+    group("шейдер: цвет грани зависит только от материала и грани");
 
     const std::string f = readSource("app/src/main/cpp/shaders/voxel.frag");
     if (f.empty()) { check(true, "шейдер не найден, проверка пропущена"); return; }
+    const std::string src = stripComments(f);
 
-    check(f.find("hash13") == std::string::npos ||
-          f.find("float hash13") == std::string::npos,
-          "функции шума в шейдере нет");
-    check(f.find("* (1.0 + grain") == std::string::npos,
-          "цвет материала на зерно не умножается");
+    // ---- 1. никакого шума по номеру вокселя ----
+    check(src.find("hash13") == std::string::npos, "функции шума в шейдере нет");
+    check(src.find("fract(sin(") == std::string::npos, "и не заменена другим шумом");
 
-    // Альбедо считается из цвета вершины и фаски, и больше ни из чего.
-    const usize a = f.find("vec3 albedo = ");
+    // ---- 2. альбедо: цвет вершины, грань, фаска — и всё ----
+    //
+    // Место фрагмента в мире здесь не участвует. Так выглядела
+    // настоящая поломка: цвет умножался на волну sin() по мировым
+    // координатам и на градиент по высоте, и один и тот же блок травы
+    // выходил заметно разным зелёным в разных концах одного кадра.
+    const usize a = src.find("vec3 albedo = ");
     check(a != std::string::npos, "альбедо считается");
     if (a != std::string::npos) {
-        const std::string line = f.substr(a, f.find(';', a) - a);
+        const std::string line = src.substr(a, src.find(';', a) - a);
         check(line.find("vColor") != std::string::npos, "из цвета материала");
-        check(line.find("hash") == std::string::npos &&
-              line.find("grain") == std::string::npos &&
-              line.find("noise") == std::string::npos &&
-              line.find("random") == std::string::npos,
-              "без шума, зерна и случайности");
+        check(line.find("FACE_LIGHT") != std::string::npos,
+              "и освещённости своей грани");
+        for (const char* bad : { "hash", "grain", "noise", "random",
+                                 "vWorldPos", "sin(", "tint" }) {
+            if (line.find(bad) != std::string::npos) {
+                std::printf("       альбедо зависит от «%s»\n", bad);
+                check(false, "без шума, места в мире и подкрасок");
+                return;
+            }
+        }
+        check(true, "без шума, места в мире и подкрасок");
     }
 
-    // Замены шума другим шумом быть не должно.
-    check(f.find("fract(sin(") == std::string::npos, "и не заменён другим шумом");
+    // Подкрасок по мировым координатам не осталось нигде: ни волны,
+    // ни градиента по высоте. Единственные sin/cos, какие терпимы в
+    // этом шейдере, — вообще никакие.
+    check(src.find("sin(") == std::string::npos,
+          "тригонометрии по координатам в террейне нет");
+    check(src.find("vWorldPos.y - 40.0") == std::string::npos,
+          "градиента цвета по высоте нет");
 
-    // Точность межстадийных переменных объявлена явно с обеих сторон.
+    // ---- 3. точность межстадийных переменных ----
     check(f.find("in highp vec2  vShade") != std::string::npos,
           "vShade объявлена highp в фрагментном шейдере");
     check(f.find("clamp(vShade, 0.0, 1.0)") != std::string::npos,
           "затенение ограничено своим договорным диапазоном");
+}
+
+// ------------------------------------------------------------
+// Затенение грани задаётся ровно в одном месте
+// ------------------------------------------------------------
+//
+// Раньше в двух: реестр блоков ставил верху цвет светлее бока, а бок
+// светлее низа, и сверху шейдер добавлял полусферный свет (небо
+// сверху, отражение земли снизу). Два независимых наклона одной и той
+// же величины — подправить контраст граней было нельзя, не выясняя
+// каждый раз, какая из двух половин сейчас видна.
+void testFaceShadingHasSingleSource() {
+    group("освещённость грани: один источник истины");
+
+    const std::string f = stripComments(
+        readSource("app/src/main/cpp/shaders/voxel.frag"));
+    if (f.empty()) { check(true, "шейдер не найден, проверка пропущена"); return; }
+
+    // ---- 1. таблица в шейдере есть, и в ней шесть чисел ----
+    const usize t = f.find("FACE_LIGHT[6] = float[6](");
+    check(t != std::string::npos, "таблица освещённости граней объявлена");
+    if (t == std::string::npos) return;
+
+    const usize open  = f.find('(', f.find("float[6]", t));
+    const usize close = f.find(')', open);
+    const std::string body = f.substr(open + 1, close - open - 1);
+    f32 fl[6] = {0,0,0,0,0,0};
+    int got = std::sscanf(body.c_str(), "%f , %f , %f , %f , %f , %f",
+                          &fl[0], &fl[1], &fl[2], &fl[3], &fl[4], &fl[5]);
+    check(got == 6, "в таблице ровно шесть значений");
+    if (got != 6) return;
+
+    // Верх ярче любого бока, низ темнее любого бока: без этого у куба
+    // пропадает верхнее ребро и он читается плоским пятном.
+    const f32 top = fl[2], bottom = fl[3];
+    bool topBrightest = true, bottomDarkest = true;
+    for (int i = 0; i < 6; ++i) {
+        if (i != 2 && fl[i] >= top)    topBrightest  = false;
+        if (i != 3 && fl[i] <= bottom) bottomDarkest = false;
+    }
+    check(topBrightest, "верхняя грань — самая светлая");
+    check(bottomDarkest, "нижняя — самая тёмная");
+
+    // Два боковых направления разведены. У куба в кадре видно самое
+    // большее одну грань из каждой пары, и при равной освещённости
+    // вертикальное ребро между ними исчезает.
+    check(std::fabs(fl[0] - fl[4]) > 0.05f,
+          "боковые направления различимы между собой");
+    check(fl[0] == fl[1] && fl[4] == fl[5],
+          "противоположные грани пары освещены одинаково");
+    for (int i = 0; i < 6; ++i)
+        if (fl[i] <= 0.f || fl[i] > 1.f) {
+            check(false, "все множители лежат в (0, 1]");
+            return;
+        }
+    check(true, "все множители лежат в (0, 1]");
+
+    // ---- 2. полусферы в шейдере больше нет ----
+    check(f.find("0.5 + 0.5 * N.y") == std::string::npos &&
+          f.find("skyVis") == std::string::npos,
+          "второго наклона по нормали в шейдере нет");
+
+    // ---- 3. и в реестре блоков тоже нет ----
+    //
+    // Один материал — один цвет. Исключения ровно два и они
+    // проверяются поимённо: у травы земляной бок, у дерева светлый
+    // спил на тёмной коре. Всё остальное обязано совпадать.
+    world::blocks();
+    struct Known { u16 id; const char* name; };
+    const Known same[] = {
+        { world::STONE,    "камень"  }, { world::DIRT,   "земля"  },
+        { world::SAND,     "песок"   }, { world::SNOW,   "снег"   },
+        { world::WATER,    "вода"    }, { world::ICE,    "лёд"    },
+        { world::LAVA,     "лава"    }, { world::LEAVES, "листва" },
+        { world::IRON_ORE, "руда железа" }, { world::GOLD_ORE, "руда золота" },
+        { world::BEDROCK,  "порода"  },
+    };
+    for (const auto& k : same) {
+        const world::BlockDef& d = world::blocks().get(k.id);
+        if (d.colorTop != d.colorSide || d.colorTop != d.colorBottom) {
+            std::printf("       у «%s» грани разного цвета\n", k.name);
+            check(false, "у однородных материалов все грани одного цвета");
+            return;
+        }
+    }
+    check(true, "у однородных материалов все грани одного цвета");
+
+    const world::BlockDef& grass = world::blocks().get(world::GRASS);
+    check(grass.colorTop != grass.colorSide, "у травы макушка отличается от бока");
+    check(grass.colorSide == world::blocks().get(world::DIRT).colorSide,
+          "а бок у неё — ровно земля");
+    const world::BlockDef& wood = world::blocks().get(world::WOOD);
+    check(wood.colorTop != wood.colorSide, "у дерева спил отличается от коры");
+    check(wood.colorTop == wood.colorBottom, "оба спила одинаковы");
+
+    // ---- 4. материалы различимы между собой ----
+    //
+    // Крапчатости, по которой руду отличали от породы, больше нет.
+    // Если руда и камень совпали по цвету — жила в стене становится
+    // невидимой, и никакой тест геометрии этого не поймает.
+    auto lum = [](world::BlockColor c) {
+        return 0.299f * (f32)((c >> 24) & 0xFF)
+             + 0.587f * (f32)((c >> 16) & 0xFF)
+             + 0.114f * (f32)((c >>  8) & 0xFF);
+    };
+    auto dist = [&](u16 a, u16 b) {
+        const world::BlockColor x = world::blocks().get(a).colorTop;
+        const world::BlockColor y = world::blocks().get(b).colorTop;
+        const f32 dr = (f32)((i32)((x >> 24) & 0xFF) - (i32)((y >> 24) & 0xFF));
+        const f32 dg = (f32)((i32)((x >> 16) & 0xFF) - (i32)((y >> 16) & 0xFF));
+        const f32 db = (f32)((i32)((x >>  8) & 0xFF) - (i32)((y >>  8) & 0xFF));
+        return std::sqrt(dr * dr + dg * dg + db * db);
+    };
+    // Руда в камне и снег на песке — те пары, что и правда стоят
+    // рядом в мире.
+    check(dist(world::IRON_ORE, world::STONE) > 30.f,
+          "железная руда отличима от камня");
+    check(dist(world::GOLD_ORE, world::STONE) > 30.f,
+          "золотая руда отличима от камня");
+    check(std::fabs(lum(world::blocks().get(world::GRASS).colorTop) -
+                    lum(world::blocks().get(world::DIRT).colorTop)) > 20.f,
+          "трава отличима от земли по светлоте, а не только по тону");
+}
+
+// ------------------------------------------------------------
+// Мир освещён по одной модели
+// ------------------------------------------------------------
+//
+// Террейн, трава и существа стоят в одном кадре друг на друге. Пока
+// каждый считал свет по-своему, это было видно: у травы рассеянный
+// свет брался от самого цвета неба, у террейна — от приглушённого к
+// белому; солнце у существ было вдвое сильнее, чем у земли под ними;
+// туман на закате красил горизонт под травой не так, как над ней.
+//
+// Общего заголовка у этих шейдеров нет — glslc собирает каждый файл
+// сам по себе, и заводить механизм включений ради трёх чисел дороже,
+// чем сверять их здесь. Числа продублированы намеренно, а этот тест —
+// то, что не даёт им разойтись снова.
+void testWorldSharesOneLightingModel() {
+    group("шейдеры: мир освещён по одной модели");
+
+    struct Src { const char* name; std::string text; };
+    Src files[] = {
+        { "voxel.frag", stripComments(readSource("app/src/main/cpp/shaders/voxel.frag")) },
+        { "grass.frag", stripComments(readSource("app/src/main/cpp/shaders/grass.frag")) },
+        { "mob.frag",   stripComments(readSource("app/src/main/cpp/shaders/mob.frag"))   },
+    };
+    for (const auto& f : files)
+        if (f.text.empty()) { check(true, "шейдеры не найдены, проверка пропущена"); return; }
+
+    // Каждая строка ниже — кусок выражения, который обязан стоять во
+    // всех трёх файлах ДОСЛОВНО. Разойдётся число — тест назовёт файл.
+    struct Rule { const char* what; const char* needle; };
+    const Rule shared[] = {
+        { "цвет солнца по высоте",
+          "mix(vec3(1.00, 0.52, 0.26), vec3(1.00, 0.97, 0.92)" },
+        { "порог «солнце над горизонтом»",   "smoothstep(-0.10, 0.06, cam.sunDir.y)" },
+        { "оттенок рассеянного света",       "mix(vec3(1.0), skyLin / skyMax, 0.55)" },
+        { "сила рассеянного света день/ночь","mix(0.14, 0.60, day)" },
+        { "сила солнца",                     "0.46 * day * above" },
+        { "вес солнечного оттенка в тумане", "0.30 * above" },
+        { "перевод в линейное пространство", "vec3 toLinear(vec3 c) { return c * c; }" },
+    };
+    for (const auto& r : shared) {
+        for (const auto& f : files) {
+            if (f.text.find(r.needle) == std::string::npos) {
+                std::printf("       в %s нет «%s»\n", f.name, r.needle);
+                check(false, r.what);
+                return;
+            }
+        }
+        check(true, r.what);
+    }
+
+    // Полусферы по нормали не осталось ни в одном: наклон по граням
+    // задаёт таблица, и он ровно один.
+    for (const auto& f : files) {
+        if (f.text.find("0.5 + 0.5 * N.y") != std::string::npos) {
+            std::printf("       в %s осталась полусфера по нормали\n", f.name);
+            check(false, "второго наклона по нормали нет нигде");
+            return;
+        }
+    }
+    check(true, "второго наклона по нормали нет нигде");
+
+    // Существа собраны из кубов, и их грани обязаны попадать в тот же
+    // ряд оттенков, что блоки: те же четыре числа, что в FACE_LIGHT.
+    const std::string& mob = files[2].text;
+    check(mob.find("faceLight") != std::string::npos,
+          "у существ освещённость грани тоже считается");
+    for (const char* v : { "0.76", "0.88", "0.50", "1.00" })
+        if (mob.find(std::string("mix(") + v) == std::string::npos &&
+            mob.find(std::string(", ") + v) == std::string::npos) {
+            std::printf("       в mob.frag нет множителя %s\n", v);
+            check(false, "и берёт те же четыре числа, что таблица террейна");
+            return;
+        }
+    check(true, "и берёт те же четыре числа, что таблица террейна");
+
+    // Итоговый цвет ограничен во всех трёх: за туманом раньше вылезал
+    // NaN, и ограничение — единственное, что его ловит.
+    for (const auto& f : files) {
+        if (f.text.find("clamp(toSrgb(") == std::string::npos) {
+            std::printf("       в %s итоговый цвет не ограничен\n", f.name);
+            check(false, "итоговый цвет ограничен [0,1] везде");
+            return;
+        }
+    }
+    check(true, "итоговый цвет ограничен [0,1] везде");
 }
 
 void testDistantGrassIsNotSubPixel() {
@@ -2828,22 +3164,6 @@ std::vector<std::pair<std::string, std::string>> allShaders() {
     return out;
 }
 
-/// Убирает строчные комментарии: в них слова «pow» и «smoothstep»
-/// встречаются как раз там, где объясняется, почему их там нет.
-std::string stripComments(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (usize i = 0; i < s.size(); ) {
-        if (s[i] == '/' && i + 1 < s.size() && s[i + 1] == '/') {
-            while (i < s.size() && s[i] != '\n') ++i;
-        } else {
-            out.push_back(s[i]);
-            ++i;
-        }
-    }
-    return out;
-}
-
 } // namespace
 
 void testShadersAvoidUndefinedMath() {
@@ -4656,6 +4976,7 @@ int main() {
     testGreedyMesh();
     testLodCoversGround();
     testMeshWindingFacesOutward();
+    testChunkSeamAcrossOrigin();
     testVoxelShading();
     testDayCycle();
     testBossPhases();
@@ -4668,7 +4989,9 @@ int main() {
     testDiagnosticBuildWired();
     testUnknownNeighborIsNotAir();
     testNeighborArrivalTriggersRemesh();
-    testNoPerVoxelGrain();
+    testVoxelColorIsPlaceIndependent();
+    testFaceShadingHasSingleSource();
+    testWorldSharesOneLightingModel();
     testDistantGrassIsNotSubPixel();
     testShadersAvoidUndefinedMath();
     testLodHasSingleSourceOfTruth();
