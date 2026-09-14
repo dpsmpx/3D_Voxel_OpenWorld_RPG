@@ -79,10 +79,18 @@ void PassSweep::report() const {
     // пиксели, которые не закрыл ландшафт.
     LOGI("  -- выключением по одному (числа занижены: проходы подменяют "
          "друг друга на экране) --");
-    for (u32 i = CUMUL_LAST + 1; i < STEP_COUNT; ++i)
+    for (u32 i = CUMUL_LAST + 1; i < SOLO_FIRST && i < STEP_COUNT; ++i)
         LOGI("  %-18s %6.2f мс   -> разность с опорным %.2f мс (кадров %u)",
              STEPS[i].name, (double)avg(i),
              (double)(base - avg(i)), frames_[i]);
+
+    // Проход в одиночку, поверх пустого кадра. Ни от чьей разности не
+    // зависит: закрывать ему нечем и некому.
+    LOGI("  -- в одиночку, поверх пустого кадра (без разности соседей) --");
+    for (u32 i = SOLO_FIRST; i < STEP_COUNT; ++i)
+        LOGI("  %-18s %6.2f мс   -> сам по себе %.2f мс (кадров %u)",
+             STEPS[i].name, (double)avg(i),
+             (double)(avg(i) - empty), frames_[i]);
 }
 
 } // namespace render
