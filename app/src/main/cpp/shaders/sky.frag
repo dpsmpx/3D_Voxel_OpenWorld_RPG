@@ -19,6 +19,13 @@ layout(location = 0) out vec4 outColor;
 vec3 toLinear(vec3 c) { return c * c; }
 vec3 toSrgb(vec3 c)   { return sqrt(max(c, vec3(0.0))); }
 
+// pow с основанием, которое бывает нулём, не определён: везде он
+// считается как exp2(k * log2(x)), а log2(0) = -inf, и что вернёт
+// драйвер дальше — его дело. На устройстве это стоило целой дальней
+// половины кадра (см. voxel.frag). Основание подпирается снизу: для
+// показателей, которые тут стоят, разница ниже кванта цвета.
+float powSafe(float x, float k) { return pow(max(x, 1e-4), k); }
+
 vec3 shoulder(vec3 c) {
     float m = max(max(c.r, c.g), c.b);
     if (m <= 0.75) return c;
@@ -48,18 +55,22 @@ void main() {
     float up = clamp(dir.y, -1.0, 1.0);
     vec3 horizon = toLinear(cam.skyColor.rgb);
     vec3 zenith  = horizon * vec3(0.42, 0.60, 1.10);
-    vec3 sky = mix(horizon, zenith, pow(clamp(up, 0.0, 1.0), 0.55));
+    vec3 sky = mix(horizon, zenith, powSafe(clamp(up, 0.0, 1.0), 0.55));
 
     // Под горизонтом — земляная дымка: без неё при взгляде вниз
     // сквозь дальний край мира светит чистое небо, и видно, где он
     // кончается.
-    sky = mix(sky, horizon * 0.55, smoothstep(0.0, -0.25, up));
+    // smoothstep(0.0, -0.25, up) стоял с edge0 БОЛЬШЕ edge1, а это по
+    // спецификации неопределено. Обычная реализация считает то, что
+    // задумано, но полагаться на неё нельзя — и стоит она ровно
+    // столько же, если развернуть край руками.
+    sky = mix(sky, horizon * 0.55, 1.0 - smoothstep(-0.25, 0.0, up));
 
     // Тёплая полоса у самого горизонта в стороне солнца — то, из-за
     // чего рассвет читается как рассвет.
     float toSun = max(dot(normalize(vec3(dir.x, 0.0, dir.z)),
                           normalize(vec3(cam.sunDir.x, 0.0, cam.sunDir.z))), 0.0);
-    sky = mix(sky, sunTint, exp(-abs(up) * 7.0) * pow(toSun, 3.0) * 0.55 * above);
+    sky = mix(sky, sunTint, exp(-abs(up) * 7.0) * powSafe(toSun, 3.0) * 0.55 * above);
 
     // Звёзды проступают, когда небесный свет падает.
     if (night > 0.01 && up > 0.0) {
@@ -74,14 +85,14 @@ void main() {
 
     // Солнце светит только когда оно над горизонтом.
     float d = max(dot(dir, cam.sunDir.xyz), 0.0);
-    sky += sunTint * pow(d, 900.0) * 3.0 * above;    // диск
-    sky += sunTint * pow(d, 48.0)  * 0.30 * above;   // ореол
-    sky += sunTint * pow(d, 6.0)   * 0.08 * above;
+    sky += sunTint * powSafe(d, 900.0) * 3.0 * above;    // диск
+    sky += sunTint * powSafe(d, 48.0)  * 0.30 * above;   // ореол
+    sky += sunTint * powSafe(d, 6.0)   * 0.08 * above;
 
     // Луна — напротив солнца, видна ночью.
     float m = max(dot(dir, -cam.sunDir.xyz), 0.0);
-    sky += vec3(0.72, 0.77, 1.0) * pow(m, 2400.0) * 2.2 * night;
-    sky += vec3(0.30, 0.36, 0.64) * pow(m, 160.0) * 0.10 * night;
+    sky += vec3(0.72, 0.77, 1.0) * powSafe(m, 2400.0) * 2.2 * night;
+    sky += vec3(0.30, 0.36, 0.64) * powSafe(m, 160.0) * 0.10 * night;
 
     outColor = vec4(toSrgb(shoulder(sky)), 1.0);
 }

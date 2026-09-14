@@ -46,7 +46,8 @@ void main() {
     // Подсветка по краю силуэта: без неё тёмная фигура сливается с
     // тенью, и моба замечаешь только когда он уже бьёт.
     vec3  toEye = cam.cameraPos.xyz - vWorldPos;
-    float rim   = pow(1.0 - clamp(dot(N, normalize(toEye)), 0.0, 1.0), 3.0);
+    float rimB  = 1.0 - clamp(dot(N, normalize(toEye)), 0.0, 1.0);
+    float rim   = rimB * rimB * rimB;
 
     vec3 lit = toLinear(vColor.rgb) * (ambient + sun + moon + 0.02)
              + skyLin * rim * 0.22;
@@ -59,7 +60,9 @@ void main() {
     fogAmt = fogAmt * fogAmt * (3.0 - 2.0 * fogAmt);
 
     float sunAmt   = max(dot(normalize(toFrag), cam.sunDir.xyz), 0.0);
-    vec3  fogColor = mix(skyLin, sunTint, pow(sunAmt, 6.0) * 0.45 * above);
+    float s2 = sunAmt * sunAmt;
+    float s6 = s2 * s2 * s2;
+    vec3  fogColor = mix(skyLin, sunTint, clamp(s6 * 0.45 * above, 0.0, 1.0));
 
     outColor = vec4(toSrgb(mix(lit, fogColor, fogAmt)), vColor.a);
 }
