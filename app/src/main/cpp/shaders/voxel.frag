@@ -47,7 +47,13 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 screenSize;
     vec4 sunDir;
     vec4 fogParams;   // start, end, timeOfDay, time
-    vec4 skyColor;
+    vec4 skyColor;     // цвет неба, sRGB; w — доля дня, 0 ночь, 1 день
+    // Свет суток, посчитанный ОДИН раз за кадр в render::Camera::toUbo.
+    // Раньше каждый фрагментный шейдер считал это сам, на каждый
+    // пиксель, хотя зависит оно только от uniform. См. CameraUbo.
+    vec4 sunLight;     // rgb — цвет солнца, линейный; w — день x над горизонтом
+    vec4 ambLight;     // rgb — оттенок рассеянного света; w — его сила
+    vec4 skyLinear;    // rgb — цвет неба, линейный; w — солнце над горизонтом
 } cam;
 
 layout(location = 0) out vec4 outColor;
@@ -179,18 +185,19 @@ void main() {
     // Одно направленное солнце и один рассеянный член. Физической
     // честности здесь не нужно: нужно, чтобы грани различались, тень
     // читалась, а ночь отличалась от дня.
-    float day   = clamp(cam.sunDir.w, 0.0, 1.0);
-    float above = smoothstep(-0.10, 0.06, cam.sunDir.y);
-
-    vec3 sunTint = toLinear(mix(vec3(1.00, 0.52, 0.26), vec3(1.00, 0.97, 0.92),
-                                smoothstep(0.0, 0.30, cam.sunDir.y)));
-
-    // Рассеянный свет красится небом, но приглушённо. Умножать на сам
-    // цвет неба нельзя: в линейном пространстве он тёмный, и всё в
-    // тени уходит в чёрно-синее, а материал перестаёт читаться.
-    vec3  skyLin  = toLinear(cam.skyColor.rgb);
-    float skyMax  = max(max(skyLin.r, skyLin.g), max(skyLin.b, 0.001));
-    vec3  ambTint = mix(vec3(1.0), skyLin / skyMax, 0.55);
+    // Всё, что зависит только от времени суток, приходит готовым: цвет
+    // солнца, оттенок и сила рассеянного света, цвет неба в линейном
+    // пространстве. Считает это render::Camera::toUbo, раз в кадр.
+    //
+    // Раньше считал каждый фрагмент — одно и то же число, полтора
+    // миллиона раз. Замер (tools/gpubench, 2306x1080): 6.12 -> 5.57 мс,
+    // 9% шейдера.
+    vec3  sunTint = cam.sunLight.rgb;    // цвет солнца, линейный
+    float sunUp   = cam.sunLight.w;      // день x над горизонтом
+    vec3  ambTint = cam.ambLight.rgb;    // оттенок рассеянного
+    float ambLvl  = cam.ambLight.w;      // его сила
+    vec3  skyLin  = cam.skyLinear.rgb;   // цвет неба, линейный
+    float above   = cam.skyLinear.w;     // солнце над горизонтом
 
     // Затенение углов запечено в геометрию мешером. Рассеянный свет
     // им гасится полностью — он приходит со всех сторон и в щель не
@@ -208,8 +215,8 @@ void main() {
     float ndl = max(dot(N, cam.sunDir.xyz), 0.0);
 
     // Ночью остаётся только рассеянный свет, слабый и холодный.
-    vec3 ambient = ambTint * (mix(0.14, 0.60, day) * ao * sky);
-    vec3 sun     = sunTint * (ndl * 0.46 * day * above * aoSun * skySun);
+    vec3 ambient = ambTint * (ambLvl * ao * sky);
+    vec3 sun     = sunTint * (ndl * 0.46 * sunUp * aoSun * skySun);
 
     vec3 lit = albedo * (ambient + sun);
 
@@ -220,7 +227,7 @@ void main() {
     if (vColor.a < 0.99) {
         highp vec3 V = normalize(cam.cameraPos.xyz - vWorldPos);
         highp vec3 H = normalize(V + cam.sunDir.xyz);
-        highp float spec = pow64(max(dot(N, H), 0.0)) * day * above;
+        highp float spec = pow64(max(dot(N, H), 0.0)) * sunUp;
         // Скользящий взгляд отражает сильнее — приближение Френеля.
         highp float fres = pow4(1.0 - clamp(dot(N, V), 0.0, 1.0));
         lit += sunTint * float(spec) * 0.9;

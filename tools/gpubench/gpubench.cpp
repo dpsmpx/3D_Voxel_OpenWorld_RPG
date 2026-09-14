@@ -78,6 +78,9 @@ struct CameraUbo {
     glm::vec4 sunDir;
     glm::vec4 fogParams;
     glm::vec4 skyColor;
+    glm::vec4 sunLight;
+    glm::vec4 ambLight;
+    glm::vec4 skyLinear;
 };
 
 u32 findMem(VkPhysicalDevice phys, u32 bits, VkMemoryPropertyFlags want) {
@@ -234,6 +237,30 @@ int main(int argc, char** argv) {
         c.sunDir      = glm::vec4(glm::normalize(glm::vec3(0.4f, 0.6f, 0.7f)), 1.f);
         c.fogParams   = glm::vec4(120.f, 224.f, 0.5f, 0.f);
         c.skyColor    = glm::vec4(0.42f, 0.62f, 0.92f, 1.f);
+
+        // Свет суток — теми же выражениями, что в render::Camera::toUbo.
+        // Инструмент гоняет НАСТОЯЩИЕ шейдеры игры: разойдись эта
+        // копия с игровой — они читали бы чужие байты и мерили мусор,
+        // молча и с правдоподобными числами. За совпадением следит
+        // тест «мир освещён по одной модели».
+        {
+            auto toLin = [](const glm::vec3& v) { return v * v; };
+            const glm::vec3 sd{ c.sunDir };
+            const f32 day   = 1.f;
+            const f32 above = glm::smoothstep(-0.10f, 0.06f, sd.y);
+            const glm::vec3 sunTint =
+                toLin(glm::mix(glm::vec3(1.00f, 0.52f, 0.26f),
+                               glm::vec3(1.00f, 0.97f, 0.92f),
+                               glm::smoothstep(0.f, 0.30f, sd.y)));
+            const glm::vec3 skyLin = toLin(glm::vec3(c.skyColor));
+            const f32 skyMax = glm::max(glm::max(skyLin.r, skyLin.g),
+                                        glm::max(skyLin.b, 0.001f));
+            const glm::vec3 ambTint =
+                glm::mix(glm::vec3(1.f), skyLin / skyMax, 0.55f);
+            c.sunLight  = glm::vec4(sunTint, day * above);
+            c.ambLight  = glm::vec4(ambTint, glm::mix(0.14f, 0.60f, day));
+            c.skyLinear = glm::vec4(skyLin, above);
+        }
         void* p = nullptr;
         VKOK(vkMapMemory(dev, uboMem, 0, sizeof(CameraUbo), 0, &p));
         std::memcpy(p, &c, sizeof(CameraUbo));
