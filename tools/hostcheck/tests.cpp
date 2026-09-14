@@ -2116,6 +2116,115 @@ void testUnloadAcceptsTighterRadius() {
 }
 
 // ------------------------------------------------------------
+// Порядок проходов кадра
+//
+// Порядок, в котором рисуются проходы, — не вкусовщина: из него прямо
+// следуют две вещи, и обе видны на экране или в журнале.
+//
+// 1. Небо закрывает ВЕСЬ экран. Пока оно рисовалось первым и с
+//    выключенной проверкой глубины, его фрагментный шейдер считался
+//    для каждого пикселя, включая те, которые потом закрывал
+//    ландшафт. Кадр tools/vkcheck: 323777 пикселей геометрии из
+//    504000, то есть закрыто 64%. Шейдер неба при этом в десять раз
+//    дороже ровной заливки той же площади (tools/gpubench на кадре
+//    2306x1080: 8.08 мс против 0.78 мс). Журнал с устройства
+//    подтверждает, что кадр упирается именно во фрагменты, а не в
+//    геометрию: 1884 индекса в диагностической сборке и 154380 в
+//    обычной дают одно и то же время рисования, 19 мс.
+//
+// 2. Вода НЕ пишет глубину — иначе смешивание не складывается. Пока
+//    она рисовалась до мобов, NPC, предметов и травы, любая такая
+//    сущность под водой проходила проверку глубины (вода её не
+//    заняла) и оказывалась нарисованной ПОВЕРХ водной глади.
+//
+// Отсюда единственно верный порядок: всё непрозрачное, затем небо,
+// затем полупрозрачное. Проверяется он по исходнику — кадр целиком на
+// хосте не собрать, там нужен весь RenderSystem с Vulkan, — но
+// проверяется именно как порядок, а не как наличие строк.
+// ------------------------------------------------------------
+void testFramePassOrder() {
+    group("рендер: порядок проходов кадра");
+
+    const std::string rs = readSource("app/src/main/cpp/src/render/render_system.cpp");
+    const std::string sb = readSource("app/src/main/cpp/src/render/skybox.cpp");
+    if (rs.empty() || sb.empty()) {
+        check(true, "исходники не найдены, проверка пропущена");
+        return;
+    }
+
+    const usize body = rs.find("void RenderSystem::render(");
+    check(body != std::string::npos, "RenderSystem::render на месте");
+    if (body == std::string::npos) return;
+    // Окно — до конца функции, а не «столько-то символов»: тело растёт
+    // вместе с объяснениями в комментариях, и счёт символов протухает
+    // молча, превращая проверку порядка в проверку «строка не найдена».
+    const usize bodyEnd = rs.find("\n}\n", body);
+    check(bodyEnd != std::string::npos, "конец RenderSystem::render найден");
+    if (bodyEnd == std::string::npos) return;
+    const std::string win = rs.substr(body, bodyEnd - body);
+
+    auto at = [&](const char* what) { return win.find(what); };
+
+    const usize opaque   = at("chunkRenderer_.renderOpaque");
+    const usize npc      = at("npcRenderer_.render");
+    const usize mob      = at("mobRenderer_.render");
+    const usize proj     = at("projRenderer_.render");
+    const usize item     = at("itemRenderer_.render");
+    const usize grass    = at("grass_.render");
+    const usize sky      = at("skybox_.render");
+    const usize blended  = at("chunkRenderer_.renderBlended");
+    const usize outline  = at("blockOutline_.render");
+    const usize ui       = at("ui_->render");
+
+    const usize NONE = std::string::npos;
+    check(opaque != NONE && sky != NONE && blended != NONE,
+          "оба прохода ландшафта и небо на месте");
+    if (opaque == NONE || sky == NONE || blended == NONE) return;
+
+    // Непрозрачное — до неба.
+    check(opaque < sky,  "ландшафт рисуется до неба");
+    check(npc    < sky,  "NPC рисуются до неба");
+    check(mob    < sky,  "мобы рисуются до неба");
+    check(proj   < sky,  "снаряды рисуются до неба");
+    check(item   < sky,  "предметы рисуются до неба");
+    check(grass  < sky,  "трава рисуется до неба");
+
+    // Полупрозрачное — после неба, и после всего непрозрачного.
+    check(sky < blended, "небо рисуется до воды");
+    check(grass < blended && mob < blended && npc < blended && item < blended,
+          "вода рисуется после непрозрачных сущностей");
+    check(blended < outline, "контур блока — после воды");
+    check(outline < ui, "интерфейс рисуется последним");
+
+    // Само небо: проверка глубины включена, запись выключена. Без
+    // проверки порядок бессмыслен — небо затрёт собой всё, что
+    // нарисовано раньше.
+    // Окно — снова до конца функции, а не «столько-то байт». В первый
+    // раз тут стояло 1600 байт, и проверка развалилась молча: объяснение
+    // рядом с флагами написано кириллицей, а это два байта на букву, и
+    // нужная строка оказалась на 1599-м.
+    const usize pipe = sb.find("bool Skybox::init(");
+    check(pipe != NONE, "описание конвейера неба на месте");
+    if (pipe != NONE) {
+        const usize pipeEnd = sb.find("\n}\n", pipe);
+        const std::string pwin = sb.substr(pipe, pipeEnd == NONE ? 4000
+                                                                 : pipeEnd - pipe);
+        check(pwin.find("d.depthTest    = true;") != NONE,
+              "у неба включена проверка глубины");
+        check(pwin.find("d.depthWrite   = false;") != NONE,
+              "и выключена запись глубины");
+    }
+
+    // Вершинный шейдер неба обязан класть z на дальнюю плоскость:
+    // только тогда LESS_OR_EQUAL пропускает его ровно там, где
+    // глубина осталась очищенной.
+    const std::string skyVert = readSource("app/src/main/cpp/shaders/sky.vert");
+    if (!skyVert.empty())
+        check(skyVert.find("uv * 2.0 - 1.0, 1.0, 1.0") != NONE,
+              "небо лежит на дальней плоскости (z = 1)");
+}
+
+// ------------------------------------------------------------
 // Вода на огрублённых уровнях
 // ------------------------------------------------------------
 namespace {
@@ -4355,6 +4464,7 @@ int main() {
     testChunkStreamingIsBudgeted();
     testSurfaceHeightCacheMatchesGenerator();
     testUnloadAcceptsTighterRadius();
+    testFramePassOrder();
     testCoarseWaterIsStable();
     testCoarseWaterDoesNotFloat();
     testLodSeamHasNoCracks();

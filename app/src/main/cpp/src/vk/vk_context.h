@@ -50,6 +50,20 @@ public:
     /// Сколько кадров реально ушло на экран. Ноль при работающем цикле
     /// означает, что показывать нечего или показ отвергается.
     u64              framesPresented() const { return framesPresented_; }
+
+    /// Сколько миллисекунд GPU РИСОВАЛ последний измеренный кадр.
+    ///
+    /// Без этого числа журнал с устройства не отвечает на главный
+    /// вопрос. Время «рисование» в сводке меряется вокруг
+    /// beginFrame/endFrame, а внутри beginFrame стоит ожидание забора
+    /// и vkAcquireNextImageKHR — то есть ожидание вертикальной
+    /// синхронизации. В одну величину слиты «GPU занят» и «мы ждём
+    /// экран», а лечатся они противоположным.
+    ///
+    /// Считается метками времени самого GPU вокруг командного буфера
+    /// кадра. Ноль означает, что устройство меток не умеет.
+    f32              lastGpuMs() const { return lastGpuMs_; }
+    bool             gpuTimingAvailable() const { return timestampPeriod_ > 0.f; }
     /// Последняя ошибка vkQueuePresentKHR (VK_SUCCESS, если её не было).
     VkResult         lastPresentResult() const { return lastPresent_; }
     /// Сколько раз пересоздавалась цепочка показа. Здоровое число —
@@ -185,6 +199,16 @@ private:
     std::vector<VkFence>     imagesInFlight_;   ///< чужие заборы, не наши
     u32                      currentFrame_ = 0;
     u64                      framesPresented_ = 0;
+
+    // ---- Метки времени GPU ----
+    // Пул на две метки (начало и конец) для каждого кадра в работе.
+    // Читаем результат не сразу, а когда кадр гарантированно
+    // завершился, — иначе vkGetQueryPoolResults либо заблокирует
+    // процессор, либо вернёт «ещё не готово».
+    VkQueryPool              timeQuery_ = VK_NULL_HANDLE;
+    f32                      timestampPeriod_ = 0.f;   ///< нс на такт; 0 — меток нет
+    bool                     timeQueryPending_[MAX_FRAMES] = {};
+    f32                      lastGpuMs_ = 0.f;
     u64                      swapchainRebuilds_ = 0;
     VkResult                 lastPresent_ = VK_SUCCESS;
     bool                     needsResize_ = false;
