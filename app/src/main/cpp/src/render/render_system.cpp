@@ -126,7 +126,12 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     camera_.setFog(vdBlocks * 0.55f, vdBlocks * 0.94f);
     chunkRenderer_.setViewDistanceBlocks(vdBlocks);
     // Отладочный вид террейна из settings.cfg: debug_shading = 1..6.
-    camera_.setDebugShading(config::settingsConst().debugShading);
+    // Пока идёт развёртка, вид задаёт она: одна из её ступеней меряет
+    // ландшафт с ранним выходом из фрагментного шейдера, и разность с
+    // обычной ступенью даёт цену всей математики фрагмента.
+    camera_.setDebugShading(passSweep_.active()
+                            ? (i32)passSweep_.shading()
+                            : config::settingsConst().debugShading);
     world.setLodBands(chunkRenderer_.lodBand(0), chunkRenderer_.lodBand(1),
                       chunkRenderer_.lodBand(2));
     // Уровень детализации мир и рендер считают от ОДНОЙ величины —
