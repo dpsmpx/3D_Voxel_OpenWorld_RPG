@@ -204,6 +204,7 @@ void UiRenderer::flush(vk::Context& ctx) {
 
     lastVerts_ = (u32)(verts_[0].size() + verts_[1].size());
     lastDrawn_ = 0;
+    lastDrawCalls_ = 0;
 
     // Ругаемся один раз: пустой интерфейс — это не «нечего показать»,
     // это ошибка, и отличить её от «нарисовали, но не видно» иначе
@@ -244,6 +245,7 @@ void UiRenderer::flush(vk::Context& ctx) {
         vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offs);
         vkCmdDraw(cmd, fb.vertexCount, 1, 0, 0);
         lastDrawn_ += fb.vertexCount;
+        ++lastDrawCalls_;
     }
 }
 

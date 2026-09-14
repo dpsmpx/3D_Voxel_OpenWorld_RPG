@@ -1422,7 +1422,15 @@ extern "C" void android_main(android_app* app) {
 
     const auto startTime = std::chrono::steady_clock::now();
     auto lastTime = startTime;
-    f32 statTimer = 0.f;
+    // Окно сводки измеряется НАСТОЯЩИМИ часами, а не накопленным dt.
+    //
+    // dt в диагностической сборке прибит к 1/60 (debug_scene живёт на
+    // постоянном шаге), и «кадров в секунду» из него выходило
+    // тождественно 60.0 при любой настоящей частоте: числитель и
+    // знаменатель росли на один и тот же кадр. В журнале это выглядело
+    // как ровно 60.0/с, тогда как игра шла за девяносто, и сводка
+    // молча врала ровно там, где на неё и смотрят.
+    auto statWall = std::chrono::steady_clock::now();
     u64 lastPresented = 0;
     u32 statReports = 0;
     f32 msUpdate = 0.f, msPrepare = 0.f, msDraw = 0.f;
@@ -1430,8 +1438,13 @@ extern "C" void android_main(android_app* app) {
     // него и ожидание экрана, и запись команд. Держим их врозь, а
     // рядом — время, которое GPU ДЕЙСТВИТЕЛЬНО рисовал, по его
     // собственным меткам.
-    f32 msWait = 0.f, msRecord = 0.f, msGpu = 0.f;
+    f32 msWait = 0.f, msRecord = 0.f, msSubmit = 0.f, msGpu = 0.f;
     u32 msFrames = 0;
+    // Время GPU по проходам и число команд рисования в каждом.
+    // Сумма проходов равна времени кадра по построению: проход
+    // начинается там, где кончился предыдущий.
+    f32 msPass[vk::Context::GPU_PASSES] = {};
+    u32 drawPass[vk::Context::GPU_PASSES] = {};
 
     while (true) {
         // ALooper_pollAll помечен недоступным начиная с NDK r27: он мог
@@ -1514,8 +1527,20 @@ extern "C" void android_main(android_app* app) {
                     eng.vk.onResize(app->window);
                     eng.applySurfaceGeometry();
                 }
-            } else {
+            }
+            // tC2..tC3 — запись команд, tC3..tD — отправка и показ.
+            //
+            // Держать их врозь пришлось после журнала с устройства:
+            // «запись команд 10.5 мс» при шестидесяти трёх чанках и
+            // 1884 индексах — это не запись. Число повторяло время
+            // GPU (10.9 мс) кадр в кадр, а значит процессор стоял и
+            // ждал GPU, и стоял он ВНУТРИ этого отрезка. Отрезок
+            // накрывал и запись, и vkQueueSubmit с vkQueuePresentKHR,
+            // то есть ровно те два места, где ожидание и живёт.
+            auto tC3 = tC2;
+            if (haveFrame) {
                 if (eng.render) eng.render->render(eng.vk);
+                tC3 = std::chrono::steady_clock::now();
                 eng.vk.endFrame();
             }
             const auto tD = std::chrono::steady_clock::now();
@@ -1532,8 +1557,14 @@ extern "C" void android_main(android_app* app) {
             msPrepare += ms(tB, tC);
             msDraw    += ms(tC, tD);
             msWait    += ms(tC1, tC2);
-            msRecord  += ms(tC2, tD);
+            msRecord  += ms(tC2, tC3);
+            msSubmit  += ms(tC3, tD);
             msGpu     += eng.vk.lastGpuMs();
+            for (u32 i = 0; i < vk::Context::GPU_PASSES; ++i) {
+                msPass[i]   += eng.vk.passMs((vk::Context::GpuPass)i);
+                drawPass[i] += eng.render
+                             ? eng.render->stats().drawCalls[i] : 0u;
+            }
             ++msFrames;
 
             // Сводка раз в три секунды. Без неё «чёрный экран» не
@@ -1542,13 +1573,14 @@ extern "C" void android_main(android_app* app) {
             // нарисованных чанков видно, какая именно это беда.
             // Первые отчёты — каждую секунду: приложение могут свернуть
             // через пару секунд, и редкая сводка ничего не успеет сказать.
-            statTimer += dt;
-            if (statTimer >= (statReports < 10 ? 1.f : 3.f)) {
+            const f32 statSec =
+                std::chrono::duration<f32>(now - statWall).count();
+            if (statSec >= (statReports < 10 ? 1.f : 3.f)) {
                 ++statReports;
                 const u64 presented = eng.vk.framesPresented();
-                const f32 fps = (f32)(presented - lastPresented) / statTimer;
+                const f32 fps = (f32)(presented - lastPresented) / statSec;
                 lastPresented = presented;
-                statTimer = 0.f;
+                statWall = now;
                 const glm::vec3 cam = eng.render ? eng.render->camera().position()
                                                  : glm::vec3(0.f);
                 const f32 n = msFrames ? (f32)msFrames : 1.f;
@@ -1558,7 +1590,8 @@ extern "C" void android_main(android_app* app) {
                      "| трава %u, мобы %u, NPC %u, предметы %u, снаряды %u "
                      "| интерфейс: вершин %u, нарисовано %u, экран %d "
                      "| мс: логика %.1f, подготовка %.1f, рисование %.1f "
-                     "(ожидание экрана %.1f, запись команд %.1f, GPU %s%.1f)",
+                     "(ожидание экрана %.1f, запись команд %.1f, "
+                     "отправка и показ %.1f, GPU %s%.1f)",
                      (unsigned long long)presented, (double)fps,
                      (int)eng.vk.lastPresentResult(),
                      (unsigned long long)eng.vk.swapchainRebuilds(),
@@ -1588,10 +1621,50 @@ extern "C" void android_main(android_app* app) {
                      (double)(msUpdate / n), (double)(msPrepare / n),
                      (double)(msDraw / n),
                      (double)(msWait / n), (double)(msRecord / n),
+                     (double)(msSubmit / n),
                      eng.vk.gpuTimingAvailable() ? "" : "нет:",
                      (double)(msGpu / n));
+                // Раскладка кадра по проходам. Отдельной строкой, а не
+                // в общей: в одну она не влезает, а читают её тогда,
+                // когда общая уже сказала «GPU занят» и остался вопрос
+                // «чем именно».
+                //
+                // Мобильный GPU плиточный, и метка ВНУТРИ прохода
+                // рендера показывает, когда GPU дошёл до этой точки в
+                // потоке команд, а не сколько он красил именно этот
+                // проход: фрагментная работа всех проходов перемешана
+                // по плиткам. Поэтому числа годятся как порядок
+                // величин и как сдвиг между сборками, но цену прохода
+                // меряют вычитанием — render_passes в settings.cfg
+                // выключает проход, и разность полного времени кадра
+                // и есть его цена.
+                {
+                    char buf[512];
+                    int off = std::snprintf(buf, sizeof(buf),
+                        "проходы GPU (мс / команд): ");
+                    for (u32 i = 0; i < vk::Context::GPU_PASSES && off > 0 &&
+                                    off < (int)sizeof(buf); ++i) {
+                        off += std::snprintf(buf + off, sizeof(buf) - (usize)off,
+                            "%s %.2f/%u  ",
+                            vk::Context::passName((vk::Context::GpuPass)i),
+                            (double)(msPass[i] / n),
+                            (unsigned)((f32)drawPass[i] / n + 0.5f));
+                    }
+                    LOGI("%s| чанки: рассмотрено %u, отсечено %u, "
+                         "нарисовано %u, вершин %u, маска проходов 0x%02X",
+                         buf,
+                         eng.render ? eng.render->consideredChunks() : 0u,
+                         eng.render ? eng.render->culledChunks() : 0u,
+                         eng.render ? eng.render->drawnChunks() : 0u,
+                         eng.render ? eng.render->drawnVertices() : 0u,
+                         (unsigned)cfg::settingsConst().renderPasses);
+                }
+
                 msUpdate = msPrepare = msDraw = 0.f;
-                msWait = msRecord = msGpu = 0.f;
+                msWait = msRecord = msSubmit = msGpu = 0.f;
+                for (u32 i = 0; i < vk::Context::GPU_PASSES; ++i) {
+                    msPass[i] = 0.f; drawPass[i] = 0;
+                }
                 msFrames = 0;
             }
         } else {

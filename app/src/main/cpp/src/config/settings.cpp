@@ -138,6 +138,7 @@ void Settings::clamp() {
     autosaveInterval   = std::clamp(autosaveInterval, 60.f, 900.f);
     viewDistance       = std::clamp(viewDistance, 4, 12);
     debugShading       = std::clamp(debugShading, 0, 6);
+    renderPasses      &= 0x7Fu;
     // Диагностическую сборку не выключить настройкой: файл с
     // debug_scene = false мог остаться от обычной сборки, а APK с
     // флагом обязан запускаться диагностическим всегда.
@@ -218,6 +219,7 @@ bool Settings::save(const std::string& path) const {
     wi("view_distance",      viewDistance);
     wb("unlimited_fps",      unlimitedFps);
     wi("debug_shading",      debugShading);
+    wi("render_passes",      (i32)renderPasses);
     wb("debug_scene",        debugScene);
 
     std::fclose(f);
@@ -307,6 +309,8 @@ bool Settings::load(const std::string& path) {
             unlimitedFps = !readBool(kv.value, !unlimitedFps);
         else if (std::strcmp(kv.key, "debug_shading") == 0)
             debugShading = readI32(kv.value, debugShading);
+        else if (std::strcmp(kv.key, "render_passes") == 0)
+            renderPasses = (u32)readI32(kv.value, (i32)renderPasses) & 0x7Fu;
         else if (std::strcmp(kv.key, "debug_scene") == 0)
             debugScene = readBool(kv.value, debugScene);
     }

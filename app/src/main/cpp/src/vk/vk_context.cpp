@@ -562,7 +562,7 @@ bool Context::createSyncObjects() {
         if (props.limits.timestampPeriod > 0.f && queueHasBits) {
             VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
             qi.queryType  = VK_QUERY_TYPE_TIMESTAMP;
-            qi.queryCount = MAX_FRAMES * 2;
+            qi.queryCount = MAX_FRAMES * STAMPS_PER_FRAME;
             if (vkCreateQueryPool(device_, &qi, nullptr, &timeQuery_) == VK_SUCCESS) {
                 timestampPeriod_ = props.limits.timestampPeriod;
                 LOGI("Метки времени GPU: есть (%.1f нс на такт)",
@@ -728,21 +728,40 @@ bool Context::beginFrame() {
         // Результат прошлого круга этого слота уже готов: выше мы
         // дождались его забора. Читаем ДО того, как сбросим метки.
         if (timeQueryPending_[currentFrame_]) {
-            u64 stamps[2] = { 0, 0 };
+            u64 stamps[STAMPS_PER_FRAME] = {};
             const VkResult qr = vkGetQueryPoolResults(
-                device_, timeQuery_, currentFrame_ * 2, 2,
+                device_, timeQuery_, currentFrame_ * STAMPS_PER_FRAME,
+                STAMPS_PER_FRAME,
                 sizeof(stamps), stamps, sizeof(u64), VK_QUERY_RESULT_64_BIT);
             if (qr == VK_SUCCESS && stamps[1] > stamps[0]) {
                 lastGpuMs_ = (f32)((double)(stamps[1] - stamps[0]) *
                                    (double)timestampPeriod_ * 1e-6);
+
+                // Проходы идут подряд, поэтому начало прохода — это
+                // метка предыдущего, а начало первого — начало кадра.
+                // Метка, до которой кадр не дошёл (проход выключён или
+                // был отброшен), равна нулю: такую длительность не
+                // считаем, иначе получилась бы разность с мусором.
+                u64 prev = stamps[0];
+                for (u32 i = 0; i < GPU_PASSES; ++i) {
+                    const u64 cur = stamps[2 + i];
+                    if (cur >= prev && cur != 0) {
+                        passMs_[i] = (f32)((double)(cur - prev) *
+                                           (double)timestampPeriod_ * 1e-6);
+                        prev = cur;
+                    } else {
+                        passMs_[i] = 0.f;
+                    }
+                }
             }
             timeQueryPending_[currentFrame_] = false;
         }
         vkCmdResetQueryPool(cmdBuffers_[currentFrame_], timeQuery_,
-                            currentFrame_ * 2, 2);
+                            currentFrame_ * STAMPS_PER_FRAME, STAMPS_PER_FRAME);
         vkCmdWriteTimestamp(cmdBuffers_[currentFrame_],
                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                            timeQuery_, currentFrame_ * 2);
+                            timeQuery_, currentFrame_ * STAMPS_PER_FRAME);
+        passMarks_ = 0;
     }
 
     vkCmdBeginRenderPass(cmdBuffers_[currentFrame_], &rp, VK_SUBPASS_CONTENTS_INLINE);
@@ -787,6 +806,35 @@ void Context::discardAcquiredFrame() {
     }
 }
 
+const char* Context::passName(GpuPass p) {
+    switch (p) {
+        case GpuPass::Terrain:  return "ландшафт";
+        case GpuPass::Entities: return "существа";
+        case GpuPass::Grass:    return "трава";
+        case GpuPass::Sky:      return "небо";
+        case GpuPass::Water:    return "вода";
+        case GpuPass::Overlay:  return "контур";
+        case GpuPass::Ui:       return "интерфейс";
+        default:                return "?";
+    }
+}
+
+void Context::markPass(GpuPass p) {
+    if (timeQuery_ == VK_NULL_HANDLE || !frameStarted_) return;
+    // Метки идут строго по порядку перечисления. Пропущенную
+    // (проход выключен в settings.cfg) дописываем здесь же, чтобы
+    // номер метки всегда отвечал своему проходу.
+    const u32 want = (u32)p;
+    if (want >= GPU_PASSES || passMarks_ > want) return;
+    while (passMarks_ <= want) {
+        vkCmdWriteTimestamp(cmdBuffers_[currentFrame_],
+                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                            timeQuery_,
+                            currentFrame_ * STAMPS_PER_FRAME + 2 + passMarks_);
+        ++passMarks_;
+    }
+}
+
 void Context::endFrame() {
     if (!frameStarted_) return;
     // Семафоры привязаны к изображениям цепочки; если пересоздание
@@ -804,9 +852,21 @@ void Context::endFrame() {
     }
     vkCmdEndRenderPass(cmdBuffers_[currentFrame_]);
     if (timeQuery_ != VK_NULL_HANDLE) {
+        // Метки проходов, до которых кадр не дошёл, всё равно надо
+        // записать: запрос, сброшенный и ни разу не записанный,
+        // делает всю выборку «ещё не готовой», и вместе с ним
+        // пропадает время всего кадра. Пишем их здесь, одну за
+        // другой, — такие проходы получат нулевую длительность.
+        while (passMarks_ < GPU_PASSES) {
+            vkCmdWriteTimestamp(cmdBuffers_[currentFrame_],
+                                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                timeQuery_,
+                                currentFrame_ * STAMPS_PER_FRAME + 2 + passMarks_);
+            ++passMarks_;
+        }
         vkCmdWriteTimestamp(cmdBuffers_[currentFrame_],
                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                            timeQuery_, currentFrame_ * 2 + 1);
+                            timeQuery_, currentFrame_ * STAMPS_PER_FRAME + 1);
         timeQueryPending_[currentFrame_] = true;
     }
     vkEndCommandBuffer(cmdBuffers_[currentFrame_]);

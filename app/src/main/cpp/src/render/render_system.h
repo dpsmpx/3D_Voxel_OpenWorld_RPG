@@ -56,7 +56,23 @@ public:
 
     Camera& camera() { return camera_; }
 
+    /// Счётчики кадра по проходам. Время GPU лежит не здесь, а в
+    /// vk::Context (метки ставит сам GPU); тут — то, что знает
+    /// процессор: сколько команд рисования он записал.
+    struct FrameStats {
+        u32 drawCalls[vk::Context::GPU_PASSES] = {};
+        u32 total() const {
+            u32 n = 0;
+            for (u32 d : drawCalls) n += d;
+            return n;
+        }
+    };
+    const FrameStats& stats() const { return stats_; }
+
     u32 drawnChunks()   const { return chunkRenderer_.lastDrawnChunks(); }
+    u32 consideredChunks() const { return chunkRenderer_.lastConsideredChunks(); }
+    u32 culledChunks()  const { return chunkRenderer_.lastCulledChunks(); }
+    u32 drawnVertices() const { return chunkRenderer_.lastDrawnVertices(); }
     u32 drawnIndices()  const { return chunkRenderer_.lastDrawnIndices(); }
     u32 lodCount(u32 l) const { return chunkRenderer_.lastLodCounts((int)l); }
     /// Чанки в кадре, которым нечем рисоваться, — это и есть дыры.
@@ -99,6 +115,7 @@ private:
     f32                   currentFps_ = 0.f;
     f32                   timeSec_ = 0.f;
     physics::RayHit       lastHit_{};
+    FrameStats            stats_{};
 
     VkDevice              dev_ = VK_NULL_HANDLE;
 };
