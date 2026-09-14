@@ -396,28 +396,21 @@ void ChunkRenderer::drawMesh(VkCommandBuffer cmd, VkPipelineLayout layout,
     vkCmdDrawIndexed(cmd, count, 1, first, 0, 0);
 }
 
-void ChunkRenderer::renderOpaque(vk::Context& ctx,
-                                 VkPipeline opaquePipe,
-                                 VkPipelineLayout layout,
-                                 VkDescriptorSet set, const math::Frustum& frustum,
-                                 const glm::vec3& cameraPos)
+// ============================================================
+// Отбор. Вынесен из renderOpaque отдельной функцией: те же решения
+// нужны и когда проход ландшафта выключен ради замера (см.
+// cullOnly в заголовке). Рисование отсюда убрано целиком — здесь
+// только выбор геометрии и счётчики.
+// ============================================================
+void ChunkRenderer::cull(const math::Frustum& frustum, const glm::vec3& cameraPos)
 {
-    VkCommandBuffer cmd = ctx.currentCmd();
-
-    VkViewport vp{};
-    vp.x = 0.f; vp.y = 0.f;
-    vp.width  = (f32)ctx.extent().width;
-    vp.height = (f32)ctx.extent().height;
-    vp.minDepth = 0.f; vp.maxDepth = 1.f;
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-
-    VkRect2D sc{}; sc.extent = ctx.extent();
-    vkCmdSetScissor(cmd, 0, 1, &sc);
-
     lastDrawnChunks_   = 0;
     lastDrawnIndices_  = 0;
     lastEmptyChunks_   = 0;
     lastWaitingChunks_ = 0;
+    lastConsideredChunks_ = 0;
+    lastCulledChunks_     = 0;
+    lastDrawnVertices_    = 0;
     for (auto& l : lodCounts_) l = 0;
 
     constexpr f32 CH = (f32)world::CHUNK_SIZE;
@@ -427,11 +420,12 @@ void ChunkRenderer::renderOpaque(vk::Context& ctx,
     visible_.clear();
     blended_.clear();
     for (auto& [coord, cm] : meshes_) {
+        ++lastConsideredChunks_;
         const glm::vec3 cmin{ (f32)coord.x * CH, 0.f, (f32)coord.z * CH };
         const glm::vec3 cmax{ cmin.x + CH, CY, cmin.z + CH };
 
         math::AABB aabb; aabb.min = cmin; aabb.max = cmax;
-        if (!frustum.intersectsAABB(aabb)) continue;
+        if (!frustum.intersectsAABB(aabb)) { ++lastCulledChunks_; continue; }
 
         const glm::vec3 center = (cmin + cmax) * 0.5f;
         const glm::vec3 d = center - cameraPos;
@@ -497,6 +491,7 @@ void ChunkRenderer::renderOpaque(vk::Context& ctx,
         }
         ++lastDrawnChunks_;
         lastDrawnIndices_ += chosen->totalIndices;
+        lastDrawnVertices_ += chosen->totalIndices / 6 * 4;   // квад = 6 индексов на 4 вершины
         ++lodCounts_[usedLod];
     }
     // blended_ — подмножество visible_: пусто одно, пусто и другое.
@@ -505,8 +500,30 @@ void ChunkRenderer::renderOpaque(vk::Context& ctx,
     // ---- 2. Порядок ----
     std::sort(visible_.begin(), visible_.end(),
               [](const Visible& a, const Visible& b) { return a.distSq < b.distSq; });
+}
 
-    // ---- 3. Непрозрачное, от ближнего к дальнему ----
+void ChunkRenderer::renderOpaque(vk::Context& ctx,
+                                 VkPipeline opaquePipe,
+                                 VkPipelineLayout layout,
+                                 VkDescriptorSet set, const math::Frustum& frustum,
+                                 const glm::vec3& cameraPos)
+{
+    VkCommandBuffer cmd = ctx.currentCmd();
+
+    VkViewport vp{};
+    vp.x = 0.f; vp.y = 0.f;
+    vp.width  = (f32)ctx.extent().width;
+    vp.height = (f32)ctx.extent().height;
+    vp.minDepth = 0.f; vp.maxDepth = 1.f;
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+
+    VkRect2D sc{}; sc.extent = ctx.extent();
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+
+    cull(frustum, cameraPos);
+    if (visible_.empty()) return;
+
+    // Непрозрачное, от ближнего к дальнему: порядок задал cull().
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaquePipe);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
                             0, 1, &set, 0, nullptr);

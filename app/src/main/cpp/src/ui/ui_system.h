@@ -67,6 +67,7 @@ public:
 
     u32 lastVertices() const { return renderer_.lastVertices(); }
     u32 lastDrawn()    const { return renderer_.lastDrawn(); }
+    u32 lastDrawCalls() const { return renderer_.lastDrawCalls(); }
 
     /// Экранное управление рисуется по состоянию TouchInput: кнопки
     /// и джойстик заведены там, а до сих пор не рисовались нигде —

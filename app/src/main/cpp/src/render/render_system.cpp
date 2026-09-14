@@ -189,26 +189,72 @@ void RenderSystem::render(vk::Context& ctx) {
     //    из этих сущностей, стоящая под водой, проходила проверку
     //    глубины (вода её не заняла) и оказывалась нарисованной
     //    ПОВЕРХ водной глади. Теперь вода идёт после них.
-    chunkRenderer_.renderOpaque(ctx, voxelPipeline_.handle(),
-                                voxelPipeline_.layout(),
-                                ds, fr, camera_.position());
+    // Проходы можно выключать по одному (render_passes в settings.cfg).
+    // Это измерительный инструмент: цена прохода на плиточном GPU
+    // честно меряется только вычитанием полного времени кадра — см.
+    // комментарий к vk::Context::markPass.
+    using Pass = vk::Context::GpuPass;
+    const u32 mask = config::settingsConst().renderPasses;
+    auto on = [mask](Pass p) { return (mask & (1u << (u32)p)) != 0; };
 
-    npcRenderer_.render(ctx, ds);
-    mobRenderer_.render(ctx, ds, fr);
-    projRenderer_.render(ctx, ds);
-    itemRenderer_.render(ctx, ds);
-    grass_.render(ctx, ds, fr);
+    stats_ = FrameStats{};
 
-    skybox_.render(ctx, ds);
-
-    chunkRenderer_.renderBlended(ctx, voxelBlendPipeline_.handle(),
-                                 voxelPipeline_.layout(), ds);
-
-    blockOutline_.render(ctx, ds, lastHit_.block, lastHit_.hit);
-
-    if (ui_ && currentPlayer_ && currentWorld_) {
-        ui_->render(ctx, *currentPlayer_, *currentWorld_, currentFps_);
+    if (on(Pass::Terrain)) {
+        chunkRenderer_.renderOpaque(ctx, voxelPipeline_.handle(),
+                                    voxelPipeline_.layout(),
+                                    ds, fr, camera_.position());
+        stats_.drawCalls[(u32)Pass::Terrain] = chunkRenderer_.lastDrawnChunks();
+    } else {
+        // Отбор всё равно нужен: по нему считаются видимые чанки, и
+        // без него выключение прохода меняло бы не только рисование,
+        // но и числа в сводке.
+        chunkRenderer_.cullOnly(fr, camera_.position());
     }
+    ctx.markPass(Pass::Terrain);
+
+    if (on(Pass::Entities)) {
+        npcRenderer_.render(ctx, ds);
+        mobRenderer_.render(ctx, ds, fr);
+        projRenderer_.render(ctx, ds);
+        itemRenderer_.render(ctx, ds);
+        stats_.drawCalls[(u32)Pass::Entities] =
+            (npcRenderer_.instanceCount()  ? 1u : 0u) +
+            (mobRenderer_.instanceCount()  ? 1u : 0u) +
+            (projRenderer_.instanceCount() ? 1u : 0u) +
+            (itemRenderer_.instanceCount() ? 1u : 0u);
+    }
+    ctx.markPass(Pass::Entities);
+
+    if (on(Pass::Grass)) {
+        grass_.render(ctx, ds, fr);
+        stats_.drawCalls[(u32)Pass::Grass] = grass_.instanceCount() ? 1u : 0u;
+    }
+    ctx.markPass(Pass::Grass);
+
+    if (on(Pass::Sky)) {
+        skybox_.render(ctx, ds);
+        stats_.drawCalls[(u32)Pass::Sky] = 1;
+    }
+    ctx.markPass(Pass::Sky);
+
+    if (on(Pass::Water)) {
+        chunkRenderer_.renderBlended(ctx, voxelBlendPipeline_.handle(),
+                                     voxelPipeline_.layout(), ds);
+        stats_.drawCalls[(u32)Pass::Water] = chunkRenderer_.lastBlendedChunks();
+    }
+    ctx.markPass(Pass::Water);
+
+    if (on(Pass::Overlay)) {
+        blockOutline_.render(ctx, ds, lastHit_.block, lastHit_.hit);
+        stats_.drawCalls[(u32)Pass::Overlay] = lastHit_.hit ? 1u : 0u;
+    }
+    ctx.markPass(Pass::Overlay);
+
+    if (on(Pass::Ui) && ui_ && currentPlayer_ && currentWorld_) {
+        ui_->render(ctx, *currentPlayer_, *currentWorld_, currentFps_);
+        stats_.drawCalls[(u32)Pass::Ui] = ui_->lastDrawCalls();
+    }
+    ctx.markPass(Pass::Ui);
 }
 
 void RenderSystem::shutdown() {

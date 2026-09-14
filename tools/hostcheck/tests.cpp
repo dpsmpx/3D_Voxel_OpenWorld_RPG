@@ -2480,6 +2480,210 @@ void testUnloadAcceptsTighterRadius() {
 // хосте не собрать, там нужен весь RenderSystem с Vulkan, — но
 // проверяется именно как порядок, а не как наличие строк.
 // ------------------------------------------------------------
+// ------------------------------------------------------------
+// Раскладка кадра по проходам: чем меряем
+// ------------------------------------------------------------
+//
+// Журнал с устройства говорил «GPU 10.9 мс» и молчал о том, на что
+// они ушли. Без этого числа по проходам любое решение об архитектуре
+// рендера — догадка: диагностическая сцена с 1884 индексами и обычный
+// мир со 154344 стоили одинаково, значит дело не в геометрии, а в чём
+// именно — сказать было нечем.
+//
+// Проверяется не «время правильное» (его знает только устройство), а
+// то, что измерительная обвязка не врёт: метки расставлены по всем
+// проходам, в порядке перечисления, после самих проходов, и ни одна
+// не теряется, когда проход выключен.
+void testFrameGpuBreakdown() {
+    group("рендер: замер кадра по проходам");
+
+    const std::string ctxh = readSource("app/src/main/cpp/src/vk/vk_context.h");
+    const std::string ctxc = readSource("app/src/main/cpp/src/vk/vk_context.cpp");
+    const std::string rs   = readSource("app/src/main/cpp/src/render/render_system.cpp");
+    if (ctxh.empty() || ctxc.empty() || rs.empty()) {
+        check(true, "исходники не найдены, проверка пропущена");
+        return;
+    }
+    const usize NONE = std::string::npos;
+
+    // ---- 1. Порядок в перечислении ----
+    const usize e0 = ctxh.find("enum class GpuPass");
+    check(e0 != NONE, "проходы перечислены в vk::Context");
+    if (e0 == NONE) return;
+    const usize e1 = ctxh.find("};", e0);
+    const std::string decl = stripComments(ctxh.substr(e0, e1 - e0));
+
+    std::vector<std::string> passes;
+    {
+        // Имена между «{» и «Count».
+        usize b = decl.find('{');
+        std::string cur;
+        for (usize i = b + 1; i < decl.size(); ++i) {
+            const char c = decl[i];
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) { cur.push_back(c); continue; }
+            if (!cur.empty()) {
+                if (cur == "Count") break;
+                passes.push_back(cur);
+                cur.clear();
+            }
+            if (c == '=') {   // «Terrain = 0» — пропускаем число
+                while (i < decl.size() && decl[i] != ',') ++i;
+            }
+        }
+    }
+    check(passes.size() >= 5, "проходов объявлено достаточно");
+    if (passes.size() < 5) return;
+
+    // ---- 2. Каждый проход размечен, ровно один раз, в том же порядке ----
+    const usize body = rs.find("void RenderSystem::render(");
+    const usize bodyEnd = body == NONE ? NONE : rs.find("\n}\n", body);
+    check(body != NONE && bodyEnd != NONE, "RenderSystem::render на месте");
+    if (body == NONE || bodyEnd == NONE) return;
+    const std::string win = rs.substr(body, bodyEnd - body);
+
+    usize prev = 0;
+    for (const auto& name : passes) {
+        const std::string mark = "markPass(Pass::" + name + ")";
+        const usize at = win.find(mark);
+        if (at == NONE) {
+            std::printf("       проход «%s» не размечен\n", name.c_str());
+            check(false, "у каждого прохода есть своя метка");
+            return;
+        }
+        if (win.find(mark, at + 1) != NONE) {
+            std::printf("       проход «%s» размечен дважды\n", name.c_str());
+            check(false, "у каждого прохода есть своя метка");
+            return;
+        }
+        if (at < prev) {
+            std::printf("       проход «%s» размечен не по порядку\n", name.c_str());
+            check(false, "метки идут в порядке перечисления");
+            return;
+        }
+        prev = at;
+    }
+    check(true, "у каждого прохода есть своя метка");
+    check(true, "метки идут в порядке перечисления");
+
+    // ---- 3. Метка стоит ПОСЛЕ работы прохода ----
+    //
+    // Метка перед проходом измерила бы предыдущий, и вся раскладка
+    // оказалась бы сдвинутой на один проход. Сверяем по паре, которую
+    // ни с чем не спутать: небо — один вызов.
+    const usize skyDraw = win.find("skybox_.render");
+    const usize skyMark = win.find("markPass(Pass::Sky)");
+    check(skyDraw != NONE && skyMark != NONE && skyDraw < skyMark,
+          "метка ставится после команд прохода, а не до");
+
+    // ---- 4. Каждый проход выключаем отдельно ----
+    for (const auto& name : passes) {
+        if (win.find("on(Pass::" + name + ")") == NONE) {
+            std::printf("       проход «%s» нельзя выключить\n", name.c_str());
+            check(false, "каждый проход можно выключить маской");
+            return;
+        }
+    }
+    check(true, "каждый проход можно выключить маской");
+
+    // Выключение ландшафта не должно останавливать отбор: он ставит
+    // чанкам целевой уровень и заказывает меши. Иначе выключённый
+    // проход менял бы не цену рисования, а поведение всего потокового
+    // конвейера, и разность времён была бы разностью разных миров.
+    check(win.find("cullOnly(") != NONE,
+          "с выключенным ландшафтом отбор всё равно идёт");
+
+    // ---- 5. Пропущенная метка не теряет весь кадр ----
+    //
+    // Запрос, сброшенный vkCmdResetQueryPool и ни разу не записанный,
+    // делает ВСЮ выборку «ещё не готовой»: вместе с проходом пропало
+    // бы и время кадра целиком. Поэтому markPass дописывает пропуски,
+    // а endFrame добивает хвост.
+    const usize mp = ctxc.find("void Context::markPass(");
+    check(mp != NONE, "markPass реализован");
+    if (mp != NONE) {
+        const std::string mpw = ctxc.substr(mp, ctxc.find("\n}\n", mp) - mp);
+        check(mpw.find("while (passMarks_ <= want)") != NONE,
+              "markPass дописывает пропущенные метки");
+    }
+    const usize ef = ctxc.find("void Context::endFrame(");
+    check(ef != NONE, "endFrame реализован");
+    if (ef != NONE) {
+        const std::string efw = ctxc.substr(ef, ctxc.find("\n}\n", ef) - ef);
+        check(efw.find("while (passMarks_ < GPU_PASSES)") != NONE,
+              "endFrame добивает хвост меток");
+    }
+
+    // ---- 6. Пул рассчитан на все метки ----
+    check(ctxh.find("STAMPS_PER_FRAME = 2 + GPU_PASSES") != NONE,
+          "меток на кадр хватает на начало, конец и все проходы");
+    check(ctxc.find("qi.queryCount = MAX_FRAMES * STAMPS_PER_FRAME") != NONE,
+          "пул запросов создаётся под это число");
+
+    // ---- 7. Маска по умолчанию — все проходы ----
+    const std::string cfg = readSource("app/src/main/cpp/src/config/settings.h");
+    if (!cfg.empty()) {
+        const usize m = cfg.find("renderPasses");
+        check(m != NONE, "маска проходов есть в настройках");
+        if (m != NONE) {
+            const std::string line = cfg.substr(m, cfg.find(';', m) - m);
+            check(line.find("0x7F") != NONE,
+                  "и по умолчанию включены все семь");
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// Сводка кадров считает по настоящим часам
+// ------------------------------------------------------------
+//
+// Здесь стояло statTimer += dt, а dt в диагностической сборке прибит
+// к 1/60: debug_scene живёт на постоянном шаге. Числитель и
+// знаменатель росли на один и тот же кадр, и «кадров в секунду»
+// выходило тождественно 60.0 при любой настоящей частоте. В журнале
+// с устройства стояло ровно «60.0/с», пока игра шла за девяносто, —
+// и сводка врала ровно в том числе, ради которого её читают.
+void testFrameRateIsMeasuredByWallClock() {
+    group("сводка: частота кадров считается по часам");
+
+    const std::string m = readSource("app/src/main/cpp/src/main.cpp");
+    if (m.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const std::string src = stripComments(m);
+    const usize NONE = std::string::npos;
+
+    check(src.find("statTimer += dt") == NONE,
+          "окно сводки не набирается из шага симуляции");
+
+    const usize f = src.find("const f32 fps =");
+    check(f != NONE, "частота кадров считается");
+    if (f != NONE) {
+        const std::string line = src.substr(f, src.find(';', f) - f);
+        check(line.find("dt") == NONE, "и не делится на шаг симуляции");
+        check(line.find("statSec") != NONE, "а делится на измеренные секунды");
+    }
+    check(src.find("std::chrono::duration<f32>(now - statWall)") != NONE,
+          "секунды берутся у steady_clock");
+
+    // Ожидание GPU и запись команд — разные беды, и лечатся они
+    // противоположным. Отрезок, накрывавший и запись, и отправку с
+    // показом, в журнале с устройства показывал 10.5 мс при 1884
+    // индексах и повторял время GPU кадр в кадр: процессор стоял и
+    // ждал GPU, а по числу это выглядело как «не успеваем записывать».
+    check(src.find("msSubmit") != NONE,
+          "отправка и показ меряются отдельно от записи команд");
+    const usize rec = src.find("msRecord  +=");
+    check(rec != NONE, "запись команд меряется");
+    if (rec != NONE) {
+        const std::string line = src.substr(rec, src.find(';', rec) - rec);
+        check(line.find("tD") == NONE,
+              "и её отрезок не дотягивается до конца кадра");
+    }
+
+    // Шаг симуляции при этом обязан остаться постоянным: сводка —
+    // это отчётность, она не имеет права трогать сам шаг.
+    check(src.find("if (dbgScene) dt = world::SCENE_FIXED_DT;") != NONE,
+          "постоянный шаг диагностической сцены на месте");
+}
+
 void testFramePassOrder() {
     group("рендер: порядок проходов кадра");
 
@@ -5003,6 +5207,8 @@ int main() {
     testSurfaceHeightCacheMatchesGenerator();
     testUnloadAcceptsTighterRadius();
     testFramePassOrder();
+    testFrameGpuBreakdown();
+    testFrameRateIsMeasuredByWallClock();
     testFrameRateLimitSetting();
     testClipboardLogTrimming();
     testCoarseWaterIsStable();

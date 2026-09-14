@@ -90,6 +90,19 @@ public:
                       VkDescriptorSet set, const math::Frustum& frustum,
                       const glm::vec3& cameraPos);
 
+    /// Только отбор: пирамида видимости, выбор уровня, заказ догрузки,
+    /// сортировка. Ничего не рисует.
+    ///
+    /// Нужен затем, что проход ландшафта можно выключить (render_passes
+    /// в settings.cfg) ради замера его цены вычитанием. Отбор при этом
+    /// обязан идти как обычно: он ставит целевой уровень чанкам и
+    /// заказывает меши, и без него выключение прохода меняло бы не
+    /// цену рисования, а поведение всего потокового конвейера — и
+    /// сравнивать замер стало бы не с чем.
+    void cullOnly(const math::Frustum& frustum, const glm::vec3& cameraPos) {
+        cull(frustum, cameraPos);
+    }
+
     /// Рисует полупрозрачную часть — воду — от дальнего к ближнему.
     ///
     /// Зовётся ОТДЕЛЬНО и позже renderOpaque, потому что между ними
@@ -115,6 +128,14 @@ public:
     u32 lastLodCounts(int lod) const { return lodCounts_[lod]; }
     u32 lastEmptyChunks() const   { return lastEmptyChunks_; }
     u32 lastWaitingChunks() const { return lastWaitingChunks_; }
+    /// Сколько чанков всего рассматривалось до отсечения по пирамиде.
+    u32 lastConsideredChunks() const { return lastConsideredChunks_; }
+    /// Сколько отсечено пирамидой видимости.
+    u32 lastCulledChunks() const  { return lastCulledChunks_; }
+    /// Чанки с полупрозрачной частью — по одному draw call на каждый.
+    u32 lastBlendedChunks() const { return (u32)blended_.size(); }
+    /// Вершин в нарисованном: по четыре на квад, как их кладёт мешер.
+    u32 lastDrawnVertices() const { return lastDrawnVertices_; }
 
 private:
     struct GpuMesh {
@@ -233,6 +254,10 @@ private:
 
     /// Один вызов отрисовки: сдвиг чанка, буферы, индексы. Общий для
     /// обоих проходов — раньше был лямбдой внутри render().
+    /// Отбор: пирамида, уровень детализации, заказ догрузки, порядок.
+    /// Заполняет visible_ и blended_ и все счётчики кадра.
+    void cull(const math::Frustum& frustum, const glm::vec3& cameraPos);
+
     void drawMesh(VkCommandBuffer cmd, VkPipelineLayout layout,
                   const Visible& v, u32 first, u32 count);
 
@@ -265,6 +290,13 @@ private:
     u32 lastEmptyChunks_  = 0;
     /// Из них те, чей меш ещё заказан и ожидается.
     u32 lastWaitingChunks_ = 0;
+    /// Чанки с мешами, рассмотренные в этом кадре, и сколько из них
+    /// отсекла пирамида видимости. Без первого числа «нарисовано 63»
+    /// не говорит ничего: то ли отсечение работает, то ли чанков всего
+    /// шестьдесят три.
+    u32 lastConsideredChunks_ = 0;
+    u32 lastCulledChunks_     = 0;
+    u32 lastDrawnVertices_    = 0;
 };
 
 } // namespace render

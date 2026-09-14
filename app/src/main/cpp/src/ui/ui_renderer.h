@@ -62,6 +62,7 @@ public:
     /// построился» от «построился, но не виден».
     u32 lastVertices() const { return lastVerts_; }
     u32 lastDrawn()    const { return lastDrawn_; }
+    u32 lastDrawCalls() const { return lastDrawCalls_; }
 
     /// Вершины, накопленные за текущий кадр, по атласам (0 — шрифт,
     /// 1 — внешний). Интерфейс целиком строится на процессоре, так
@@ -116,7 +117,7 @@ private:
     int activeSlot_ = 0;
 
     float whiteU_ = 0.f, whiteV_ = 0.f;
-    u32 lastVerts_ = 0, lastDrawn_ = 0;
+    u32 lastVerts_ = 0, lastDrawn_ = 0, lastDrawCalls_ = 0;
     /// cos/sin угла доворота; при нулевом повороте — (1, 0).
     float rotC_ = 1.f, rotS_ = 0.f;
     glm::vec2 rotate(glm::vec2 p) const {
