@@ -484,6 +484,44 @@ bool Context::createSyncObjects() {
         VKCHECK(vkCreateSemaphore(device_, &si, nullptr, &imgAvailable_[i]));
         VKCHECK(vkCreateFence    (device_, &fi, nullptr, &inFlight_[i]));
     }
+
+    // Метки времени GPU: две на кадр в работе.
+    //
+    // Нужны затем, что время «рисование» в сводке меряется вокруг
+    // beginFrame/endFrame, а внутри beginFrame стоит ожидание забора и
+    // vkAcquireNextImageKHR — то есть ожидание экрана. В одно число
+    // слиты «GPU занят» и «мы ждём вертикальную синхронизацию», а
+    // лечится это противоположным. Метки отвечают на вопрос прямо.
+    //
+    // Устройство может их не уметь (timestampPeriod == 0 или нулевая
+    // разрядность у семейства очередей) — тогда просто живём без них.
+    {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(physical_, &props);
+
+        u32 qn = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_, &qn, nullptr);
+        std::vector<VkQueueFamilyProperties> qs(qn);
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_, &qn, qs.data());
+        const bool queueHasBits =
+            gfxFamily_ < qn && qs[gfxFamily_].timestampValidBits > 0;
+
+        if (props.limits.timestampPeriod > 0.f && queueHasBits) {
+            VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            qi.queryType  = VK_QUERY_TYPE_TIMESTAMP;
+            qi.queryCount = MAX_FRAMES * 2;
+            if (vkCreateQueryPool(device_, &qi, nullptr, &timeQuery_) == VK_SUCCESS) {
+                timestampPeriod_ = props.limits.timestampPeriod;
+                LOGI("Метки времени GPU: есть (%.1f нс на такт)",
+                     (double)timestampPeriod_);
+            } else {
+                timeQuery_ = VK_NULL_HANDLE;
+            }
+        } else {
+            LOGI("Метки времени GPU: устройство их не даёт");
+        }
+    }
+
     return createSwapchainSync();
 }
 
@@ -631,6 +669,29 @@ bool Context::beginFrame() {
     rp.renderArea.extent = swapExtent_;
     rp.clearValueCount   = 2;
     rp.pClearValues      = clears;
+    // Метка начала — до прохода рендера, чтобы в измеренное попало всё,
+    // что кадр отдаёт GPU.
+    if (timeQuery_ != VK_NULL_HANDLE) {
+        // Результат прошлого круга этого слота уже готов: выше мы
+        // дождались его забора. Читаем ДО того, как сбросим метки.
+        if (timeQueryPending_[currentFrame_]) {
+            u64 stamps[2] = { 0, 0 };
+            const VkResult qr = vkGetQueryPoolResults(
+                device_, timeQuery_, currentFrame_ * 2, 2,
+                sizeof(stamps), stamps, sizeof(u64), VK_QUERY_RESULT_64_BIT);
+            if (qr == VK_SUCCESS && stamps[1] > stamps[0]) {
+                lastGpuMs_ = (f32)((double)(stamps[1] - stamps[0]) *
+                                   (double)timestampPeriod_ * 1e-6);
+            }
+            timeQueryPending_[currentFrame_] = false;
+        }
+        vkCmdResetQueryPool(cmdBuffers_[currentFrame_], timeQuery_,
+                            currentFrame_ * 2, 2);
+        vkCmdWriteTimestamp(cmdBuffers_[currentFrame_],
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            timeQuery_, currentFrame_ * 2);
+    }
+
     vkCmdBeginRenderPass(cmdBuffers_[currentFrame_], &rp, VK_SUBPASS_CONTENTS_INLINE);
 
     frameStarted_ = true;
@@ -689,6 +750,12 @@ void Context::endFrame() {
         return;
     }
     vkCmdEndRenderPass(cmdBuffers_[currentFrame_]);
+    if (timeQuery_ != VK_NULL_HANDLE) {
+        vkCmdWriteTimestamp(cmdBuffers_[currentFrame_],
+                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                            timeQuery_, currentFrame_ * 2 + 1);
+        timeQueryPending_[currentFrame_] = true;
+    }
     vkEndCommandBuffer(cmdBuffers_[currentFrame_]);
 
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -790,6 +857,10 @@ void Context::shutdown() {
             slot = TransferSlot{};
         }
         destroySwapchainSync();
+        if (timeQuery_ != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(device_, timeQuery_, nullptr);
+            timeQuery_ = VK_NULL_HANDLE;
+        }
         for (u32 i = 0; i < MAX_FRAMES; ++i) {
             vkDestroySemaphore(device_, imgAvailable_[i], nullptr);
             vkDestroyFence(device_, inFlight_[i], nullptr);

@@ -169,17 +169,40 @@ void RenderSystem::render(vk::Context& ctx) {
     VkDescriptorSet ds = descriptors_.set(frame);
     math::Frustum fr = camera_.frustum();
 
-    skybox_.render(ctx, ds);
-
-    chunkRenderer_.render(ctx, voxelPipeline_.handle(),
-                          voxelBlendPipeline_.handle(), voxelPipeline_.layout(),
-                          ds, fr, camera_.position());
+    // Порядок кадра: сперва ВСЁ непрозрачное, потом небо, потом
+    // полупрозрачное. Раньше он был другим — небо первым, вода сразу
+    // за ландшафтом, сущности после воды, — и это стоило двух вещей
+    // сразу.
+    //
+    // 1. Небо закрывает весь экран. Пока оно рисовалось первым и без
+    //    проверки глубины, его шейдер считался для каждого пикселя, а
+    //    ландшафт закрашивал под две трети посчитанного (доля
+    //    измерена на кадре tools/vkcheck: 323777 пикселей геометрии
+    //    из 504000). Шейдер неба при этом в десять раз дороже ровной
+    //    заливки той же площади (tools/gpubench, кадр 2306x1080:
+    //    8.08 мс против 0.78 мс). Теперь небо идёт последним из
+    //    непрозрачного и с проверкой глубины: закрытые пиксели
+    //    отбрасываются до фрагментного шейдера.
+    //
+    // 2. Вода не пишет глубину — иначе смешивание не складывается.
+    //    Пока она рисовалась ДО мобов, NPC, предметов и травы, любая
+    //    из этих сущностей, стоящая под водой, проходила проверку
+    //    глубины (вода её не заняла) и оказывалась нарисованной
+    //    ПОВЕРХ водной глади. Теперь вода идёт после них.
+    chunkRenderer_.renderOpaque(ctx, voxelPipeline_.handle(),
+                                voxelPipeline_.layout(),
+                                ds, fr, camera_.position());
 
     npcRenderer_.render(ctx, ds);
     mobRenderer_.render(ctx, ds, fr);
     projRenderer_.render(ctx, ds);
     itemRenderer_.render(ctx, ds);
     grass_.render(ctx, ds, fr);
+
+    skybox_.render(ctx, ds);
+
+    chunkRenderer_.renderBlended(ctx, voxelBlendPipeline_.handle(),
+                                 voxelPipeline_.layout(), ds);
 
     blockOutline_.render(ctx, ds, lastHit_.block, lastHit_.hit);
 

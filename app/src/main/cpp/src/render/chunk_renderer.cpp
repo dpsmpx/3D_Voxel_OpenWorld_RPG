@@ -364,12 +364,43 @@ void ChunkRenderer::uploadChunks(vk::Context& ctx, world::ChunkManager& world,
 
 // ============================================================
 // Отрисовка: отбор, сортировка, два прохода.
+//
+// Проходы разнесены по двум вызовам, и это не косметика. Между
+// непрозрачным ландшафтом и полупрозрачной водой обязаны попасть две
+// вещи, которые раньше рисовались ПОСЛЕ воды:
+//
+//   * непрозрачные сущности — мобы, NPC, предметы, трава. Вода не
+//     пишет глубину (иначе смешивание не работает), поэтому моб,
+//     нарисованный после неё, проходил проверку глубины и оказывался
+//     ПОВЕРХ водной глади, стоя при этом под водой;
+//   * небо. Оно закрывает весь экран, и пока оно рисовалось первым,
+//     каждый пиксель считал его шейдер, даже если поверх ложился
+//     ландшафт. Замер (tools/gpubench): шейдер неба в десять раз
+//     дороже простой заливки той же площади, а кадр vkcheck
+//     показывает, что геометрия закрывает под две трети экрана.
+//
+// Порядок в RenderSystem::render теперь такой: ландшафт, сущности,
+// трава, небо, вода, контур, интерфейс.
 // ============================================================
-void ChunkRenderer::render(vk::Context& ctx,
-                           VkPipeline opaquePipe, VkPipeline blendPipe,
-                           VkPipelineLayout layout,
-                           VkDescriptorSet set, const math::Frustum& frustum,
-                           const glm::vec3& cameraPos)
+void ChunkRenderer::drawMesh(VkCommandBuffer cmd, VkPipelineLayout layout,
+                             const Visible& v, u32 first, u32 count)
+{
+    if (count == 0) return;
+    const ChunkPush push{ glm::vec4(v.origin, 0.f) };
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT,
+                       0, sizeof(push), &push);
+    const VkBuffer vb = v.mesh->vb.handle();
+    VkDeviceSize offsets[] = { 0 };
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offsets);
+    vkCmdBindIndexBuffer(cmd, v.mesh->ib.handle(), 0, v.mesh->indexType);
+    vkCmdDrawIndexed(cmd, count, 1, first, 0, 0);
+}
+
+void ChunkRenderer::renderOpaque(vk::Context& ctx,
+                                 VkPipeline opaquePipe,
+                                 VkPipelineLayout layout,
+                                 VkDescriptorSet set, const math::Frustum& frustum,
+                                 const glm::vec3& cameraPos)
 {
     VkCommandBuffer cmd = ctx.currentCmd();
 
@@ -468,6 +499,7 @@ void ChunkRenderer::render(vk::Context& ctx,
         lastDrawnIndices_ += chosen->totalIndices;
         ++lodCounts_[usedLod];
     }
+    // blended_ — подмножество visible_: пусто одно, пусто и другое.
     if (visible_.empty()) return;
 
     // ---- 2. Порядок ----
@@ -475,30 +507,29 @@ void ChunkRenderer::render(vk::Context& ctx,
               [](const Visible& a, const Visible& b) { return a.distSq < b.distSq; });
 
     // ---- 3. Непрозрачное, от ближнего к дальнему ----
-    auto bindAndDraw = [&](const Visible& v, u32 first, u32 count) {
-        if (count == 0) return;
-        const ChunkPush push{ glm::vec4(v.origin, 0.f) };
-        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT,
-                           0, sizeof(push), &push);
-        const VkBuffer vb = v.mesh->vb.handle();
-        VkDeviceSize offsets[] = { 0 };
-        vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offsets);
-        vkCmdBindIndexBuffer(cmd, v.mesh->ib.handle(), 0, v.mesh->indexType);
-        vkCmdDrawIndexed(cmd, count, 1, first, 0, 0);
-    };
-
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaquePipe);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
                             0, 1, &set, 0, nullptr);
-    for (const auto& v : visible_) bindAndDraw(v, 0, v.mesh->opaqueIndices);
+    for (const auto& v : visible_) drawMesh(cmd, layout, v, 0, v.mesh->opaqueIndices);
+}
 
-    // ---- 4. Полупрозрачное, от дальнего к ближнему ----
+// ============================================================
+// Полупрозрачный проход: вода. Отбор и сортировку сделал
+// renderOpaque, здесь остаётся только нарисовать — и нарисовать
+// ПОСЛЕ всей непрозрачной геометрии и после неба.
+// ============================================================
+void ChunkRenderer::renderBlended(vk::Context& ctx,
+                                  VkPipeline blendPipe,
+                                  VkPipelineLayout layout,
+                                  VkDescriptorSet set)
+{
     // Обратный порядок — единственный, при котором смешивание даёт
     // верный результат: дальняя вода должна лечь под ближнюю.
     //
     // Сортируется отдельный список: порядок непрозрачного прохода
     // здесь не годится, он считан от центров чанков.
     if (blended_.empty()) return;
+    VkCommandBuffer cmd = ctx.currentCmd();
     std::sort(blended_.begin(), blended_.end(),
               [](const Blended& a, const Blended& b) { return a.distSq > b.distSq; });
 
@@ -507,8 +538,8 @@ void ChunkRenderer::render(vk::Context& ctx,
                             0, 1, &set, 0, nullptr);
     for (const auto& b : blended_) {
         const Visible v{ b.mesh, b.origin, b.distSq };
-        bindAndDraw(v, b.mesh->opaqueIndices,
-                    b.mesh->totalIndices - b.mesh->opaqueIndices);
+        drawMesh(cmd, layout, v, b.mesh->opaqueIndices,
+                 b.mesh->totalIndices - b.mesh->opaqueIndices);
     }
 }
 

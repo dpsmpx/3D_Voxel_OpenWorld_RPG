@@ -73,21 +73,37 @@ public:
     void setViewDistanceBlocks(f32 blocks) { bands_.fromViewDistance(blocks); }
     const world::LodBands& bands() const { return bands_; }
 
-    /// Отбирает видимые чанки, раскладывает их по расстоянию и
-    /// рисует в два прохода: непрозрачное от ближнего к дальнему,
-    /// полупрозрачное — наоборот.
+    /// Отбирает видимые чанки, раскладывает их по расстоянию и рисует
+    /// НЕПРОЗРАЧНУЮ часть, от ближнего к дальнему.
     ///
     /// Порядок здесь не косметика. Мобильные GPU отбрасывают
     /// закрытые фрагменты по глубине ДО фрагментного шейдера, но
     /// только если ближнее уже нарисовано: обход в порядке
     /// хэш-таблицы, как было раньше, отдавал эту экономию даром.
-    /// А смешивание, наоборот, требует обратного порядка, иначе
-    /// вода поверх воды складывается неправильно.
-    void render(vk::Context& ctx,
-                VkPipeline opaquePipe, VkPipeline blendPipe,
-                VkPipelineLayout layout,
-                VkDescriptorSet set, const math::Frustum& frustum,
-                const glm::vec3& cameraPos);
+    ///
+    /// Заодно этот вызов готовит список полупрозрачного для
+    /// renderBlended: отбор и отсечение по пирамиде видимости делаются
+    /// один раз на кадр, а не дважды.
+    void renderOpaque(vk::Context& ctx,
+                      VkPipeline opaquePipe,
+                      VkPipelineLayout layout,
+                      VkDescriptorSet set, const math::Frustum& frustum,
+                      const glm::vec3& cameraPos);
+
+    /// Рисует полупрозрачную часть — воду — от дальнего к ближнему.
+    ///
+    /// Зовётся ОТДЕЛЬНО и позже renderOpaque, потому что между ними
+    /// обязаны встать непрозрачные сущности (вода не пишет глубину, и
+    /// моб под водой иначе рисуется поверх неё) и небо (пока оно
+    /// рисовалось первым, его шейдер считался и для тех пикселей,
+    /// которые потом закрывал ландшафт).
+    ///
+    /// Вызывать только после renderOpaque в том же кадре: список
+    /// полупрозрачного собирает он.
+    void renderBlended(vk::Context& ctx,
+                       VkPipeline blendPipe,
+                       VkPipelineLayout layout,
+                       VkDescriptorSet set);
 
     /// Границы уровней детализации в блоках — их же берёт мир,
     /// чтобы мешировать новый чанк сразу в нужном разрешении.
@@ -192,6 +208,7 @@ private:
     bool uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
                    ChunkGpu& gpu, world::Chunk& chunk, u8 lod);
 
+
     VkDevice         dev_  = VK_NULL_HANDLE;
     VkPhysicalDevice phys_ = VK_NULL_HANDLE;
 
@@ -213,6 +230,11 @@ private:
         glm::vec3 origin;
         f32 distSq;
     };
+
+    /// Один вызов отрисовки: сдвиг чанка, буферы, индексы. Общий для
+    /// обоих проходов — раньше был лямбдой внутри render().
+    void drawMesh(VkCommandBuffer cmd, VkPipelineLayout layout,
+                  const Visible& v, u32 first, u32 count);
 
     std::vector<Blended>      blended_;
     std::vector<VoxelVertex>  scratchVerts_;

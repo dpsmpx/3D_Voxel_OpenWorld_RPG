@@ -1396,6 +1396,11 @@ extern "C" void android_main(android_app* app) {
     u64 lastPresented = 0;
     u32 statReports = 0;
     f32 msUpdate = 0.f, msPrepare = 0.f, msDraw = 0.f;
+    // «Рисование» само по себе не отвечает ни на один вопрос: внутри
+    // него и ожидание экрана, и запись команд. Держим их врозь, а
+    // рядом — время, которое GPU ДЕЙСТВИТЕЛЬНО рисовал, по его
+    // собственным меткам.
+    f32 msWait = 0.f, msRecord = 0.f, msGpu = 0.f;
     u32 msFrames = 0;
 
     while (true) {
@@ -1468,7 +1473,10 @@ extern "C" void android_main(android_app* app) {
             eng.prepareFrame(timeSec, dt);
             const auto tC = std::chrono::steady_clock::now();
 
-            if (!eng.vk.beginFrame()) {
+            const auto tC1 = std::chrono::steady_clock::now();
+            const bool haveFrame = eng.vk.beginFrame();
+            const auto tC2 = std::chrono::steady_clock::now();
+            if (!haveFrame) {
                 // Цепочка устарела — обычно из-за поворота экрана.
                 // Пересоздали её, значит обязаны заново перенести
                 // размеры и угол в камеру и интерфейс.
@@ -1481,6 +1489,11 @@ extern "C" void android_main(android_app* app) {
                 eng.vk.endFrame();
             }
             const auto tD = std::chrono::steady_clock::now();
+            // tC1..tC2 — ожидание экрана, tC2..tD — запись команд.
+            // Раньше и то и другое лежало в одном числе «рисование», а
+            // это разные беды: первое означает, что мы упёрлись в
+            // вертикальную синхронизацию или в GPU, второе — что
+            // процессор не успевает записать кадр.
 
             auto ms = [](auto a, auto b) {
                 return std::chrono::duration<f32, std::milli>(b - a).count();
@@ -1488,6 +1501,9 @@ extern "C" void android_main(android_app* app) {
             msUpdate  += ms(tA, tB);
             msPrepare += ms(tB, tC);
             msDraw    += ms(tC, tD);
+            msWait    += ms(tC1, tC2);
+            msRecord  += ms(tC2, tD);
+            msGpu     += eng.vk.lastGpuMs();
             ++msFrames;
 
             // Сводка раз в три секунды. Без неё «чёрный экран» не
@@ -1511,7 +1527,8 @@ extern "C" void android_main(android_app* app) {
                      "дыр %u (ждут меша %u), LOD %u/%u/%u/%u "
                      "| трава %u, мобы %u, NPC %u, предметы %u, снаряды %u "
                      "| интерфейс: вершин %u, нарисовано %u, экран %d "
-                     "| мс: логика %.1f, подготовка %.1f, рисование %.1f",
+                     "| мс: логика %.1f, подготовка %.1f, рисование %.1f "
+                     "(ожидание экрана %.1f, запись команд %.1f, GPU %s%.1f)",
                      (unsigned long long)presented, (double)fps,
                      (int)eng.vk.lastPresentResult(),
                      (unsigned long long)eng.vk.swapchainRebuilds(),
@@ -1539,8 +1556,12 @@ extern "C" void android_main(android_app* app) {
                      eng.ui ? eng.ui->lastDrawn() : 0u,
                      eng.ui ? (int)eng.ui->screen : -1,
                      (double)(msUpdate / n), (double)(msPrepare / n),
-                     (double)(msDraw / n));
+                     (double)(msDraw / n),
+                     (double)(msWait / n), (double)(msRecord / n),
+                     eng.vk.gpuTimingAvailable() ? "" : "нет:",
+                     (double)(msGpu / n));
                 msUpdate = msPrepare = msDraw = 0.f;
+                msWait = msRecord = msGpu = 0.f;
                 msFrames = 0;
             }
         } else {

@@ -67,16 +67,21 @@ cd "$PROJ"
 "$OUT/vkcheck" --out "$OUT/frame.ppm" --debug-assets "$OUT/assets" "$@" || rc=$?
 rc=${rc:-0}
 
-if command -v python3 >/dev/null 2>&1 && python3 -c "import PIL" 2>/dev/null; then
-    python3 - "$OUT" <<'PY'
-import sys
-from PIL import Image
-out = sys.argv[1]
-try:
-    Image.open(f"{out}/frame.ppm").save(f"{out}/frame.png")
-    print(f"vkcheck: {out}/frame.png")
-except Exception as e:
-    print("vkcheck: png не сделан:", e)
-PY
+# PPM в PNG — своими руками, без Pillow.
+#
+# Раньше здесь звался Pillow под защитой "import PIL". Защита
+# оказалась не той: сам пакет PIL импортируется, а нужный ему
+# PIL.Image тянет бинарный модуль, и вот его может не быть в системе
+# (или он собран под другую версию python — ровно так и вышло).
+# Питон падал, а при set -e вместе с ним падала ВСЯ проверка графики,
+# хотя кадр к тому времени был отрисован и проверен, и слой проверки
+# не сказал ни слова.
+#
+# Картинка нужна человеку, а не проверке, поэтому её отсутствие не
+# может ронять проверку. Кодировщик PNG без внешних пакетов влезает в
+# два десятка строк стандартной библиотеки — зависимость того не стоила.
+if command -v python3 >/dev/null 2>&1; then
+    python3 "$PROJ/tools/vkcheck/ppm2png.py" "$OUT/frame.ppm" "$OUT/frame.png" \
+        || echo "vkcheck: png не сделан (кадр в .ppm на месте)"
 fi
 exit $rc
