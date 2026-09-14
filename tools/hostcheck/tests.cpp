@@ -1363,6 +1363,111 @@ void testBuildStampIsNotStale() {
 }
 
 
+/// Небо: светила считаются только там, где их видно.
+///
+/// Замер на устройстве (ступень «только небо»): 8.57 мс на полный
+/// экран, 3.44 нс на пиксель — дороже фрагментной математики ландшафта
+/// (2.94). Пять степеней на солнце и луну давали ноль почти везде, но
+/// считались на каждом пикселе неба.
+///
+/// Проверка сторожит не текст, а ВЕЛИЧИНУ отброшенного: порог ветви
+/// берётся из шейдера и подставляется в те же степени. Опусти его —
+/// и обрезанное сияние станет видимым стыком, о чём текстовая сверка
+/// не сказала бы ничего.
+void testSkyCutsOnlyWhatCannotBeSeen() {
+    group("небо: светила считаются только там, где видны");
+
+    const std::string f = readSource("app/src/main/cpp/shaders/sky.frag");
+    if (f.empty()) { check(true, "sky.frag не найден, проверка пропущена"); return; }
+    const std::string src = stripComments(f);
+    const usize NONE = std::string::npos;
+
+    // ---- 1. Широкое сияние считается ВЕЗДЕ и без логарифма ----
+    //
+    // Шестая степень заметна далеко от солнца: на пороге 0.80 она даёт
+    // 0.021 в линейном свете — это до пяти уровней цвета на тёмном
+    // небе. Обрезать её ветвью нельзя, а pow для неё не нужен: три
+    // умножения дают то же самое.
+    check(src.find("powSafe(d, 6.0)") == NONE,
+          "широкое сияние солнца считается без pow");
+    check(src.find("d2 * d2 * d2") != NONE,
+          "оно считается умножениями");
+    check(src.find("powSafe(toSun, 3.0)") == NONE &&
+          src.find("toSun * toSun * toSun") != NONE,
+          "полоса у горизонта — тоже умножениями");
+
+    // ---- 2. Резкие члены — под ветвью ----
+    const usize sunIf  = src.find("if (d > ");
+    const usize moonIf = src.find("if (m > ");
+    check(sunIf != NONE,  "диск и ореол солнца под ветвью");
+    check(moonIf != NONE, "диск и ореол луны под ветвью");
+    if (sunIf == NONE || moonIf == NONE) return;
+
+    double sunCut = 0.0, moonCut = 0.0;
+    std::sscanf(src.c_str() + sunIf + 8,  "%lf", &sunCut);
+    std::sscanf(src.c_str() + moonIf + 8, "%lf", &moonCut);
+    check(sunCut > 0.0 && moonCut > 0.0, "пороги ветвей прочитаны");
+
+    // Всё, что режет ветвь, обязано быть под ветвью, и наоборот:
+    // иначе порог сторожит не то.
+    const usize sunEnd = src.find('}', sunIf);
+    const std::string sunBody = src.substr(sunIf, sunEnd - sunIf);
+    check(sunBody.find("powSafe(d, 900.0)") != NONE &&
+          sunBody.find("powSafe(d, 48.0)") != NONE,
+          "под ветвью солнца ровно диск и ореол");
+    const usize moonEnd = src.find('}', moonIf);
+    const std::string moonBody = src.substr(moonIf, moonEnd - moonIf);
+    check(moonBody.find("powSafe(m, 2400.0)") != NONE &&
+          moonBody.find("powSafe(m, 160.0)") != NONE,
+          "под ветвью луны ровно диск и ореол");
+
+    // ---- 3. Отброшенное не видно НИ НА ЧЁМ ----
+    //
+    // Худший случай — чёрное небо: там прибавка x к линейному нулю
+    // после перевода в sRGB (корень) даёт 255*sqrt(x) уровней. Порог
+    // цели: заведомо меньше половины уровня, то есть x < 3.8e-6.
+    const double LIMIT = 3.8e-6;
+    struct Term { const char* what; double cut, exp_, k; };
+    const Term terms[] = {
+        { "диск солнца",  sunCut,  900.0, 3.00 },
+        { "ореол солнца", sunCut,   48.0, 0.30 },
+        { "диск луны",    moonCut, 2400.0, 2.20 },
+        { "ореол луны",   moonCut,  160.0, 0.10 },
+    };
+    bool ok = true;
+    for (const auto& t : terms) {
+        const double lost = std::pow(t.cut, t.exp_) * t.k;
+        const double levels = 255.0 * std::sqrt(lost);
+        if (lost > LIMIT) {
+            std::printf("       на пороге %.2f «%s» теряет %.2e — это %.2f уровня цвета\n",
+                        t.cut, t.what, lost, levels);
+            ok = false;
+        }
+    }
+    check(ok, "на пороге отброшенное ниже кванта цвета даже на чёрном небе");
+
+    // И порог не должен быть завышен до бессмыслицы: ветвь, которая
+    // никогда не срабатывает, убрала бы солнце с неба.
+    check(sunCut < 0.999 && moonCut < 0.9999,
+          "но ветвь всё-таки срабатывает вблизи светила");
+
+    // Снизу порог сторожится отдельно, и это не про картинку.
+    //
+    // Опустить порог БЕЗОПАСНО: отброшенного становится меньше.
+    // Опасно другое — что ветвь перестанет окупаться. Смысл её в том,
+    // чтобы пропускать почти всё небо; порог 0.60 это конус в 53
+    // градуса, то есть пятая часть полусферы. Ниже — ветвь есть, а
+    // выигрыша нет, и заметить это по картинке нельзя.
+    if (sunCut < 0.60 || moonCut < 0.60) {
+        std::printf("       пороги %.2f и %.2f: конус слишком широк, "
+                    "ветвь перестаёт окупаться\n", sunCut, moonCut);
+        check(false, "ветвь узкая — иначе она не экономит");
+    } else {
+        check(true, "ветвь узкая — иначе она не экономит");
+    }
+}
+
+
 void testWorldSharesOneLightingModel() {
     group("шейдеры: мир освещён по одной модели");
 
@@ -5742,6 +5847,7 @@ int main() {
     testFaceShadingHasSingleSource();
     testApkCarriesTheShadersItWasBuiltFrom();
     testBuildStampIsNotStale();
+    testSkyCutsOnlyWhatCannotBeSeen();
     testWorldSharesOneLightingModel();
     testDistantGrassIsNotSubPixel();
     testShadersAvoidUndefinedMath();
