@@ -41,7 +41,13 @@ using Clock = std::chrono::steady_clock;
     std::printf("gpubench: %s -> %d (строка %d)\n", #x, (int)r_, __LINE__); \
     std::exit(1); } } while (0)
 
-std::string g_assets = "app/src/main/assets/";
+/// Каталог с шейдерами ИГРЫ, собранными для этого запуска. По
+/// умолчанию — каталог сборки инструмента, а не поставка: собирать
+/// шейдеры прямо в app/src/main/assets значит подложить их в APK.
+/// Ровно так и вышло однажды: APK уехал на устройство со старым
+/// voxel.frag, оставленным там предыдущим прогоном инструмента, и
+/// замер на устройстве молча повторил прежние числа.
+std::string g_assets = "build/gpubench/assets/";
 /// Каталог опорных шейдеров самого бенчмарка. Отдельно от ассетов
 /// игры: класть туда своё — значит отправить это в APK.
 std::string g_benchAssets = "build/gpubench/";
@@ -104,6 +110,7 @@ int main(int argc, char** argv) {
         if      (a == "--size")   { W = (u32)atoi(next()); H = (u32)atoi(next()); }
         else if (a == "--iters")  iters = atoi(next());
         else if (a == "--assets") g_assets = std::string(next()) + "/";
+        else if (a == "--assets")       g_assets = std::string(next()) + "/";
         else if (a == "--bench-assets") g_benchAssets = std::string(next()) + "/";
     }
 

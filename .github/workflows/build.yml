@@ -87,13 +87,13 @@ jobs:
           cp third_party/entt-src/single_include/entt/entt.hpp \
              third_party/entt/include/entt/
 
-      - name: Компиляция шейдеров
-        run: |
-          set -e
-          mkdir -p app/src/main/assets/shaders
-          for f in app/src/main/cpp/shaders/*.vert app/src/main/cpp/shaders/*.frag; do
-              glslc -O "$f" -o "app/src/main/assets/shaders/$(basename "$f").spv"
-          done
+      # Отдельного шага компиляции шейдеров здесь больше нет: их
+      # собирает сама сборка APK (задача compileShaders в
+      # app/build.gradle). Раньше шаг писал .spv в
+      # app/src/main/assets/shaders, откуда gradle паковал каталог как
+      # есть, — и туда же писали tools/vkcheck и tools/gpubench. Этого
+      # хватило, чтобы APK уехал на устройство со старым шейдером.
+      # glslc при этом по-прежнему нужен: его зовёт gradle.
 
       - name: gradle assembleDebug
         run: ./gradlew assembleDebug --no-daemon --stacktrace
@@ -118,6 +118,24 @@ jobs:
           need 'assets/shaders/voxel.vert.spv'
           need 'assets/shaders/voxel.frag.spv'
           need 'AndroidManifest.xml'
+
+          # Шейдер в APK обязан быть собран ИЗ ТЕКУЩЕГО исходника.
+          #
+          # Проверка дословно повторяет тот случай, ради которого
+          # написана: APK нёс новый нативный код и старый voxel.frag,
+          # оставленный в каталоге ассетов посторонним прогоном.
+          # Собрать шейдер заново и сверить байты — единственный
+          # способ увидеть это до устройства.
+          rm -rf /tmp/spvchk && mkdir -p /tmp/spvchk/{ref,apk}
+          for f in app/src/main/cpp/shaders/*.vert app/src/main/cpp/shaders/*.frag; do
+              glslc -O "$f" -o "/tmp/spvchk/ref/$(basename "$f").spv"
+          done
+          unzip -q -o "$APK" 'assets/shaders/*' -d /tmp/spvchk/apk
+          if ! diff -rq /tmp/spvchk/ref /tmp/spvchk/apk/assets/shaders; then
+              echo "✗ шейдеры в APK не совпадают со сборкой из исходников"
+              exit 1
+          fi
+          echo "✓ шейдеры в APK собраны из текущих исходников"
 
           # Метод упаковки для .so обязан быть Stored.
           BAD="$(unzip -v "$APK" | awk '/lib\/arm64-v8a\/.*\.so$/ && $2 != "Stored" {print $NF}')"
