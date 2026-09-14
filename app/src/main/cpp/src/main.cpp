@@ -1328,9 +1328,31 @@ static void handleCmd(android_app* app, int32_t cmd) {
             eng->hasFocus = false;
             eng->updateRunning();
             break;
-        case APP_CMD_LOW_MEMORY:
-            LOGW("APP_CMD_LOW_MEMORY");
+        case APP_CMD_LOW_MEMORY: {
+            // Системе не хватает памяти. Больше всего её держит мир:
+            // чанк — это четверть мегабайта вокселей, а их в круге
+            // полторы сотни, то есть под сорок мегабайт, и это без
+            // мешей в видеопамяти. Если не отдать ничего, система
+            // выберет сама — и выберет весь процесс.
+            //
+            // Отдаём дальние чанки, оставляя ближний круг. Потоковая
+            // загрузка вернёт их обратно по бюджету, когда память
+            // появится, и по мере того, как игрок пойдёт в их сторону.
+            if (!eng->initialized || !eng->world || !eng->player) {
+                LOGW("APP_CMD_LOW_MEMORY (мир ещё не создан)");
+                break;
+            }
+            constexpr i32 KEEP_CHUNKS = 3;   // ~96 блоков вокруг игрока
+            const glm::vec3 pos = eng->player->controller.state().position;
+            const usize before = eng->world->loadedChunks();
+            auto doomed = eng->world->collectUnloadCandidates(pos, KEEP_CHUNKS);
+            if (eng->render)
+                for (const auto& c : doomed) eng->render->forgetChunk(c);
+            eng->world->removeChunks(doomed);
+            LOGW("APP_CMD_LOW_MEMORY: чанков было %zu, выгружено %zu, осталось %zu",
+                 before, doomed.size(), eng->world->loadedChunks());
             break;
+        }
         default:
             break;
     }

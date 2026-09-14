@@ -34,10 +34,11 @@ mkdir -p "$OUT"
     -isystem "$TP/glm" -isystem "$TP/Vulkan-Headers/include" \
     -o "$OUT/bench" \
     "$PROJ/tools/bench/bench.cpp" \
-    "$SRC"/world/{chunk,block,terrain,biome,noise,features,chunk_manager}.cpp \
+    "$SRC"/world/{chunk,block,terrain,biome,noise,features,chunk_manager,debug_scene}.cpp \
     "$SRC"/render/mesh_builder.cpp \
     "$SRC"/world/ai/pathfinding.cpp \
     "$SRC"/audio/{audio_engine,sound_registry}.cpp \
+    "$SRC"/config/settings.cpp \
     "$SRC"/core/{crashlog,job_system}.cpp \
     "$OUT/stubs.o" \
     -lpthread -ldl
