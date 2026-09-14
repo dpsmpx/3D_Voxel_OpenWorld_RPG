@@ -33,11 +33,13 @@ inline bool faceIsBlended(const world::BlockDef& def, u8 face) {
 
 /// Выкладывает один квад: четыре вершины и шесть индексов.
 void emitQuad(const world::Quad& q, const world::BlockDef& def,
-              std::vector<VoxelVertex>& verts, std::vector<u32>& idx)
+              std::vector<VoxelVertex>& verts, std::vector<u32>& idx,
+              bool forceOpaque = false)
 {
     const u32 rgba = def.faceColor(q.v0.face);
     const u8 cr = (u8)(rgba >> 24), cg = (u8)(rgba >> 16);
-    const u8 cb = (u8)(rgba >>  8), ca = (u8)(rgba);
+    const u8 cb = (u8)(rgba >>  8);
+    const u8 ca = forceOpaque ? (u8)255 : (u8)(rgba);
     const u32 grain = (u32)def.grain & 7u;   // и так 0..7
     const u32 tint  = def.biomeTint ? 1u : 0u;
 
@@ -82,9 +84,12 @@ void buildChunkVertices(const world::Chunk& chunk,
                         std::vector<VoxelVertex>& outVerts,
                         std::vector<u32>& outIndices,
                         u32& outOpaqueIndices,
-                        glm::vec3* outBlendCenter)
+                        glm::vec3* outBlendCenter,
+                        u8 lod)
 {
     (void)chunk;   // позиции локальные: смещение чанка добавляет шейдер
+    // Прозрачность живёт на двух ближних уровнях. См. заголовок.
+    const bool blendAllowed = (lod < 2);
     if (outBlendCenter) *outBlendCenter = glm::vec3(0.f);
     outVerts.clear();
     outIndices.clear();
@@ -97,9 +102,13 @@ void buildChunkVertices(const world::Chunk& chunk,
     // остальное. Порядок в буфере и есть порядок отрисовки.
     for (const auto& q : quads) {
         const world::BlockDef& def = reg.get(q.v0.block);
-        if (!faceIsBlended(def, q.v0.face)) emitQuad(q, def, outVerts, outIndices);
+        const bool blended = faceIsBlended(def, q.v0.face);
+        if (blended && blendAllowed) continue;
+        emitQuad(q, def, outVerts, outIndices, blended);
     }
     outOpaqueIndices = (u32)outIndices.size();
+    if (!blendAllowed) return;   // полупрозрачного хвоста на огрублённых нет
+
     glm::dvec3 blendSum(0.0);
     f64 blendArea = 0.0;
     for (const auto& q : quads) {

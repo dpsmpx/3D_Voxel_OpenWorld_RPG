@@ -89,7 +89,7 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
         if (!chunk.meshes[lod].built) return false;
         buildChunkVertices(chunk, chunk.meshes[lod].quads,
                            scratchVerts_, scratchIndices_, gm.opaqueIndices,
-                           &gm.blendCenter);
+                           &gm.blendCenter, lod);
         chunk.meshes[lod].ready.store(false, std::memory_order_release);
     }
 

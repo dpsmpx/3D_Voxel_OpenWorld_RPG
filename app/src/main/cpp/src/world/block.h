@@ -110,6 +110,16 @@ constexpr u16 UNKNOWN = 0xFFFF;
 /// Можно ли решать по этому соседу, строить грань или нет.
 inline bool neighborKnown(u16 id) { return id != UNKNOWN; }
 
+/// Рисуется ли материал со смешиванием, то есть видно ли сквозь него.
+/// Смотрим на альфу цвета, а не на флаг isTransparent: листва и лава
+/// помечены прозрачными, чтобы мешер не склеивал их грани, но рисуются
+/// они непрозрачными. Сквозь видно только воду и лёд.
+inline bool isSeeThrough(const BlockDef& d) {
+    return (d.colorTop    & 0xFFu) < 255u
+        || (d.colorSide   & 0xFFu) < 255u
+        || (d.colorBottom & 0xFFu) < 255u;
+}
+
 BlockRegistry& blocks();  // синглтон
 
 } // namespace world

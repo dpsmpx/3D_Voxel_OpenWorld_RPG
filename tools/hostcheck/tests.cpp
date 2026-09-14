@@ -1676,6 +1676,118 @@ void testCoarseWaterIsStable() {
     check(l8.water[3][3], "клетка с одиноким камнем осталась водой");
 }
 
+void testCoarseWaterDoesNotFloat() {
+    group("LOD: прозрачное не поднимается и не подменяет сушу");
+
+    world::blocks();
+    world::ChunkNeighbors nb;
+    std::vector<world::Quad> quads;
+
+    // --- 1. Гладь воды не уезжает вверх ---
+    //
+    // Море в этом мире стоит на y = 32, то есть верхний воксель воды
+    // попадает в САМЫЙ НИЗ клетки 32..39. Клетка рисуется целым кубом,
+    // и по правилу «занято — значит вся клетка» её верх оказывался на
+    // y = 40: гладь уезжала на семь блоков вверх и вставала над
+    // берегом отдельными плитами.
+    auto sea = std::make_unique<world::Chunk>();
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            for (i32 y = 0; y <= 23; ++y) sea->setUnlocked(x, y, z, world::STONE);
+            for (i32 y = 24; y <= 32; ++y) sea->setUnlocked(x, y, z, world::WATER);
+        }
+
+    auto topWaterFace = [&](const std::vector<world::Quad>& qs) {
+        f32 best = -1.f;
+        for (const auto& q : qs) {
+            if (q.v0.face != 2) continue;
+            if (q.v0.block != world::WATER) continue;
+            best = std::max(best, q.v0.pos.y);
+        }
+        return best;
+    };
+
+    world::buildGreedyMesh(*sea, nb, quads, world::Lod::Full);
+    const f32 seaFull = topWaterFace(quads);
+    check(seaFull > 32.5f && seaFull < 33.5f, "в полном разрешении гладь на y=33");
+
+    world::buildGreedyMesh(*sea, nb, quads, world::Lod::Eighth);
+    const f32 sea8 = topWaterFace(quads);
+    check(sea8 > 0.f, "на уровне 8^3 море не исчезло");
+    check(sea8 <= seaFull, "и не поднялось выше настоящей глади");
+    check(sea8 >= seaFull - 8.f, "и не провалилось глубже одной клетки");
+
+    world::buildGreedyMesh(*sea, nb, quads, world::Lod::Quarter);
+    const f32 sea4 = topWaterFace(quads);
+    check(sea4 > 0.f && sea4 <= seaFull, "на уровне 4^3 тоже не поднялось");
+
+    // --- 2. Полоска воды у обрыва не становится кубом над пустотой ---
+    //
+    // Две колонки воды на краю плато, остальные шесть колонок клетки —
+    // воздух. Правило «занято — значит вся клетка» отдавало такой
+    // клетке весь куб 8x8x8, и над обрывом висела плита воды.
+    auto shelf = std::make_unique<world::Chunk>();
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            const i32 top = (x < 2) ? 39 : 31;
+            for (i32 y = 0; y <= top; ++y) shelf->setUnlocked(x, y, z, world::STONE);
+            if (x < 2)
+                for (i32 y = 40; y <= 41; ++y) shelf->setUnlocked(x, y, z, world::WATER);
+        }
+
+    world::buildGreedyMesh(*shelf, nb, quads, world::Lod::Eighth);
+    const TopMap s8 = topFaces(quads);
+    check(!s8.water[5][4], "над обрывом воды не появилось");
+    check(!s8.water[7][7], "и в дальнем углу той же клетки — тоже");
+    check(s8.solid[5][4] || s8.solid[7][7], "сам обрыв при этом на месте");
+}
+
+void testDistantWaterIsNotBlended() {
+    group("вода: на дальних уровнях прозрачности нет");
+
+    world::blocks();
+    world::ChunkNeighbors nb;
+    std::vector<world::Quad> quads;
+    std::vector<render::VoxelVertex> verts;
+    std::vector<u32> idx;
+    u32 opaque = 0;
+
+    auto lake = std::make_unique<world::Chunk>();
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            for (i32 y = 0; y <= 27; ++y) lake->setUnlocked(x, y, z, world::STONE);
+            for (i32 y = 28; y <= 31; ++y) lake->setUnlocked(x, y, z, world::WATER);
+        }
+    world::buildGreedyMesh(*lake, nb, quads, world::Lod::Full);
+
+    render::buildChunkVertices(*lake, quads, verts, idx, opaque, nullptr, 0);
+    check(opaque < idx.size(), "вблизи вода уходит в проход со смешиванием");
+    const usize blended0 = idx.size() - opaque;
+
+    render::buildChunkVertices(*lake, quads, verts, idx, opaque, nullptr, 1);
+    check(idx.size() - opaque == blended0,
+          "на первом уровне прозрачность ещё есть — шва у игрока быть не должно");
+
+    for (u8 lod : { (u8)2, (u8)3 }) {
+        render::buildChunkVertices(*lake, quads, verts, idx, opaque, nullptr, lod);
+        check(opaque == idx.size(), "на дальних уровнях полупрозрачного хвоста нет");
+        // Грани не потерялись: они просто уехали в непрозрачный проход.
+        check(idx.size() > 0, "и грани воды при этом не пропали");
+        bool opaqueAlpha = true;
+        for (const auto& v : verts) if (v.a != 255) opaqueAlpha = false;
+        check(opaqueAlpha, "альфа у них выставлена в непрозрачную");
+    }
+
+    const std::string mb = readSource("app/src/main/cpp/src/render/mesh_builder.cpp");
+    const std::string cr = readSource("app/src/main/cpp/src/render/chunk_renderer.cpp");
+    if (!mb.empty() && !cr.empty()) {
+        check(mb.find("blendAllowed = (lod < 2)") != std::string::npos,
+              "порог прозрачности задан одним местом");
+        check(cr.find("&gm.blendCenter, lod)") != std::string::npos,
+              "рендер сообщает сборщику вершин уровень чанка");
+    }
+}
+
 // ------------------------------------------------------------
 // Порядок смешивания воды
 // ------------------------------------------------------------
@@ -3607,6 +3719,8 @@ int main() {
     testLodHasSingleSourceOfTruth();
     testResidentLodSurvivesRequest();
     testCoarseWaterIsStable();
+    testCoarseWaterDoesNotFloat();
+    testDistantWaterIsNotBlended();
     testWaterSortedByWaterCenter();
     testUiTapSurvivesRedraw();
     testHudAndButtonsDoNotOverlap();
