@@ -52,6 +52,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <set>
 #include "ui/hud_layout.h"
@@ -1735,6 +1736,172 @@ void testWaterSortedByWaterCenter() {
         const std::string win = crc.substr(s, 200);
         check(win.find("a.distSq > b.distSq") != std::string::npos,
               "от дальнего к ближнему");
+    }
+}
+
+// ------------------------------------------------------------
+// Неопределённая математика в шейдерах
+// ------------------------------------------------------------
+namespace {
+
+/// Содержимое всех шейдеров проекта, по именам.
+std::vector<std::pair<std::string, std::string>> allShaders() {
+    static const char* names[] = {
+        "voxel.vert", "voxel.frag", "sky.vert", "sky.frag",
+        "grass.vert", "grass.frag", "mob.vert", "mob.frag",
+        "outline.vert", "outline.frag", "projectile.vert", "projectile.frag",
+        "ui.vert", "ui.frag",
+    };
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const char* n : names) {
+        std::string path = std::string("app/src/main/cpp/shaders/") + n;
+        std::string src  = readSource(path.c_str());
+        if (!src.empty()) out.push_back({ n, std::move(src) });
+    }
+    return out;
+}
+
+/// Убирает строчные комментарии: в них слова «pow» и «smoothstep»
+/// встречаются как раз там, где объясняется, почему их там нет.
+std::string stripComments(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (usize i = 0; i < s.size(); ) {
+        if (s[i] == '/' && i + 1 < s.size() && s[i + 1] == '/') {
+            while (i < s.size() && s[i] != '\n') ++i;
+        } else {
+            out.push_back(s[i]);
+            ++i;
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+void testShadersAvoidUndefinedMath() {
+    group("шейдеры: неопределённых операций нет");
+
+    const auto shaders = allShaders();
+    check(shaders.size() >= 12, "исходники шейдеров найдены");
+    if (shaders.empty()) return;
+
+    // ---- 1. pow() с нулевым основанием ----
+    //
+    // pow(x, k) всюду считается как exp2(k * log2(x)). При x = 0 это
+    // log2(0) = -inf, и что вернёт драйвер — его дело: на программном
+    // Vulkan ноль, на устройстве вышел NaN. Основания здесь обнуляются
+    // постоянно — max(dot(N, солнце), 0.0) равен нулю для любой грани,
+    // отвёрнутой от солнца, — поэтому либо основание подпирается снизу
+    // через max(), либо степень раскладывается умножениями.
+    usize bare = 0;
+    std::string bareWhere;
+    for (const auto& [name, raw] : shaders) {
+        const std::string src = stripComments(raw);
+        for (usize i = src.find("pow("); i != std::string::npos;
+             i = src.find("pow(", i + 1)) {
+            // powSafe(...) и собственные pow2/pow4/pow8/pow64 — не вызовы pow.
+            if (i >= 4 && src.compare(i - 4, 4, "Safe") == 0) continue;
+            const char before = i > 0 ? src[i - 1] : ' ';
+            if (before == 'w' || (before >= '0' && before <= '9')) continue;
+            // Внутри самого powSafe вызов законен: там основание и
+            // подпирается.
+            const usize lineStart = src.rfind('\n', i);
+            const std::string line =
+                src.substr(lineStart + 1, src.find('\n', i) - lineStart - 1);
+            if (line.find("float powSafe") != std::string::npos) continue;
+            if (src.compare(i + 4, 4, "max(") == 0) continue;
+            ++bare;
+            if (bareWhere.empty()) bareWhere = name + ": " + line;
+        }
+    }
+    check(bare == 0, "ни один pow() не берёт основание, которое бывает нулём");
+    if (bare) std::printf("       первый такой: %s\n", bareWhere.c_str());
+
+    // Террейн — самый горячий шейдер и единственный, объявленный
+    // mediump. Там pow не должно быть вовсе: в половинной точности
+    // логарифм уводит результат в денормалы задолго до нуля.
+    for (const auto& [name, raw] : shaders) {
+        if (name != "voxel.frag") continue;
+        const std::string src = stripComments(raw);
+        check(src.find("pow(") == std::string::npos,
+              "в voxel.frag pow не вызывается вовсе");
+        check(src.find("pow8(sunAmt)") != std::string::npos,
+              "восьмая степень для тумана считается умножениями");
+        check(src.find("pow64(") != std::string::npos,
+              "и блик на воде — тоже");
+    }
+
+    // ---- 2. smoothstep с перевёрнутыми краями ----
+    //
+    // По спецификации результат не определён при edge0 >= edge1.
+    // Обычная реализация считает то, что задумано, но полагаться на
+    // это нельзя.
+    usize flipped = 0;
+    std::string flippedWhere;
+    for (const auto& [name, raw] : shaders) {
+        const std::string src = stripComments(raw);
+        for (usize i = src.find("smoothstep("); i != std::string::npos;
+             i = src.find("smoothstep(", i + 1)) {
+            const usize a = i + 11;
+            const usize comma = src.find(',', a);
+            if (comma == std::string::npos) continue;
+            const usize comma2 = src.find(',', comma + 1);
+            if (comma2 == std::string::npos) continue;
+            const std::string e0 = src.substr(a, comma - a);
+            const std::string e1 = src.substr(comma + 1, comma2 - comma - 1);
+            // Только числовые края: с выражениями порядок не проверить.
+            char* end0 = nullptr; char* end1 = nullptr;
+            const double v0 = std::strtod(e0.c_str(), &end0);
+            const double v1 = std::strtod(e1.c_str(), &end1);
+            bool num0 = end0 && *end0 == '\0' && !e0.empty();
+            bool num1 = end1 && *end1 == '\0' && !e1.empty();
+            // strtod остановится на пробеле — обрежем его.
+            auto trimmed = [](const std::string& t) {
+                usize b = t.find_first_not_of(" \t");
+                usize e = t.find_last_not_of(" \t");
+                return b == std::string::npos ? std::string() : t.substr(b, e - b + 1);
+            };
+            const std::string t0 = trimmed(e0), t1 = trimmed(e1);
+            double d0 = 0, d1 = 0;
+            num0 = !t0.empty() && (std::sscanf(t0.c_str(), "%lf", &d0) == 1)
+                   && t0.find_first_not_of("-+.0123456789eE") == std::string::npos;
+            num1 = !t1.empty() && (std::sscanf(t1.c_str(), "%lf", &d1) == 1)
+                   && t1.find_first_not_of("-+.0123456789eE") == std::string::npos;
+            (void)v0; (void)v1;
+            if (num0 && num1 && d0 >= d1) {
+                ++flipped;
+                if (flippedWhere.empty())
+                    flippedWhere = name + ": smoothstep(" + t0 + ", " + t1 + ", ...)";
+            }
+        }
+    }
+    check(flipped == 0, "ни одного smoothstep с edge0 >= edge1");
+    if (flipped) std::printf("       первый такой: %s\n", flippedWhere.c_str());
+
+    // ---- 3. Туман террейна считается в полной точности ----
+    //
+    // Именно здесь одна ошибка красит в свой цвет всю дальнюю половину
+    // кадра: цвет тумана подставляется всюду, где fogAmt перестал быть
+    // нулём, то есть сразу за началом тумана и до края мира.
+    const std::string vf = readSource("app/src/main/cpp/shaders/voxel.frag");
+    if (!vf.empty()) {
+        check(vf.find("highp float dist") != std::string::npos,
+              "расстояние до фрагмента — highp");
+        check(vf.find("highp float fogAmt") != std::string::npos,
+              "доля тумана — highp");
+        check(vf.find("highp float sunAmt") != std::string::npos,
+              "и подмешивание солнечного оттенка — тоже");
+        const usize m = vf.find("sunMix");
+        check(m != std::string::npos, "вес солнечного оттенка вынесен отдельно");
+        if (m != std::string::npos) {
+            const std::string line = vf.substr(m, vf.find(';', m) - m);
+            check(line.find("clamp(") != std::string::npos,
+                  "и ограничен своим диапазоном");
+        }
+        const usize o = vf.find("outColor = vec4(clamp(");
+        check(o != std::string::npos,
+              "итоговый цвет террейна ограничен [0,1]");
     }
 }
 
@@ -3436,6 +3603,7 @@ int main() {
     testNeighborArrivalTriggersRemesh();
     testNoPerVoxelGrain();
     testDistantGrassIsNotSubPixel();
+    testShadersAvoidUndefinedMath();
     testLodHasSingleSourceOfTruth();
     testResidentLodSurvivesRequest();
     testCoarseWaterIsStable();

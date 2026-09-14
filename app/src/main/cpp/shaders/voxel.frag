@@ -45,6 +45,26 @@ const vec3 FACE_N[6] = vec3[6](
 vec3 toLinear(vec3 c) { return c * c; }
 vec3 toSrgb(vec3 c)   { return sqrt(max(c, vec3(0.0))); }
 
+// Целые степени — умножениями, а НЕ через pow().
+//
+// pow(x, k) везде считается как exp2(k * log2(x)), и при x = 0 это
+// log2(0) = -inf. Что выйдет дальше — дело драйвера: на хосте ноль, на
+// устройстве вышел NaN. Дальше NaN проходил в цвет тумана, а toSrgb с
+// его max(c, 0.0) превращал NaN в ноль — и ВСЯ геометрия дальше начала
+// тумана становилась угольно-чёрной, ровно по границе, где fogAmt
+// перестаёт быть нулём. Ближе тумана картинка оставалась верной: там
+// NaN умножается на ноль, а в mediump это на устройстве даёт ноль, а
+// не NaN.
+//
+// Основания здесь обнуляются постоянно: max(dot(...), 0.0) равен нулю
+// для любой грани, отвёрнутой от солнца. Показатели 8, 64 и 4 — степени
+// двойки, значит четыре, шесть и две операции умножения, без единого
+// логарифма. Заодно это точнее и дешевле pow.
+highp float pow2(highp float x)  { return x * x; }
+highp float pow4(highp float x)  { highp float a = x * x; return a * a; }
+highp float pow8(highp float x)  { return pow2(pow4(x)); }
+highp float pow64(highp float x) { return pow8(pow8(x)); }
+
 // Плечо только для пересветов: до 0.75 не трогаем ничего, выше —
 // мягко подводим к единице по самому яркому каналу, чтобы солнце на
 // снегу не выбивало цвет в белое пятно.
@@ -192,25 +212,35 @@ void main() {
     // синее стекло, положенное на дно.
     if (vColor.a < 0.99) {
         highp vec3 V = normalize(cam.cameraPos.xyz - vWorldPos);
-        vec3 H = normalize(V + cam.sunDir.xyz);
-        float spec = pow(max(dot(N, H), 0.0), 64.0) * day * above;
+        highp vec3 H = normalize(V + cam.sunDir.xyz);
+        highp float spec = pow64(max(dot(N, H), 0.0)) * day * above;
         // Скользящий взгляд отражает сильнее — приближение Френеля.
-        float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0);
-        lit += sunTint * spec * 0.9;
-        lit += skyLin * fres * 0.35;
+        highp float fres = pow4(1.0 - clamp(dot(N, V), 0.0, 1.0));
+        lit += sunTint * float(spec) * 0.9;
+        lit += skyLin * float(fres) * 0.35;
     }
 
     lit = shoulder(lit);
 
     // ---- туман ----
-    highp vec3 toFrag = vWorldPos - cam.cameraPos.xyz;
-    float dist   = length(toFrag);
-    float fogAmt = clamp((dist - cam.fogParams.x) /
-                         max(cam.fogParams.y - cam.fogParams.x, 0.001), 0.0, 1.0);
+    //
+    // Весь расчёт — highp. Здесь расстояния в сотни блоков и разности
+    // близких больших чисел, и именно здесь одна ошибка красит в свой
+    // цвет всю дальнюю половину кадра.
+    highp vec3  toFrag = vWorldPos - cam.cameraPos.xyz;
+    highp float dist   = length(toFrag);
+    highp float fogAmt = clamp((dist - cam.fogParams.x) /
+                               max(cam.fogParams.y - cam.fogParams.x, 0.001),
+                               0.0, 1.0);
     fogAmt = fogAmt * fogAmt * (3.0 - 2.0 * fogAmt);
 
-    float sunAmt   = max(dot(normalize(toFrag), cam.sunDir.xyz), 0.0);
-    vec3  fogColor = mix(skyLin, sunTint, pow(sunAmt, 8.0) * 0.30 * above);
+    highp float sunAmt = max(dot(normalize(toFrag), cam.sunDir.xyz), 0.0);
+    // Вес подмешивания солнечного оттенка ограничен своим диапазоном.
+    // Он и так в нём по построению — но именно отсюда вылетало значение,
+    // покрасившее туман в чёрное, и цена страховки здесь нулевая.
+    highp float sunMix  = clamp(pow8(sunAmt) * 0.30 * above, 0.0, 1.0);
+    vec3        fogColor = mix(skyLin, sunTint, float(sunMix));
 
-    outColor = vec4(toSrgb(mix(lit, fogColor, fogAmt)), vColor.a);
+    outColor = vec4(clamp(toSrgb(mix(lit, fogColor, float(fogAmt))),
+                          0.0, 1.0), vColor.a);
 }

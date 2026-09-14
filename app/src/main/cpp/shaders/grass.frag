@@ -49,7 +49,11 @@ void main() {
     fogAmt = fogAmt * fogAmt * (3.0 - 2.0 * fogAmt);
 
     float sunAmt   = max(dot(normalize(toFrag), cam.sunDir.xyz), 0.0);
-    vec3  fogColor = mix(skyLin, sunTint, pow(sunAmt, 6.0) * 0.45 * above);
+    // Шестая степень — тремя умножениями, без логарифма: основание
+    // обнуляется на любой грани, отвёрнутой от солнца.
+    float s2 = sunAmt * sunAmt;
+    float s6 = s2 * s2 * s2;
+    vec3  fogColor = mix(skyLin, sunTint, clamp(s6 * 0.45 * above, 0.0, 1.0));
 
     outColor = vec4(toSrgb(mix(lit, fogColor, fogAmt)), 1.0);
 }
