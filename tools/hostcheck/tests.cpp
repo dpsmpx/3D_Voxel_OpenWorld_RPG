@@ -1788,6 +1788,86 @@ void testDistantWaterIsNotBlended() {
     }
 }
 
+void testLodSeamHasNoCracks() {
+    group("LOD: на стыке уровней нет сквозных щелей");
+
+    world::blocks();
+
+    // Два соседних чанка, оба — ровное плато с верхним вокселем на y=36.
+    //
+    // Грубый (8^3) округляет поверхность вверх до верха своей клетки,
+    // то есть до y=40. Мелкий оставляет настоящие 37. Между ними три
+    // блока. Грубый решает, строить ли на стыке стену, огрубляя соседа
+    // СВОИМ шагом: клетка соседа занята — значит стены не нужно. А
+    // сосед стоит ниже, и сквозь эти три блока видно небо.
+    auto flat = [](i32 cx) {
+        auto c = std::make_unique<world::Chunk>();
+        c->coord = { cx, 0, 0 };
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+            for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                for (i32 y = 0; y <= 36; ++y)
+                    c->setUnlocked(x, y, z, world::STONE);
+        return c;
+    };
+    auto A = flat(0);
+    auto B = flat(1);
+
+    world::ChunkNeighbors nbA; nbA.px = B.get();
+    world::ChunkNeighbors nbB; nbB.nx = A.get();
+
+    std::vector<world::Quad> qa, qb;
+    world::buildGreedyMesh(*A, nbA, qa, world::Lod::Eighth);
+    world::buildGreedyMesh(*B, nbB, qb, world::Lod::Full);
+
+    auto topFace = [](const std::vector<world::Quad>& qs) {
+        f32 best = -1.f;
+        for (const auto& q : qs) if (q.v0.face == 2) best = std::max(best, q.v0.pos.y);
+        return best;
+    };
+    const f32 topA = topFace(qa), topB = topFace(qb);
+    check(topA > topB, "грубый чанк стоит выше мелкого — есть что закрывать");
+
+    // Закрыт ли каждый блок по высоте гранью +X на плоскости стыка.
+    auto covered = [&](const std::vector<world::Quad>& qs, i32 z, i32 y) {
+        for (const auto& q : qs) {
+            if (q.v0.face != 0) continue;                       // +X
+            if ((i32)q.v0.pos.x != world::CHUNK_SIZE) continue;  // плоскость стыка
+            const glm::vec3 p1 = q.v0.pos + q.du + q.dv;
+            const i32 z0 = (i32)std::min(q.v0.pos.z, p1.z);
+            const i32 z1 = (i32)std::max(q.v0.pos.z, p1.z);
+            const i32 y0 = (i32)std::min(q.v0.pos.y, p1.y);
+            const i32 y1 = (i32)std::max(q.v0.pos.y, p1.y);
+            if (z >= z0 && z < z1 && y >= y0 && y < y1) return true;
+        }
+        return false;
+    };
+
+    i32 open = 0;
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 y = (i32)topB; y < (i32)topA; ++y)
+            if (!covered(qa, z, y)) ++open;
+    check(open == 0, "щель между ними закрыта стеной грубого чанка");
+    if (open) std::printf("       открыто блоков: %d из %d\n",
+                          open, (i32)(topA - topB) * world::CHUNK_SIZE);
+
+    // При совпадающих уровнях закрывать нечего, и лишней геометрии
+    // юбка тоже не должна приносить: она прячется внутри соседа.
+    std::vector<world::Quad> qsame;
+    world::buildGreedyMesh(*B, nbB, qsame, world::Lod::Eighth);
+    check(topFace(qsame) == topA, "на одном уровне поверхности совпадают");
+
+    // Источник: юбка привязана к проверке «клетка соседа заполнена
+    // целиком», а не к произвольной глубине.
+    const std::string cc = readSource("app/src/main/cpp/src/world/chunk.cpp");
+    if (!cc.empty()) {
+        check(cc.find("cellFullySolid") != std::string::npos,
+              "у мешера есть проверка полной заполненности клетки соседа");
+        const usize u = cc.find("if (outerSlice && !cellFullySolid(n)) shouldEmit = true;");
+        check(u != std::string::npos,
+              "и юбка строится ровно по ней, на крайнем слое чанка");
+    }
+}
+
 // ------------------------------------------------------------
 // Порядок смешивания воды
 // ------------------------------------------------------------
@@ -3720,6 +3800,7 @@ int main() {
     testResidentLodSurvivesRequest();
     testCoarseWaterIsStable();
     testCoarseWaterDoesNotFloat();
+    testLodSeamHasNoCracks();
     testDistantWaterIsNotBlended();
     testWaterSortedByWaterCenter();
     testUiTapSurvivesRedraw();
