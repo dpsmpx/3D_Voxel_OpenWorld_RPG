@@ -1163,10 +1163,11 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
             {
                 Rect r{ innerX, y, innerW, rowH };
                 int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
-                    s.vsync = !s.vsync; changeCb();
+                    s.unlimitedFps = !s.unlimitedFps; changeCb();
                 });
                 (void)idx;
-                toggleWidget(ui_, r, &s.vsync, T(StrKey::Settings_Vsync));
+                toggleWidget(ui_, r, &s.unlimitedFps,
+                             T(StrKey::Settings_UnlimitedFps));
                 y += rowH + rowGap;
             }
             break;

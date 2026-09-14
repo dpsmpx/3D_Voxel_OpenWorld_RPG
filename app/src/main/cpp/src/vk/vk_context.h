@@ -64,6 +64,22 @@ public:
     /// кадра. Ноль означает, что устройство меток не умеет.
     f32              lastGpuMs() const { return lastGpuMs_; }
     bool             gpuTimingAvailable() const { return timestampPeriod_ > 0.f; }
+
+    /// Ограничивать ли частоту кадров вертикальной синхронизацией.
+    ///
+    /// Настройка была в файле и в меню, но до свопчейна не доходила:
+    /// режим показа стоял в коде намертво (FIFO), и тумблер не делал
+    /// ничего. Со снятым ограничением видно, сколько кадров машина
+    /// выдаёт на самом деле, — а без этого числа нельзя понять,
+    /// упёрлись мы в GPU или просто ждём экран.
+    ///
+    /// Смена вступает в силу пересозданием цепочки: режим показа —
+    /// её свойство, менять его на лету нельзя.
+    void setVsync(bool on);
+    bool vsync() const { return vsyncWanted_; }
+    /// Какой режим показа выбран на самом деле. Устройство может не
+    /// уметь того, что мы просим.
+    VkPresentModeKHR presentMode() const { return presentMode_; }
     /// Последняя ошибка vkQueuePresentKHR (VK_SUCCESS, если её не было).
     VkResult         lastPresentResult() const { return lastPresent_; }
     /// Сколько раз пересоздавалась цепочка показа. Здоровое число —
@@ -126,6 +142,9 @@ private:
     bool createSurface(ANativeWindow* w);
     bool pickPhysicalDevice();
     bool createLogicalDevice();
+    /// Режим показа по настройке vsyncWanted_; заодно запоминает, что
+    /// получилось, в presentMode_.
+    VkPresentModeKHR choosePresentMode();
     bool createSwapchain();
     bool createImageViews();
     bool createDepthResources();
@@ -199,6 +218,10 @@ private:
     std::vector<VkFence>     imagesInFlight_;   ///< чужие заборы, не наши
     u32                      currentFrame_ = 0;
     u64                      framesPresented_ = 0;
+
+    /// Просим ли ограничение по экрану и что получилось на самом деле.
+    bool                     vsyncWanted_ = true;
+    VkPresentModeKHR         presentMode_ = VK_PRESENT_MODE_FIFO_KHR;
 
     // ---- Метки времени GPU ----
     // Пул на две метки (начало и конец) для каждого кадра в работе.

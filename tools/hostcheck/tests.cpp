@@ -35,6 +35,8 @@
 #include "world/chunk_manager.h"
 #include "render/mesh_builder.h"
 #include "render/chunk_renderer.h"
+#include "core/clipboard.h"
+#include "config/settings.h"
 #include "render/camera.h"
 #include "render/instanced_renderer.h"
 #include "vk/vk_buffer.h"
@@ -2222,6 +2224,219 @@ void testFramePassOrder() {
     if (!skyVert.empty())
         check(skyVert.find("uv * 2.0 - 1.0, 1.0, 1.0") != NONE,
               "небо лежит на дальней плоскости (z = 1)");
+}
+
+// ------------------------------------------------------------
+// Настройка частоты кадров доходит до цепочки показа
+//
+// Тумблер уже был: он лежал в структуре настроек, сохранялся в файл,
+// показывался в меню — и НЕ ДЕЛАЛ НИЧЕГО. Режим показа стоял в
+// createSwapchain намертво (VK_PRESENT_MODE_FIFO_KHR), и переключение
+// в меню меняло только строчку в settings.cfg.
+//
+// Это ровно тот класс поломки, который не видно ни в одном журнале:
+// всё «работает», настройка сохраняется, а поведение не меняется.
+// Поэтому проверяется не наличие поля, а цепочка целиком: значение по
+// умолчанию, запись и чтение файла, чтение старого ключа — и по
+// исходнику то, что режим показа выбирается, а не зашит.
+// ------------------------------------------------------------
+void testFrameRateLimitSetting() {
+    group("настройки: ограничение частоты кадров доходит до цепочки");
+
+    // 1. По умолчанию ограничения нет: пока частота упирается в экран,
+    //    по ней нельзя сказать ничего о запасе.
+    {
+        config::Settings s;
+        check(s.unlimitedFps, "по умолчанию ограничения кадров нет");
+    }
+
+    // 2. Значение переживает запись и чтение.
+    const std::string path = "build/hostcheck/settings_fps.cfg";
+    {
+        config::Settings s;
+        s.unlimitedFps = false;
+        check(s.save(path), "настройки записаны");
+
+        config::Settings back;
+        check(back.load(path), "настройки прочитаны");
+        check(!back.unlimitedFps, "выключенное состояние дошло целым");
+    }
+    {
+        config::Settings s;
+        s.unlimitedFps = true;
+        s.save(path);
+        config::Settings back;
+        back.unlimitedFps = false;
+        back.load(path);
+        check(back.unlimitedFps, "включённое состояние дошло целым");
+    }
+
+    // 3. Старый ключ из уже лежащих на диске файлов. Он был обратным
+    //    по смыслу, и прочитать его надо обратным же образом — иначе
+    //    прежний выбор игрока молча перевернётся.
+    {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        check(f != nullptr, "файл со старым ключом создан");
+        if (f) {
+            std::fputs("[Render]\nvsync = true\n", f);
+            std::fclose(f);
+            config::Settings s;
+            s.unlimitedFps = true;
+            check(s.load(path), "файл со старым ключом прочитан");
+            check(!s.unlimitedFps,
+                  "старое vsync=true означает, что ограничение нужно");
+        }
+    }
+    {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        if (f) {
+            std::fputs("[Render]\nvsync = false\n", f);
+            std::fclose(f);
+            config::Settings s;
+            s.unlimitedFps = false;
+            s.load(path);
+            check(s.unlimitedFps, "а старое vsync=false — что не нужно");
+        }
+    }
+
+    // 3a. Пробелы вокруг ключа и значения не значат ничего.
+    //
+    //     Раньше значили: разбор не обрезал их, и «debug_scene = true»
+    //     давало ключ «debug_scene » с пробелом на конце, который не
+    //     совпадал ни с чем. Файл читался молча, настройка не
+    //     применялась. Движок пишет файл без пробелов, поэтому на
+    //     своих же файлах это не всплывало никогда — только на тех,
+    //     что правят руками. А именно так и описан в
+    //     docs/RENDER_AUDIT.md способ включить диагностическую сцену.
+    {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        check(f != nullptr, "файл с пробелами создан");
+        if (f) {
+            std::fputs("# комментарий\n"
+                       "[Render]\n"
+                       "  view_distance  =  9  \n"
+                       "\tunlimited_fps\t=\tfalse\t\n",
+                       f);
+            std::fclose(f);
+            config::Settings s;
+            s.viewDistance = 7;
+            s.unlimitedFps = true;
+            check(s.load(path), "файл с пробелами прочитан");
+            check(s.viewDistance == 9, "пробелы вокруг числа не мешают");
+            check(!s.unlimitedFps, "и вокруг тумблера тоже");
+        }
+    }
+
+    // 3b. Заголовок раздела и комментарий — не пары «ключ-значение».
+    {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        if (f) {
+            std::fputs("[Render]\n# view_distance = 4\n; view_distance = 5\n", f);
+            std::fclose(f);
+            config::Settings s;
+            s.viewDistance = 8;
+            s.load(path);
+            check(s.viewDistance == 8,
+                  "закомментированный ключ не применяется");
+        }
+    }
+
+    std::remove(path.c_str());
+
+    // 4. И главное: цепочка показа берёт режим из настройки, а не из
+    //    зашитой константы.
+    const std::string vk  = readSource("app/src/main/cpp/src/vk/vk_context.cpp");
+    const std::string mn  = readSource("app/src/main/cpp/src/main.cpp");
+    const std::string uis = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (vk.empty() || mn.empty() || uis.empty()) {
+        check(true, "исходники не найдены, проверка пропущена");
+        return;
+    }
+    check(vk.find("ci.presentMode      = choosePresentMode();") != std::string::npos,
+          "режим показа выбирается, а не зашит");
+    check(vk.find("ci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;") == std::string::npos,
+          "зашитого FIFO не осталось");
+    check(vk.find("VK_PRESENT_MODE_IMMEDIATE_KHR") != std::string::npos,
+          "без ограничения просим IMMEDIATE — он и показывает максимум");
+    check(mn.find("vk.setVsync(!s.unlimitedFps)") != std::string::npos,
+          "смена тумблера доходит до контекста");
+    check(mn.find("vk.setVsync(!cfg::settingsConst().unlimitedFps)") != std::string::npos,
+          "и применяется ещё до создания первой цепочки");
+    check(uis.find("s.unlimitedFps = !s.unlimitedFps") != std::string::npos,
+          "тумблер в меню переключает именно её");
+}
+
+// ------------------------------------------------------------
+// Журнал в буфер обмена: срезка длинного файла
+//
+// Сама отправка — это JNI, её на хосте не выполнить. А вот подготовка
+// текста — обычный код, и ошибка в ней даёт не отказ, а мусор в
+// буфере: заметишь только тогда, когда журнал понадобится, то есть в
+// самый неподходящий момент.
+//
+// Ограничение не выдумано: транзакция Binder — около мегабайта на весь
+// процесс, и журнал длинной сессии перерастает его легко.
+// ------------------------------------------------------------
+void testClipboardLogTrimming() {
+    group("журнал: подготовка текста для буфера обмена");
+
+    const std::string path = "build/hostcheck/cliptest.log";
+
+    // Короткий файл уходит целиком.
+    {
+        const std::string body = "======== запуск ========\nI: строка\nI: ещё строка\n";
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        check(f != nullptr, "короткий файл создан");
+        if (f) { std::fwrite(body.data(), 1, body.size(), f); std::fclose(f); }
+        const std::string got = sys::clipboardTextFromFile(path.c_str());
+        check(got == body, "короткий журнал уходит целиком");
+    }
+
+    // Длинный — началом и хвостом, и всё вместе влезает в предел.
+    {
+        const usize total = sys::CLIPBOARD_MAX_BYTES * 3;
+        std::string body;
+        body.reserve(total);
+        // Каждая строка пронумерована: по номерам видно, что взяты
+        // именно начало и хвост, а не что попало.
+        for (u64 i = 0; body.size() < total; ++i) {
+            char line[64];
+            std::snprintf(line, sizeof(line), "I: строка %llu\n",
+                          (unsigned long long)i);
+            body += line;
+        }
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        check(f != nullptr, "длинный файл создан");
+        if (f) { std::fwrite(body.data(), 1, body.size(), f); std::fclose(f); }
+
+        const std::string got = sys::clipboardTextFromFile(path.c_str());
+        check(!got.empty(), "из длинного журнала что-то взято");
+        check(got.size() < body.size(), "взято меньше, чем есть");
+        // Предел плюс отметка о пропуске — она короткая и постоянная.
+        check(got.size() <= sys::CLIPBOARD_MAX_BYTES + 256,
+              "взятое укладывается в предел транзакции");
+
+        check(got.compare(0, 24, body.compare(0, 24, got, 0, 24) == 0
+                                     ? got.substr(0, 24) : std::string()) == 0,
+              "текст начинается с начала файла");
+        check(got.rfind("пропущено") != std::string::npos,
+              "о пропуске середины сказано прямо");
+        // Хвост файла обязан быть хвостом текста: именно там то, на
+        // чём всё кончилось.
+        const std::string lastLines = body.substr(body.size() - 64);
+        check(got.size() >= lastLines.size() &&
+              got.compare(got.size() - lastLines.size(), lastLines.size(),
+                          lastLines) == 0,
+              "и заканчивается концом файла");
+    }
+
+    // Нет файла — нет текста, и это не падение.
+    check(sys::clipboardTextFromFile("build/hostcheck/нет-такого.log").empty(),
+          "отсутствующий файл даёт пустой текст");
+    check(sys::clipboardTextFromFile(nullptr).empty(),
+          "нулевой путь тоже");
+
+    std::remove(path.c_str());
 }
 
 // ------------------------------------------------------------
@@ -4465,6 +4680,8 @@ int main() {
     testSurfaceHeightCacheMatchesGenerator();
     testUnloadAcceptsTighterRadius();
     testFramePassOrder();
+    testFrameRateLimitSetting();
+    testClipboardLogTrimming();
     testCoarseWaterIsStable();
     testCoarseWaterDoesNotFloat();
     testLodSeamHasNoCracks();

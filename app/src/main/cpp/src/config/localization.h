@@ -58,7 +58,7 @@ enum class StrKey : u16 {
     Settings_UiScale, Settings_UiOpacity, Settings_ShowFps,
     Settings_ShowDebug, Settings_Master, Settings_Music, Settings_Sfx,
     Settings_Language, Settings_Autosave, Settings_AutosaveInterval,
-    Settings_ViewDistance, Settings_Vsync,
+    Settings_ViewDistance, Settings_UnlimitedFps,
 
     // --- Уведомления ---
     Notif_LevelUp, Notif_Crafted, Notif_Saved, Notif_Loaded,
