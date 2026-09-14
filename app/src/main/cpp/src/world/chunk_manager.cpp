@@ -27,6 +27,16 @@ ChunkManager::ChunkManager(u64 seed, i32 viewDistance)
 {}
 
 ChunkManager::~ChunkManager() {
+    // ПЕРВЫМ делом объявляем себя умершими.
+    //
+    // Дальше мы всё равно попробуем дождаться задач, но дождаться
+    // получается не всегда: планировщик могли остановить раньше нас,
+    // а задачи могли не уложиться в отведённые пять секунд. На этих
+    // двух путях деструктор идёт дальше, не дождавшись, — и раньше
+    // оставлял в очереди задачи с сырым указателем на себя. Теперь
+    // они увидят снятый флаг и выйдут, ничего не тронув.
+    host_->alive.store(false, std::memory_order_release);
+
     // Задачи держат сырой указатель на менеджер, поэтому дожидаемся
     // их завершения. Чанки они держат через shared_ptr и переживут
     // очистку карты, но сам ChunkManager — нет.
@@ -43,17 +53,19 @@ ChunkManager::~ChunkManager() {
     // Такой порядок (остановить планировщик, потом разрушить мир)
     // считается ошибкой вызывающего, поэтому о нём говорим вслух.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (jobsInFlight_.load(std::memory_order_acquire) > 0) {
+    while (host_->inFlight.load(std::memory_order_acquire) > 0) {
         if (!jobs::gJobs.running()) {
-            LOGE("ChunkManager разрушается при остановленном планировщике: "
+            // Уже не опасно — задачи выйдут по снятому флагу, — но
+            // всё ещё означает, что мир разрушают после планировщика.
+            LOGW("ChunkManager разрушается при остановленном планировщике: "
                  "%u задач не выполнится никогда",
-                 jobsInFlight_.load(std::memory_order_acquire));
+                 host_->inFlight.load(std::memory_order_acquire));
             break;
         }
         if (std::chrono::steady_clock::now() > deadline) {
             LOGE("ChunkManager: фоновые задачи не завершились за 5 с, "
                  "осталось %u — продолжаем разрушение",
-                 jobsInFlight_.load(std::memory_order_acquire));
+                 host_->inFlight.load(std::memory_order_acquire));
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -100,8 +112,8 @@ void ChunkManager::enqueueGenerate(ChunkCoord coord) {
     auto chunk = findChunk(coord.x, coord.z);
     if (!chunk) return;
 
-    auto* ctx = new JobCtx{ this, std::move(chunk), coord, 0, 0, 0 };
-    jobsInFlight_.fetch_add(1, std::memory_order_acq_rel);
+    auto* ctx = new JobCtx{ host_, this, std::move(chunk), coord, 0, 0, 0 };
+    host_->inFlight.fetch_add(1, std::memory_order_acq_rel);
     jobs::gJobs.submit(&ChunkManager::jobGenerate, ctx);
 }
 
@@ -123,8 +135,8 @@ void ChunkManager::enqueueMesh(ChunkCoord coord, u8 lod) {
     // состояние более нового запроса.
     const u64 seq  = chunk->lodSeq[want].fetch_add(1, std::memory_order_acq_rel) + 1;
 
-    auto* ctx = new JobCtx{ this, std::move(chunk), coord, v, want, seq };
-    jobsInFlight_.fetch_add(1, std::memory_order_acq_rel);
+    auto* ctx = new JobCtx{ host_, this, std::move(chunk), coord, v, want, seq };
+    host_->inFlight.fetch_add(1, std::memory_order_acq_rel);
     jobs::gJobs.submit(&ChunkManager::jobMesh, ctx);
 }
 
@@ -142,8 +154,6 @@ void ChunkManager::enqueueMeshCurrentLod(ChunkCoord coord) {
 
 void ChunkManager::jobGenerate(void* data) {
     std::unique_ptr<JobCtx> ctx(static_cast<JobCtx*>(data));
-    ChunkManager* mgr = ctx->mgr;
-    Chunk* c = ctx->chunk.get();
 
     // Счётчик снимаем последним — как и в jobMesh. Раньше он снимался
     // сразу после генерации вокселей, а дальше задача ещё дважды
@@ -151,10 +161,20 @@ void ChunkManager::jobGenerate(void* data) {
     // мешей соседям. Если эта задача была последней, деструктор
     // менеджера в этот момент переставал ждать и уничтожал его — и
     // обращения уходили в освобождённую память.
+    //
+    // Счётчик лежит в JobHost, а не в менеджере: снимать его мы будем
+    // уже после того, как менеджера может не быть.
     struct InFlight {
         std::atomic<u32>& n;
         ~InFlight() { n.fetch_sub(1, std::memory_order_acq_rel); }
-    } guard{ mgr->jobsInFlight_ };
+    } guard{ ctx->host->inFlight };
+
+    // Менеджера может уже не быть: задача пролежала в очереди дольше,
+    // чем прожил мир. Трогать mgr до этой проверки нельзя.
+    if (!ctx->host->alive.load(std::memory_order_acquire)) return;
+
+    ChunkManager* mgr = ctx->mgr;
+    Chunk* c = ctx->chunk.get();
 
     if (c->removed.load(std::memory_order_acquire)) return;
 
@@ -172,6 +192,15 @@ void ChunkManager::jobGenerate(void* data) {
             buildMinimalScene(*c);
         else
             generateChunkVoxels(*c, terrain, columns.data(), mgr->seed_);
+
+        // Высоты поверхности — из тех же колонок, что уже посчитаны.
+        // Даром: колонки всё равно в руках, а миникарте и траве иначе
+        // придётся пересчитывать шум по каждой точке. Индексация та
+        // же, что у computeChunkColumns: x * CHUNK_SIZE + z.
+        for (i32 x = 0; x < CHUNK_SIZE; ++x)
+            for (i32 z = 0; z < CHUNK_SIZE; ++z)
+                c->surfaceY[(usize)x * CHUNK_SIZE + z] =
+                    (i16)columns[(usize)x * CHUNK_SIZE + z].surface;
     }
 
     c->version.fetch_add(1, std::memory_order_release);
@@ -202,13 +231,18 @@ void ChunkManager::jobGenerate(void* data) {
 
 void ChunkManager::jobMesh(void* data) {
     std::unique_ptr<JobCtx> ctx(static_cast<JobCtx*>(data));
-    ChunkManager* mgr = ctx->mgr;
-    Chunk* c = ctx->chunk.get();
 
     struct InFlight {
         std::atomic<u32>& n;
         ~InFlight() { n.fetch_sub(1, std::memory_order_acq_rel); }
-    } guard{ mgr->jobsInFlight_ };
+    } guard{ ctx->host->inFlight };
+
+    // Как и в jobGenerate: пока не убедились, что менеджер жив, его
+    // указателя для нас не существует.
+    if (!ctx->host->alive.load(std::memory_order_acquire)) return;
+
+    ChunkManager* mgr = ctx->mgr;
+    Chunk* c = ctx->chunk.get();
 
     // Уровень задачи выбран при постановке и здесь уже не обсуждается.
     const u8 lod = ctx->lod & 3;
@@ -385,7 +419,6 @@ u8 ChunkManager::lodForChunk(ChunkCoord c, u8 current) const {
 }
 
 void ChunkManager::update(const glm::vec3& playerPos) {
-    ++frameCounter_;
     if (!cameraKnown_.load(std::memory_order_acquire)) {
         cameraX_.store(playerPos.x, std::memory_order_relaxed);
         cameraY_.store(playerPos.y, std::memory_order_relaxed);
@@ -394,28 +427,63 @@ void ChunkManager::update(const glm::vec3& playerPos) {
     const i32 pcx = (i32)std::floor(playerPos.x / (f32)CHUNK_SIZE);
     const i32 pcz = (i32)std::floor(playerPos.z / (f32)CHUNK_SIZE);
 
-    for (i32 dz = -viewDistance_; dz <= viewDistance_; ++dz) {
-        for (i32 dx = -viewDistance_; dx <= viewDistance_; ++dx) {
-            if (dx*dx + dz*dz > viewDistance_*viewDistance_) continue;
-            const ChunkCoord c{ pcx + dx, pcz + dz };
-            {
-                std::shared_lock lk(chunksMtx_);
-                if (chunks_.count(c)) {
-                    std::lock_guard lk2(lruMtx_);
-                    lastAccess_[c] = frameCounter_;
-                    continue;
-                }
-            }
-            getChunk(c.x, c.z);
+    rebuildStreamOrder();
+
+    // Чанки заводятся по бюджету на кадр и строго от ближнего к
+    // дальнему.
+    //
+    // Раньше здесь заводились ВСЕ недостающие чанки круга разом, в
+    // порядке растрового обхода квадрата. На старте и после любого
+    // заметного перемещения это два десятка мегабайт свежей памяти в
+    // одном кадре: чанк — четверть мегабайта вокселей, и каждую
+    // страницу ядро обнуляет при первом касании. Замер на хосте:
+    // двести чанков, созданных и удержанных, — шестнадцать с
+    // половиной миллисекунд, и ровно столько же показывал провал
+    // world.update в долгой сессии (см. tools/soak). На телефоне
+    // память медленнее.
+    //
+    // Порядок важен не меньше бюджета: под бюджетом растровый обход
+    // заводил бы сперва угол квадрата, а чанк под ногами игрока —
+    // последним. Обход идёт по возрастанию расстояния, поэтому мир
+    // нарастает вокруг игрока, а не от угла.
+    u32 created = 0;
+    for (const auto& off : streamOrder_) {
+        const ChunkCoord c{ pcx + off.dx, pcz + off.dz };
+        {
+            std::shared_lock lk(chunksMtx_);
+            if (chunks_.count(c)) continue;
         }
+        if (created >= MAX_NEW_CHUNKS_PER_UPDATE) break;   // остальные — в следующем кадре
+        getChunk(c.x, c.z);
+        ++created;
     }
 }
 
-std::vector<ChunkCoord> ChunkManager::collectUnloadCandidates(const glm::vec3& playerPos) {
+void ChunkManager::rebuildStreamOrder() {
+    if (streamOrderFor_ == viewDistance_) return;
+    streamOrderFor_ = viewDistance_;
+    streamOrder_.clear();
+    const i32 vd = viewDistance_;
+    streamOrder_.reserve((usize)(2 * vd + 1) * (usize)(2 * vd + 1));
+    for (i32 dz = -vd; dz <= vd; ++dz)
+        for (i32 dx = -vd; dx <= vd; ++dx) {
+            const i32 d2 = dx * dx + dz * dz;
+            if (d2 > vd * vd) continue;
+            streamOrder_.push_back({ dx, dz, d2 });
+        }
+    std::sort(streamOrder_.begin(), streamOrder_.end(),
+              [](const StreamOffset& a, const StreamOffset& b) {
+                  return a.distSq < b.distSq;
+              });
+}
+
+std::vector<ChunkCoord> ChunkManager::collectUnloadCandidates(const glm::vec3& playerPos,
+                                                             i32 radiusChunks) {
     std::vector<ChunkCoord> out;
     const i32 pcx = (i32)std::floor(playerPos.x / (f32)CHUNK_SIZE);
     const i32 pcz = (i32)std::floor(playerPos.z / (f32)CHUNK_SIZE);
-    const i32 R = viewDistance_ + 2;   // гистерезис, чтобы не мигали на границе
+    // Гистерезис, чтобы чанки не мигали на границе круга.
+    const i32 R = radiusChunks >= 0 ? radiusChunks : viewDistance_ + 2;
 
     std::shared_lock lk(chunksMtx_);
     for (auto& [coord, chunk] : chunks_) {
@@ -438,10 +506,6 @@ void ChunkManager::removeChunks(const std::vector<ChunkCoord>& coords) {
             doomed.push_back(std::move(it->second));
             chunks_.erase(it);
         }
-    }
-    {
-        std::lock_guard lk2(lruMtx_);
-        for (const auto& c : coords) lastAccess_.erase(c);
     }
     {
         // Задача меширования могла успеть положить чанк в очередь выгрузки.
@@ -531,6 +595,16 @@ u16 VoxelReader::at(i32 wx, i32 wy, i32 wz) {
 
 bool VoxelReader::isSolid(i32 wx, i32 wy, i32 wz) {
     return blocks().isSolid(at(wx, wy, wz));
+}
+
+i32 VoxelReader::surfaceAt(i32 wx, i32 wz) {
+    const i32 cx = wx >> 5, cz = wz >> 5;
+    if (!valid_ || cx != cx_ || cz != cz_) reopen(cx, cz);
+    // Чанка ещё нет — считаем как раньше. Это честный запасной путь,
+    // а не приблизительный: генератор и есть источник этого числа.
+    if (!haveChunk_) return mgr_->generator().surfaceHeight(wx, wz);
+    const i32 lx = wx & 31, lz = wz & 31;
+    return (i32)chunk_->surfaceY[(usize)lx * CHUNK_SIZE + lz];
 }
 
 u16 ChunkManager::getVoxel(i32 wx, i32 wy, i32 wz) const {

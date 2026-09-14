@@ -134,6 +134,18 @@ int main(int argc, char** argv) {
     auto scratch = std::make_unique<world::Chunk>();
     scratch->coord = { 7, 0, -3 };
 
+    // Сам объект чанка, до всякой генерации. Чанк — это массив
+    // вокселей 32x128x32 по два байта, то есть четверть мегабайта,
+    // и при создании он обнуляется весь. Потоковая загрузка
+    // создаёт их пачками по две сотни за кадр.
+    std::printf("  (sizeof(Chunk) = %.0f КБ)\n", (double)sizeof(world::Chunk) / 1024.0);
+    bench("создание пустого чанка",
+          [&] {
+              auto c = std::make_shared<world::Chunk>();
+              // Чтобы компилятор не выбросил создание целиком.
+              c->coord.x = (i32)(usize)c.get();
+          });
+
     bench("колонки чанка (32x32)",
           [&] { world::computeChunkColumns(gen, 7, -3, cols); },
           "колонка", 32.0 * 32.0);
@@ -190,12 +202,22 @@ int main(int argc, char** argv) {
     // сгенерирован», и замер покажет не то, что происходит в игре.
     jobs::gJobs.start(4);
     {
-        world::ChunkManager mgr(seed, 2);
+        // Радиус 3 чанка — чтобы под миникартой (128x128 блоков,
+        // то есть четыре чанка по стороне) лежал настоящий мир, а не
+        // пустота. Иначе чтения уходят по короткому пути «чанка нет»,
+        // и замер покажет не ту работу, что в игре.
+        world::ChunkManager mgr(seed, 3);
         // Ждём настоящих данных, а не просто записей в карте.
-        for (int i = 0; i < 600; ++i) {
+        // Потоковая загрузка заводит чанки по бюджету на кадр, так
+        // что кадров нужно много — как и в игре.
+        for (int i = 0; i < 900; ++i) {
             mgr.update({ 8.f, 70.f, 8.f });
-            if (mgr.getVoxel(8, world::CHUNK_SIZE_Y - 1, 8) == world::AIR &&
-                mgr.getVoxel(8, 0, 8) == world::BEDROCK) break;
+            const bool centreReady =
+                mgr.getVoxel(8, world::CHUNK_SIZE_Y - 1, 8) == world::AIR &&
+                mgr.getVoxel(8, 0, 8) == world::BEDROCK;
+            if (centreReady && mgr.isReadyAt(-64, -64) && mgr.isReadyAt(64, 64) &&
+                mgr.pendingJobs() == 0)
+                break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         std::printf("    (чанков в памяти: %zu)\n", mgr.loadedChunks());
@@ -269,7 +291,37 @@ int main(int argc, char** argv) {
         // (то есть полный расчёт колонки по шуму) и вертикальный
         // проход по вокселям.
         std::printf("\nминикарта\n");
-        bench("полная перерисовка 128x128",
+        bench("полная перерисовка 128x128 (как сейчас)",
+              [&] {
+                  u32 s2 = 0;
+                  world::VoxelReader rdm(mgr);
+                  for (i32 py = 0; py < 128; ++py)
+                      for (i32 px = 0; px < 128; ++px) {
+                          const i32 wx = px - 64, wz = py - 64;
+                          const i32 sy = rdm.surfaceAt(wx, wz);
+                          for (i32 y = sy + 4; y >= (sy - 8 < 1 ? 1 : sy - 8); --y) {
+                              const u16 b = rdm.at(wx, y, wz);
+                              if (b != world::AIR && b != world::WATER) { s2 += b; break; }
+                          }
+                      }
+                  sink = s2;
+              },
+              "пиксель", 128.0 * 128.0);
+
+        bench("высоты из чанка 128x128",
+              [&] {
+                  u32 s2 = 0;
+                  world::VoxelReader rdm(mgr);
+                  for (i32 py = 0; py < 128; ++py)
+                      for (i32 px = 0; px < 128; ++px)
+                          s2 += (u32)rdm.surfaceAt(px - 64, py - 64);
+                  sink = s2;
+              },
+              "пиксель", 128.0 * 128.0);
+
+        // Как было до кэша высот: тот же проход, но высота считается
+        // генератором заново на каждый пиксель.
+        bench("полная перерисовка 128x128 (было: высота от генератора)",
               [&] {
                   u32 s2 = 0;
                   world::VoxelReader rdm(mgr);
@@ -286,7 +338,7 @@ int main(int argc, char** argv) {
               },
               "пиксель", 128.0 * 128.0);
 
-        bench("только высоты поверхности 128x128",
+        bench("было: только высоты от генератора 128x128",
               [&] {
                   u32 s2 = 0;
                   for (i32 py = 0; py < 128; ++py)

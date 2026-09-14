@@ -1824,6 +1824,298 @@ void testMeshJobBuildsRequestedLod() {
 }
 
 // ------------------------------------------------------------
+// Потоковая загрузка: бюджет на кадр и порядок от ближнего
+//
+// Чанк — это четверть мегабайта вокселей, и дорого в нём не
+// выделение памяти (четыре микросекунды), а первое касание страниц:
+// их обнуляет ядро. Замер: двести созданных и УДЕРЖАННЫХ чанков —
+// шестнадцать с половиной миллисекунд; двести созданных и тут же
+// отпущенных — одна, потому что аллокатор отдаёт тот же блок.
+//
+// update() заводил весь недостающий круг разом, и на старте и после
+// любого рывка это был ровно такой провал: долгая сессия
+// (tools/soak) показывала пик world.update в 19-21 мс на каждом
+// перемещении, и ни на чём другом.
+//
+// Проверяется не время — оно на разных машинах разное, — а два
+// свойства, из которых оно следует: за кадр заводится не больше
+// бюджета, и заводится всегда ближнее.
+// ------------------------------------------------------------
+void testChunkStreamingIsBudgeted() {
+    group("мир: потоковая загрузка по бюджету, от ближнего к дальнему");
+
+    world::blocks();
+    const i32 VD = 8;
+    world::ChunkManager mgr(0xA1B2C3D4ULL, VD);
+
+    // Один кадр на пустом мире.
+    mgr.update({ 4.f, 70.f, 4.f });
+    const usize afterOne = mgr.loadedChunks();
+
+    check(afterOne > 0, "за первый кадр что-то заводится");
+    check(afterOne <= 16,
+          "за кадр заводится горстка чанков, а не весь круг");
+    // Круг радиусом 8 — это больше двух сотен чанков. Если бы бюджета
+    // не было, первый же кадр завёл бы их все.
+    check(afterOne < 100, "весь круг за один кадр не заводится");
+
+    check(mgr.findChunk(0, 0) != nullptr,
+          "чанк под игроком заведён в первом же кадре");
+
+    // Главное свойство: всё заведённое ближе всего незаведённого.
+    // Именно оно означает «мир нарастает вокруг игрока», и именно оно
+    // ломается, если обход вернуть к растровому.
+    {
+        i32 worstCreated = -1, bestMissing = 1 << 30;
+        for (i32 dz = -VD; dz <= VD; ++dz)
+            for (i32 dx = -VD; dx <= VD; ++dx) {
+                const i32 d2 = dx * dx + dz * dz;
+                if (d2 > VD * VD) continue;
+                const bool have = mgr.findChunk(dx, dz) != nullptr;
+                if (have) { if (d2 > worstCreated) worstCreated = d2; }
+                else      { if (d2 < bestMissing)  bestMissing  = d2; }
+            }
+        check(worstCreated >= 0, "хоть один чанк заведён");
+        check(worstCreated <= bestMissing,
+              "самый дальний заведённый не дальше самого ближнего незаведённого");
+    }
+
+    // За много кадров круг наполняется целиком — бюджет откладывает
+    // работу, а не отменяет её.
+    for (int i = 0; i < 400; ++i) mgr.update({ 4.f, 70.f, 4.f });
+    {
+        usize inCircle = 0, have = 0;
+        for (i32 dz = -VD; dz <= VD; ++dz)
+            for (i32 dx = -VD; dx <= VD; ++dx) {
+                if (dx * dx + dz * dz > VD * VD) continue;
+                ++inCircle;
+                if (mgr.findChunk(dx, dz)) ++have;
+            }
+        check(have == inCircle, "за несколько кадров круг наполняется весь");
+        check(inCircle > 150, "круг и правда большой (иначе проверка ни о чём)");
+    }
+
+    // Установившийся режим: заводить нечего, и update() ничего не
+    // создаёт. Иначе бюджет превратился бы в вечную подкачку.
+    const usize settled = mgr.loadedChunks();
+    mgr.update({ 4.f, 70.f, 4.f });
+    check(mgr.loadedChunks() == settled,
+          "на месте update() ничего не заводит заново");
+}
+
+// ------------------------------------------------------------
+// Высота поверхности берётся из чанка, а не считается заново
+//
+// TerrainGenerator::surfaceHeight — это полный расчёт колонки: все
+// шумовые поля биома плюс три октавы рельефа. Замер: полмикросекунды
+// на колонку. Миникарта звала его шестнадцать тысяч раз за проход
+// (7.8 мс из 7.85 мс всего прохода), трава — шестьсот раз за
+// пересборку. Оба раза — для местности, уже лежащей в памяти.
+//
+// Теперь генерация складывает высоты в Chunk::surfaceY, а
+// VoxelReader::surfaceAt отдаёт их. Ценность этого держится целиком
+// на одном: отданное число обязано СОВПАДАТЬ с тем, что вернул бы
+// генератор. Иначе миникарта и трава разъедутся с рельефом.
+// ------------------------------------------------------------
+void testSurfaceHeightCacheMatchesGenerator() {
+    group("мир: высота поверхности из чанка равна высоте от генератора");
+
+    world::blocks();
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager mgr(0x5A17ULL, 2);
+
+        bool ready = false;
+        for (int i = 0; i < 500 && !ready; ++i) {
+            mgr.update({ 8.f, 70.f, 8.f });
+            ready = mgr.isReadyAt(8, 8) && mgr.isReadyAt(40, 40);
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "чанки сгенерированы");
+
+        if (ready) {
+            world::VoxelReader rd(mgr);
+            // Весь чанк (0,0) и кусок соседнего: переход через границу
+            // чанка — там, где индексация проще всего перепутать.
+            usize checked = 0, mismatch = 0;
+            i32 firstBadX = 0, firstBadZ = 0, gotBad = 0, wantBad = 0;
+            for (i32 wz = 0; wz < world::CHUNK_SIZE + 8; ++wz)
+                for (i32 wx = 0; wx < world::CHUNK_SIZE + 8; ++wx) {
+                    const i32 got  = rd.surfaceAt(wx, wz);
+                    const i32 want = mgr.generator().surfaceHeight(wx, wz);
+                    ++checked;
+                    if (got != want) {
+                        if (!mismatch) {
+                            firstBadX = wx; firstBadZ = wz;
+                            gotBad = got; wantBad = want;
+                        }
+                        ++mismatch;
+                    }
+                }
+            if (mismatch)
+                std::printf("    (первое расхождение: %d,%d — из чанка %d, "
+                            "от генератора %d; всего %zu из %zu)\n",
+                            firstBadX, firstBadZ, gotBad, wantBad,
+                            mismatch, checked);
+            check(checked > 1500, "проверено достаточно колонок");
+            check(mismatch == 0, "высота из чанка совпадает с высотой генератора");
+
+            // Отрицательные координаты: маска и сдвиг там ведут себя
+            // иначе, чем деление, и это классическое место ошибки.
+            usize negMismatch = 0;
+            for (i32 wz = -40; wz < -8; ++wz)
+                for (i32 wx = -40; wx < -8; ++wx)
+                    if (rd.surfaceAt(wx, wz) != mgr.generator().surfaceHeight(wx, wz))
+                        ++negMismatch;
+            check(negMismatch == 0,
+                  "и на отрицательных координатах тоже");
+
+            // Незагруженный чанк: запасной путь обязан дать то же
+            // самое, просто медленнее.
+            const i32 farX = 100000, farZ = -70000;
+            check(mgr.findChunk(farX >> 5, farZ >> 5) == nullptr,
+                  "дальний чанк и правда не загружен");
+            check(rd.surfaceAt(farX, farZ) ==
+                      mgr.generator().surfaceHeight(farX, farZ),
+                  "для незагруженного чанка считает генератор");
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+// Задача, пережившая свой мир
+//
+// ChunkManager раздаёт фоновым задачам сырой указатель на себя, а
+// деструктор дожидается этих задач. Дождаться он умеет только пока
+// планировщик крутится — и ровно два пути ведут мимо:
+//
+//   * планировщик остановили раньше мира: очередь никто не разберёт,
+//     счётчик не сдвинется, деструктор пишет в журнал и идёт дальше;
+//   * задачи не уложились в пять секунд: то же самое.
+//
+// На обоих в очереди оставались задачи с указателем на освобождённую
+// память, и первый же запуск планировщика их выполнял. В приложении
+// это не стреляло только потому, что порядок вызовов выверен вручную
+// (releaseWorld строго до jobs::gJobs.stop()) — то есть держалось на
+// комментарии, а не на устройстве кода. В проверках воспроизводилось
+// падением в десяти прогонах из десяти.
+//
+// Утверждение здесь — «процесс дожил до конца». Это честно: у
+// обращения к освобождённой памяти нет другого наблюдаемого следа.
+// Чтобы оно не было пустым, память между смертью мира и запуском
+// планировщика намеренно занимается и портится: тогда обращение по
+// старому указателю почти наверняка попадёт в чужое и упадёт.
+// ------------------------------------------------------------
+void testJobsOutlivingTheirWorldAreSafe() {
+    group("мир: задачи, пережившие свой мир, ничего не трогают");
+
+    world::blocks();
+    // Планировщик остановлен: это и есть тот самый порядок.
+    check(!jobs::gJobs.running(), "планировщик остановлен");
+
+    std::vector<std::shared_ptr<world::Chunk>> kept;
+    usize queued = 0;
+
+    for (int round = 0; round < 3; ++round) {
+        {
+            world::ChunkManager mgr(0xFEEDULL + (u64)round, 4);
+            // Много кадров — много заведённых чанков и, значит, много
+            // задач генерации, которым никогда не суждено выполниться
+            // при жизни этого мира.
+            for (int i = 0; i < 60; ++i) mgr.update({ 0.f, 70.f, 0.f });
+            queued += mgr.pendingJobs();
+            // Держим чанк живым за пределами мира: если задача мёртвого
+            // мира всё-таки отработает, она его сгенерирует.
+            if (auto c = mgr.findChunk(0, 0)) kept.push_back(c);
+        }   // мир разрушен, задачи остались в очереди
+
+        // Занимаем и портим освободившуюся память, чтобы обращение по
+        // старому указателю попало в чужое, а не в случайно уцелевшее.
+        {
+            std::vector<std::vector<u8>> rubble;
+            for (int i = 0; i < 64; ++i) rubble.emplace_back(64 * 1024, (u8)0xA5);
+            volatile u8 sink = 0;
+            for (const auto& r : rubble) sink = (u8)(sink ^ r[0]);
+            (void)sink;
+        }
+    }
+
+    check(queued > 0, "задачи и правда остались неразобранными");
+    check(!kept.empty(), "чанки мёртвых миров удержаны");
+
+    // А теперь запускаем планировщик: очередь разбирается.
+    jobs::gJobs.start(3);
+    for (int i = 0; i < 100 && jobs::gJobs.running(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    jobs::gJobs.stop();
+
+    check(true, "очередь разобрана, процесс жив");
+
+    usize generated = 0;
+    for (const auto& c : kept)
+        if (c->generated.load(std::memory_order_acquire)) ++generated;
+    check(generated == 0,
+          "задача мёртвого мира не сгенерировала его чанк");
+}
+
+// ------------------------------------------------------------
+// Нехватка памяти: миру есть что отдать
+//
+// Чанк — четверть мегабайта вокселей; в круге дальности их полторы
+// сотни, то есть под сорок мегабайт, и это ещё без мешей в
+// видеопамяти. APP_CMD_LOW_MEMORY при этом не делал НИЧЕГО, кроме
+// записи в журнал: система просила память, мир не отдавал ничего, и
+// выбор сводился к тому, что система убивала процесс целиком.
+//
+// Проверяется механизм, на который опирается обработчик: выгрузка
+// умеет работать по заданному радиусу, а не только по обычному кругу.
+// ------------------------------------------------------------
+void testUnloadAcceptsTighterRadius() {
+    group("мир: выгрузку можно попросить о радиусе потеснее");
+
+    world::blocks();
+    const i32 VD = 6;
+    world::ChunkManager mgr(0xDEADBEEFULL, VD);
+    for (int i = 0; i < 400; ++i) mgr.update({ 0.f, 70.f, 0.f });
+
+    const usize full = mgr.loadedChunks();
+    check(full > 80, "круг наполнен");
+
+    // Обычный круг с гистерезисом ничего не выбрасывает: всё в нём.
+    check(mgr.collectUnloadCandidates({ 0.f, 70.f, 0.f }).empty(),
+          "по обычному радиусу выгружать нечего");
+
+    // А по тесному — выбрасывает всё, что дальше него.
+    constexpr i32 KEEP = 3;
+    auto doomed = mgr.collectUnloadCandidates({ 0.f, 70.f, 0.f }, KEEP);
+    check(!doomed.empty(), "по тесному радиусу есть что выгрузить");
+    mgr.removeChunks(doomed);
+
+    const usize left = mgr.loadedChunks();
+    check(left < full, "чанков стало меньше");
+    check(left + doomed.size() == full, "выгружено ровно столько, сколько названо");
+
+    // Ближний круг цел: игрок не должен провалиться сквозь мир из-за
+    // того, что системе не хватило памяти.
+    usize nearMissing = 0, tooFarLeft = 0;
+    for (i32 dz = -KEEP; dz <= KEEP; ++dz)
+        for (i32 dx = -KEEP; dx <= KEEP; ++dx)
+            if (dx * dx + dz * dz <= KEEP * KEEP && !mgr.findChunk(dx, dz))
+                ++nearMissing;
+    for (i32 dz = -VD - 2; dz <= VD + 2; ++dz)
+        for (i32 dx = -VD - 2; dx <= VD + 2; ++dx)
+            if (dx * dx + dz * dz > KEEP * KEEP && mgr.findChunk(dx, dz))
+                ++tooFarLeft;
+    check(nearMissing == 0, "ближний круг вокруг игрока остался целым");
+    check(tooFarLeft == 0, "всё, что дальше тесного радиуса, выгружено");
+
+    // И потоковая загрузка возвращает мир обратно.
+    for (int i = 0; i < 400; ++i) mgr.update({ 0.f, 70.f, 0.f });
+    check(mgr.loadedChunks() == full, "круг восстанавливается сам");
+}
+
+// ------------------------------------------------------------
 // Вода на огрублённых уровнях
 // ------------------------------------------------------------
 namespace {
@@ -4059,6 +4351,10 @@ int main() {
     testResidentLodSurvivesRequest();
     testLodCompletionIsAddressed();
     testMeshJobBuildsRequestedLod();
+    testJobsOutlivingTheirWorldAreSafe();
+    testChunkStreamingIsBudgeted();
+    testSurfaceHeightCacheMatchesGenerator();
+    testUnloadAcceptsTighterRadius();
     testCoarseWaterIsStable();
     testCoarseWaterDoesNotFloat();
     testLodSeamHasNoCracks();
