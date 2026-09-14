@@ -416,7 +416,8 @@ int main(int argc, char** argv) {
         lodUsed[useLod & 3]++;
         world::buildGreedyMesh(*c, nb, quads, (world::Lod)useLod);
         u32 opaque = 0;
-        render::buildChunkVertices(*c, quads, verts, idx, opaque);
+        render::buildChunkVertices(*c, quads, verts, idx, opaque,
+                                   nullptr, (u8)(useLod & 3));
         totalQuads += quads.size();
         for (const auto& v : verts) {
             ++aoHist[(v.packed >> 23) & 3u];
