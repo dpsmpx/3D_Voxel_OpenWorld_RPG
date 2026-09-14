@@ -70,10 +70,19 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # packages: '' — не ставить то, что действие ставит по умолчанию.
+      #
+      # По умолчанию это «tools platform-tools», а пакета tools в
+      # репозитории Google больше нет: sdkmanager отвечает «Failed to
+      # find package 'tools'» и роняет сборку APK на любой ветке, к
+      # содержимому репозитория это отношения не имеет. Что нужно —
+      # ставим сами строкой ниже; остальное уже есть в образе runner-а.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
-      - name: Установка NDK
-        run: sdkmanager --install "ndk;26.1.10909125" > /dev/null
+      - name: Установка NDK и platform-tools
+        run: sdkmanager --install "platform-tools" "ndk;26.1.10909125" > /dev/null
 
       - name: Зависимости
         run: |
