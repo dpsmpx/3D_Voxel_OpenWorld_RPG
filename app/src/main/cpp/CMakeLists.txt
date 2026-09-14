@@ -51,18 +51,22 @@ endif()
 
 # Отпечаток сборки в журнале. Без него по логу с устройства нельзя
 # сказать, какая именно версия установлена, и починенная ошибка
-# выглядит как непочиненная. В CI сборка всегда свежая; локально
-# значение берётся на этапе конфигурации CMake и может отстать —
-# перенастройте, если важно.
-execute_process(
-    COMMAND git rev-parse --short HEAD
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    OUTPUT_VARIABLE VOXEL_BUILD_SHA
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET)
-if(NOT VOXEL_BUILD_SHA)
-    set(VOXEL_BUILD_SHA "без git")
-endif()
+# выглядит как непочиненная.
+#
+# Считается на КАЖДУЮ сборку, а не при настройке CMake: настройка
+# происходит однажды и переиспользуется, поэтому прежняя метка
+# застревала и подписывала свежие сборки давнишним коммитом. Подробности
+# и пометка «грязный» — в cmake/build_sha.cmake.
+set(VOXEL_SHA_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+set(VOXEL_SHA_H   ${VOXEL_SHA_DIR}/build_sha.h)
+file(MAKE_DIRECTORY ${VOXEL_SHA_DIR})
+add_custom_target(voxel_build_sha ALL
+    COMMAND ${CMAKE_COMMAND}
+            -DOUT=${VOXEL_SHA_H}
+            -DSRC=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_sha.cmake
+    BYPRODUCTS ${VOXEL_SHA_H}
+    COMMENT "отпечаток сборки")
 
 add_library(native-lib SHARED
     src/main.cpp
@@ -235,7 +239,8 @@ target_compile_options(native-lib PRIVATE
     -fvisibility=hidden
 )
 
-target_compile_definitions(native-lib PRIVATE VOXEL_BUILD_SHA="${VOXEL_BUILD_SHA}")
+add_dependencies(native-lib voxel_build_sha)
+target_include_directories(native-lib PRIVATE ${VOXEL_SHA_DIR})
 
 # Диагностическая сборка: -DVOXEL_DEBUG_SCENE=ON.
 #

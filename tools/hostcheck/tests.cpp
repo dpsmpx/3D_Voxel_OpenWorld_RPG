@@ -1227,6 +1227,142 @@ void testFaceShadingHasSingleSource() {
 // сам по себе, и заводить механизм включений ради трёх чисел дороже,
 // чем сверять их здесь. Числа продублированы намеренно, а этот тест —
 // то, что не даёт им разойтись снова.
+/// Сборка APK не имеет права врать о том, что в ней лежит.
+///
+/// Случай, ради которого проверка написана. Шейдеры в APK — это
+/// app/src/main/assets/shaders/*.spv, файлы генерируемые и не в git.
+/// Клали их туда три разные руки: build.sh, tools/vkcheck/run.sh и
+/// tools/gpubench/run.sh. Прогон A/B картинки собрал шейдеры из
+/// git stash — то есть СТАРЫЕ, — а следом ./gradlew assemble упаковал
+/// их в APK вместе с новым нативным кодом. Сборка уехала на устройство,
+/// замер послушно повторил прежние числа, и единственным следом в
+/// журнале был размер SPIR-V.
+void testApkCarriesTheShadersItWasBuiltFrom() {
+    group("сборка: APK несёт свои собственные шейдеры");
+
+    // Комментарии выкидываются сразу: закомментированная строка —
+    // это ровно то, чего проверка искать не должна. Мутация
+    // «// dependsOn compileShaders» её и пережила, пока сверялся
+    // сырой текст.
+    const std::string raw = readSource("app/build.gradle");
+    if (raw.empty()) { check(true, "build.gradle не найден, проверка пропущена"); return; }
+    std::string g;
+    for (const std::string& line : splitLines(raw)) {
+        const std::string t = trimmed(line);
+        if (t.rfind("//", 0) == 0) continue;
+        g += line + "\n";
+    }
+    const usize NONE = std::string::npos;
+
+    // ---- 1. Шейдеры компилирует сама сборка ----
+    check(g.find("tasks.register('compileShaders')") != NONE,
+          "в сборке есть задача компиляции шейдеров");
+    check(g.find("'glslc'") != NONE && g.find("'-O'") != NONE,
+          "она зовёт glslc с оптимизацией");
+    check(g.find("src/main/cpp/shaders") != NONE,
+          "и берёт исходники шейдеров, а не готовые .spv");
+
+    // ---- 2. Она отрабатывает ДО упаковки ----
+    check(g.find("merge.*Assets") != NONE || g.find("mergeAssets") != NONE,
+          "задача привязана к слиянию ассетов");
+    check(g.find("dependsOn compileShaders") != NONE,
+          "и упаковка от неё зависит");
+
+    // ---- 3. Ассеты берутся ТОЛЬКО из каталога сборки ----
+    //
+    // Это и есть замок. Пока assets.srcDirs указывает на рабочее дерево,
+    // в APK попадает то, что там оставил кто угодно.
+    check(g.find("assets.srcDirs  = [shaderAssetsDir]") != NONE ||
+          g.find("assets.srcDirs = [shaderAssetsDir]") != NONE,
+          "assets.srcDirs указывает на каталог сборки");
+    const usize as = g.find("assets.srcDirs");
+    if (as != NONE) {
+        const std::string line = g.substr(as, g.find('\n', as) - as);
+        check(line.find("src/main/assets") == NONE,
+              "и НЕ на src/main/assets — туда пишут инструменты");
+    }
+
+    // ---- 4. Каталог пересобирается начисто ----
+    check(g.find("delete(shaderAssetsDir)") != NONE,
+          "каталог чистится: чужой .spv не переживает сборку");
+
+    // ---- 5. Инструменты в поставку не пишут ----
+    //
+    // Прямая причина случившегося. Инструмент вправе собирать шейдеры
+    // игры — но только себе, в свой каталог сборки.
+    struct Tool { const char* name; std::string text; };
+    const Tool tools[] = {
+        { "tools/vkcheck/run.sh",  readSource("tools/vkcheck/run.sh")  },
+        { "tools/gpubench/run.sh", readSource("tools/gpubench/run.sh") },
+        { "tools/hostcheck/run.sh", readSource("tools/hostcheck/run.sh") },
+    };
+    bool clean = true;
+    for (const auto& t : tools) {
+        if (t.text.empty()) continue;
+        for (const std::string& line : splitLines(t.text)) {
+            const std::string l = trimmed(line);
+            if (l.empty() || l[0] == '#') continue;       // в пояснениях путь назвать можно
+            if (l.find("app/src/main/assets") == NONE) continue;
+            // Писать туда нельзя ни glslc, ни mkdir, ни cp.
+            std::printf("       %s пишет в поставку: %s\n", t.name, l.c_str());
+            clean = false;
+        }
+    }
+    check(clean, "ни один инструмент не пишет в app/src/main/assets");
+}
+
+
+/// Отпечаток сборки в журнале обязан относиться к ЭТОЙ сборке.
+///
+/// Раньше `git rev-parse` стоял в CMakeLists на этапе конфигурации.
+/// CMake настраивается однажды и переиспользуется, поэтому метка
+/// застревала: свежая сборка подписывалась давнишним коммитом. Именно
+/// по такой метке пришлось разбираться, какая сборка на устройстве.
+void testBuildStampIsNotStale() {
+    group("сборка: отпечаток в журнале относится к этой сборке");
+
+    const std::string cm = readSource("app/src/main/cpp/CMakeLists.txt");
+    if (cm.empty()) { check(true, "CMakeLists не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    // На этапе конфигурации git больше не зовётся.
+    bool configureTime = false;
+    const std::string body = stripComments(cm);
+    const usize ep = body.find("execute_process");
+    if (ep != NONE && body.find("git rev-parse", ep) != NONE &&
+        body.find("git rev-parse", ep) < body.find(')', ep) + 400)
+        configureTime = true;
+    check(!configureTime, "git rev-parse не вызывается при настройке CMake");
+
+    check(cm.find("add_custom_target(voxel_build_sha ALL") != NONE,
+          "метка пишется отдельной целью на каждую сборку");
+    check(cm.find("cmake/build_sha.cmake") != NONE,
+          "её считает cmake/build_sha.cmake");
+    check(cm.find("add_dependencies(native-lib voxel_build_sha)") != NONE,
+          "и библиотека от этой цели зависит");
+
+    const std::string sh = readSource("app/src/main/cpp/cmake/build_sha.cmake");
+    if (sh.empty()) { check(false, "cmake/build_sha.cmake не найден"); return; }
+    check(sh.find("git rev-parse --short HEAD") != NONE,
+          "скрипт берёт текущий коммит");
+    // APK, собранный поверх незакоммиченных правок, — это НЕ тот
+    // коммит. Подписывать его чистым SHA значит врать ровно там, где
+    // отпечаток и нужен.
+    check(sh.find("git status --porcelain") != NONE &&
+          sh.find("грязный") != NONE,
+          "и помечает сборку с незакоммиченными правками грязной");
+    check(sh.find("NOT OLD STREQUAL TEXT") != NONE,
+          "файл переписывается только при изменении — иначе пересборка каждый раз");
+
+    const std::string mc = readSource("app/src/main/cpp/src/main.cpp");
+    if (!mc.empty()) {
+        check(mc.find("build_sha.h") != NONE, "main.cpp включает сгенерированный заголовок");
+        check(mc.find("LOGI(\" сборка: %s\", VOXEL_BUILD_SHA)") != NONE,
+              "и печатает отпечаток в журнал");
+    }
+}
+
+
 void testWorldSharesOneLightingModel() {
     group("шейдеры: мир освещён по одной модели");
 
@@ -5535,6 +5671,8 @@ int main() {
     testNeighborArrivalTriggersRemesh();
     testVoxelColorIsPlaceIndependent();
     testFaceShadingHasSingleSource();
+    testApkCarriesTheShadersItWasBuiltFrom();
+    testBuildStampIsNotStale();
     testWorldSharesOneLightingModel();
     testDistantGrassIsNotSubPixel();
     testShadersAvoidUndefinedMath();

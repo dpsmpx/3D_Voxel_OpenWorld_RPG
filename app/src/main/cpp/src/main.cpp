@@ -83,6 +83,15 @@
 #include "ecs/registry.h"
 #include "ecs/components.h"
 
+// Отпечаток сборки: заголовок пишется на КАЖДУЮ сборку (см.
+// cmake/build_sha.cmake). Через __has_include — чтобы хостовые
+// инструменты, собирающие этот файл без CMake, не падали.
+#if defined(__has_include)
+#  if __has_include("build_sha.h")
+#    include "build_sha.h"
+#  endif
+#endif
+
 using namespace ecs;
 namespace cfg = config;
 

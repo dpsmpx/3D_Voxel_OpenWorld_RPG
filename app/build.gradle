@@ -2,6 +2,78 @@ plugins {
     id 'com.android.application'
 }
 
+
+// ============================================================
+//  Шейдеры: их компилирует сама сборка APK
+// ============================================================
+//
+// Раньше gradle паковал app/src/main/assets/shaders как есть, а .spv
+// туда клал «кто-то раньше»: build.sh, tools/vkcheck/run.sh,
+// tools/gpubench/run.sh. Файлы не в git (см. .gitignore), так что в
+// APK уезжало содержимое рабочего каталога на момент сборки.
+//
+// Этим и вышел молчаливый обман: прогон A/B картинки собрал шейдеры
+// из git stash — то есть СТАРЫЕ, — а следом ./gradlew assemble упаковал
+// их в APK вместе с новым нативным кодом. Сборка уехала на устройство,
+// замер повторил прежние числа, и заметить это можно было только по
+// размеру SPIR-V в журнале.
+//
+// Теперь исходник шейдера — единственный источник того, что лежит в
+// APK. Каталог собирается заново на каждый прогон задачи: файл,
+// оставшийся от прошлого раза или положенный чужой рукой, не
+// переживает сборку.
+def shaderSourceDir = file('src/main/cpp/shaders')
+def shaderAssetsDir = new File(buildDir, 'generated/shaderAssets')
+
+def compileShaders = tasks.register('compileShaders') {
+    description = 'GLSL -> SPIR-V (glslc -O) для APK'
+    group = 'build'
+    inputs.dir(shaderSourceDir).withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.dir(shaderAssetsDir)
+    doLast {
+        def outDir = new File(shaderAssetsDir, 'shaders')
+        delete(shaderAssetsDir)
+        outDir.mkdirs()
+
+        def sources = (shaderSourceDir.listFiles() ?: new File[0])
+                .findAll { it.name.endsWith('.vert') || it.name.endsWith('.frag') }
+                .sort { it.name }
+        if (sources.isEmpty())
+            throw new GradleException("шейдеров не найдено в $shaderSourceDir")
+
+        sources.each { src ->
+            def dst = new File(outDir, src.name + '.spv')
+            def proc
+            try {
+                proc = new ProcessBuilder('glslc', '-O',
+                                          src.absolutePath, '-o', dst.absolutePath)
+                        .redirectErrorStream(true).start()
+            } catch (IOException e) {
+                throw new GradleException(
+                    'glslc не найден — без него APK собрать нельзя.\n' +
+                    '    Termux: pkg install shaderc\n' +
+                    '    Debian: apt-get install glslc', e)
+            }
+            def log = proc.inputStream.text
+            if (proc.waitFor() != 0)
+                throw new GradleException("glslc не смог собрать ${src.name}:\n$log")
+            // Предупреждение glslc — это ошибка в шейдере, которую
+            // иначе увидишь только чёрным экраном на устройстве.
+            if (log.trim())
+                throw new GradleException("glslc ругается на ${src.name}:\n$log")
+        }
+        logger.lifecycle("шейдеров собрано: ${sources.size()} -> $outDir")
+    }
+}
+
+// Ассеты сливаются до упаковки — задача обязана отработать раньше.
+tasks.matching { it.name ==~ /merge.*Assets/ }.configureEach {
+    dependsOn compileShaders
+}
+tasks.matching { it.name == 'preBuild' }.configureEach {
+    dependsOn compileShaders
+}
+
 android {
     namespace 'com.voxelrpg.game'
     compileSdk 34
@@ -121,7 +193,10 @@ android {
             // Native библиотека собирается CMake, но jniLibs — fallback
             // если мы хотим предсобранные .so класть вручную (см. build.sh).
             jniLibs.srcDirs = ['src/main/jniLibs']
-            assets.srcDirs  = ['src/main/assets']
+            // Ассеты берутся ТОЛЬКО из каталога сборки, куда их кладёт
+            // задача compileShaders (см. ниже). Каталог src/main/assets
+            // в APK больше не попадает — и не может его испортить.
+            assets.srcDirs  = [shaderAssetsDir]
         }
     }
 

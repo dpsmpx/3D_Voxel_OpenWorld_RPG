@@ -33,16 +33,22 @@ fi
 mkdir -p "$OUT"
 
 echo "==> Шейдеры..."
-mkdir -p "$PROJ/app/src/main/assets/shaders"
+# Собираются в каталог ИНСТРУМЕНТА, а не в app/src/main/assets.
+#
+# Раньше — прямо в поставку, откуда gradle пакует APK. Этого хватило,
+# чтобы отправить на устройство APK со старым voxel.frag: прогон A/B
+# оставил там шейдеры из git stash, gradle их и упаковал, а замер на
+# устройстве молча повторил прежние числа. Инструмент не имеет права
+# писать в поставку — ни файлов, ни своих.
+mkdir -p "$OUT/assets/shaders"
 for f in "$PROJ"/app/src/main/cpp/shaders/*.vert "$PROJ"/app/src/main/cpp/shaders/*.frag; do
     [ -e "$f" ] || continue
     base="$(basename "$f")"
-    glslc "$f" -o "$PROJ/app/src/main/assets/shaders/$base.spv"
+    glslc "$f" -o "$OUT/assets/shaders/$base.spv"
 done
 
 # Отладочные фрагментные шейдеры инструмента: вершинный при этом
 # остаётся настоящим, игровым.
-mkdir -p "$OUT/assets/shaders"
 for m in 0 1 2 3 4 5; do
     glslc -DMODE=$m "$PROJ/tools/vkcheck/debug.frag" \
           -o "$OUT/assets/shaders/debug$m.frag.spv"
@@ -64,7 +70,8 @@ echo "==> Сборка..."
 
 echo "==> Кадр..."
 cd "$PROJ"
-"$OUT/vkcheck" --out "$OUT/frame.ppm" --debug-assets "$OUT/assets" "$@" || rc=$?
+"$OUT/vkcheck" --out "$OUT/frame.ppm" --assets "$OUT/assets" \
+              --debug-assets "$OUT/assets" "$@" || rc=$?
 rc=${rc:-0}
 
 # PPM в PNG — своими руками, без Pillow.
