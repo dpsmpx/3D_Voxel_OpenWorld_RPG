@@ -26,7 +26,7 @@ layout(push_constant) uniform Push {
 layout(location = 0) out vec4      vColor;
 layout(location = 1) out vec3      vWorldPos;
 layout(location = 2) out vec2      vShade;  // x — затенение углов, y — открытость неба
-layout(location = 3) out flat uint vInfo;   // грань в младших 3 битах, зерно выше
+layout(location = 3) out flat uint vInfo;   // индекс грани, 0..5
 
 void main() {
     vec3 local = vec3(float( inPacked        & 63u),
@@ -35,8 +35,6 @@ void main() {
     uint face  = (inPacked >> 20) & 7u;
     uint ao    = (inPacked >> 23) & 3u;
     uint sky   = (inPacked >> 25) & 7u;
-    uint grain = (inPacked >> 28) & 7u;
-    uint tint  = (inPacked >> 31) & 1u;
 
     vec3 world = pc.chunkOrigin.xyz + local;
     gl_Position = cam.viewProj * vec4(world, 1.0);
@@ -44,5 +42,5 @@ void main() {
     vColor    = inColor;
     vWorldPos = world;
     vShade    = vec2(float(ao) * (1.0 / 3.0), float(sky) * (1.0 / 7.0));
-    vInfo     = face | (grain << 3) | (tint << 6);
+    vInfo     = face;
 }

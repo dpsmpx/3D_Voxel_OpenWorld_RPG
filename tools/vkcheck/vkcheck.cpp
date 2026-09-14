@@ -22,6 +22,7 @@
 #include "render/camera.h"
 #include "render/voxel_pipeline.h"
 #include "render/grass_pipeline.h"
+#include "world/day_cycle.h"
 #include "world/debug_scene.h"
 #include "render/instanced_renderer.h"
 #include "world/chunk.h"
@@ -136,6 +137,11 @@ int main(int argc, char** argv) {
     // debug_shading: номер едет в свободной компоненте screenSize.z,
     // и шейдер игры разбирает его сам.
     int   shading = 0;
+    // Время суток, [0,1): 0 — полночь, 0.5 — полдень. Без ключа
+    // солнце стоит там же, где стояло всегда, и прежние снимки
+    // повторяются байт в байт.
+    float timeOfDay = 0.f;
+    bool  timeGiven = false;
     // Минимальная детерминированная сцена вместо генератора: та же
     // функция строит её и в игре, см. world/debug_scene.
     bool  minimalScene = false;
@@ -167,6 +173,7 @@ int main(int argc, char** argv) {
         else if (a == "--assert-solid") assertSolid = true;
         else if (a == "--fp16") fp16 = true;
         else if (a == "--shading") shading = atoi(next());
+        else if (a == "--time")    { timeOfDay = (float)atof(next()); timeGiven = true; }
         else if (a == "--scene") {
             const std::string v = next();
             if (v == "minimal") minimalScene = true;
@@ -598,6 +605,21 @@ int main(int argc, char** argv) {
     }
     cam.setDebugCamera(eye, yaw, pitch);
 
+    // Свет суток берётся из того же DayCycle, что у игры, а не из
+    // своих чисел: иначе снимок инструмента освещён не так, как кадр
+    // на устройстве, и сравнивать их бессмысленно.
+    if (timeGiven) {
+        world::DayCycle dc;
+        dc.reset(timeOfDay, 0);
+        cam.setSunDir(dc.sunDirection());
+        cam.setSky(dc.skyColor(), dc.skyLight(), dc.timeOfDay());
+        const glm::vec3 sd = dc.sunDirection();
+        std::printf("vkcheck: время суток %.3f, солнце %.2f %.2f %.2f, "
+                    "свет неба %.2f\n",
+                    (double)dc.timeOfDay(), (double)sd.x, (double)sd.y,
+                    (double)sd.z, (double)dc.skyLight());
+    }
+
     render::CameraUbo u = cam.toUbo(world::SCENE_TIME_SEC);
     u.screenSize = glm::vec4((float)W, (float)H, (float)shading, 0.f);
     ubo.write(&u, sizeof(u));
@@ -726,8 +748,16 @@ int main(int argc, char** argv) {
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VKOK(vkBeginCommandBuffer(cmd, &bi));
 
+    // Небо шейдером здесь НЕ рисуется: инструмент про геометрию и свет
+    // террейна, и лишний полноэкранный проход только мешал бы считать
+    // пиксели. Фон — заливка цветом неба этого времени суток, чтобы
+    // ночной снимок не выглядел дневным.
     VkClearValue clears[2];
     clears[0].color = {{ 0.45f, 0.62f, 0.85f, 1.0f }};
+    if (timeGiven) {
+        const glm::vec3 sc = cam.skyColor();
+        clears[0].color = {{ sc.x, sc.y, sc.z, 1.0f }};
+    }
     clears[1].depthStencil = { 1.0f, 0 };
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass = rp; rbi.framebuffer = fb;

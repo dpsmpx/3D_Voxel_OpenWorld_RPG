@@ -27,20 +27,28 @@ void main() {
     vec3 base = toLinear(vColor.rgb) * 0.45;
     vec3 albedo = mix(base, tip, vHeight * vHeight);
 
-    // Трава — билборд без своей нормали. Считаем её открытой небу и
-    // подсвечиваем на просвет, как это делает листва.
+    // Освещение — та же модель и те же числа, что у террейна
+    // (shaders/voxel.frag). Трава растёт прямо на нём, и любое
+    // расхождение здесь видно как полоса чужого оттенка у самой земли.
+    //
+    // Раньше расхождение и было: у травы рассеянный свет считался от
+    // самого skyLin, у террейна — от приглушённого к белому, и сила
+    // солнца отличалась в полтора раза. За тем, чтобы числа снова не
+    // разошлись, следит тест «мир освещён по одной модели».
     float day    = clamp(cam.sunDir.w, 0.0, 1.0);
     float above  = smoothstep(-0.10, 0.06, cam.sunDir.y);
     vec3  sunTint = toLinear(mix(vec3(1.00, 0.52, 0.26), vec3(1.00, 0.97, 0.92),
                                  smoothstep(0.0, 0.30, cam.sunDir.y)));
     vec3  skyLin  = toLinear(cam.skyColor.rgb);
-    const float skyVis = 0.85;
+    float skyMax  = max(max(skyLin.r, skyLin.g), max(skyLin.b, 0.001));
+    vec3  ambTint = mix(vec3(1.0), skyLin / skyMax, 0.55);
 
-    vec3 ambient = skyLin * (0.16 + 0.34 * skyVis) * (0.25 + 0.75 * day);
-    vec3 sun     = sunTint * (0.62 * day * above);
-    vec3 moon    = vec3(0.04, 0.055, 0.11) * (1.0 - day) * (0.30 + 0.35 * skyVis);
+    // Пучок — билборд без своей нормали: считаем его открытым небу и
+    // освещённым, как верхняя грань блока.
+    vec3 ambient = ambTint * mix(0.14, 0.60, day);
+    vec3 sun     = sunTint * (0.46 * day * above);
 
-    vec3 lit = albedo * (ambient + sun + moon + 0.02);
+    vec3 lit = albedo * (ambient + sun);
 
     vec3  toFrag = vWorldPos - cam.cameraPos.xyz;
     float dist   = length(toFrag);
@@ -48,12 +56,14 @@ void main() {
                          max(cam.fogParams.y - cam.fogParams.x, 0.001), 0.0, 1.0);
     fogAmt = fogAmt * fogAmt * (3.0 - 2.0 * fogAmt);
 
-    float sunAmt   = max(dot(normalize(toFrag), cam.sunDir.xyz), 0.0);
-    // Шестая степень — тремя умножениями, без логарифма: основание
-    // обнуляется на любой грани, отвёрнутой от солнца.
+    float sunAmt = max(dot(normalize(toFrag), cam.sunDir.xyz), 0.0);
+    // Восьмая степень — тремя умножениями, без логарифма: основание
+    // обнуляется на любой грани, отвёрнутой от солнца. Показатель и
+    // вес те же, что у тумана террейна: иначе на закате горизонт под
+    // травой и над ней окрашен по-разному.
     float s2 = sunAmt * sunAmt;
-    float s6 = s2 * s2 * s2;
-    vec3  fogColor = mix(skyLin, sunTint, clamp(s6 * 0.45 * above, 0.0, 1.0));
+    float s8 = s2 * s2 * s2 * s2;
+    vec3  fogColor = mix(skyLin, sunTint, clamp(s8 * 0.30 * above, 0.0, 1.0));
 
-    outColor = vec4(toSrgb(mix(lit, fogColor, fogAmt)), 1.0);
+    outColor = vec4(clamp(toSrgb(mix(lit, fogColor, fogAmt)), 0.0, 1.0), 1.0);
 }
