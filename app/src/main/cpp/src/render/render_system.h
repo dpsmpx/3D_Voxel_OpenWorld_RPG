@@ -15,6 +15,7 @@
 #include "../player/player.h"
 #include "../world/chunk_manager.h"
 #include "camera.h"
+#include "pass_sweep.h"
 #include "chunk_renderer.h"
 #include "skybox.h"
 #include "instanced_renderer.h"
@@ -69,6 +70,10 @@ public:
     };
     const FrameStats& stats() const { return stats_; }
 
+    /// Развёртка по проходам: выключает их по одному и печатает
+    /// таблицу цен. Кормится временем GPU из главного цикла.
+    PassSweep& passSweep() { return passSweep_; }
+
     u32 drawnChunks()   const { return chunkRenderer_.lastDrawnChunks(); }
     u32 consideredChunks() const { return chunkRenderer_.lastConsideredChunks(); }
     u32 culledChunks()  const { return chunkRenderer_.lastCulledChunks(); }
@@ -116,6 +121,7 @@ private:
     f32                   timeSec_ = 0.f;
     physics::RayHit       lastHit_{};
     FrameStats            stats_{};
+    PassSweep             passSweep_{};
 
     VkDevice              dev_ = VK_NULL_HANDLE;
 };

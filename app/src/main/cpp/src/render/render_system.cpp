@@ -194,7 +194,11 @@ void RenderSystem::render(vk::Context& ctx) {
     // честно меряется только вычитанием полного времени кадра — см.
     // комментарий к vk::Context::markPass.
     using Pass = vk::Context::GpuPass;
-    const u32 mask = config::settingsConst().renderPasses;
+    // Пока идёт развёртка, маску задаёт она: иначе два источника
+    // спорили бы за одно и то же поле, и замер сравнивал бы не то,
+    // что думает.
+    const u32 mask = passSweep_.active() ? passSweep_.mask()
+                                         : config::settingsConst().renderPasses;
     auto on = [mask](Pass p) { return (mask & (1u << (u32)p)) != 0; };
 
     stats_ = FrameStats{};

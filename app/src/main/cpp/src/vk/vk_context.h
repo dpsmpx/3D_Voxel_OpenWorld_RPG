@@ -102,6 +102,16 @@ public:
     /// settings.cfg) и посмотреть на ПОЛНОЕ время кадра. Разность и
     /// есть цена прохода. См. docs/RENDER_AUDIT.md.
     void markPass(GpuPass p);
+
+    /// Включить или выключить метки внутри прохода рендера.
+    ///
+    /// Они не бесплатны: на устройстве (Adreno, 2306x1080) та же
+    /// диагностическая сцена шла 10.8..11.3 мс без них и 12.7..13.3 мс
+    /// с ними. Поэтому по умолчанию их нет, а время всего кадра
+    /// меряется всегда — оно стоит вокруг командного буфера и тайлер
+    /// ему не мешает.
+    void setPassTiming(bool on) { passTiming_ = on; }
+    bool passTiming() const     { return passTiming_; }
     /// Длительность прохода в последнем измеренном кадре, мс.
     f32  passMs(GpuPass p) const {
         return (u32)p < GPU_PASSES ? passMs_[(u32)p] : 0.f;
@@ -282,6 +292,12 @@ private:
     /// на нём мусор или VK_NOT_READY на всю выборку разом.
     u32                      passMarks_ = 0;
     f32                      passMs_[GPU_PASSES] = {};
+    bool                     passTiming_ = false;
+    /// Сколько меток кадра реально используется: две (начало и конец)
+    /// или все. Сброшенный и ни разу не записанный запрос делает ВСЮ
+    /// выборку «ещё не готовой», поэтому сбрасывать и читать надо
+    /// ровно столько, сколько записываем.
+    u32 stampsUsed() const { return passTiming_ ? STAMPS_PER_FRAME : 2; }
     u64                      swapchainRebuilds_ = 0;
     VkResult                 lastPresent_ = VK_SUCCESS;
     bool                     needsResize_ = false;
