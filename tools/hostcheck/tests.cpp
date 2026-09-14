@@ -2665,6 +2665,89 @@ void testFrameGpuBreakdown() {
         check(true, "каждый проход выключается своей комбинацией");
         check(sw.find("WARMUP_SEC") != NONE,
               "первые кадры после смены маски выбрасываются");
+
+        // ---- Пустой кадр: нижний предел ----
+        //
+        // Первый замер на устройстве дал сумму всех проходов 1.5 мс
+        // из 10.8 — девять миллисекунд ни на что. Без кадра, в
+        // котором не нарисовано НИЧЕГО, нельзя отличить «рисование
+        // дешёвое» от «мерим не рисование».
+        check(sw.find("{ 0x00,") != NONE,
+              "в наборе есть кадр, где не рисуется ничего");
+        const usize zero = sw.find("{ 0x00,");
+        const usize all  = sw.find("{ 0x7F,");
+        check(all != NONE && zero != NONE && all < zero,
+              "опорный кадр идёт первым, пустой сразу за ним");
+
+        // ---- Чередование кругов ----
+        //
+        // Два круга подряд дали по одному проходу 0.56 и 1.36 мс.
+        // Такой разброс — не выборочный шум на трёх сотнях кадров, а
+        // нагрев телефона. Комбинации обязаны чередоваться и набирать
+        // время по многу раз вперемешку.
+        check(sw.find("ROUNDS") != NONE, "набор проходится несколько раз");
+        const usize r = sw.find("ROUNDS = ");
+        if (r != NONE) {
+            int rounds = 0;
+            if (std::sscanf(sw.c_str() + r + 9, "%d", &rounds) == 1)
+                check(rounds >= 3, "кругов достаточно, чтобы размазать нагрев");
+        }
+        const std::string swc =
+            readSource("app/src/main/cpp/src/render/pass_sweep.cpp");
+        if (!swc.empty()) {
+            // Шаг обязан меняться раньше круга: иначе это не
+            // чередование, а те же блоки подряд.
+            const usize inc = swc.find("++step_");
+            const usize rnd = swc.find("++round_");
+            check(inc != NONE && rnd != NONE && inc < rnd,
+                  "комбинации чередуются, а не идут блоками подряд");
+            // Накопители — по комбинации, а не одно общее число:
+            // иначе круги не сложить.
+            check(swc.find("sum_[step_]") != NONE,
+                  "время копится по каждой комбинации отдельно");
+        }
+    }
+
+    // ---- 5в. Автовыход по завершении замера ----
+    //
+    // Диагностическая сборка запускается ради одного числа; держать её
+    // открытой после того, как число получено, значит греть телефон и
+    // портить следующий замер. Выход обязан идти ОБЫЧНЫМ путём —
+    // через wantQuit: по дороге журнал копируется в буфер обмена, и
+    // руками остаётся только запустить и подождать.
+    if (!cfgh.empty()) {
+        const usize e = cfgh.find("bool exitAfterSweep");
+        check(e != NONE, "автовыход по завершении замера есть");
+        if (e != NONE) {
+            const std::string line = cfgh.substr(e, cfgh.find(';', e) - e);
+            check(line.find("DIAGNOSTIC_BUILD") != NONE,
+                  "и включён ровно в диагностической сборке");
+        }
+    }
+    const std::string mainSrc = readSource("app/src/main/cpp/src/main.cpp");
+    if (!mainSrc.empty()) {
+        // Ищем именно ветку выхода, а не строку в журнале: имя
+        // настройки встречается в файле дважды.
+        const usize q = mainSrc.find("if (cfg::settingsConst().exitAfterSweep)");
+        check(q != NONE, "цикл кадров смотрит на настройку автовыхода");
+        if (q != NONE) {
+            // Выход обязан идти через wantQuit, а не через
+            // ANativeActivity_finish напрямую: иначе не отработает
+            // onWindowTerm, и журнал не попадёт в буфер обмена.
+            const std::string w = mainSrc.substr(q, 400);
+            check(w.find("wantQuit = true") != NONE,
+                  "и выходит обычным путём, с копированием журнала");
+            check(w.find("ANativeActivity_finish") == NONE,
+                  "а не закрывает окно в обход onWindowTerm");
+        }
+        // Сам путь wantQuit обязан копировать журнал — иначе автовыход
+        // отнимает у замера его результат.
+        const usize term = mainSrc.find("void onWindowTerm");
+        if (term != NONE) {
+            const std::string tw = mainSrc.substr(term, 3000);
+            check(tw.find("copyFileToClipboard") != NONE,
+                  "на выходе журнал копируется в буфер обмена");
+        }
     }
     // Пока идёт развёртка, маску задаёт она, а не настройка: два
     // источника на одно поле спорили бы, и замер сравнивал бы не то.

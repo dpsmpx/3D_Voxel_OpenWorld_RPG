@@ -222,6 +222,7 @@ bool Settings::save(const std::string& path) const {
     wi("render_passes",      (i32)renderPasses);
     wb("gpu_pass_timing",    gpuPassTiming);
     wb("render_pass_sweep",  renderPassSweep);
+    wb("exit_after_sweep",   exitAfterSweep);
     wb("debug_scene",        debugScene);
 
     std::fclose(f);
@@ -317,6 +318,8 @@ bool Settings::load(const std::string& path) {
             gpuPassTiming = readBool(kv.value, gpuPassTiming);
         else if (std::strcmp(kv.key, "render_pass_sweep") == 0)
             renderPassSweep = readBool(kv.value, renderPassSweep);
+        else if (std::strcmp(kv.key, "exit_after_sweep") == 0)
+            exitAfterSweep = readBool(kv.value, exitAfterSweep);
         else if (std::strcmp(kv.key, "debug_scene") == 0)
             debugScene = readBool(kv.value, debugScene);
     }

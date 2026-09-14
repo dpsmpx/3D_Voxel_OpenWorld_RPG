@@ -476,9 +476,15 @@ struct Engine {
             // Полная квалификация не для красоты: `render` здесь ещё
             // и поле Engine, и без ведущего «::» читателю приходится
             // вспоминать правило поиска имени перед «::».
-            LOGI("развёртка проходов: включена, %u комбинаций по %.0f с",
+            LOGI("развёртка проходов: включена, %u комбинаций по %.2f с, "
+                 "%u кругов (~%.0f с), выход по завершении: %s",
                  ::render::PassSweep::STEP_COUNT,
-                 (double)::render::PassSweep::STEP_SEC);
+                 (double)::render::PassSweep::SLICE_SEC,
+                 ::render::PassSweep::ROUNDS,
+                 (double)(::render::PassSweep::STEP_COUNT *
+                          ::render::PassSweep::SLICE_SEC *
+                          (f32)::render::PassSweep::ROUNDS),
+                 cfg::settingsConst().exitAfterSweep ? "да" : "нет");
         }
         LOGI("зерно мира: %llu, дальность %d чанков",
              (unsigned long long)worldSeed, world->viewDistance());
@@ -1577,8 +1583,17 @@ extern "C" void android_main(android_app* app) {
             // командного буфера тайлеру не мешает, в отличие от
             // меток внутри прохода.
             if (eng.render && eng.render->passSweep().active() &&
-                eng.render->passSweep().tick(dt, eng.vk.lastGpuMs()))
+                eng.render->passSweep().tick(dt, eng.vk.lastGpuMs())) {
                 eng.render->passSweep().report();
+                // Замер сделан — держать сборку открытой незачем, она
+                // только греет телефон и портит следующий замер. Выход
+                // идёт обычным путём, значит журнал по дороге попадает
+                // в буфер обмена.
+                if (cfg::settingsConst().exitAfterSweep) {
+                    LOGI("развёртка закончена — выходим");
+                    eng.wantQuit = true;
+                }
+            }
             for (u32 i = 0; i < vk::Context::GPU_PASSES; ++i) {
                 msPass[i]   += eng.vk.passMs((vk::Context::GpuPass)i);
                 drawPass[i] += eng.render
