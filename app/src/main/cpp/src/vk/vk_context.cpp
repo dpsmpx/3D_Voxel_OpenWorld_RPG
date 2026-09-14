@@ -272,6 +272,50 @@ bool Context::createLogicalDevice() {
     return true;
 }
 
+// Режим показа по настройке «ограничивать частоту кадров».
+//
+// FIFO есть всегда — это единственный режим, который спецификация
+// обязывает поддерживать. Остальные надо спрашивать: без снятия
+// ограничения максимальную частоту не увидеть, а увидеть её нужно,
+// чтобы отличить «упёрлись в GPU» от «ждём экран».
+//
+// Без ограничения берём IMMEDIATE: он показывает ровно то, что машина
+// успевает, ценой разрыва кадра. MAILBOX разрывов не даёт, но он же и
+// не даёт увидеть максимум — лишние кадры он выбрасывает, а на экран
+// отдаёт всё те же шестьдесят в секунду. Поэтому он только запасной,
+// на устройствах без IMMEDIATE.
+VkPresentModeKHR Context::choosePresentMode() {
+    presentMode_ = VK_PRESENT_MODE_FIFO_KHR;
+    if (vsyncWanted_) return presentMode_;
+
+    u32 n = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface_, &n, nullptr);
+    std::vector<VkPresentModeKHR> modes(n);
+    if (n) vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface_, &n, modes.data());
+
+    auto has = [&](VkPresentModeKHR m) {
+        for (auto x : modes) if (x == m) return true;
+        return false;
+    };
+    if      (has(VK_PRESENT_MODE_IMMEDIATE_KHR)) presentMode_ = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    else if (has(VK_PRESENT_MODE_MAILBOX_KHR))   presentMode_ = VK_PRESENT_MODE_MAILBOX_KHR;
+    else {
+        LOGW("Без ограничения кадров просили, но устройство даёт только FIFO");
+    }
+    return presentMode_;
+}
+
+void Context::setVsync(bool on) {
+    if (vsyncWanted_ == on) return;
+    vsyncWanted_ = on;
+    // Режим показа — свойство цепочки. Просим пересоздать её тем же
+    // путём, которым это делает поворот экрана: beginFrame вернёт
+    // false, и главный цикл позовёт onResize.
+    needsResize_ = true;
+    LOGI("Ограничение кадров по экрану: %s (цепочка будет пересоздана)",
+         on ? "включено" : "снято");
+}
+
 bool Context::createSwapchain() {
     // Ответ обязательно проверяем: при неудаче caps остаётся мусором
     // из стека, и из него получаются и размер цепочки, и число
@@ -356,7 +400,7 @@ bool Context::createSwapchain() {
     ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.preTransform     = surfaceTransform_;
     ci.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    ci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
+    ci.presentMode      = choosePresentMode();
     ci.clipped          = VK_TRUE;
 
     auto transformName = [](VkSurfaceTransformFlagBitsKHR t) {
@@ -368,9 +412,18 @@ bool Context::createSwapchain() {
             default: return "иной";
         }
     };
-    LOGI("Свопчейн: %ux%u, экран повёрнут на %s, просим preTransform %s",
+    auto presentName = [](VkPresentModeKHR m) {
+        switch (m) {
+            case VK_PRESENT_MODE_IMMEDIATE_KHR: return "IMMEDIATE (без ограничения)";
+            case VK_PRESENT_MODE_MAILBOX_KHR:   return "MAILBOX (без разрывов)";
+            case VK_PRESENT_MODE_FIFO_KHR:      return "FIFO (по экрану)";
+            default: return "иной";
+        }
+    };
+    LOGI("Свопчейн: %ux%u, экран повёрнут на %s, просим preTransform %s, показ %s",
          swapExtent_.width, swapExtent_.height,
-         transformName(displayTransform), transformName(surfaceTransform_));
+         transformName(displayTransform), transformName(surfaceTransform_),
+         presentName(ci.presentMode));
 
     VKCHECK(vkCreateSwapchainKHR(device_, &ci, nullptr, &swapchain_));
     vkGetSwapchainImagesKHR(device_, swapchain_, &imgCount, nullptr);

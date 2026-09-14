@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <atomic>
 
+#include "core/clipboard.h"
 #include "core/log.h"
 #include "core/job_system.h"
 #include "core/math.h"
@@ -124,6 +125,9 @@ struct Engine {
     u32  lastSaveSlot    = 0;
 
     std::string settingsPath;
+    /// Нужен для JNI: буфер обмена живёт на стороне Java, а
+    /// добраться до него можно только через объект активности.
+    ANativeActivity* activity = nullptr;
     std::string internalDataPath;
 
     glm::vec2 cameraYawPitch{ 0.f, -0.35f };
@@ -214,6 +218,7 @@ struct Engine {
 
         LOGI("=== VoxelRPG: инициализация окна (Phase 15) ===");
 
+        activity = app->activity;
         internalDataPath = app->activity->internalDataPath ?
                            app->activity->internalDataPath : "/tmp";
         settingsPath = internalDataPath + "/settings.cfg";
@@ -223,6 +228,10 @@ struct Engine {
         cfg::L().setLanguage(cfg::settingsConst().language);
 
         crash::step("Vulkan: создание контекста");
+        // Режим показа надо выбрать ДО создания цепочки: это её
+        // свойство. Иначе первая цепочка родится с ограничением по
+        // экрану, а снялось бы оно только после первой смены тумблера.
+        vk.setVsync(!cfg::settingsConst().unlimitedFps);
         if (!vk.init(w)) { LOGE("Vulkan init failed"); return; }
 
         const i32 ww = ANativeWindow_getWidth(w);
@@ -297,6 +306,12 @@ struct Engine {
 
             if (ui) ui->showFps = s.showFps;
             if (world) world->setViewDistance(s.viewDistance);
+
+            // Режим показа — свойство цепочки, поэтому смена тумблера
+            // пересоздаёт её. Context сам решит, когда: он поднимет
+            // признак, beginFrame вернёт false, и главный цикл позовёт
+            // onResize тем же путём, что и при повороте экрана.
+            vk.setVsync(!s.unlimitedFps);
 
             cfg::L().setLanguage(s.language);
 
@@ -480,6 +495,21 @@ struct Engine {
         audio::engine().shutdown();
 
         cfg::settings().save(settingsPath);
+
+        // Журнал — в буфер обмена.
+        //
+        // Файл остаётся на месте, как и был; это не замена, а
+        // избавление от похода в Termux ради чтения. Делаем здесь, а
+        // не позже: на этом шаге приложение ещё на переднем плане, а
+        // часть прошивок молча отказывает фоновым в записи в буфер.
+        //
+        // Сюда приходят оба пути выхода: и закрытие окна системой, и
+        // выход из меню игры (wantQuit тоже зовёт onWindowTerm).
+        if (activity && crash::logPath()[0]) {
+            if (!sys::copyFileToClipboard(activity, crash::logPath()))
+                LOGW("Журнал в буфер обмена не попал — файл на месте: %s",
+                     crash::logPath());
+        }
 
         // Окна больше нет — рисовать нельзя, чем бы ни был фокус.
         initialized = false;

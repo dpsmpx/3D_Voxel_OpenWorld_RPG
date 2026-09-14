@@ -23,25 +23,57 @@ struct KV {
     char value[128];
 };
 
+/// Пробелы по краям ключа и значения — не значащие.
+///
+/// Раньше не обрезались вовсе, и «debug_scene = true» не совпадало
+/// ни с одним ключом: разбор отдавал ключ «debug_scene » с пробелом
+/// на конце. Файл при этом читался молча и без жалоб, настройка
+/// просто не применялась.
+///
+/// Сам движок пишет файл без пробелов, поэтому на своих же файлах
+/// это не всплывало никогда. Всплывало на тех, что правят руками, —
+/// а именно так и описан в docs/RENDER_AUDIT.md способ включить
+/// диагностическую сцену на устройстве.
+void trimSpan(const char*& begin, const char*& end) {
+    while (begin < end && (*begin == ' ' || *begin == '\t')) ++begin;
+    while (end > begin) {
+        const char c = end[-1];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') --end;
+        else break;
+    }
+}
+
+void copySpan(char* dst, usize cap, const char* begin, const char* end) {
+    usize n = (usize)(end - begin);
+    if (n >= cap) n = cap - 1;
+    std::memcpy(dst, begin, n);
+    dst[n] = '\0';
+}
+
 bool parseLine(const char* line, KV& out) {
     if (!line) return false;
-    if (line[0] == '#' || line[0] == '\0') return false;
 
-    const char* eq = std::strchr(line, '=');
-    if (!eq) return false;
+    const char* lineEnd = line + std::strlen(line);
+    const char* p = line;
+    trimSpan(p, lineEnd);
+    if (p == lineEnd) return false;
+    // Комментарий и заголовок раздела — не пары «ключ-значение».
+    if (*p == '#' || *p == ';' || *p == '[') return false;
 
-    usize klen = (usize)(eq - line);
-    if (klen >= sizeof(out.key)) klen = sizeof(out.key) - 1;
-    std::memcpy(out.key, line, klen);
-    out.key[klen] = '\0';
+    const char* eq = std::strchr(p, '=');
+    if (!eq || eq >= lineEnd) return false;
 
-    const char* v = eq + 1;
-    usize vlen = std::strlen(v);
-    // Обрезаем \r\n
-    while (vlen > 0 && (v[vlen-1] == '\n' || v[vlen-1] == '\r')) --vlen;
-    if (vlen >= sizeof(out.value)) vlen = sizeof(out.value) - 1;
-    std::memcpy(out.value, v, vlen);
-    out.value[vlen] = '\0';
+    const char* kb = p;
+    const char* ke = eq;
+    trimSpan(kb, ke);
+    if (kb == ke) return false;
+
+    const char* vb = eq + 1;
+    const char* ve = lineEnd;
+    trimSpan(vb, ve);
+
+    copySpan(out.key,   sizeof(out.key),   kb, ke);
+    copySpan(out.value, sizeof(out.value), vb, ve);
     return true;
 }
 
@@ -184,7 +216,7 @@ bool Settings::save(const std::string& path) const {
 
     std::fprintf(f, "\n[Render]\n");
     wi("view_distance",      viewDistance);
-    wb("vsync",              vsync);
+    wb("unlimited_fps",      unlimitedFps);
     wi("debug_shading",      debugShading);
     wb("debug_scene",        debugScene);
 
@@ -266,8 +298,13 @@ bool Settings::load(const std::string& path) {
 
         else if (std::strcmp(kv.key, "view_distance") == 0)
             viewDistance = readI32(kv.value, viewDistance);
+        else if (std::strcmp(kv.key, "unlimited_fps") == 0)
+            unlimitedFps = readBool(kv.value, unlimitedFps);
+        // Ключ из старых файлов настроек. Он был обратным по смыслу и
+        // ни на что не влиял, но раз уж лежит у кого-то на диске —
+        // прочитаем, чтобы прежний выбор не пропал молча.
         else if (std::strcmp(kv.key, "vsync") == 0)
-            vsync = readBool(kv.value, vsync);
+            unlimitedFps = !readBool(kv.value, !unlimitedFps);
         else if (std::strcmp(kv.key, "debug_shading") == 0)
             debugShading = readI32(kv.value, debugShading);
         else if (std::strcmp(kv.key, "debug_scene") == 0)

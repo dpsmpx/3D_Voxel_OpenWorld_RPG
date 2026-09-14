@@ -130,7 +130,7 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Settings_Autosave */ "Autosave",
     /* Settings_AutosaveInterval */"Autosave Interval",
     /* Settings_ViewDistance */"View Distance",
-    /* Settings_Vsync */    "V-Sync",
+    /* Settings_UnlimitedFps */ "Unlimited FPS",
 
     /* Notif_LevelUp */     "LEVEL UP!",
     /* Notif_Crafted */     "Crafted!",
@@ -263,7 +263,7 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Settings_Autosave */ "Автосохранение",
     /* Settings_AutosaveInterval */"Интервал автосейва",
     /* Settings_ViewDistance */"Дальность прорисовки",
-    /* Settings_Vsync */    "Вертикальная синхронизация",
+    /* Settings_UnlimitedFps */ "Без ограничения кадров",
 
     /* Notif_LevelUp */     "НОВЫЙ УРОВЕНЬ!",
     /* Notif_Crafted */     "Создано!",

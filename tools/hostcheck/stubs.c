@@ -45,6 +45,7 @@ STUB(vkCreateDescriptorSetLayout)
 STUB(vkCreateDevice)
 STUB(vkCreateFence)
 /* Метки времени GPU: пул запросов и запись меток в командный буфер. */
+STUB(vkGetPhysicalDeviceSurfacePresentModesKHR)
 STUB(vkCreateQueryPool)
 STUB(vkDestroyQueryPool)
 STUB(vkGetQueryPoolResults)
