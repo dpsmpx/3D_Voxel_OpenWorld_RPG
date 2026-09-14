@@ -100,20 +100,40 @@ void ChunkManager::enqueueGenerate(ChunkCoord coord) {
     auto chunk = findChunk(coord.x, coord.z);
     if (!chunk) return;
 
-    auto* ctx = new JobCtx{ this, std::move(chunk), coord, 0 };
+    auto* ctx = new JobCtx{ this, std::move(chunk), coord, 0, 0, 0 };
     jobsInFlight_.fetch_add(1, std::memory_order_acq_rel);
     jobs::gJobs.submit(&ChunkManager::jobGenerate, ctx);
 }
 
-void ChunkManager::enqueueMesh(ChunkCoord coord) {
+void ChunkManager::enqueueMesh(ChunkCoord coord, u8 lod) {
     auto chunk = findChunk(coord.x, coord.z);
     if (!chunk) return;
     if (!chunk->generated.load(std::memory_order_acquire)) return;
 
-    const u64 v = chunk->version.load(std::memory_order_acquire);
-    auto* ctx = new JobCtx{ this, std::move(chunk), coord, v };
+    const u8  want = lod & 3;
+    const u64 v    = chunk->version.load(std::memory_order_acquire);
+    // Уровень фиксируется ЗДЕСЬ и уезжает в задаче. Воркер читать
+    // lodWanted не будет: между постановкой и запуском проходит
+    // неопределённое время, и прочитанное там значение относится уже
+    // к другому кадру и другому положению камеры.
+    //
+    // Вместе с уровнем уезжает номер заказа на него. Если пока задача
+    // считает, тот же уровень закажут заново, её результат устареет,
+    // и записывать его будет нельзя — иначе старая задача затрёт
+    // состояние более нового запроса.
+    const u64 seq  = chunk->lodSeq[want].fetch_add(1, std::memory_order_acq_rel) + 1;
+
+    auto* ctx = new JobCtx{ this, std::move(chunk), coord, v, want, seq };
     jobsInFlight_.fetch_add(1, std::memory_order_acq_rel);
     jobs::gJobs.submit(&ChunkManager::jobMesh, ctx);
+}
+
+void ChunkManager::enqueueMeshCurrentLod(ChunkCoord coord) {
+    auto chunk = findChunk(coord.x, coord.z);
+    if (!chunk) return;
+    // Единственное разрешённое чтение lodWanted: здесь, в момент
+    // постановки, чтобы выбрать заказываемый уровень.
+    enqueueMesh(coord, chunk->lodWanted.load(std::memory_order_acquire) & 3);
 }
 
 // ============================================================
@@ -162,15 +182,18 @@ void ChunkManager::jobGenerate(void* data) {
     // сперва мешируется в полном разрешении, а через кадр
     // перестраивается в грубом — двойная работа на каждом новом чанке
     // у края мира, а их там больше всего.
-    c->lodWanted.store(
-        mgr->lodForChunk(ctx->coord, c->lodWanted.load(std::memory_order_acquire) & 3),
-        std::memory_order_release);
+    const u8 lod = mgr->lodForChunk(
+        ctx->coord, c->lodWanted.load(std::memory_order_acquire) & 3);
+    c->lodWanted.store(lod, std::memory_order_release);
 
-    mgr->enqueueMesh(ctx->coord);
-    mgr->enqueueMesh({ ctx->coord.x - 1, ctx->coord.z });
-    mgr->enqueueMesh({ ctx->coord.x + 1, ctx->coord.z });
-    mgr->enqueueMesh({ ctx->coord.x, ctx->coord.z - 1 });
-    mgr->enqueueMesh({ ctx->coord.x, ctx->coord.z + 1 });
+    // Свой чанк заказываем именно на этот уровень, а соседей — на те,
+    // что заказаны у них: у соседа своё расстояние до камеры и своя
+    // история, и навязывать ему наш уровень нельзя.
+    mgr->enqueueMesh(ctx->coord, lod);
+    mgr->enqueueMeshCurrentLod({ ctx->coord.x - 1, ctx->coord.z });
+    mgr->enqueueMeshCurrentLod({ ctx->coord.x + 1, ctx->coord.z });
+    mgr->enqueueMeshCurrentLod({ ctx->coord.x, ctx->coord.z - 1 });
+    mgr->enqueueMeshCurrentLod({ ctx->coord.x, ctx->coord.z + 1 });
 }
 
 // ============================================================
@@ -187,6 +210,9 @@ void ChunkManager::jobMesh(void* data) {
         ~InFlight() { n.fetch_sub(1, std::memory_order_acq_rel); }
     } guard{ mgr->jobsInFlight_ };
 
+    // Уровень задачи выбран при постановке и здесь уже не обсуждается.
+    const u8 lod = ctx->lod & 3;
+
     if (c->removed.load(std::memory_order_acquire)) return;
     if (!c->generated.load(std::memory_order_acquire)) return;
 
@@ -194,6 +220,11 @@ void ChunkManager::jobMesh(void* data) {
     // поставлена более свежая. Свежая версия победит и так, но лишний
     // проход меширования дорогой — выходим.
     if (c->version.load(std::memory_order_acquire) != ctx->version) return;
+
+    // То же самое, но по заказам на ЭТОТ уровень: пока задача ждала
+    // своей очереди, тот же уровень заказали заново. Считать дважды
+    // одно и то же незачем.
+    if (c->lodSeq[lod].load(std::memory_order_acquire) != ctx->lodSeq) return;
 
     const NeighborLease lease = mgr->gatherNeighbors(ctx->coord.x, ctx->coord.z);
 
@@ -225,13 +256,28 @@ void ChunkManager::jobMesh(void* data) {
         meshArena.reset();
         std::pmr::vector<Quad> quads{ &meshRes };
 
-        // Строим один уровень — тот, который нужен рендеру. Четыре
-        // уровня разом стоили вчетверо больше работы и хранились
-        // целиком, хотя чанк почти всегда рисуется одним.
-        const u8 lod = c->lodWanted.load(std::memory_order_acquire) & 3;
+        // Строим РОВНО тот уровень, за которым нас послали.
+        //
+        // Здесь стояло чтение c->lodWanted — и это была причина
+        // оставшегося перещёлкивания LOD. Между постановкой задачи и
+        // этой строкой проходит неопределённое время: значение
+        // успевало смениться, задача строила чужой уровень, а
+        // получатель потом угадывал, что же ему построили. Уровень
+        // теперь приезжает в самой задаче и не меняется.
         buildGreedyMesh(*c, nb, quads, (Lod)lod);
 
         std::lock_guard mlk(c->meshMutex);
+
+        // Последняя сверка перед записью — уже под замком меша.
+        //
+        // Пока мы считали, воксели могли измениться, а этот уровень —
+        // быть заказан заново. И в том и в другом случае наш результат
+        // относится к прошлому, и класть его нельзя: снаружи он
+        // неотличим от свежего, а более новый запрос оказался бы
+        // затёрт задачей, которая старше его.
+        if (c->version.load(std::memory_order_acquire) != ctx->version) return;
+        if (c->lodSeq[lod].load(std::memory_order_acquire) != ctx->lodSeq) return;
+
         // Копия в обычный vector: меш переживает арену воркера.
         c->meshes[lod].quads.assign(quads.begin(), quads.end());
         c->meshes[lod].revision = ctx->version;
@@ -262,14 +308,20 @@ void ChunkManager::jobMesh(void* data) {
 
     if (c->removed.load(std::memory_order_acquire)) return;
 
-    // Один и тот же чанк мог уже попасть в очередь — не дублируем.
-    // Флаг на самом чанке вместо перебора очереди: очередь читают и
-    // пишут несколько рабочих потоков разом, и перебор под общим
-    // замком дорожал вместе с её длиной.
-    if (c->queuedForUpload.exchange(true, std::memory_order_acq_rel)) return;
+    // Тот же уровень того же чанка мог уже попасть в очередь — не
+    // дублируем. Флаг на самом чанке вместо перебора очереди: очередь
+    // читают и пишут несколько рабочих потоков разом, и перебор под
+    // общим замком дорожал вместе с её длиной.
+    //
+    // Отметка на УРОВЕНЬ, а не на чанк: у одного чанка может честно
+    // стоять в очереди несколько уровней, и общая отметка теряла бы
+    // все, кроме первого, молча.
+    if (c->queuedForUpload[lod].exchange(true, std::memory_order_acq_rel)) return;
 
+    // В очередь едет пара «чанк и построенный уровень». Получателю
+    // больше нечего угадывать: завершение адресовано конкретному lod.
     std::lock_guard lk(mgr->readyMtx_);
-    mgr->meshesReady_.push_back(ctx->chunk);
+    mgr->meshesReady_.push_back(MeshReady{ ctx->chunk, lod });
 }
 
 NeighborLease ChunkManager::gatherNeighbors(i32 cx, i32 cz) const {
@@ -290,8 +342,8 @@ NeighborLease ChunkManager::gatherNeighbors(i32 cx, i32 cz) const {
     return lease;
 }
 
-std::vector<std::shared_ptr<Chunk>> ChunkManager::pollMeshesReady(usize maxCount) {
-    std::vector<std::shared_ptr<Chunk>> out;
+std::vector<MeshReady> ChunkManager::pollMeshesReady(usize maxCount) {
+    std::vector<MeshReady> out;
     {
         std::lock_guard lk(readyMtx_);
         if (maxCount == 0 || meshesReady_.size() <= maxCount) {
@@ -311,8 +363,10 @@ std::vector<std::shared_ptr<Chunk>> ChunkManager::pollMeshesReady(usize maxCount
         // и выходила молча. Меш при этом построен, но в очередь не
         // попал — и на экране оставалась дыра ровно до тех пор, пока
         // тот же уровень не закажут заново.
-        for (const auto& c : out)
-            if (c) c->queuedForUpload.store(false, std::memory_order_release);
+        for (const auto& m : out)
+            if (m.chunk)
+                m.chunk->queuedForUpload[m.lod & 3].store(false,
+                                                          std::memory_order_release);
     }
     return out;
 }
@@ -394,13 +448,14 @@ void ChunkManager::removeChunks(const std::vector<ChunkCoord>& coords) {
         std::lock_guard lk3(readyMtx_);
         meshesReady_.erase(
             std::remove_if(meshesReady_.begin(), meshesReady_.end(),
-                           [](const std::shared_ptr<Chunk>& c) {
-                               if (!c->removed.load(std::memory_order_acquire))
+                           [](const MeshReady& m) {
+                               if (!m.chunk) return true;
+                               if (!m.chunk->removed.load(std::memory_order_acquire))
                                    return false;
                                // Очередь его больше не держит — флаг
                                // не должен утверждать обратное.
-                               c->queuedForUpload.store(false,
-                                                        std::memory_order_release);
+                               m.chunk->queuedForUpload[m.lod & 3].store(
+                                   false, std::memory_order_release);
                                return true;
                            }),
             meshesReady_.end());
@@ -430,13 +485,15 @@ void ChunkManager::setVoxel(i32 wx, i32 wy, i32 wz, u16 block) {
 
     // Перестраиваем свой чанк и соседей: изменение на границе меняет
     // видимость граней у соседа.
-    enqueueMesh({cx, cz});
+    // Каждый чанк перестраивается в СВОЁМ текущем уровне, и уровень
+    // выбирается здесь, а не в воркере.
+    enqueueMeshCurrentLod({cx, cz});
     const i32 lx = wx - (cx << 5);
     const i32 lz = wz - (cz << 5);
-    if (lx == 0)              enqueueMesh({cx - 1, cz});
-    if (lx == CHUNK_SIZE - 1) enqueueMesh({cx + 1, cz});
-    if (lz == 0)              enqueueMesh({cx, cz - 1});
-    if (lz == CHUNK_SIZE - 1) enqueueMesh({cx, cz + 1});
+    if (lx == 0)              enqueueMeshCurrentLod({cx - 1, cz});
+    if (lx == CHUNK_SIZE - 1) enqueueMeshCurrentLod({cx + 1, cz});
+    if (lz == 0)              enqueueMeshCurrentLod({cx, cz - 1});
+    if (lz == CHUNK_SIZE - 1) enqueueMeshCurrentLod({cx, cz + 1});
 }
 
 // ============================================================
@@ -526,9 +583,16 @@ void ChunkManager::requestLod(ChunkCoord coord, u8 lod) {
     chunk->lodWanted.store(want, std::memory_order_release);
     {
         std::lock_guard lk(chunk->meshMutex);
-        if (chunk->meshes[want].built) return;   // уже построен, ждёт выгрузки
+        // Уже построен по текущим вокселям — ждёт выгрузки, второй раз
+        // считать нечего. Сверка с version обязательна: «построен»
+        // без неё означало бы в том числе «построен по старым
+        // вокселям», и заказ на пересборку не уходил бы никогда.
+        if (chunk->meshes[want].built &&
+            chunk->meshes[want].revision ==
+                chunk->version.load(std::memory_order_acquire))
+            return;
     }
-    enqueueMesh(coord);
+    enqueueMesh(coord, want);
 }
 
 usize ChunkManager::loadedChunks() const {

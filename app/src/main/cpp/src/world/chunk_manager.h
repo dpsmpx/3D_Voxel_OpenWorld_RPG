@@ -48,6 +48,21 @@ struct NeighborLease {
 
 class ChunkManager;
 
+/// Готовый меш: чанк И уровень, который в нём построен.
+///
+/// Уровень едет вместе с чанком, а не выясняется потом по его
+/// состоянию. Раньше очередь несла только чанк, и получатель гадал,
+/// что же ему прислали: смотрел на желаемый уровень, а если тот не
+/// построен — брал первый попавшийся из четырёх. Набор построенных
+/// уровней меняется во времени сам по себе, поэтому «первый
+/// попавшийся» назначал резидентным то LOD0, то LOD3 при неподвижной
+/// камере — ровно это и было видно как перещёлкивание дальнего
+/// рельефа.
+struct MeshReady {
+    std::shared_ptr<Chunk> chunk;
+    u8                     lod = 0;   ///< какой уровень реально построен
+};
+
 /// Курсор чтения вокселей.
 ///
 /// Почти вся цена ChunkManager::getVoxel — это не чтение памяти, а
@@ -108,7 +123,7 @@ public:
     /// стоит сборки вершин и копии в видеопамять — без ограничения
     /// это заметный провал кадра ровно там, где игрок смотрит по
     /// сторонам. Ноль означает «все».
-    std::vector<std::shared_ptr<Chunk>> pollMeshesReady(usize maxCount = 0);
+    std::vector<MeshReady> pollMeshesReady(usize maxCount = 0);
 
     /// ---- Управление вокселями ----
     void setVoxel(i32 wx, i32 wy, i32 wz, u16 block);
@@ -170,10 +185,24 @@ private:
         std::shared_ptr<Chunk> chunk;
         ChunkCoord             coord{};
         u64                    version = 0;
+        /// Уровень детализации, ЗА КОТОРЫМ задачу послали. Выбран в
+        /// момент постановки и с тех пор не меняется: воркер строит
+        /// его и только его. Для jobGenerate не значит ничего.
+        u8                     lod = 0;
+        /// Номер этого заказа (Chunk::lodSeq[lod] на момент
+        /// постановки). По нему задача узнаёт, не устарела ли она.
+        u64                    lodSeq = 0;
     };
 
     void enqueueGenerate(ChunkCoord coord);
-    void enqueueMesh(ChunkCoord coord);
+    /// Ставит задачу построения КОНКРЕТНОГО уровня. Уровень
+    /// фиксируется здесь и уезжает в задаче; на Chunk::lodWanted
+    /// воркер больше не смотрит.
+    void enqueueMesh(ChunkCoord coord, u8 lod);
+    /// То же для случая «перестроить чанк как есть»: правка блока,
+    /// появление соседа. Уровень берётся из lodWanted ЗДЕСЬ, в
+    /// момент постановки, и дальше живёт в задаче.
+    void enqueueMeshCurrentLod(ChunkCoord coord);
     NeighborLease gatherNeighbors(i32 cx, i32 cz) const;
 
     static void jobGenerate(void* data);
@@ -197,7 +226,7 @@ private:
     mutable std::shared_mutex chunksMtx_;
 
     std::mutex                                readyMtx_;
-    std::vector<std::shared_ptr<Chunk>>       meshesReady_;
+    std::vector<MeshReady>                    meshesReady_;
 
     /// Задачи генерации и меширования вместе: деструктор ждёт их все,
     /// иначе воркер обратится к уничтоженному ChunkManager.

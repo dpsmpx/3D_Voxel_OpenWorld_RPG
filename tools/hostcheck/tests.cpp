@@ -34,6 +34,7 @@
 #include "world/debug_scene.h"
 #include "world/chunk_manager.h"
 #include "render/mesh_builder.h"
+#include "render/chunk_renderer.h"
 #include "render/camera.h"
 #include "render/instanced_renderer.h"
 #include "vk/vk_buffer.h"
@@ -49,6 +50,7 @@
 #include "world/ai/pathfinding.h"
 #include "core/job_system.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -868,13 +870,17 @@ void testNeighborArrivalTriggersRemesh() {
     check(gen != std::string::npos, "чанк помечается сгенерированным");
     if (gen == std::string::npos) return;
 
-    const std::string after = cm.substr(gen, 1400);
-    check(after.find("enqueueMesh(ctx->coord)") != std::string::npos,
-          "свой чанк ставится на меширование");
+    const std::string after = cm.substr(gen, 2200);
+    // Уровень указывается при ПОСТАНОВКЕ: enqueueMesh принимает его
+    // вторым доводом, и воркеру уже нечего выбирать.
+    check(after.find("enqueueMesh(ctx->coord, lod)") != std::string::npos,
+          "свой чанк ставится на меширование в выбранном здесь уровне");
     usize n = 0;
     for (const char* d : { "coord.x - 1", "coord.x + 1", "coord.z - 1", "coord.z + 1" })
         if (after.find(d) != std::string::npos) ++n;
     check(n == 4, "и все четыре соседа — тоже");
+    check(after.find("enqueueMesh(ctx->coord);") == std::string::npos,
+          "постановки без уровня не осталось");
 
     // Поведение: тот же чанк, смешированный без соседа и с соседом,
     // обязан дать разное число граней на стыке.
@@ -1545,12 +1551,71 @@ void testResidentLodSurvivesRequest() {
 
     // 2. Смена резидентного уровня происходит только после успешной
     //    загрузки: присваивание стоит внутри if (uploadLod(...)).
-    const usize u = crc.find("if (uploadLod(ctx, cmd, it->second, c, req.lod))");
+    const usize u = crc.find("if (uploadLod(ctx, cmd, gpu, c, req.lod))");
     check(u != std::string::npos, "уровень грузится из очереди запросов");
     if (u != std::string::npos) {
-        const std::string win = crc.substr(u, 200);
-        check(win.find("residentLod  = req.lod") != std::string::npos,
-              "резидентным уровень становится после успешной загрузки");
+        const std::string win = crc.substr(u, 400);
+        check(win.find("residentAfterUpload") != std::string::npos,
+              "резидентным уровень становится после успешной загрузки, "
+              "и только по общему правилу");
+    }
+
+    // 2a. Правило смены резидентного уровня — одно на весь рендер, и
+    //     присваиваний residentLod помимо него не осталось. Иначе
+    //     любая новая ветка загрузки снова начнёт назначать
+    //     резидентным всё, что доехало.
+    {
+        const std::string only = "residentLod  = residentAfterUpload(";
+        usize direct = 0;
+        for (usize at = crc.find("residentLod  = "); at != std::string::npos;
+             at = crc.find("residentLod  = ", at + 1)) {
+            if (crc.substr(at, only.size()) != only) ++direct;
+        }
+        check(direct == 0, "residentLod присваивают только через общее правило");
+        check(crc.find("gpu.residentLod  = have") == std::string::npos,
+              "«что угадали, то и резидентное» из загрузки убрано");
+    }
+
+    // 2b. Перебора «первый построенный из 0..3» в загрузке больше нет.
+    //     Именно он назначал резидентным то LOD0, то LOD3 при
+    //     неподвижной камере.
+    {
+        const usize up = crc.find("void ChunkRenderer::uploadChunks");
+        check(up != std::string::npos, "uploadChunks на месте");
+        if (up != std::string::npos) {
+            const usize end = crc.find("void ChunkRenderer::render", up);
+            const std::string win = crc.substr(up, end - up);
+            check(win.find("if (c.meshes[l].built) { have = l; break; }")
+                      == std::string::npos,
+                  "перебор «первый построенный из четырёх» удалён");
+            check(win.find("c.lodWanted.load") == std::string::npos,
+                  "и подсматривание в lodWanted тоже");
+        }
+    }
+
+    // 4. Воркер не выбирает уровень сам: он строит тот, что записан в
+    //    задаче. Чтения lodWanted в jobMesh быть не должно — из-за
+    //    него уже поставленная задача строила не тот уровень, за
+    //    которым её посылали.
+    {
+        const usize jm = cmc.find("void ChunkManager::jobMesh");
+        check(jm != std::string::npos, "jobMesh на месте");
+        if (jm != std::string::npos) {
+            const usize end = cmc.find("NeighborLease ChunkManager::gatherNeighbors", jm);
+            const std::string win = cmc.substr(jm, end - jm);
+            check(win.find("lodWanted.load") == std::string::npos,
+                  "jobMesh не читает lodWanted");
+            check(win.find("const u8 lod = ctx->lod") != std::string::npos,
+                  "уровень задачи берётся из её же контекста");
+        }
+        const usize eq = cmc.find("void ChunkManager::enqueueMesh(ChunkCoord coord, u8 lod)");
+        check(eq != std::string::npos,
+              "enqueueMesh принимает уровень и фиксирует его при постановке");
+        if (eq != std::string::npos) {
+            const std::string win = cmc.substr(eq, 1800);
+            check(win.find("lodSeq[want].fetch_add") != std::string::npos,
+                  "и заодно номер заказа, по которому задача узнаёт, что устарела");
+        }
     }
 
     // 3. Мир не выбрасывает остальные уровни при постройке нового,
@@ -1562,6 +1627,200 @@ void testResidentLodSurvivesRequest() {
         check(win.find("revision == ctx->version") != std::string::npos,
               "и оставляет те, что построены по тем же вокселям");
     }
+}
+
+// ------------------------------------------------------------
+// Гонка завершений LOD: кто заказывал, тот и получает
+//
+// Симптом: при НЕПОДВИЖНОЙ камере разрешение дальнего рельефа
+// перещёлкивало между LOD0..LOD3. Камера не двигалась, воксели не
+// менялись, а картинка менялась.
+//
+// Причина была в асинхронном конвейере, и целиком в семантике
+// «кто чей»:
+//
+//   1. Задача меширования не несла в себе уровень. Она читала
+//      Chunk::lodWanted В МОМЕНТ ВЫПОЛНЕНИЯ — то есть неизвестно
+//      через сколько кадров после постановки — и строила то, что
+//      прочитала. За каким уровнем её посылали, она не помнила.
+//   2. Очередь готовых мешей несла один лишь чанк, без уровня.
+//   3. Получатель угадывал: нет нужного уровня — брал первый
+//      построенный из 0..3.
+//   4. Что угадал, то и становилось residentLod.
+//   5. render() рисует residentLod.
+//
+// Набор построенных уровней меняется во времени сам по себе —
+// уровни достраиваются и устаревают. Поэтому шаг 3 давал разный
+// ответ в разных кадрах БЕЗ единого изменения снаружи, и побеждал
+// тот воркер, который закончил последним.
+//
+// Правило, которое это закрывает, ровно одно и живёт в
+// render::residentAfterUpload: резидентным уровень становится, только
+// если он и есть целевой, либо рисовать не было нечем вовсе. Чужое
+// завершение — задача за другой уровень, поставленная раньше и
+// закончившаяся позже — не двигает резидентный уровень никуда.
+// ------------------------------------------------------------
+void testLodCompletionIsAddressed() {
+    group("LOD: завершение адресовано уровню, а не чанку");
+
+    constexpr u8 NONE = render::LOD_NONE;
+
+    // ---- 1. Само правило ----
+    check(render::residentAfterUpload(NONE, 2, 2) == 2,
+          "первый же приехавший целевой уровень становится резидентным");
+    check(render::residentAfterUpload(NONE, 2, 0) == 0,
+          "пока рисовать нечем, годится и не целевой: дыра хуже грубой геометрии");
+    check(render::residentAfterUpload(3, 3, 0) == 3,
+          "чужое завершение не сбивает устоявшийся резидентный уровень");
+    check(render::residentAfterUpload(3, 3, 1) == 3, "и никакое другое тоже");
+    check(render::residentAfterUpload(0, 2, 2) == 2,
+          "приехавший целевой уровень сменяет резидентный");
+    check(render::residentAfterUpload(2, 2, NONE) == 2,
+          "мусорный уровень не принимается вовсе");
+
+    // ---- 2. Порядок завершений не решает ничего ----
+    //
+    // Главная проверка. Несколько уровней одного чанка строятся
+    // одновременно (это разрешено) и по одним и тем же вокселям.
+    // Заканчиваются они в произвольном порядке — так работает пул
+    // воркеров. Итог обязан быть один и тот же при ЛЮБОМ порядке:
+    // резидентным становится только целевой уровень.
+    //
+    // Перебираем все 24 порядка прибытия четырёх уровней.
+    u8 perm[4] = { 0, 1, 2, 3 };
+    int orders = 0, wrong = 0;
+    std::sort(perm, perm + 4);
+    do {
+        ++orders;
+        for (u8 target = 0; target < 4; ++target) {
+            // Свежий чанк: рисовать нечем.
+            u8 resident = NONE;
+            for (u8 i = 0; i < 4; ++i)
+                resident = render::residentAfterUpload(resident, target, perm[i]);
+            if (resident != target) ++wrong;
+        }
+    } while (std::next_permutation(perm, perm + 4));
+    check(orders == 24, "перебраны все порядки прибытия");
+    check(wrong == 0,
+          "при любом порядке резидентным становится ровно целевой уровень");
+
+    // ---- 3. Неподвижная камера: повторные завершения ничего не двигают ----
+    //
+    // Чанк устоялся на своём уровне, камера стоит, целевой уровень не
+    // меняется. Задачи за прочие уровни продолжают приходить —
+    // запоздавшие, повторные, в любом порядке. Резидентный уровень
+    // обязан остаться тем же самым.
+    for (u8 target = 0; target < 4; ++target) {
+        u8 resident = target;
+        bool held = true;
+        for (int round = 0; round < 32; ++round) {
+            const u8 arrived = (u8)((round * 7 + 1) & 3);
+            resident = render::residentAfterUpload(resident, target, arrived);
+            if (resident != target) held = false;
+        }
+        if (!held) {
+            check(false, "при неподвижной камере резидентный уровень не уезжает");
+            break;
+        }
+        if (target == 3)
+            check(true, "при неподвижной камере резидентный уровень не уезжает");
+    }
+
+    // ---- 4. Смена уровня всё-таки происходит ----
+    // Правило не должно оказаться «резидентный уровень не меняется
+    // никогда»: это вылечило бы мерцание ценой отключённого LOD.
+    {
+        u8 resident = 0;
+        const u8 target = 2;
+        resident = render::residentAfterUpload(resident, target, 1);   // чужое
+        check(resident == 0, "чужой уровень по дороге не принят");
+        resident = render::residentAfterUpload(resident, target, 2);   // целевой
+        check(resident == 2, "целевой уровень доехал и принят");
+    }
+}
+
+// ------------------------------------------------------------
+// Мир строит РОВНО заказанный уровень и говорит, какой построил
+//
+// Это вторая половина того же исправления, на стороне мира.
+// Проверяется поведением, на живом планировщике: заказываем уровни,
+// забираем готовые меши и смотрим, что приехало.
+// ------------------------------------------------------------
+void testMeshJobBuildsRequestedLod() {
+    group("мир: задача меширования строит заказанный уровень");
+
+    world::blocks();
+    jobs::gJobs.start(3);
+    {
+        world::ChunkManager mgr(0xB0BAULL, 1);
+
+        // Ждём настоящий рельеф в чанке (0,0).
+        bool ready = false;
+        for (int i = 0; i < 500 && !ready; ++i) {
+            mgr.update({ 8.f, 70.f, 8.f });
+            ready = mgr.isReadyAt(8, 8);
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "чанк сгенерирован");
+
+        if (ready) {
+            // Заказываем все четыре уровня подряд, не дожидаясь ни
+            // одного: ровно тот случай, когда у чанка одновременно
+            // строится несколько уровней. Очередь готовых мешей
+            // намеренно НЕ разбираем заранее — уровень, построенный
+            // при генерации, тоже обязан приехать со своим номером.
+            const world::ChunkCoord c{ 0, 0 };
+            for (u8 l = 0; l < 4; ++l) mgr.requestLod(c, l);
+
+            bool arrived[4] = { false, false, false, false };
+            bool everyArrivalIsBuilt = true;
+            bool everyArrivalWasAsked = true;
+            for (int i = 0; i < 200; ++i) {
+                for (const auto& m : mgr.pollMeshesReady()) {
+                    if (!m.chunk) continue;
+                    if (m.lod > 3) { everyArrivalWasAsked = false; continue; }
+                    if (m.chunk->coord.x == 0 && m.chunk->coord.z == 0)
+                        arrived[m.lod] = true;
+                    // Уровень, названный в завершении, обязан быть
+                    // действительно построен. Раньше уровень в
+                    // завершении вообще не назывался — получателю
+                    // было нечего проверить.
+                    std::lock_guard lk(m.chunk->meshMutex);
+                    if (!m.chunk->meshes[m.lod].built) everyArrivalIsBuilt = false;
+                }
+                if (arrived[0] && arrived[1] && arrived[2] && arrived[3]) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+
+            check(everyArrivalWasAsked, "уровень в завершении — настоящий уровень");
+            check(everyArrivalIsBuilt,
+                  "названный в завершении уровень действительно построен");
+            check(arrived[0] && arrived[1] && arrived[2] && arrived[3],
+                  "все четыре заказанных уровня доехали по отдельности");
+
+            // И построены именно как заявлено: число квадов совпадает
+            // с эталонным мешем того же уровня. Задача, прочитавшая
+            // уровень из lodWanted в момент выполнения, дала бы здесь
+            // четыре одинаковых меша вместо четырёх разных.
+            auto chunk = mgr.findChunk(0, 0);
+            check(chunk != nullptr, "чанк на месте");
+            if (chunk) {
+                usize quads[4] = { 0, 0, 0, 0 };
+                {
+                    std::lock_guard lk(chunk->meshMutex);
+                    for (u8 l = 0; l < 4; ++l)
+                        quads[l] = chunk->meshes[l].built
+                                 ? chunk->meshes[l].quads.size() : 0;
+                }
+                // Огрубление не может добавлять геометрию.
+                check(quads[0] && quads[1] && quads[2] && quads[3],
+                      "геометрия есть на каждом из четырёх уровней");
+                check(quads[0] > quads[3],
+                      "четыре уровня различны — а не один и тот же четырежды");
+            }
+        }
+    }
+    jobs::gJobs.stop();
 }
 
 // ------------------------------------------------------------
@@ -3798,6 +4057,8 @@ int main() {
     testShadersAvoidUndefinedMath();
     testLodHasSingleSourceOfTruth();
     testResidentLodSurvivesRequest();
+    testLodCompletionIsAddressed();
+    testMeshJobBuildsRequestedLod();
     testCoarseWaterIsStable();
     testCoarseWaterDoesNotFloat();
     testLodSeamHasNoCracks();
