@@ -2609,9 +2609,67 @@ void testFrameGpuBreakdown() {
     check(ef != NONE, "endFrame реализован");
     if (ef != NONE) {
         const std::string efw = ctxc.substr(ef, ctxc.find("\n}\n", ef) - ef);
-        check(efw.find("while (passMarks_ < GPU_PASSES)") != NONE,
+        check(efw.find("passMarks_ < GPU_PASSES") != NONE,
               "endFrame добивает хвост меток");
+        // ...но только пока метки вообще ставятся. Сбрасывается и
+        // читается ровно столько запросов, сколько записывается
+        // (stampsUsed), и дописывать хвост при выключенных метках
+        // значило бы писать в запрос, который никто не сбрасывал.
+        check(efw.find("passTiming_ && passMarks_") != NONE,
+              "и только когда метки включены");
     }
+
+    // ---- 5а. Метки внутри прохода отключаемы и выключены ----
+    //
+    // На устройстве они стоили двух миллисекунд из одиннадцати: та же
+    // диагностическая сцена шла 10.8..11.3 мс без них и 12.7..13.3 мс
+    // с ними. Плиточный GPU откладывает фрагментную работу прохода
+    // рендера целиком, и метка посреди прохода заставляет его эту
+    // работу разорвать. Толку при этом ноль: весь кадр собирался в
+    // первой метке, остальные показывали ноль.
+    check(ctxh.find("void setPassTiming(bool on)") != NONE,
+          "метки внутри прохода можно выключить");
+    check(ctxc.find("if (!passTiming_ ||") != NONE,
+          "и выключенные они ничего не пишут");
+    const std::string cfgh = readSource("app/src/main/cpp/src/config/settings.h");
+    if (!cfgh.empty()) {
+        const usize g = cfgh.find("bool gpuPassTiming");
+        check(g != NONE, "настройка меток по проходам есть");
+        if (g != NONE) {
+            const std::string line = cfgh.substr(g, cfgh.find(';', g) - g);
+            check(line.find("false") != NONE, "и по умолчанию выключена");
+        }
+    }
+
+    // ---- 5б. Развёртка меряет вычитанием, а не метками ----
+    const std::string sw = readSource("app/src/main/cpp/src/render/pass_sweep.h");
+    check(!sw.empty(), "развёртка по проходам есть");
+    if (!sw.empty()) {
+        // Опорный замер обязан идти первым: от него считается разность.
+        const usize st = sw.find("STEPS[] = {");
+        check(st != NONE, "комбинации перечислены");
+        if (st != NONE) {
+            const usize first = sw.find("0x7F", st);
+            const usize brace = sw.find('}', st);
+            check(first != NONE && first < brace,
+                  "опорная комбинация (все проходы) идёт первой");
+        }
+        // Каждый проход обязан быть выключен ровно в одной комбинации,
+        // иначе часть таблицы просто не заполнится.
+        for (const char* m : { "0x77", "0x3F", "0x7E", "0x7B", "0x6F", "0x7D" })
+            if (sw.find(m) == NONE) {
+                std::printf("       нет комбинации %s\n", m);
+                check(false, "каждый проход выключается своей комбинацией");
+                return;
+            }
+        check(true, "каждый проход выключается своей комбинацией");
+        check(sw.find("WARMUP_SEC") != NONE,
+              "первые кадры после смены маски выбрасываются");
+    }
+    // Пока идёт развёртка, маску задаёт она, а не настройка: два
+    // источника на одно поле спорили бы, и замер сравнивал бы не то.
+    check(win.find("passSweep_.active() ? passSweep_.mask()") != NONE,
+          "во время развёртки маску задаёт она");
 
     // ---- 6. Пул рассчитан на все метки ----
     check(ctxh.find("STAMPS_PER_FRAME = 2 + GPU_PASSES") != NONE,

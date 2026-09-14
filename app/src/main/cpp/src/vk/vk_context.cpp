@@ -729,10 +729,10 @@ bool Context::beginFrame() {
         // дождались его забора. Читаем ДО того, как сбросим метки.
         if (timeQueryPending_[currentFrame_]) {
             u64 stamps[STAMPS_PER_FRAME] = {};
+            const u32 used = stampsUsed();
             const VkResult qr = vkGetQueryPoolResults(
-                device_, timeQuery_, currentFrame_ * STAMPS_PER_FRAME,
-                STAMPS_PER_FRAME,
-                sizeof(stamps), stamps, sizeof(u64), VK_QUERY_RESULT_64_BIT);
+                device_, timeQuery_, currentFrame_ * STAMPS_PER_FRAME, used,
+                sizeof(u64) * used, stamps, sizeof(u64), VK_QUERY_RESULT_64_BIT);
             if (qr == VK_SUCCESS && stamps[1] > stamps[0]) {
                 lastGpuMs_ = (f32)((double)(stamps[1] - stamps[0]) *
                                    (double)timestampPeriod_ * 1e-6);
@@ -743,7 +743,7 @@ bool Context::beginFrame() {
                 // был отброшен), равна нулю: такую длительность не
                 // считаем, иначе получилась бы разность с мусором.
                 u64 prev = stamps[0];
-                for (u32 i = 0; i < GPU_PASSES; ++i) {
+                for (u32 i = 0; i < GPU_PASSES && passTiming_; ++i) {
                     const u64 cur = stamps[2 + i];
                     if (cur >= prev && cur != 0) {
                         passMs_[i] = (f32)((double)(cur - prev) *
@@ -757,7 +757,7 @@ bool Context::beginFrame() {
             timeQueryPending_[currentFrame_] = false;
         }
         vkCmdResetQueryPool(cmdBuffers_[currentFrame_], timeQuery_,
-                            currentFrame_ * STAMPS_PER_FRAME, STAMPS_PER_FRAME);
+                            currentFrame_ * STAMPS_PER_FRAME, stampsUsed());
         vkCmdWriteTimestamp(cmdBuffers_[currentFrame_],
                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                             timeQuery_, currentFrame_ * STAMPS_PER_FRAME);
@@ -820,7 +820,7 @@ const char* Context::passName(GpuPass p) {
 }
 
 void Context::markPass(GpuPass p) {
-    if (timeQuery_ == VK_NULL_HANDLE || !frameStarted_) return;
+    if (!passTiming_ || timeQuery_ == VK_NULL_HANDLE || !frameStarted_) return;
     // Метки идут строго по порядку перечисления. Пропущенную
     // (проход выключен в settings.cfg) дописываем здесь же, чтобы
     // номер метки всегда отвечал своему проходу.
@@ -857,7 +857,7 @@ void Context::endFrame() {
         // делает всю выборку «ещё не готовой», и вместе с ним
         // пропадает время всего кадра. Пишем их здесь, одну за
         // другой, — такие проходы получат нулевую длительность.
-        while (passMarks_ < GPU_PASSES) {
+        while (passTiming_ && passMarks_ < GPU_PASSES) {
             vkCmdWriteTimestamp(cmdBuffers_[currentFrame_],
                                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                                 timeQuery_,

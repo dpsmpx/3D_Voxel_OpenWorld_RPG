@@ -467,6 +467,19 @@ struct Engine {
         updateRunning();
         running     = true;
         LOGI("=== VoxelRPG готов (Phase 15). Spawn y=%.1f ===", playerSpawn.y);
+        // Метки времени GPU внутри прохода рендера стоят двух
+        // миллисекунд на плиточном GPU и всё равно не делят кадр —
+        // см. config::Settings::gpuPassTiming. По умолчанию их нет.
+        vk.setPassTiming(cfg::settingsConst().gpuPassTiming);
+        if (cfg::settingsConst().renderPassSweep && render) {
+            render->passSweep().start();
+            // Полная квалификация не для красоты: `render` здесь ещё
+            // и поле Engine, и без ведущего «::» читателю приходится
+            // вспоминать правило поиска имени перед «::».
+            LOGI("развёртка проходов: включена, %u комбинаций по %.0f с",
+                 ::render::PassSweep::STEP_COUNT,
+                 (double)::render::PassSweep::STEP_SEC);
+        }
         LOGI("зерно мира: %llu, дальность %d чанков",
              (unsigned long long)worldSeed, world->viewDistance());
     }
@@ -1560,6 +1573,12 @@ extern "C" void android_main(android_app* app) {
             msRecord  += ms(tC2, tC3);
             msSubmit  += ms(tC3, tD);
             msGpu     += eng.vk.lastGpuMs();
+            // Развёртка ест ПОЛНОЕ время кадра: метка вокруг
+            // командного буфера тайлеру не мешает, в отличие от
+            // меток внутри прохода.
+            if (eng.render && eng.render->passSweep().active() &&
+                eng.render->passSweep().tick(dt, eng.vk.lastGpuMs()))
+                eng.render->passSweep().report();
             for (u32 i = 0; i < vk::Context::GPU_PASSES; ++i) {
                 msPass[i]   += eng.vk.passMs((vk::Context::GpuPass)i);
                 drawPass[i] += eng.render

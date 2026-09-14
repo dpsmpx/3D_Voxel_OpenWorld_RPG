@@ -220,6 +220,8 @@ bool Settings::save(const std::string& path) const {
     wb("unlimited_fps",      unlimitedFps);
     wi("debug_shading",      debugShading);
     wi("render_passes",      (i32)renderPasses);
+    wb("gpu_pass_timing",    gpuPassTiming);
+    wb("render_pass_sweep",  renderPassSweep);
     wb("debug_scene",        debugScene);
 
     std::fclose(f);
@@ -311,6 +313,10 @@ bool Settings::load(const std::string& path) {
             debugShading = readI32(kv.value, debugShading);
         else if (std::strcmp(kv.key, "render_passes") == 0)
             renderPasses = (u32)readI32(kv.value, (i32)renderPasses) & 0x7Fu;
+        else if (std::strcmp(kv.key, "gpu_pass_timing") == 0)
+            gpuPassTiming = readBool(kv.value, gpuPassTiming);
+        else if (std::strcmp(kv.key, "render_pass_sweep") == 0)
+            renderPassSweep = readBool(kv.value, renderPassSweep);
         else if (std::strcmp(kv.key, "debug_scene") == 0)
             debugScene = readBool(kv.value, debugScene);
     }
