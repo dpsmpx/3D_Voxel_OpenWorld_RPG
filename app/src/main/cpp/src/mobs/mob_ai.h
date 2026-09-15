@@ -32,7 +32,6 @@ struct MobAI {
     world::ai::MoveParams moveParams{};
 
     /// Анимация
-    f32 walkPhase = 0.f;
     f32 attackAnim = 0.f;
     f32 deathTimer = 0.f;
     f32 damageFlash = 0.f;

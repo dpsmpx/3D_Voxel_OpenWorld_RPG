@@ -82,10 +82,14 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     const auto ready = world.pollMeshesReady(render::ChunkRenderer::MAX_MESH_UPLOADS_PER_FRAME);
     chunkRenderer_.uploadChunks(ctx, world, ready, camera_.position());
 
-    mobRenderer_.rebuild(registry);
+    mobRenderer_.rebuild(registry, timeSec_);
     mobRenderer_.upload(ctx);
 
-    npcRenderer_.rebuild(registry);
+    // Модель игрока идёт в тот же поток инстансов, что и NPC: один
+    // конвейер, один буфер, один вызов отрисовки на всех двуногих.
+    npcRenderer_.rebuild(registry, timeSec_,
+                         player && player->cameraMode ==
+                             player::CameraMode::ThirdPerson);
     npcRenderer_.upload(ctx);
 
     projRenderer_.rebuild(registry);

@@ -217,6 +217,9 @@ void updateMobs(world::ChunkManager& world,
         u16 inside = world.getVoxel(fx, feetY, fz);
         ai->inWater = (inside == world::WATER) || (below == world::WATER);
         ai->onGround = (below != world::AIR) && (below != world::WATER);
+        // Признак опоры знает тот, кто двигает существо. Поза его
+        // только читает — иначе её пришлось бы угадывать по скорости.
+        if (auto* lo = reg.get<ecs::Locomotion>(e)) lo->grounded = ai->onGround;
 
         if (agent->state == AIAgent::Dead) {
             ai->deathTimer += dt;
@@ -289,13 +292,11 @@ void updateMobs(world::ChunkManager& world,
         if (stunned) {
             vel->linear.x *= std::exp(-8.f * dt);
             vel->linear.z *= std::exp(-8.f * dt);
-            ai->walkPhase += dt * 1.f;
         } else {
             switch (agent->state) {
             case AIAgent::Idle: {
                 vel->linear.x *= std::exp(-6.f * dt);
                 vel->linear.z *= std::exp(-6.f * dt);
-                ai->walkPhase += dt * 2.f;
 
                 if (ai->stateTime > frand(IDLE_TIME_MIN, IDLE_TIME_MAX)) {
                     agent->state = AIAgent::Patrol;
@@ -331,7 +332,6 @@ void updateMobs(world::ChunkManager& world,
                 }
                 vel->linear.x = dir.x * def.walkSpeed * speedMult;
                 vel->linear.z = dir.z * def.walkSpeed * speedMult;
-                ai->walkPhase += dt * 6.f;
 
                 if (isHostile && distToPlayer < def.aggroRange) {
                     if (hasLOS(world, pos + glm::vec3(0, def.eyeHeight, 0),
@@ -379,7 +379,6 @@ void updateMobs(world::ChunkManager& world,
                 }
                 vel->linear.x = dir.x * def.chaseSpeed * speedMult;
                 vel->linear.z = dir.z * def.chaseSpeed * speedMult;
-                ai->walkPhase += dt * 9.f;
 
                 if (!ai->path.empty() && ai->pathIndex < (i32)ai->path.size()) {
                     glm::vec3 wp = glm::vec3(ai->path[ai->pathIndex]) + glm::vec3(0.5f,0,0.5f);
@@ -457,7 +456,6 @@ void updateMobs(world::ChunkManager& world,
                 if (d > 0.1f) away /= d;
                 vel->linear.x = away.x * def.chaseSpeed * speedMult;
                 vel->linear.z = away.z * def.chaseSpeed * speedMult;
-                ai->walkPhase += dt * 9.f;
 
                 if (hp->current / def.maxHealth > 0.7f || ai->stateTime > 8.f) {
                     agent->state = AIAgent::Idle;

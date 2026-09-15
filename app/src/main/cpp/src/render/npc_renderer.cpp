@@ -8,7 +8,9 @@
 #include "../ecs/components.h"
 #include "../core/orientation.h"
 #include "../entity/rig.h"
-#include "../entity/humanoid_rig.h"
+#include "../npc/npc_rig.h"
+#include "../player/player_rig.h"
+#include "../combat/components.h"
 #include "../entity/locomotion.h"
 #include "../core/log.h"
 #include <cstring>
@@ -20,31 +22,6 @@ namespace render {
 // Вершинный формат и геометрия куба — общие для всех рендеров
 // MobInstance, см. MOB_ATTRS в mob_renderer.h.
 
-namespace {
-
-/// Оснастка вида, построенная один раз.
-///
-/// Двуногий один на всех: и на селянина, и на стража, и на игрока.
-/// Отличают их пропорции и цвета из определения вида — не отдельный
-/// код на каждого.
-const entity::Rig& npcRig(u16 id, const npc::NpcDef& def) {
-    static entity::Rig cache[npc::NPC_COUNT]{};
-    static bool built[npc::NPC_COUNT]{};
-
-    const u16 k = (id < npc::NPC_COUNT) ? id : (u16)npc::NPC_NONE;
-    if (!built[k]) {
-        entity::HumanoidSpec spec;
-        spec.height      = def.bodyHeight;
-        spec.bodyColor   = def.bodyColor;
-        spec.headColor   = def.headColor;
-        spec.accentColor = def.accentColor;
-        cache[k] = entity::humanoidRig(spec);
-        built[k] = true;
-    }
-    return cache[k];
-}
-
-} // namespace
 
 bool NpcRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout) {
     dev_ = ctx.device();
@@ -98,7 +75,7 @@ bool NpcRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayo
     return true;
 }
 
-void NpcRenderer::rebuild(ecs::Registry& reg) {
+void NpcRenderer::rebuild(ecs::Registry& reg, f32 timeSec, bool showPlayer) {
     cpu_.clear();
 
     auto& pool = reg.pool<npc::NpcAI>();
@@ -133,10 +110,25 @@ void NpcRenderer::rebuild(ecs::Registry& reg) {
         // опоры (наполовину под землёй), а голова висела на 1.45 — с
         // просветом там, где полагалась грудь. Теперь геометрию даёт
         // оснастка, позу — общая локомоция, сборку — entity::resolve.
-        const entity::Rig& rig = npcRig(tag->id, def);
+        // Облик особи, а не вида: шесть селян в деревне обязаны
+        // отличаться друг от друга не только координатами.
+        const auto* look = reg.get<ecs::Appearance>(e);
+        const entity::Rig& rig = npc::rigFor(tag->id, look ? look->seed : 0u);
 
         anim::AnimState st;
-        st.phase     = ai->walkPhase;
+        // Фаза шага — состояние сущности, посчитанное ПУТЁМ, а не
+        // множителем ко времени в ИИ.
+        const auto* gt = reg.get<ecs::Gait>(e);
+        st.phase     = gt ? gt->phase : 0.f;
+        st.time      = timeSec;
+
+        // Прыжок, падение и приземление — состояние сущности, не
+        // догадка рендера по вертикальной скорости.
+        if (const auto* lo = reg.get<ecs::Locomotion>(e)) {
+            st.air  = lo->air;
+            st.land = lo->land;
+            st.rise = lo->rise;
+        }
         st.speedNorm = speedNorm;
         st.death     = (ai->state == npc::NpcAI::Dead) ? ai->deathTimer : 0.f;
 
@@ -194,7 +186,74 @@ void NpcRenderer::rebuild(ecs::Registry& reg) {
         }
     }
 
+    if (showPlayer) appendPlayer(reg, timeSec);
+
     instanceCount_ = (u32)cpu_.size();
+}
+
+// Игрок рисуется ЗДЕСЬ, а не отдельным рендером.
+//
+// Он такой же двуногий, как селянин, и формат инстанса у него тот же,
+// поэтому свой конвейер, свой буфер и свой вызов отрисовки ему не
+// нужны — это была бы лишняя цена за отсутствующее отличие. Раньше
+// игрока не рисовали вовсе: камера стоит в пяти с половиной метрах
+// позади, а показывать там было нечего.
+void NpcRenderer::appendPlayer(ecs::Registry& reg, f32 timeSec) {
+    auto& pool = reg.pool<ecs::PlayerTag>();
+    for (usize i = 0; i < pool.size(); ++i) {
+        const ecs::Entity e = pool.entityAt((u32)i);
+        const auto* tf = reg.get<ecs::Transform>(e);
+        const auto* vel = reg.get<ecs::Velocity>(e);
+        if (!tf || !vel) continue;
+
+        const auto* fc = reg.get<ecs::Facing>(e);
+        const auto* gt = reg.get<ecs::Gait>(e);
+        const auto* ws = reg.get<combat::WeaponState>(e);
+
+        const glm::vec2 velXZ { vel->linear.x, vel->linear.z };
+        const f32 yaw = fc ? fc->yaw : orient::yawFromDirection(velXZ.x, velXZ.y);
+
+        // Нормируем по скорости бега: на спринте шаг обязан быть
+        // шире, чем на шаге, — иначе обе скорости выглядят одинаково.
+        const f32 speedNorm = glm::min(1.f, glm::length(velXZ) / 7.5f);
+
+        const entity::Rig& rg = player::rig();
+
+        anim::AnimState st;
+        st.phase     = gt ? gt->phase : 0.f;
+        st.time      = timeSec;
+
+        // Прыжок, падение и приземление — состояние сущности, не
+        // догадка рендера по вертикальной скорости.
+        if (const auto* lo = reg.get<ecs::Locomotion>(e)) {
+            st.air  = lo->air;
+            st.land = lo->land;
+            st.rise = lo->rise;
+        }
+        st.speedNorm = speedNorm;
+        st.attack    = ws ? glm::clamp(ws->swingAnim, 0.f, 1.f) : 0.f;
+        if (const auto* lo = reg.get<ecs::Locomotion>(e)) {
+            st.air  = lo->air;
+            st.land = lo->land;
+            st.rise = lo->rise;
+        }
+
+        entity::Pose pose;
+        anim::poseFor(rg, pose, st);
+
+        entity::ResolvedPart parts[entity::MAX_PARTS];
+        const u8 n = entity::resolve(rg, pose, tf->position, yaw,
+                                     parts, entity::MAX_PARTS);
+        for (u8 k = 0; k < n; ++k) {
+            MobInstance inst{};
+            inst.pos   = parts[k].center;
+            inst.size  = parts[k].size;
+            inst.color = parts[k].color;
+            inst.rot   = glm::vec4(parts[k].rot.x, parts[k].rot.y,
+                                   parts[k].rot.z, parts[k].rot.w);
+            cpu_.push_back(inst);
+        }
+    }
 }
 
 void NpcRenderer::upload(vk::Context& ctx) {

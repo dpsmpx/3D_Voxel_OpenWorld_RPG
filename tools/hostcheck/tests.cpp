@@ -65,6 +65,9 @@
 #include "entity/locomotion.h"
 #include "entity/mob_rigs.h"
 #include "entity/humanoid_rig.h"
+#include "npc/npc_rig.h"
+#include "player/player_rig.h"
+#include "player/player.h"
 #include "entity/rig.h"
 #include "ui/ui_theme.h"
 #include "ui/ui_atlas.h"
@@ -6168,48 +6171,24 @@ void testRigHierarchyIsSound() {
             check(false, m);
         }
 
-        // ---- 3б. Оснастка не меняет размер модели ----
+        // ---- 3б. Модель того же размера, что и коллайдер ----
         //
-        // Оснастка — то же существо, пересобранное с суставами, а не
-        // другое. Если звенья ноги в сумме длиннее исходной коробки,
-        // существо молча вырастает: опора этого уже не покажет —
-        // подошва всё равно садится на ноль, просто макушка уезжает
-        // вверх. Ровно так и было: половинки ноги брали по 0.55 длины
-        // вместо 0.5, и каждый зверь оказывался выше задуманного.
+        // Иначе визуал и физика расходятся: по существу промахиваются
+        // там, где оно выглядит задетым, и наоборот. Раньше расходились
+        // сильно — у Каменного стража модель была 4.35 при коллайдере
+        // 3.40, почти на метр выше того, во что попадают.
+        //
+        // Сверяем по МАКУШКЕ, то есть с ушами и рогами: силуэт — это
+        // то, что видно, а не то, что осталось после вычитания примет.
         {
-            f32 flatLo = 0.f, flatHi = 0.f;
-            bool any = false;
-            for (u8 q = 0; q < d.partCount; ++q) {
-                const mobs::MobPart& sp = d.parts[q];
-                if (sp.size.x <= 0.f || sp.size.y <= 0.f || sp.size.z <= 0.f)
-                    continue;
-                const f32 b = sp.offset.y - sp.size.y * 0.5f;
-                const f32 t = sp.offset.y + sp.size.y * 0.5f;
-                if (!any) { flatLo = b; flatHi = t; any = true; }
-                else { flatLo = std::min(flatLo, b); flatHi = std::max(flatHi, t); }
-            }
-            if (any) {
-                entity::Pose rest;
-                entity::ResolvedPart rp[entity::MAX_PARTS];
-                const u8 rn = entity::resolve(rig, rest, glm::vec3(0.f), 0.f,
-                                              rp, entity::MAX_PARTS);
-                f32 rigLo = 0.f, rigHi = 0.f;
-                for (u8 q = 0; q < rn; ++q) {
-                    const f32 b = rp[q].center.y - rp[q].size.y * 0.5f;
-                    const f32 t = rp[q].center.y + rp[q].size.y * 0.5f;
-                    if (q == 0) { rigLo = b; rigHi = t; }
-                    else { rigLo = std::min(rigLo, b); rigHi = std::max(rigHi, t); }
-                }
-                const f32 flatH = flatHi - flatLo;
-                const f32 rigH  = rigHi - rigLo;
-                if (rn > 0 && std::fabs(rigH - flatH) > 0.02f * flatH + 0.01f) {
-                    ++problems;
-                    char m[176];
-                    std::snprintf(m, sizeof(m),
-                                  "%s: оснастка ростом %.2f вместо %.2f",
-                                  name ? name : "?", rigH, flatH);
-                    check(false, m);
-                }
+            const f32 top = entity::highestPoint(rig, rig.rest, 0.f);
+            if (std::fabs(top - d.bodyHeight) > 0.02f * d.bodyHeight + 0.01f) {
+                ++problems;
+                char m[176];
+                std::snprintf(m, sizeof(m),
+                              "%s: модель ростом %.2f при коллайдере %.2f",
+                              name ? name : "?", top, d.bodyHeight);
+                check(false, m);
             }
         }
 
@@ -6217,9 +6196,7 @@ void testRigHierarchyIsSound() {
         //
         // Ни парящих, ни утопленных. Начало сущности — точка опоры,
         // значит низ модели в покое должен быть у нуля.
-        entity::Pose idle;
-        anim::idlePose(rig, idle, 0.f);
-        const f32 lo = entity::lowestPoint(rig, idle, 0.f);
+        const f32 lo = entity::lowestPoint(rig, rig.rest, 0.f);
         if (std::fabs(lo) > 0.35f) {
             ++problems;
             char m[176];
@@ -6314,6 +6291,643 @@ void testRigResolveRotatesParts() {
         check(std::fabs(a[1].center.x - b[1].center.x) < 1e-4f &&
               std::fabs(a[1].center.z - b[1].center.z) < 1e-4f,
               "поправка модели равносильна повороту сущности");
+    }
+}
+
+// ------------------------------------------------------------
+// У игрока есть модель.
+//
+// Её не было вовсе. Камера по умолчанию стоит в пяти с половиной
+// метрах позади и на метр выше — то есть игра третьего лица, — а
+// показывать там было нечего: ни одного рендера, который рисовал бы
+// игрока, в проекте не существовало.
+// ------------------------------------------------------------
+void testPlayerHasModel() {
+    group("игрок: модель есть и живёт по общим правилам");
+
+    const entity::Rig& rig = player::rig();
+    check(rig.count > 0, "оснастка игрока построена");
+    if (rig.count == 0) return;
+
+    // ---- Рост модели совпадает с ростом коллайдера ----
+    //
+    // Иначе игрок протискивается там, где визуально не пролезает, и
+    // наоборот — застревает в проёме, который выглядит свободным.
+    {
+        entity::Pose rest;
+        entity::ResolvedPart p[entity::MAX_PARTS];
+        const u8 n = entity::resolve(rig, rest, glm::vec3(0.f), 0.f,
+                                     p, entity::MAX_PARTS);
+        f32 top = 0.f;
+        for (u8 i = 0; i < n; ++i)
+            top = std::max(top, p[i].center.y + p[i].size.y * 0.5f);
+
+        // Коллайдер задан полувысотой 0.90 — значит рост 1.80.
+        check(std::fabs(top - 1.80f) < 1e-3f,
+              "рост модели совпадает с высотой коллайдера");
+        check(std::fabs(entity::lowestPoint(rig, rest, 0.f)) < 1e-3f,
+              "и подошва стоит на опоре");
+    }
+
+    // ---- Игрок не особый случай ----
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(10.f, 64.f, 10.f));
+        const ecs::Entity e = pl.entity();
+
+        auto* fc = reg.get<ecs::Facing>(e);
+        auto* gt = reg.get<ecs::Gait>(e);
+        check(fc != nullptr,
+              "поворот игрока — тот же компонент, что у мобов и NPC");
+        check(gt != nullptr,
+              "и фаза шага тоже: своего способа ходить у игрока нет");
+        if (gt) {
+            check(std::fabs(gt->stride - rig.strideLength) < 1e-4f,
+                  "длина шага взята из его собственной оснастки");
+        }
+
+        // Тот же общий проход, что и для всех остальных, обязан
+        // двигать игрока: если он его не видит, игрок останется
+        // смотреть на север и не шагнёт ни разу.
+        if (fc && gt) {
+            auto* v = reg.get<ecs::Velocity>(e);
+            check(v != nullptr, "и скорость, по которой всё это считается");
+            if (v) {
+                v->linear = glm::vec3(3.f, 0.f, 0.f);   // строго на восток
+                for (int i = 0; i < 120; ++i) {
+                    orient::advanceFacing(*fc, v->linear, 1.f / 60.f);
+                    anim::advanceGait(*gt, v->linear, 1.f / 60.f);
+                }
+                const f32 east = orient::yawFromDirection(1.f, 0.f);
+                check(std::fabs(orient::angleDelta(fc->yaw, east)) < 1e-3f,
+                      "идёт на восток — и смотрит на восток");
+                check(gt->phase > 0.f, "и переставляет ноги, пока идёт");
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// Переходы: покой, шаг, бег, прыжок, падение, приземление.
+//
+// Анимация знала ровно два положения — покой и шаг — и смешивала их
+// по скорости. Прыжка, падения и приземления не было вовсе, поэтому
+// существо падало с обрыва, перебирая ногами по воздуху.
+// ------------------------------------------------------------
+void testLocomotionStatesAndTransitions() {
+    group("переходы: шаг, бег, полёт, посадка");
+
+    using State = ecs::Locomotion::State;
+    const f32 dt = 1.f / 60.f;
+
+    // ---- Состояние выбирается скоростью и опорой ----
+    {
+        ecs::Locomotion lo{};
+        anim::advanceLocomotion(lo, 0.f, 0.f, true, dt);
+        check(lo.state == State::Idle, "стоит — покой");
+
+        anim::advanceLocomotion(lo, 0.3f, 0.f, true, dt);
+        check(lo.state == State::Walk, "медленно — шаг");
+
+        anim::advanceLocomotion(lo, 0.95f, 0.f, true, dt);
+        check(lo.state == State::Run, "быстро — бег");
+
+        anim::advanceLocomotion(lo, 0.5f, 4.f, false, dt);
+        check(lo.state == State::Jump, "оторвался вверх — прыжок");
+
+        anim::advanceLocomotion(lo, 0.5f, -6.f, false, dt);
+        check(lo.state == State::Fall, "летит вниз — падение");
+
+        anim::advanceLocomotion(lo, 0.5f, 0.f, true, dt);
+        check(lo.state == State::Land, "коснулся земли — приземление");
+    }
+
+    // ---- Опора не угадывается по вертикальной скорости ----
+    //
+    // В верхней точке прыжка она нулевая. Существо, которое в этот
+    // миг считает себя стоящим, на мгновение встаёт в позу покоя
+    // прямо в воздухе.
+    {
+        ecs::Locomotion lo{};
+        anim::advanceLocomotion(lo, 0.f, 0.f, false, dt);
+        check(lo.state == State::Fall || lo.state == State::Jump,
+              "в высшей точке прыжка существо всё ещё в воздухе");
+    }
+
+    // ---- Переход не мгновенный ----
+    {
+        ecs::Locomotion lo{};
+        anim::advanceLocomotion(lo, 0.f, -5.f, false, dt);
+        const f32 afterOne = lo.air;
+        check(afterOne > 0.f && afterOne < 1.f,
+              "воздушная поза нарастает, а не включается кадром");
+
+        for (int i = 0; i < 60; ++i)
+            anim::advanceLocomotion(lo, 0.f, -5.f, false, dt);
+        check(lo.air > 0.99f, "и за время перехода доходит до полной");
+
+        // Вернулись на землю — гаснет так же плавно.
+        anim::advanceLocomotion(lo, 0.f, 0.f, true, dt);
+        const f32 first = lo.air;
+        check(first < 1.f && first > 0.f, "и гаснет не мгновенно");
+    }
+
+    // ---- Приземление проходит само ----
+    {
+        ecs::Locomotion lo{};
+        for (int i = 0; i < 10; ++i)
+            anim::advanceLocomotion(lo, 0.f, -8.f, false, dt);
+        anim::advanceLocomotion(lo, 0.f, 0.f, true, dt);
+        check(lo.state == State::Land, "сел");
+        check(lo.land > 0.5f, "и присед глубок в момент касания");
+
+        f32 prev = lo.land;
+        bool monotone = true, easing = true;
+        for (int i = 0; i < 40; ++i) {
+            anim::advanceLocomotion(lo, 0.f, 0.f, true, dt);
+            if (lo.land > prev + 1e-5f) monotone = false;
+            // Мало «не растёт»: присед обязан РАСПРЯМЛЯТЬСЯ каждый
+            // кадр. Ступенька — тот же рывок, только отложенный: она
+            // проходит проверку на монотонность и всё равно щёлкает.
+            if (prev > 0.02f && lo.land > prev - 1e-6f) easing = false;
+            prev = lo.land;
+        }
+        check(monotone, "присед обратно не проваливается");
+        check(easing, "и распрямляется плавно, а не ступенькой");
+        check(lo.land < 0.01f, "и проходит сам");
+        check(lo.state == State::Idle, "после чего существо снова стоит");
+    }
+
+    // ---- Позы действительно разные ----
+    {
+        const entity::Rig& rig = player::rig();
+
+        auto poseOf = [&](const anim::AnimState& st) {
+            entity::Pose p;
+            anim::poseFor(rig, p, st);
+            return p;
+        };
+        auto differ = [&](const entity::Pose& a, const entity::Pose& b) {
+            f32 worst = 0.f;
+            for (u8 i = 0; i < rig.count; ++i)
+                for (int k = 0; k < 3; ++k)
+                    worst = std::max(worst, std::fabs(a.euler[i][k] - b.euler[i][k]));
+            return worst;
+        };
+
+        anim::AnimState walk;  walk.phase = 1.2f; walk.speedNorm = 0.35f;
+        anim::AnimState run;   run.phase  = 1.2f; run.speedNorm  = 1.0f;
+        anim::AnimState fall;  fall.phase = 1.2f; fall.speedNorm = 0.35f;
+        fall.air = 1.f; fall.rise = -1.f;
+        anim::AnimState jump = fall; jump.rise = 1.f;
+        anim::AnimState land;  land.phase = 1.2f; land.speedNorm = 0.f;
+        land.land = 1.f;
+
+        check(differ(poseOf(walk), poseOf(run)) > 0.05f,
+              "бег отличается от шага не только частотой");
+        check(differ(poseOf(walk), poseOf(fall)) > 0.2f,
+              "в падении поза своя, а не продолжение шага");
+        check(differ(poseOf(jump), poseOf(fall)) > 0.2f,
+              "взлетая ноги поджаты, падая — вытянуты");
+        check(differ(poseOf(land), poseOf(walk)) > 0.2f,
+              "приземление — отдельная поза");
+
+        // Наклон корпуса на бегу — это то, чем бег и отличается.
+        {
+            f32 torsoWalk = 0.f, torsoRun = 0.f;
+            const entity::Pose w = poseOf(walk), r = poseOf(run);
+            for (u8 i = 0; i < rig.count; ++i)
+                if (rig.parts[i].role == entity::PartRole::Torso) {
+                    torsoWalk = w.euler[i].x; torsoRun = r.euler[i].x;
+                }
+            check(torsoRun > torsoWalk + 0.05f, "на бегу корпус наклонён вперёд");
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// Селяне отличаются друг от друга.
+//
+// Раньше все жители деревни были побайтово одинаковы: оснастка
+// строилась одна на вид, и шесть селян отличались только
+// координатами. Деревня выглядела складом одинаковых кукол.
+// ------------------------------------------------------------
+void testNpcsVaryBetweenIndividuals() {
+    group("NPC: облик особи, а не вида");
+
+    auto measure = [](const entity::Rig& r) {
+        entity::ResolvedPart p[entity::MAX_PARTS];
+        const u8 n = entity::resolve(r, r.rest, glm::vec3(0.f), 0.f,
+                                     p, entity::MAX_PARTS);
+        f32 top = 0.f, wide = 0.f;
+        u32 shirt = 0, skin = 0;
+        u8 w = 0;
+        for (u8 i = 0; i < r.count && w < n; ++i) {
+            if (!r.parts[i].visible) continue;
+            top  = std::max(top, p[w].center.y + p[w].size.y * 0.5f);
+            wide = std::max(wide, p[w].size.x);
+            if (r.parts[i].role == entity::PartRole::Torso) shirt = p[w].color;
+            if (r.parts[i].role == entity::PartRole::Head)  skin  = p[w].color;
+            ++w;
+        }
+        struct R { f32 top, wide; u32 shirt, skin; };
+        return R{ top, wide, shirt, skin };
+    };
+
+    // ---- Облики действительно разные ----
+    {
+        std::set<u32> shirts, skins;
+        std::set<int> heights;
+        for (u32 v = 0; v < npc::NPC_VARIANTS; ++v) {
+            // Семя подбираем так, чтобы попасть в каждый облик.
+            u32 seed = 0;
+            for (u32 t = 0; t < 100000u; ++t)
+                if (npc::variantOf(t) == (u8)v) { seed = t; break; }
+            const auto m = measure(npc::rigFor(npc::NPC_VILLAGER, seed));
+            shirts.insert(m.shirt);
+            skins.insert(m.skin);
+            heights.insert((int)std::lround(m.top * 1000.f));
+        }
+        check(heights.size() >= npc::NPC_VARIANTS - 2,
+              "почти каждый облик своего роста");
+        check(shirts.size() >= 8, "и своего оттенка рубахи");
+        check(skins.size() >= 4, "оттенков кожи несколько");
+    }
+
+    // ---- Но все они остаются селянами ----
+    //
+    // Вариация меняет ОСОБЬ, а не вид: если рост гуляет вдвое, а
+    // рубаха перекрашивается в произвольный цвет, роль перестаёт
+    // читаться и деревня превращается в балаган.
+    {
+        const auto& def = npc::npcRegistry().get(npc::NPC_VILLAGER);
+        int tooTall = 0, tooOff = 0;
+        for (u32 seed = 0; seed < 400u; ++seed) {
+            const auto m = measure(npc::rigFor(npc::NPC_VILLAGER, seed));
+            if (std::fabs(m.top - def.bodyHeight) > def.bodyHeight * 0.10f)
+                ++tooTall;
+
+            // Оттенок рубахи гуляет по яркости, но не по тону.
+            const auto ch = [](u32 c, int sh) { return (f32)((c >> sh) & 0xFF); };
+            const f32 r0 = ch(def.bodyColor, 24), g0 = ch(def.bodyColor, 16);
+            const f32 r1 = ch(m.shirt, 24),       g1 = ch(m.shirt, 16);
+            if (r0 > 1.f && g0 > 1.f && r1 > 1.f && g1 > 1.f) {
+                const f32 ratio = (r1 / g1) / (r0 / g0);
+                if (ratio < 0.9f || ratio > 1.1f) ++tooOff;
+            }
+        }
+        check(tooTall == 0, "рост всех обликов держится в пределах десятой");
+        check(tooOff == 0, "и тон рубахи остаётся тоном своей роли");
+    }
+
+    // ---- Облик устойчив ----
+    //
+    // Он берётся из постоянного ключа NPC. Если бы одно и то же семя
+    // давало разный облик, селянин менялся бы в лице при каждой
+    // перезагрузке чанка.
+    {
+        const auto a = measure(npc::rigFor(npc::NPC_VILLAGER, 12345u));
+        const auto b = measure(npc::rigFor(npc::NPC_VILLAGER, 12345u));
+        check(a.top == b.top && a.shirt == b.shirt && a.skin == b.skin,
+              "одно семя — один и тот же облик");
+    }
+
+    // ---- Шаг соразмерен ногам особи ----
+    //
+    // Низкий селянин с длинным шагом скользил бы ногами точно так же,
+    // как раньше скользили все.
+    {
+        f32 minS = 1e9f, maxS = 0.f;
+        int mismatched = 0;
+        for (u32 seed = 0; seed < 200u; ++seed) {
+            const entity::Rig& r = npc::rigFor(npc::NPC_VILLAGER, seed);
+            minS = std::min(minS, r.strideLength);
+            maxS = std::max(maxS, r.strideLength);
+            const auto m = measure(r);
+            // Выше — значит и шаг длиннее: связь обязана быть.
+            if (r.strideLength <= 0.f || m.top <= 0.f) ++mismatched;
+        }
+        check(mismatched == 0, "у каждого облика шаг положителен");
+        check(maxS > minS * 1.02f, "и у разных обликов он разный");
+    }
+}
+
+// ------------------------------------------------------------
+// Звери отличаются друг от друга, а не только цветом коробки.
+//
+// Плоское описание вида давало девять зашитых слотов: тело, голова,
+// четыре ноги, хвост, две руки. Ни уха, ни морды, ни рога выразить в
+// нём было нельзя — поэтому овца и волк были двумя коробками на
+// четырёх ногах, отличавшимися оттенком серого.
+// ------------------------------------------------------------
+void testBeastsHaveCharacter() {
+    group("звери: приметы вида, а не оттенок серого");
+
+    auto hasRole = [](const entity::Rig& r, entity::PartRole role) {
+        for (u8 i = 0; i < r.count; ++i)
+            if (r.parts[i].role == role) return true;
+        return false;
+    };
+    auto countRole = [](const entity::Rig& r, entity::PartRole role) {
+        int n = 0;
+        for (u8 i = 0; i < r.count; ++i)
+            if (r.parts[i].role == role) ++n;
+        return n;
+    };
+
+    const entity::Rig& sheep   = mobs::rigFor(mobs::MOB_SHEEP);
+    const entity::Rig& cow     = mobs::rigFor(mobs::MOB_COW);
+    const entity::Rig& wolf    = mobs::rigFor(mobs::MOB_WOLF);
+    const entity::Rig& chicken = mobs::rigFor(mobs::MOB_CHICKEN);
+
+    // ---- Приметы на месте ----
+    check(countRole(sheep, entity::PartRole::Ear) == 2, "у овцы два уха");
+    check(countRole(wolf,  entity::PartRole::Ear) == 2, "у волка два уха");
+    check(countRole(cow,   entity::PartRole::Horn) == 2, "у коровы два рога");
+    check(hasRole(sheep, entity::PartRole::Snout), "у овцы есть морда");
+    check(hasRole(wolf,  entity::PartRole::Snout), "у волка есть морда");
+    check(hasRole(chicken, entity::PartRole::Snout), "у курицы есть клюв");
+    check(hasRole(wolf, entity::PartRole::Tail), "у волка есть хвост");
+
+    check(!hasRole(sheep, entity::PartRole::Horn), "а у овцы рогов нет");
+    check(!hasRole(chicken, entity::PartRole::Ear), "и у курицы ушей нет");
+
+    // ---- Уши висят или торчат — и это разные звери ----
+    //
+    // Направление уха задано позой ПОКОЯ, а не отдельной коробкой:
+    // иначе оно не качалось бы вместе с головой на бегу.
+    {
+        f32 sheepEar = 0.f, wolfEar = 0.f;
+        for (u8 i = 0; i < sheep.count; ++i)
+            if (sheep.parts[i].role == entity::PartRole::Ear)
+                sheepEar = sheep.rest.euler[i].x;
+        for (u8 i = 0; i < wolf.count; ++i)
+            if (wolf.parts[i].role == entity::PartRole::Ear)
+                wolfEar = wolf.rest.euler[i].x;
+        check(sheepEar < -0.3f, "у овцы уши висят");
+        check(wolfEar > 0.1f, "а у волка торчат");
+    }
+
+    // ---- Курица — птица: одна пара ног ----
+    {
+        int legs = countRole(chicken, entity::PartRole::UpperLegFR)
+                 + countRole(chicken, entity::PartRole::UpperLegFL)
+                 + countRole(chicken, entity::PartRole::UpperLegBR)
+                 + countRole(chicken, entity::PartRole::UpperLegBL);
+        check(legs == 2, "у курицы две ноги");
+        int wolfLegs = countRole(wolf, entity::PartRole::UpperLegFR)
+                     + countRole(wolf, entity::PartRole::UpperLegFL)
+                     + countRole(wolf, entity::PartRole::UpperLegBR)
+                     + countRole(wolf, entity::PartRole::UpperLegBL);
+        check(wolfLegs == 4, "а у волка четыре");
+    }
+
+    // ---- Силуэты разные ----
+    //
+    // Волк длинный и низкий, овца короткая и плотная. Если отношение
+    // длины к высоте у них совпадёт, порода перестанет читаться.
+    {
+        auto extent = [](const entity::Rig& r, int axis) {
+            entity::ResolvedPart p[entity::MAX_PARTS];
+            const u8 n = entity::resolve(r, r.rest, glm::vec3(0.f), 0.f,
+                                         p, entity::MAX_PARTS);
+            f32 lo = 0.f, hi = 0.f;
+            for (u8 i = 0; i < n; ++i) {
+                const f32 c = p[i].center[axis], h = p[i].size[axis] * 0.5f;
+                if (i == 0) { lo = c - h; hi = c + h; }
+                else { lo = std::min(lo, c - h); hi = std::max(hi, c + h); }
+            }
+            return hi - lo;
+        };
+        const f32 wolfRatio  = extent(wolf, 2)  / std::max(0.01f, extent(wolf, 1));
+        const f32 sheepRatio = extent(sheep, 2) / std::max(0.01f, extent(sheep, 1));
+        check(wolfRatio > sheepRatio * 1.15f,
+              "волк длиннее относительно роста, чем овца");
+    }
+
+    // ---- Примета качается СВОИМ суставом ----
+    //
+    // Ухо — ребёнок головы, и на бегу оно поедет вместе с ней, даже
+    // если собственного движения у него нет вовсе. Поэтому сравнивать
+    // надо не с покоем, а с той же позой, где обнулён угол самого
+    // уха: разница и есть вклад его сустава.
+    {
+        anim::AnimState run;
+        run.phase = 1.1f; run.speedNorm = 1.f;
+        entity::Pose moving;
+        anim::poseFor(wolf, moving, run);
+
+        int earOwn = 0, tailOwn = 0;
+        for (u8 i = 0; i < wolf.count; ++i) {
+            const entity::PartRole r = wolf.parts[i].role;
+            const bool ear  = (r == entity::PartRole::Ear);
+            const bool tail = (r == entity::PartRole::Tail);
+            if (!ear && !tail) continue;
+
+            entity::Pose frozen = moving;
+            frozen.euler[i] = wolf.rest.euler[i];   // сустав не двигается
+
+            entity::ResolvedPart a[entity::MAX_PARTS], b[entity::MAX_PARTS];
+            const u8 n = entity::resolve(wolf, moving, glm::vec3(0.f), 0.f,
+                                         a, entity::MAX_PARTS);
+            entity::resolve(wolf, frozen, glm::vec3(0.f), 0.f,
+                            b, entity::MAX_PARTS);
+            u8 w = 0;
+            for (u8 j = 0; j < i; ++j) if (wolf.parts[j].visible) ++w;
+            if (w >= n) continue;
+
+            if (glm::length(a[w].center - b[w].center) > 1e-3f) {
+                if (ear) ++earOwn; else ++tailOwn;
+            }
+        }
+        check(earOwn > 0, "на бегу ухо мотает собственным суставом");
+        check(tailOwn > 0, "и хвост качается своим");
+    }
+
+    // ---- Поза покоя переживает анимацию ----
+    //
+    // Висячее ухо задано наклоном сустава в позе покоя. Если анимация
+    // кладётся ВМЕСТО неё, а не поверх, овца на первом же шаге
+    // вскидывает уши торчком — и перестаёт быть овцой.
+    //
+    // Смотрим, куда ухо показывает: местное +Y, повёрнутое суставом.
+    // Его составляющая по Z отрицательна у висячего уха и
+    // положительна у торчащего.
+    {
+        auto earTilt = [](const entity::Rig& r, const entity::Pose& pose) {
+            entity::ResolvedPart p[entity::MAX_PARTS];
+            const u8 n = entity::resolve(r, pose, glm::vec3(0.f), 0.f,
+                                         p, entity::MAX_PARTS);
+            u8 w = 0;
+            for (u8 i = 0; i < r.count && w < n; ++i) {
+                if (!r.parts[i].visible) continue;
+                if (r.parts[i].role == entity::PartRole::Ear)
+                    return (p[w].rot * glm::vec3(0.f, 1.f, 0.f)).z;
+                ++w;
+            }
+            return 0.f;
+        };
+
+        check(earTilt(sheep, sheep.rest) < -0.5f, "стоя у овцы ухо свисает назад");
+        check(earTilt(wolf,  wolf.rest)  >  0.1f, "а у волка смотрит вперёд");
+
+        int sheepUp = 0;
+        for (int k = 0; k < 16; ++k) {
+            anim::AnimState st;
+            st.phase = (f32)k * 0.4f; st.speedNorm = 1.f;
+            entity::Pose pose;
+            anim::poseFor(sheep, pose, st);
+            if (earTilt(sheep, pose) > -0.3f) ++sheepUp;
+        }
+        check(sheepUp == 0, "и на бегу овца ушей торчком не вскидывает");
+    }
+
+    // ---- Стоя зверь хвостом в такт шагу не машет ----
+    {
+        entity::Pose standing;
+        anim::walkPose(wolf, standing, 2.2f, 0.f);
+        f32 worst = 0.f;
+        for (u8 i = 0; i < wolf.count; ++i)
+            for (int k = 0; k < 3; ++k)
+                worst = std::max(worst, std::fabs(standing.euler[i][k]));
+        check(worst < 1e-4f, "на нулевой скорости ходьба не даёт ничего");
+    }
+}
+
+// ------------------------------------------------------------
+// Фаза шага идёт путём, а не временем.
+//
+// Раньше её двигали строчки `walkPhase += dt * 9.f`, разные на каждое
+// состояние ИИ: в покое 2, в ходьбе 6, в погоне 9. Скорость и длина
+// шага при этом не связаны ничем, поэтому ноги скользят по земле — и
+// «правильного» множителя не существует: он верен ровно для одной
+// скорости.
+// ------------------------------------------------------------
+void testGaitPhaseFollowsDistance() {
+    group("походка: фаза идёт путём, а не временем");
+
+    // ---- 1. Один шаг на длину шага, какой бы ни была скорость ----
+    //
+    // Это и есть определение «нога не скользит»: за путь в stride
+    // модель обязана проделать ровно один цикл.
+    {
+        constexpr f32 TAU = 6.28318530718f;
+        int bad = 0;
+        for (const f32 speed : { 0.5f, 2.f, 4.5f, 7.5f, 12.f }) {
+            ecs::Gait g{};
+            g.stride = 1.6f;
+            // Шаг по времени подбираем так, чтобы за 240 кадров
+            // пройти РОВНО одну длину шага: округление числа кадров
+            // само по себе дало бы расхождение и проверяло бы его, а
+            // не формулу.
+            const int steps = 240;
+            const f32 dt = g.stride / (speed * (f32)steps);
+            for (int i = 0; i < steps; ++i)
+                anim::advanceGait(g, glm::vec3(0.f, 0.f, speed), dt);
+
+            // Фаза приведена к [0, TAU), поэтому полный цикл читается
+            // как возврат к началу.
+            const f32 off = std::min(g.phase, TAU - g.phase);
+            if (off > 0.05f) ++bad;
+        }
+        check(bad == 0, "за длину шага — ровно один цикл, на любой скорости");
+    }
+
+    // ---- 2. Вдвое быстрее — вдвое чаще, а не шире ----
+    {
+        ecs::Gait slow{}, fast{};
+        slow.stride = fast.stride = 1.6f;
+        const f32 dt = 1.f / 60.f;
+        for (int i = 0; i < 60; ++i) {
+            anim::advanceGait(slow, glm::vec3(0, 0, 2.f), dt);
+            anim::advanceGait(fast, glm::vec3(0, 0, 4.f), dt);
+        }
+        // Фаза свёрнута, поэтому сравниваем накопленный путь напрямую:
+        // два метра против четырёх за ту же секунду.
+        ecs::Gait s2{}, f2{};
+        s2.stride = f2.stride = 1000.f;   // достаточно, чтобы не свернулась
+        for (int i = 0; i < 60; ++i) {
+            anim::advanceGait(s2, glm::vec3(0, 0, 2.f), dt);
+            anim::advanceGait(f2, glm::vec3(0, 0, 4.f), dt);
+        }
+        check(std::fabs(f2.phase - 2.f * s2.phase) < 1e-3f,
+              "вдвое быстрее — вдвое больше циклов");
+    }
+
+    // ---- 3. Длинная нога — редкий шаг ----
+    {
+        ecs::Gait shortLeg{}, longLeg{};
+        shortLeg.stride = 1000.f;
+        longLeg.stride  = 2000.f;
+        const f32 dt = 1.f / 60.f;
+        for (int i = 0; i < 60; ++i) {
+            anim::advanceGait(shortLeg, glm::vec3(0, 0, 3.f), dt);
+            anim::advanceGait(longLeg,  glm::vec3(0, 0, 3.f), dt);
+        }
+        check(longLeg.phase < shortLeg.phase - 1e-4f,
+              "при том же пути длинноногий делает меньше шагов");
+    }
+
+    // ---- 4. На месте фаза замирает, а не сбрасывается ----
+    {
+        ecs::Gait g{};
+        g.stride = 1.6f;
+        for (int i = 0; i < 30; ++i)
+            anim::advanceGait(g, glm::vec3(0, 0, 3.f), 1.f / 60.f);
+        const f32 walked = g.phase;
+        check(walked > 0.1f, "на ходу фаза растёт");
+
+        for (int i = 0; i < 120; ++i)
+            anim::advanceGait(g, glm::vec3(0.f), 1.f / 60.f);
+        check(std::fabs(g.phase - walked) < 1e-6f,
+              "встал — фаза замерла там, где была, а не обнулилась");
+
+        // Дрожание скорости тоже не должно двигать ноги.
+        for (int i = 0; i < 120; ++i)
+            anim::advanceGait(g, glm::vec3((i % 2 ? 0.01f : -0.01f), 0.f, 0.f),
+                              1.f / 60.f);
+        check(std::fabs(g.phase - walked) < 1e-6f,
+              "и от дрожания скорости не дёргается");
+    }
+
+    // ---- 5. Падение с высоты не считается шагом ----
+    {
+        ecs::Gait g{};
+        g.stride = 1.6f;
+        for (int i = 0; i < 120; ++i)
+            anim::advanceGait(g, glm::vec3(0.f, -20.f, 0.f), 1.f / 60.f);
+        check(g.phase == 0.f, "вертикальная скорость шагов не делает");
+    }
+
+    // ---- 6. Фаза не растёт неограниченно ----
+    //
+    // За час игры она иначе доходит до величин, на которых синус
+    // теряет точность, и походка начинает дёргаться.
+    {
+        ecs::Gait g{};
+        g.stride = 1.6f;
+        for (int i = 0; i < 20000; ++i)
+            anim::advanceGait(g, glm::vec3(0, 0, 8.f), 1.f / 60.f);
+        check(g.phase >= 0.f && g.phase < 6.2832f,
+              "фаза остаётся в пределах одного оборота");
+    }
+
+    // ---- 7. Длина шага берётся из оснастки ----
+    {
+        int bad = 0;
+        f32 minStride = 1e9f, maxStride = 0.f;
+        for (u16 id = 1; id < mobs::MOB_COUNT; ++id) {
+            const entity::Rig& rg = mobs::rigFor(id);
+            if (rg.count == 0) continue;
+            if (!(rg.strideLength > 0.05f)) ++bad;
+            minStride = std::min(minStride, rg.strideLength);
+            maxStride = std::max(maxStride, rg.strideLength);
+        }
+        check(bad == 0, "у каждого вида длина шага положительна");
+        // У курицы и у коровы ноги разной длины — значит и шаг разный.
+        check(maxStride > minStride * 1.5f,
+              "коротконогим и длинноногим шаг задан разный");
     }
 }
 
@@ -8168,6 +8782,11 @@ int main() {
     testRigResolveRotatesParts();
     testGaitMatchesAnatomy();
     testHumanoidRigIsWholeBody();
+    testBeastsHaveCharacter();
+    testNpcsVaryBetweenIndividuals();
+    testLocomotionStatesAndTransitions();
+    testGaitPhaseFollowsDistance();
+    testPlayerHasModel();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

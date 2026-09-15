@@ -309,6 +309,13 @@ walkPhase += distanceTravelled / strideLength · 2π
 | 2 | Единый источник истины поворота; `Facing` как состояние | `core/orientation.h`, `ecs/components.h` |
 | 3 | Иерархия частей, поза, сборка; кватернион в инстансе; единый вершинный формат | `entity/rig.h`, `entity/locomotion.h`, `entity/mob_rigs.cpp`, `render/mob_renderer.h` |
 | 3 | Двуногий; рендер NPC переведён на оснастку | `entity/humanoid_rig.*`, `render/npc_renderer.cpp` |
+| 4 | Модель игрока — её не было вовсе | `player/player_rig.*` |
+| 5 | Фаза шага идёт путём, а не временем | `ecs::Gait`, `entity/locomotion.h` |
+| 6 | Звери: приметы вида вместо оттенка серого; плоское описание удалено | `entity/beast_rig.*`, `entity/mob_rigs.cpp` |
+| 7 | Процедурная вариация особей NPC | `ecs::Appearance`, `npc/npc_rig.cpp` |
+
+Подробности — в `docs/CHARACTER_STYLE_GUIDE.md` (как выглядит
+существо) и `docs/ANIMATION_SYSTEM.md` (как оно движется).
 
 Побочно закрыто при переводе NPC на оснастку: коробка тела стояла
 **центром в точке опоры** — то есть наполовину под землёй, — голова

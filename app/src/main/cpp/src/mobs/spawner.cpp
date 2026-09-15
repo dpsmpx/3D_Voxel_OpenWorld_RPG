@@ -3,6 +3,7 @@
  * @brief Мобы: определения, конечный автомат ИИ, спавн, боссы.
  */
 #include "spawner.h"
+#include "../entity/mob_rigs.h"
 #include "mob_def.h"
 #include "mob_ai.h"
 #include "../ecs/components.h"
@@ -127,6 +128,10 @@ ecs::Entity Spawner::spawnMob(world::ChunkManager& /*world*/,
     reg.add(e, ecs::Velocity{});
     // Поворот — состояние сущности, а не вычисление в рендере.
     reg.add(e, ecs::Facing{});
+    // Длина шага — свойство модели, а не состояния: берём из
+    // оснастки вида, где она выведена из длины ног.
+    reg.add(e, ecs::Gait{ 0.f, rigFor(mobId).strideLength });
+    reg.add(e, ecs::Locomotion{});
     reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
     reg.add(e, ecs::Collider{
         glm::vec3(def.bodyRadius, def.bodyHeight * 0.5f, def.bodyRadius),

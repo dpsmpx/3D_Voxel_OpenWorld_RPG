@@ -3,6 +3,7 @@
  * @brief NPC: роли, диалоги с ветвлением, поведение жителей.
  */
 #include "npc_spawner.h"
+#include "npc_rig.h"
 #include "npc_def.h"
 #include "npc_ai.h"
 #include "../ecs/components.h"
@@ -170,7 +171,8 @@ void NpcSpawner::update(world::ChunkManager& world,
                                         : specs[0].pos.z - playerPos.z;
                 if (ddx * ddx + ddz * ddz > SPAWN_DIST * SPAWN_DIST) continue;
 
-                for (const auto& s : specs) {
+                for (usize si = 0; si < specs.size(); ++si) {
+                    const NpcSpec& s = specs[si];
                     const NpcDef& def = npcRegistry().get(s.typeId);
                     if (def.maxHealth <= 0.f) continue;
 
@@ -184,6 +186,20 @@ void NpcSpawner::update(world::ChunkManager& world,
                     // Поворот — состояние сущности, а не вычисление
                     // в рендере. NPC доворачивается спокойнее мобов.
                     reg.add(e, ecs::Facing{ 0.f, 0.f, 5.f });
+
+                    // Облик особи — из ПОСТОЯННОГО ключа NPC, а не из
+                    // номера сущности: иначе селянин менял бы рост и
+                    // цвет рубахи всякий раз, как чанк выгружался и
+                    // загружался обратно.
+                    const u64 key = (si < keys.size()) ? keys[si] : (u64)si;
+                    const u32 look = (u32)(key ^ (key >> 32));
+                    reg.add(e, ecs::Appearance{ look });
+
+                    // Длина шага — из ТОЙ ЖЕ оснастки, которую
+                    // нарисует рендер: у низкого селянина шаг короче,
+                    // и ноги не должны при этом скользить.
+                    reg.add(e, ecs::Gait{ 0.f, rigFor(s.typeId, look).strideLength });
+                    reg.add(e, ecs::Locomotion{});
                     reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
 
                     ecs::Collider col;

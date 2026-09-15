@@ -96,7 +96,7 @@ bool MobRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayo
     return true;
 }
 
-void MobRenderer::rebuild(ecs::Registry& reg) {
+void MobRenderer::rebuild(ecs::Registry& reg, f32 timeSec) {
     cpuInstances_.clear();
 
     auto& pool = reg.pool<mobs::MobAI>();
@@ -133,7 +133,19 @@ void MobRenderer::rebuild(ecs::Registry& reg) {
         const entity::Rig& rig = mobs::rigFor(tag->id);
 
         anim::AnimState st;
-        st.phase     = ai->walkPhase;
+        // Фаза шага — состояние сущности, посчитанное ПУТЁМ, а не
+        // множителем ко времени в ИИ.
+        const auto* gt = reg.get<ecs::Gait>(e);
+        st.phase     = gt ? gt->phase : 0.f;
+        st.time      = timeSec;
+
+        // Прыжок, падение и приземление — состояние сущности, не
+        // догадка рендера по вертикальной скорости.
+        if (const auto* lo = reg.get<ecs::Locomotion>(e)) {
+            st.air  = lo->air;
+            st.land = lo->land;
+            st.rise = lo->rise;
+        }
         st.speedNorm = speedNorm;
         st.attack    = attacking ? ai->attackAnim : 0.f;
         st.death     = dying ? ai->deathTimer : 0.f;

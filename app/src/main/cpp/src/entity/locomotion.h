@@ -4,6 +4,7 @@
  */
 #pragma once
 #include "rig.h"
+#include <algorithm>
 #include <cmath>
 
 namespace anim {
@@ -18,6 +19,7 @@ struct Swing {
     f32 lowerLeg = 0.40f;
     f32 arm      = 0.45f;
     f32 tail     = 0.22f;
+    f32 ear      = 0.30f;
     f32 head     = 0.05f;
 };
 
@@ -126,7 +128,17 @@ inline void walkPose(const entity::Rig& rig, entity::Pose& pose,
         } else if (isArm(r)) {
             pose.euler[i].x = s * sw.arm * speedNorm * sign;
         } else if (r == entity::PartRole::Tail) {
-            pose.euler[i].y = std::sin(phase * 0.5f) * sw.tail;
+            // Все слагаемые ходьбы обязаны гаснуть вместе со
+            // скоростью: иначе у стоящего зверя хвост продолжает
+            // мотаться в такт шагу, которого нет. Покачивание в покое
+            // — дело idlePose, и оно идёт временем, а не фазой.
+            pose.euler[i].y = std::sin(phase * 0.5f) * sw.tail * speedNorm;
+            pose.euler[i].x = std::sin(phase) * sw.tail * 0.4f * speedNorm;
+        } else if (r == entity::PartRole::Ear) {
+            // Ухо отстаёт от головы: оно мягкое, его мотает шагом.
+            // Без этого зверь на бегу выглядит чучелом.
+            pose.euler[i].x = std::sin(phase * 2.f - 0.7f) * sw.ear * speedNorm;
+            pose.euler[i].z = std::sin(phase) * sw.ear * 0.5f * speedNorm;
         } else if (r == entity::PartRole::Head) {
             pose.euler[i].x = std::sin(phase * 2.f) * sw.head * speedNorm;
         } else if (r == entity::PartRole::Torso) {
@@ -150,6 +162,8 @@ inline void idlePose(const entity::Rig& rig, entity::Pose& pose, f32 t) {
             pose.euler[i].x = breathe * 0.02f;
         else if (r == entity::PartRole::Tail)
             pose.euler[i].y = std::sin(t * 0.9f) * 0.10f;
+        else if (r == entity::PartRole::Ear)
+            pose.euler[i].x = std::sin(t * 1.1f) * 0.05f;
     }
 }
 
@@ -161,11 +175,102 @@ inline void idlePose(const entity::Rig& rig, entity::Pose& pose, f32 t) {
 /// самодельные `sin(walkPhase)` в рендере NPC, двигавшие ногу
 /// параллельно себе.
 struct AnimState {
-    f32 phase     = 0.f;   ///< фаза шага, радианы
+    f32 phase     = 0.f;   ///< фаза шага, радианы; идёт ПУТЁМ
+    f32 time      = 0.f;   ///< монотонное время, секунды; для дыхания
     f32 speedNorm = 0.f;   ///< скорость к максимальной, 0..1
     f32 attack    = 0.f;   ///< 0..1, замах
     f32 death     = 0.f;   ///< секунды с момента смерти, 0 — жив
+    f32 air       = 0.f;   ///< доля воздушной позы, 0..1
+    f32 land      = 0.f;   ///< доля посадочной позы, 0..1
+    f32 rise      = 0.f;   ///< -1 падает, +1 взлетает; форма воздушной позы
 };
+
+/// Ниже этой доли максимальной скорости существо идёт, выше — бежит.
+///
+/// Бег отличается не только частотой шага: корпус наклоняется вперёд.
+/// Без наклона шаг и бег выглядят одним движением, прокрученным с
+/// разной скоростью.
+constexpr f32 RUN_THRESHOLD = 0.6f;
+
+/// Сколько длится поза приземления.
+constexpr f32 LAND_TIME = 0.28f;
+
+/// За сколько нарастает и гаснет воздушная поза.
+constexpr f32 AIR_BLEND_TIME = 0.12f;
+
+/// Продвинуть состояние передвижения.
+///
+/// Состояние выбирается по ФАКТИЧЕСКОЙ скорости и признаку опоры.
+/// Переходы плавные: доли воздушной и посадочной поз нарастают и
+/// гаснут за своё время, а не переключаются кадром.
+template <class LocoT>
+inline void advanceLocomotion(LocoT& lo, f32 speedNorm, f32 verticalSpeed,
+                              bool grounded, f32 dt)
+{
+    using State = typename LocoT::State;
+
+    const State was = lo.state;
+    const bool wasAir = (was == State::Jump || was == State::Fall);
+
+    if (!grounded) {
+        lo.state = (verticalSpeed > 0.5f) ? State::Jump : State::Fall;
+    } else if (wasAir) {
+        // Коснулись земли — приседаем. Без этого падение с высоты
+        // кончается тем, что существо просто продолжает идти.
+        lo.state = State::Land;
+    } else if (was == State::Land && lo.stateTime < LAND_TIME) {
+        lo.state = State::Land;
+    } else if (speedNorm < 0.05f) {
+        lo.state = State::Idle;
+    } else {
+        lo.state = (speedNorm < RUN_THRESHOLD) ? State::Walk : State::Run;
+    }
+
+    lo.stateTime = (lo.state == was) ? lo.stateTime + dt : 0.f;
+    lo.grounded  = grounded;
+
+    const bool air = (lo.state == State::Jump || lo.state == State::Fall);
+    const f32 step = dt / AIR_BLEND_TIME;
+    lo.air  = air ? std::min(1.f, lo.air + step) : std::max(0.f, lo.air - step);
+
+    if (lo.state == State::Land) {
+        // Приседание глубже всего в момент касания и распрямляется.
+        const f32 t = lo.stateTime / LAND_TIME;
+        lo.land = (t >= 1.f) ? 0.f : (1.f - t) * (1.f - t);
+    } else {
+        lo.land = std::max(0.f, lo.land - dt / LAND_TIME);
+    }
+
+    lo.rise = grounded ? 0.f
+                       : (verticalSpeed > 0.5f ? 1.f
+                          : (verticalSpeed < -0.5f ? -1.f : 0.f));
+}
+
+/// Продвинуть фазу шага пройденным путём.
+///
+/// Раньше фазу двигало время: `walkPhase += dt * 9.f` в погоне,
+/// `* 6.f` в ходьбе, `* 2.f` в покое. Скорость и длина шага при этом
+/// не связаны ничем, поэтому ноги скользят — и «правильного»
+/// множителя не существует: он верен ровно для одной скорости.
+///
+/// Здесь согласованность — следствие формулы: за длину шага модель
+/// проходит ровно один цикл, какой бы ни была скорость.
+///
+/// При остановке фаза ЗАМИРАЕТ. Не сбрасывается: иначе существо
+/// дёргает ногой всякий раз, как встанет.
+template <class GaitT>
+inline void advanceGait(GaitT& g, const glm::vec3& velocity, f32 dt) {
+    constexpr f32 TAU = 6.28318530718f;
+    const f32 speed = std::sqrt(velocity.x * velocity.x +
+                                velocity.z * velocity.z);
+    if (speed < 0.05f) return;
+
+    const f32 stride = g.stride > 0.01f ? g.stride : 1.6f;
+    g.phase += (speed * dt) / stride * TAU;
+    // Держим фазу в разумных пределах: за час игры она иначе
+    // вырастает настолько, что синус теряет точность.
+    if (g.phase >= TAU) g.phase = std::fmod(g.phase, TAU);
+}
 
 /// Поза сущности: покой смешивается с шагом по нормированной скорости.
 ///
@@ -175,11 +280,68 @@ inline void poseFor(const entity::Rig& rig, entity::Pose& pose,
 {
     entity::Pose walk, idle;
     walkPose(rig, walk, st.phase, st.speedNorm);
-    idlePose(rig, idle, st.phase);
+    // Дыхание идёт ВРЕМЕНЕМ: фаза шага у стоящего замерла, и покой,
+    // построенный на ней, замер бы вместе с ней.
+    idlePose(rig, idle, st.time);
 
     const f32 k = st.speedNorm < 0.f ? 0.f : (st.speedNorm > 1.f ? 1.f : st.speedNorm);
-    for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i)
-        pose.euler[i] = idle.euler[i] * (1.f - k) + walk.euler[i] * k;
+    for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i) {
+        // Поза покоя — постоянный наклон модели (висячее ухо, поднятый
+        // хвост). Анимация кладётся ПОВЕРХ неё, а не вместо: иначе ухо
+        // на первом же шаге встанет торчком.
+        pose.euler[i] = rig.rest.euler[i]
+                      + idle.euler[i] * (1.f - k) + walk.euler[i] * k;
+    }
+
+    // ---- Бег: корпус вперёд ----
+    //
+    // Иначе шаг и бег — одно движение с разной частотой. Наклон
+    // растёт только выше порога бега, чтобы ходьба его не получала.
+    if (st.speedNorm > RUN_THRESHOLD) {
+        const f32 runK = (st.speedNorm - RUN_THRESHOLD) / (1.f - RUN_THRESHOLD);
+        for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i)
+            if (rig.parts[i].role == entity::PartRole::Torso)
+                pose.euler[i].x += runK * 0.22f;
+    }
+
+    // ---- Воздух ----
+    //
+    // Поджатые ноги и разведённые руки. Раньше существо падало с
+    // обрыва, перебирая ногами по воздуху: воздушного положения не
+    // было вовсе.
+    if (st.air > 0.001f) {
+        // Взлетая, ноги поджимаются вперёд; падая — вытягиваются
+        // вниз-назад, навстречу земле.
+        const f32 tuck = (st.rise >= 0.f) ? 0.7f : -0.35f;
+        for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i) {
+            const entity::PartRole r = rig.parts[i].role;
+            if (isUpperLimb(r))
+                pose.euler[i].x = pose.euler[i].x * (1.f - st.air)
+                                + tuck * st.air;
+            else if (isLowerLimb(r))
+                pose.euler[i].x = pose.euler[i].x * (1.f - st.air)
+                                + kneeBendSign(r) * 0.8f * st.air;
+            else if (isArm(r))
+                pose.euler[i].x = pose.euler[i].x * (1.f - st.air)
+                                - 0.9f * st.air;
+        }
+    }
+
+    // ---- Приземление ----
+    //
+    // Присед в момент касания, распрямляющийся за LAND_TIME. Гасит
+    // падение: без него удар о землю ничем не отмечен.
+    if (st.land > 0.001f) {
+        for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i) {
+            const entity::PartRole r = rig.parts[i].role;
+            if (isUpperLimb(r))
+                pose.euler[i].x += 0.45f * st.land;
+            else if (isLowerLimb(r))
+                pose.euler[i].x += kneeBendSign(r) * 0.75f * st.land;
+            else if (r == entity::PartRole::Torso)
+                pose.euler[i].x += 0.25f * st.land;
+        }
+    }
 
     if (st.attack > 0.01f) {
         for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i)

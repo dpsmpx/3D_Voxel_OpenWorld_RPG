@@ -83,7 +83,9 @@ public:
     void destroy();
 
     /// Перестраивает инстанс-буфер из ECS-сущностей
-    void rebuild(ecs::Registry& reg);
+    /// timeSec — монотонное время кадра: на нём идёт дыхание
+/// в покое. Фаза шага берётся из ecs::Gait, она идёт путём.
+    void rebuild(ecs::Registry& reg, f32 timeSec);
 
     /// Загружает инстансы в GPU. Вызывается 1 раз за кадр.
     void upload(vk::Context& ctx);

@@ -128,6 +128,7 @@ add_library(native-lib SHARED
 
     # Игрок
     src/player/player.cpp
+    src/player/player_rig.cpp
 
     # Интерфейс
     src/ui/drag_drop.cpp
@@ -141,6 +142,7 @@ add_library(native-lib SHARED
 
     # Мобы
     src/mobs/mob_ai.cpp
+    src/entity/beast_rig.cpp
     src/entity/humanoid_rig.cpp
     src/entity/mob_rigs.cpp
     src/mobs/mob_def.cpp
@@ -175,6 +177,7 @@ add_library(native-lib SHARED
     # NPC
     src/npc/dialogue.cpp
     src/npc/npc_ai.cpp
+    src/npc/npc_rig.cpp
     src/npc/npc_def.cpp
     src/npc/npc_spawner.cpp
 
