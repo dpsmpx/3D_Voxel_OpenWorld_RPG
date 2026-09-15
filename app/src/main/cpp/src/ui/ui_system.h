@@ -10,6 +10,7 @@
 #include "drag_drop.h"
 #include "scroll.h"
 #include "minimap.h"
+#include "hud_layout.h"
 #include "../player/player.h"
 #include "../world/chunk_manager.h"
 #include "../save/save_slot.h"
@@ -61,6 +62,16 @@ public:
     void destroy();
 
     void setScreenSize(i32 w, i32 h);
+
+    /// Плотность экрана из AConfiguration_getDensity.
+    ///
+    /// До неё размеры считались от числа пикселей, и цель касания
+    /// выходила 20..36 dp при норме 48: кнопка меню — 3.2 мм при
+    /// подушечке пальца 8..10 мм.
+    void setDensityDpi(i32 dpi);
+
+    /// Единственный источник геометрии: и отрисовка, и касание.
+    const HudLayout& layout() const { return layout_; }
 
     /// Поворот вывода — тот же, что у камеры.
     void setSurfaceRotation(u32 degrees) { renderer_.setSurfaceRotation(degrees); }
@@ -261,8 +272,11 @@ private:
 
     UiRenderer renderer_;
     UiContext  ui_;
+    HudLayout  layout_;
     i32        screenW_ = 1080;
     i32        screenH_ = 1920;
+    i32        densityDpi_ = 0;      ///< 0 — система не сообщила
+    void       rebuildLayout();
     VkDevice   dev_ = VK_NULL_HANDLE;
 
     /// Скролл

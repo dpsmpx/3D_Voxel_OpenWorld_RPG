@@ -4304,86 +4304,175 @@ void testUiTapSurvivesRedraw() {
 void testHudAndButtonsDoNotOverlap() {
     group("раскладка: HUD и экранные кнопки не налезают");
 
-    struct Size { f32 w, h; const char* name; };
+    // Проверяется ТА ЖЕ раскладка, по которой рисуется.
+    //
+    // Раньше здесь сверялись ui::minimapRect и ui::hotbarRect, которые
+    // не вызывал никто, кроме этой проверки: drawMinimap и drawHotbar
+    // считали свои числа без общего масштаба. На 1280x720 расхождение
+    // доходило до 191 точки, четыре кнопки реально накрывали HUD, а
+    // проверка рапортовала «ни одного наложения» — она сверяла модель
+    // с моделью. При высоте 1080 расхождение было ровно ноль, и на
+    // этом телефоне игру и смотрели.
+    struct Size { f32 w, h; i32 dpi; const char* name; };
     const Size sizes[] = {
-        { 2306.f, 1080.f, "2306x1080" },   // тот самый телефон
-        { 2400.f, 1080.f, "2400x1080" },
-        { 1920.f, 1080.f, "1920x1080" },
-        { 1280.f,  720.f, "1280x720"  },
-        { 2560.f, 1600.f, "2560x1600" },   // планшет
+        { 2306.f, 1080.f, 400, "2306x1080 @400" },   // тот самый телефон
+        { 2400.f, 1080.f, 440, "2400x1080 @440" },
+        { 1920.f, 1080.f, 400, "1920x1080 @400" },
+        { 1280.f,  720.f, 320, "1280x720 @320"  },   // бюджетный
+        { 2560.f, 1600.f, 280, "2560x1600 @280" },   // планшет
+        { 3200.f, 1440.f, 560, "3200x1440 @560" },   // плотный
+        {  960.f,  540.f, 240, "960x540 @240"   },   // самый слабый
     };
 
-    // Ближайшая точка прямоугольника к центру круга: если она ближе
-    // радиуса, фигуры пересекаются.
-    auto circleHitsRect = [](f32 cx, f32 cy, f32 rad, const ui::HudRect& r) {
+    auto overlaps = [](const ui::Rect& a, const ui::Rect& b) {
+        return !(a.x + a.w <= b.x || b.x + b.w <= a.x ||
+                 a.y + a.h <= b.y || b.y + b.h <= a.y);
+    };
+    auto circleHitsRect = [](f32 cx, f32 cy, f32 rad, const ui::Rect& r) {
         const f32 nx = cx < r.x ? r.x : (cx > r.x + r.w ? r.x + r.w : cx);
         const f32 ny = cy < r.y ? r.y : (cy > r.y + r.h ? r.y + r.h : cy);
         const f32 dx = nx - cx, dy = ny - cy;
-        return dx * dx + dy * dy < rad * rad;
+        return dx * dx + dy * dy < rad * rad - 0.01f;
     };
 
-    int collisions = 0;
-    for (const auto& s : sizes) {
-        // Все прямоугольники HUD, которые всегда на экране.
-        std::vector<std::pair<const char*, ui::HudRect>> rects;
-        static const char* MENU[ui::HUD_MENU_COUNT] =
-            { "|||", "INV", "SKL", "ATT", "QST", "REP", "SAV" };
-        for (u32 i = 0; i < ui::HUD_MENU_COUNT; ++i)
-            rects.push_back({ MENU[i], ui::hudMenuRect(i, s.w, s.h) });
-        rects.push_back({ "миникарта", ui::minimapRect(s.w, s.h) });
-        rects.push_back({ "пояс",      ui::hotbarRect(s.w, s.h) });
+    int problems = 0;
+    for (const auto& sz : sizes)
+      // Зеркальная раскладка для левши — это отдельная раскладка, а
+      // не отражённые кнопки поверх прежнего HUD. Пока отражалось
+      // только управление, кнопки левши приезжали под столбец
+      // навигации: на 1280x720 «PUT» попадала ровно на него. Теперь
+      // зеркалится весь экран, и проверяются оба варианта целиком.
+      for (int mirror = 0; mirror < 2; ++mirror) {
+        const char* mode = mirror ? " (левша)" : "";
+        const ui::HudLayout L(sz.w, sz.h,
+                              ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                              ui::SafeInsets{}, mirror != 0);
 
-        // Оба варианта: обычный и зеркальный для левшей — TouchInput
-        // отражает центр по горизонтали, а HUD остаётся на месте.
-        for (int mirror = 0; mirror < 2; ++mirror) {
-            auto centerOf = [&](const input::ButtonLayout& L) {
-                glm::vec2 c = input::buttonCenterPx(L, s.w, s.h);
-                if (mirror) c.x = s.w - c.x;
-                return c;
+        // ---- прямоугольники HUD, которые всегда на экране ----
+        std::vector<std::pair<const char*, ui::Rect>> rects;
+        rects.push_back({ "полоса опыта", L.xpBar() });
+        for (u32 i = 0; i < 3; ++i)
+            rects.push_back({ "полоса ресурса", L.resourceBar(i) });
+        for (u32 i = 0; i < ui::HudLayout::NAV_COUNT; ++i)
+            rects.push_back({ "кнопка навигации", L.navButton(i) });
+        rects.push_back({ "миникарта", L.minimap() });
+        for (u32 i = 0; i < L.hotbarVisibleSlots(); ++i)
+            rects.push_back({ "ячейка пояса", L.hotbarSlot(i) });
+
+        // ---- ничто не уходит за экран ----
+        for (const auto& [name, r] : rects) {
+            if (r.x >= -0.5f && r.y >= -0.5f &&
+                r.x + r.w <= sz.w + 0.5f && r.y + r.h <= sz.h + 0.5f) continue;
+            ++problems;
+            char msg[160];
+            std::snprintf(msg, sizeof(msg), "%s%s: %s за краем экрана",
+                          sz.name, mode, name);
+            check(false, msg);
+        }
+
+        // ---- прямоугольники HUD не налезают друг на друга ----
+        for (usize a = 0; a < rects.size(); ++a)
+            for (usize b = a + 1; b < rects.size(); ++b) {
+                if (!overlaps(rects[a].second, rects[b].second)) continue;
+                ++problems;
+                char msg[160];
+                std::snprintf(msg, sizeof(msg), "%s%s: %s налезает на %s",
+                              sz.name, mode, rects[a].first, rects[b].first);
+                check(false, msg);
+            }
+
+        // ---- круглые кнопки ----
+        {
+            auto centerOf = [&](u32 i) {
+                const auto c = L.padButton(i);
+                return glm::vec2{ c.cx, c.cy };
             };
-            const char* mode = mirror ? " (левша)" : "";
 
-            for (u32 b = 0; b < input::DEFAULT_BUTTON_COUNT; ++b) {
-                const auto& L = input::DEFAULT_BUTTONS[b];
-                const glm::vec2 c = centerOf(L);
-                const f32 rad = input::buttonRadiusPx(L, s.h);
-                if (c.x - rad < 0.f || c.y - rad < 0.f ||
-                    c.x + rad > s.w || c.y + rad > s.h) {
-                    ++collisions;
+            for (u32 b = 0; b < ui::PAD_BUTTON_COUNT; ++b) {
+                const auto def = L.padButton(b);
+                const glm::vec2 c = centerOf(b);
+                if (c.x - def.r < -0.5f || c.y - def.r < -0.5f ||
+                    c.x + def.r > sz.w + 0.5f || c.y + def.r > sz.h + 0.5f) {
+                    ++problems;
                     char msg[160];
-                    std::snprintf(msg, sizeof(msg), "%s%s: кнопка %s за краем экрана",
-                                  s.name, mode, L.label);
+                    std::snprintf(msg, sizeof(msg), "%s%s: кнопка %s за краем",
+                                  sz.name, mode, def.label);
                     check(false, msg);
                 }
                 for (const auto& [name, r] : rects) {
-                    if (!circleHitsRect(c.x, c.y, rad, r)) continue;
-                    ++collisions;
-                    char msg[160];
+                    if (!circleHitsRect(c.x, c.y, def.r, r)) continue;
+                    ++problems;
+                    char msg[176];
                     std::snprintf(msg, sizeof(msg), "%s%s: кнопка %s накрывает %s",
-                                  s.name, mode, L.label, name);
+                                  sz.name, mode, def.label, name);
                     check(false, msg);
                 }
             }
 
-            // И сами круглые кнопки не должны налезать друг на друга.
-            for (u32 a = 0; a < input::DEFAULT_BUTTON_COUNT; ++a)
-                for (u32 b = a + 1; b < input::DEFAULT_BUTTON_COUNT; ++b) {
-                    const auto& A = input::DEFAULT_BUTTONS[a];
-                    const auto& B = input::DEFAULT_BUTTONS[b];
-                    const glm::vec2 ca = centerOf(A), cb = centerOf(B);
+            // Между соседними целями нужен зазор, иначе промах по
+            // одной попадает в другую.
+            for (u32 a = 0; a < ui::PAD_BUTTON_COUNT; ++a)
+                for (u32 b = a + 1; b < ui::PAD_BUTTON_COUNT; ++b) {
+                    const auto A = L.padButton(a), B = L.padButton(b);
+                    const glm::vec2 ca = centerOf(a), cb = centerOf(b);
                     const f32 dx = ca.x - cb.x, dy = ca.y - cb.y;
-                    const f32 rr = input::buttonRadiusPx(A, s.h)
-                                 + input::buttonRadiusPx(B, s.h);
-                    if (dx * dx + dy * dy >= rr * rr) continue;
-                    ++collisions;
-                    char msg[160];
-                    std::snprintf(msg, sizeof(msg), "%s%s: кнопки %s и %s налезают",
-                                  s.name, mode, A.label, B.label);
+                    const f32 need = A.r + B.r + L.dp(ui::theme::TOUCH_GAP_DP);
+                    if (dx * dx + dy * dy >= need * need - 0.01f) continue;
+                    ++problems;
+                    char msg[176];
+                    std::snprintf(msg, sizeof(msg), "%s%s: кнопки %s и %s ближе зазора",
+                                  sz.name, mode, A.label, B.label);
                     check(false, msg);
                 }
         }
+
+        // ---- ни одна цель касания не мельче нормы ----
+        const f32 minSide = L.dp(ui::theme::TOUCH_MIN_DP) - 0.01f;
+        for (u32 i = 0; i < ui::HudLayout::NAV_COUNT; ++i) {
+            const ui::Rect r = L.navButton(i);
+            if (r.w >= minSide && r.h >= minSide) continue;
+            ++problems;
+            char msg[160];
+            std::snprintf(msg, sizeof(msg),
+                          "%s%s: кнопка навигации мельче 48 dp", sz.name, mode);
+            check(false, msg);
+        }
+        {
+            const ui::Rect r = L.hotbarSlot(0);
+            if (r.w < minSide || r.h < minSide) {
+                ++problems;
+                char msg[160];
+                std::snprintf(msg, sizeof(msg),
+                              "%s%s: ячейка пояса мельче 48 dp", sz.name, mode);
+                check(false, msg);
+            }
+        }
+        for (u32 b = 0; b < ui::PAD_BUTTON_COUNT; ++b) {
+            const auto def = L.padButton(b);
+            if (def.r * 2.f >= minSide) continue;
+            ++problems;
+            char msg[160];
+            std::snprintf(msg, sizeof(msg), "%s%s: кнопка %s мельче 48 dp",
+                          sz.name, mode, def.label);
+            check(false, msg);
+        }
+
+        // ---- пояс показывает не меньше разумного минимума ----
+        if (L.hotbarVisibleSlots() < ui::HudLayout::HOTBAR_MIN_VISIBLE) {
+            ++problems;
+            char msg[160];
+            std::snprintf(msg, sizeof(msg), "%s%s: пояс показывает меньше пяти ячеек",
+                          sz.name, mode);
+            check(false, msg);
+        }
+        if (L.hotbarVisibleSlots() > ui::HudLayout::HOTBAR_SLOTS) {
+            ++problems;
+            check(false, "пояс показывает больше ячеек, чем есть в данных");
+        }
     }
-    check(collisions == 0, "ни одного наложения на проверенных экранах");
+
+    check(problems == 0,
+          "на семи экранах: ни наложений, ни целей мельче 48 dp");
 }
 
 // ------------------------------------------------------------

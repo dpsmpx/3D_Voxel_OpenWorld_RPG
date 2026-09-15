@@ -15,6 +15,17 @@ typedef struct android_poll_source {
 } android_poll_source;
 typedef struct AInputQueue AInputQueue;
 typedef struct AConfiguration AConfiguration;
+
+/* Плотность экрана. Настоящее объявление живёт в
+   <android/configuration.h>; здесь оно нужно затем, что HUD считает
+   размеры в dp и без плотности переводить их не во что. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+int32_t AConfiguration_getDensity(AConfiguration* config);
+#ifdef __cplusplus
+}
+#endif
 typedef struct ARect { int32_t left, top, right, bottom; } ARect;
 typedef struct android_app {
     void* userData;
