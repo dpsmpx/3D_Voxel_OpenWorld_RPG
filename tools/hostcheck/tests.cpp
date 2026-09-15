@@ -1363,108 +1363,117 @@ void testBuildStampIsNotStale() {
 }
 
 
-/// Небо: светила считаются только там, где их видно.
+/// Небо: степени считаются дёшево, и БЕЗ ветвей.
 ///
-/// Замер на устройстве (ступень «только небо»): 8.57 мс на полный
-/// экран, 3.44 нс на пиксель — дороже фрагментной математики ландшафта
-/// (2.94). Пять степеней на солнце и луну давали ноль почти везде, но
-/// считались на каждом пикселе неба.
+/// Здесь записан самый дорого доставшийся урок этого этапа.
 ///
-/// Проверка сторожит не текст, а ВЕЛИЧИНУ отброшенного: порог ветви
-/// берётся из шейдера и подставляется в те же степени. Опусти его —
-/// и обрезанное сияние станет видимым стыком, о чём текстовая сверка
-/// не сказала бы ничего.
-void testSkyCutsOnlyWhatCannotBeSeen() {
-    group("небо: светила считаются только там, где видны");
+/// Небо — самый дорогой шейдер кадра на пиксель: 8.5 мс на полный
+/// экран, 3.4 нс на пиксель, дороже фрагментной математики ландшафта
+/// (2.9). Дороги в нём степени: пять `pow` на диски и ореолы светил,
+/// которые дают ноль почти везде.
+///
+/// Напрашивалось спрятать их под ветвь. На хосте это снимало 27%
+/// шейдера. На устройстве — НОЛЬ: 8.57 -> 8.49 и 8.38 при разбросе
+/// самого замера 0.11 мс. А удаление тех же членов БЕЗУСЛОВНО снимало
+/// 1.77 мс, то есть 21%.
+///
+/// Значит арифметика действительно дорога, но драйвер разворачивает
+/// короткую ветвь в предикаты: считает обе стороны и выбирает.
+/// Пропустить работу условием на этом GPU нельзя — её можно только не
+/// делать. Отсюда и проверка: во фрагментном шейдере неба не должно
+/// появляться ветвей «ради скорости».
+void testSkyPaysForMathNotBranches() {
+    group("небо: степени дёшевы, ветвей ради скорости нет");
 
     const std::string f = readSource("app/src/main/cpp/shaders/sky.frag");
     if (f.empty()) { check(true, "sky.frag не найден, проверка пропущена"); return; }
     const std::string src = stripComments(f);
     const usize NONE = std::string::npos;
 
-    // ---- 1. Широкое сияние считается ВЕЗДЕ и без логарифма ----
+    // ---- 1. Ветвей вокруг светил нет ----
     //
-    // Шестая степень заметна далеко от солнца: на пороге 0.80 она даёт
-    // 0.021 в линейном свете — это до пяти уровней цвета на тёмном
-    // небе. Обрезать её ветвью нельзя, а pow для неё не нужен: три
-    // умножения дают то же самое.
+    // Именно они не работают: `if (d > ...)` и `if (m > ...)` вокруг
+    // диска и ореола были измерены и не дали ничего.
+    check(src.find("if (d >") == NONE && src.find("if (d>") == NONE,
+          "диск и ореол солнца считаются без ветви");
+    check(src.find("if (m >") == NONE && src.find("if (m>") == NONE,
+          "и луны тоже");
+
+    // ---- 2. Степени одного основания делят логарифм ----
+    //
+    // pow(x, k) это exp2(k * log2(x)). У четырёх степеней два
+    // основания, значит логарифмов нужно два, а не четыре.
+    check(src.find("log2(d)") != NONE && src.find("log2(m)") != NONE,
+          "логарифм считается по разу на основание");
+    for (const char* dead : { "powSafe(d, 900.0)", "powSafe(d, 48.0)",
+                              "powSafe(m, 2400.0)", "powSafe(m, 160.0)" })
+        if (src.find(dead) != NONE) {
+            std::printf("       осталась отдельная степень: %s\n", dead);
+            check(false, "отдельных pow на светила не осталось");
+            return;
+        }
+    check(true, "отдельных pow на светила не осталось");
+    check(src.find("exp2(900.0 * ld)") != NONE &&
+          src.find("exp2( 48.0 * ld)") != NONE,
+          "диск и ореол солнца — через общий логарифм");
+    check(src.find("exp2(2400.0 * lm)") != NONE &&
+          src.find("exp2( 160.0 * lm)") != NONE,
+          "диск и ореол луны — тоже");
+
+    // ---- 3. Широкому сиянию логарифм не нужен вовсе ----
+    //
+    // Шестая степень — три умножения. Обрезать её нельзя (она заметна
+    // далеко от солнца), а считать через pow незачем.
     check(src.find("powSafe(d, 6.0)") == NONE,
-          "широкое сияние солнца считается без pow");
+          "широкое сияние считается без pow");
     check(src.find("d2 * d2 * d2") != NONE,
           "оно считается умножениями");
     check(src.find("powSafe(toSun, 3.0)") == NONE &&
           src.find("toSun * toSun * toSun") != NONE,
           "полоса у горизонта — тоже умножениями");
 
-    // ---- 2. Резкие члены — под ветвью ----
-    const usize sunIf  = src.find("if (d > ");
-    const usize moonIf = src.find("if (m > ");
-    check(sunIf != NONE,  "диск и ореол солнца под ветвью");
-    check(moonIf != NONE, "диск и ореол луны под ветвью");
-    if (sunIf == NONE || moonIf == NONE) return;
-
-    double sunCut = 0.0, moonCut = 0.0;
-    std::sscanf(src.c_str() + sunIf + 8,  "%lf", &sunCut);
-    std::sscanf(src.c_str() + moonIf + 8, "%lf", &moonCut);
-    check(sunCut > 0.0 && moonCut > 0.0, "пороги ветвей прочитаны");
-
-    // Всё, что режет ветвь, обязано быть под ветвью, и наоборот:
-    // иначе порог сторожит не то.
-    const usize sunEnd = src.find('}', sunIf);
-    const std::string sunBody = src.substr(sunIf, sunEnd - sunIf);
-    check(sunBody.find("powSafe(d, 900.0)") != NONE &&
-          sunBody.find("powSafe(d, 48.0)") != NONE,
-          "под ветвью солнца ровно диск и ореол");
-    const usize moonEnd = src.find('}', moonIf);
-    const std::string moonBody = src.substr(moonIf, moonEnd - moonIf);
-    check(moonBody.find("powSafe(m, 2400.0)") != NONE &&
-          moonBody.find("powSafe(m, 160.0)") != NONE,
-          "под ветвью луны ровно диск и ореол");
-
-    // ---- 3. Отброшенное не видно НИ НА ЧЁМ ----
+    // ---- 4. Сколько дорогих операций осталось ----
     //
-    // Худший случай — чёрное небо: там прибавка x к линейному нулю
-    // после перевода в sRGB (корень) даёт 255*sqrt(x) уровней. Порог
-    // цели: заведомо меньше половины уровня, то есть x < 3.8e-6.
-    const double LIMIT = 3.8e-6;
-    struct Term { const char* what; double cut, exp_, k; };
-    const Term terms[] = {
-        { "диск солнца",  sunCut,  900.0, 3.00 },
-        { "ореол солнца", sunCut,   48.0, 0.30 },
-        { "диск луны",    moonCut, 2400.0, 2.20 },
-        { "ореол луны",   moonCut,  160.0, 0.10 },
+    // Это и есть цена прохода. Ветвь их не уменьшает — доказано
+    // замером, — поэтому единственный способ удешевить небо — уменьшить
+    // это число.
+    //
+    // Первая редакция счётчика пропустила мутацию «добавлена лишняя
+    // exp»: она не считала `powSafe` (её имя не совпадает с «pow(») и
+    // брала порог с запасом. Теперь считаются все поимённо, а порог
+    // равен ровно тому, что есть: 2 log2 + 4 exp2 + 1 exp + 1 powSafe
+    // (градиент к зениту) + 1 sin (звёзды).
+    struct Op { const char* name; usize want; };
+    const Op ops[] = {
+        { "log2(",    2 },
+        { "exp2(",    4 },
+        { "exp(",     1 },
+        { "powSafe(", 1 },
+        { "pow(",     0 },   // отдельных pow в теле быть не должно
+        { "sin(",     1 },
     };
-    bool ok = true;
-    for (const auto& t : terms) {
-        const double lost = std::pow(t.cut, t.exp_) * t.k;
-        const double levels = 255.0 * std::sqrt(lost);
-        if (lost > LIMIT) {
-            std::printf("       на пороге %.2f «%s» теряет %.2e — это %.2f уровня цвета\n",
-                        t.cut, t.what, lost, levels);
-            ok = false;
+    const usize mainAt = src.find("void main");
+    usize heavy = 0;
+    bool counted = true;
+    for (const auto& op : ops) {
+        usize n = 0;
+        for (usize at = src.find(op.name, mainAt); at != NONE;
+             at = src.find(op.name, at + 1)) {
+            // «powSafe(» содержит «pow» — но не «pow(», так что
+            // пересечения нет; страховка на случай переименования.
+            if (std::strcmp(op.name, "pow(") == 0 &&
+                at >= 4 && src.compare(at - 4, 4, "Safe") == 0) continue;
+            ++n;
+        }
+        heavy += n;
+        if (n != op.want) {
+            std::printf("       «%s» в небе: %zu, ожидалось %zu\n",
+                        op.name, n, op.want);
+            counted = false;
         }
     }
-    check(ok, "на пороге отброшенное ниже кванта цвета даже на чёрном небе");
-
-    // И порог не должен быть завышен до бессмыслицы: ветвь, которая
-    // никогда не срабатывает, убрала бы солнце с неба.
-    check(sunCut < 0.999 && moonCut < 0.9999,
-          "но ветвь всё-таки срабатывает вблизи светила");
-
-    // Снизу порог сторожится отдельно, и это не про картинку.
-    //
-    // Опустить порог БЕЗОПАСНО: отброшенного становится меньше.
-    // Опасно другое — что ветвь перестанет окупаться. Смысл её в том,
-    // чтобы пропускать почти всё небо; порог 0.60 это конус в 53
-    // градуса, то есть пятая часть полусферы. Ниже — ветвь есть, а
-    // выигрыша нет, и заметить это по картинке нельзя.
-    if (sunCut < 0.60 || moonCut < 0.60) {
-        std::printf("       пороги %.2f и %.2f: конус слишком широк, "
-                    "ветвь перестаёт окупаться\n", sunCut, moonCut);
-        check(false, "ветвь узкая — иначе она не экономит");
-    } else {
-        check(true, "ветвь узкая — иначе она не экономит");
-    }
+    check(counted && heavy == 9,
+          "дорогих операций в небе ровно столько, сколько измерено (9)");
 }
 
 
@@ -3172,6 +3181,96 @@ void testFrameGpuBreakdown() {
                 check(w.find("base -") == NONE,
                       "а не разностью с опорным");
             }
+        }
+
+        // ---- Ярус «дальние первыми»: сколько экономит ранний тест ----
+        //
+        // Перекрытие ландшафта — главный оставшийся вопрос аудита, и
+        // счётчика перекрытых фрагментов у нас не будет. Зато есть
+        // способ увидеть ту же величину косвенно: нарисовать тот же
+        // ландшафт от ДАЛЬНЕГО к ближнему. Картинка не изменится
+        // (геометрия непрозрачная, тест глубины включён), а ранний
+        // тест перестанет отбрасывать закрытые фрагменты — ближнее
+        // рисуется последним. Разница и есть то, что он экономит.
+        check(sw.find("ORDER_FIRST") != NONE, "ярус «дальние первыми» размечен");
+        check(sw.find("u8          farFirst;") != NONE,
+              "у ступени есть порядок непрозрачных чанков");
+        check(sw.find("{ 0x01, 1, 1,") != NONE && sw.find("{ 0x01, 0, 1,") != NONE,
+              "обе ступени ландшафта меряются и в обратном порядке");
+
+        // Пара обязана отличаться ТОЛЬКО порядком.
+        //
+        // Иначе разность мерит не ранний тест, а что-то ещё: другую
+        // маску, другой отладочный вид. Сверяем поля впрямую.
+        {
+            struct St { u32 mask; u32 shading; u32 farFirst; };
+            std::vector<St> steps;
+            const usize st0 = sw.find("STEPS[] = {");
+            const usize stEnd = sw.find("\n    };", st0);
+            for (usize at = sw.find("{ 0x", st0); at != NONE && at < stEnd;
+                 at = sw.find("{ 0x", at + 1)) {
+                St v{};
+                if (std::sscanf(sw.c_str() + at, "{ 0x%x, %u, %u,",
+                                &v.mask, &v.shading, &v.farFirst) == 3)
+                    steps.push_back(v);
+            }
+            int orderFirst = -1, cumulFirst = -1;
+            const usize of = sw.find("ORDER_FIRST = ");
+            const usize cf = sw.find("CUMUL_FIRST = ");
+            if (of != NONE) std::sscanf(sw.c_str() + of + 14, "%d", &orderFirst);
+            if (cf != NONE) std::sscanf(sw.c_str() + cf + 14, "%d", &cumulFirst);
+            check(orderFirst > 0 && cumulFirst > 0 &&
+                  (usize)orderFirst < steps.size(),
+                  "ORDER_FIRST указывает на существующую ступень");
+
+            bool paired = true;
+            for (usize i = (usize)orderFirst; i < steps.size(); ++i) {
+                const usize ref = (usize)cumulFirst + (i - (usize)orderFirst);
+                if (ref >= steps.size()) break;
+                const St& a = steps[i];
+                const St& b = steps[ref];
+                if (a.mask != b.mask || a.shading != b.shading ||
+                    a.farFirst != 1 || b.farFirst != 0) {
+                    std::printf("       ступень %zu и её пара %zu отличаются "
+                                "не только порядком\n", i, ref);
+                    paired = false;
+                }
+            }
+            check(paired, "каждая ступень яруса отличается от своей пары только порядком");
+
+            // И в игре порядок всегда от ближнего: обратный — только
+            // на время развёртки.
+            for (usize i = 0; i < (usize)orderFirst && i < steps.size(); ++i)
+                if (steps[i].farFirst != 0) {
+                    std::printf("       ступень %zu вне яруса рисует дальние первыми\n", i);
+                    check(false, "обратный порядок только в своём ярусе");
+                    return;
+                }
+            check(true, "обратный порядок только в своём ярусе");
+        }
+        if (!swc.empty()) {
+            const usize orderLoop = swc.find("i = ORDER_FIRST");
+            check(orderLoop != NONE, "у яруса свой цикл печати");
+            if (orderLoop != NONE) {
+                const std::string w = swc.substr(orderLoop, 400);
+                check(w.find("CUMUL_FIRST + (i - ORDER_FIRST)") != NONE,
+                      "печатается против своей пары, а не против опорного");
+            }
+            // Одиночный ярус не должен захватывать ступени порядка.
+            check(swc.find("i = SOLO_FIRST; i < ORDER_FIRST") != NONE,
+                  "ярус «в одиночку» останавливается на ORDER_FIRST");
+        }
+        {
+            const std::string rs2 =
+                readSource("app/src/main/cpp/src/render/render_system.cpp");
+            const std::string cr =
+                readSource("app/src/main/cpp/src/render/chunk_renderer.h");
+            if (!rs2.empty())
+                check(rs2.find("setFarFirst(passSweep_.farFirst())") != NONE,
+                      "порядок задаёт только развёртка");
+            if (!cr.empty())
+                check(cr.find("bool farFirst_ = false;") != NONE,
+                      "по умолчанию — от ближнего к дальнему");
         }
 
         // ---- Пустой кадр: нижний предел ----
@@ -5847,7 +5946,7 @@ int main() {
     testFaceShadingHasSingleSource();
     testApkCarriesTheShadersItWasBuiltFrom();
     testBuildStampIsNotStale();
-    testSkyCutsOnlyWhatCannotBeSeen();
+    testSkyPaysForMathNotBranches();
     testWorldSharesOneLightingModel();
     testDistantGrassIsNotSubPixel();
     testShadersAvoidUndefinedMath();

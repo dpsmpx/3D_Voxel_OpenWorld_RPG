@@ -498,8 +498,21 @@ void ChunkRenderer::cull(const math::Frustum& frustum, const glm::vec3& cameraPo
     if (visible_.empty()) return;
 
     // ---- 2. Порядок ----
-    std::sort(visible_.begin(), visible_.end(),
-              [](const Visible& a, const Visible& b) { return a.distSq < b.distSq; });
+    //
+    // От ближнего к дальнему: ранний тест глубины отбрасывает
+    // закрытые фрагменты до фрагментного шейдера, а он здесь стоит
+    // больше всего в кадре.
+    //
+    // farFirst_ разворачивает порядок и нужен только замеру: картинка
+    // от него не меняется (геометрия непрозрачная, тест глубины
+    // включён), а разница во времени и есть то, что ранний тест
+    // сейчас экономит.
+    if (farFirst_)
+        std::sort(visible_.begin(), visible_.end(),
+                  [](const Visible& a, const Visible& b) { return a.distSq > b.distSq; });
+    else
+        std::sort(visible_.begin(), visible_.end(),
+                  [](const Visible& a, const Visible& b) { return a.distSq < b.distSq; });
 }
 
 void ChunkRenderer::renderOpaque(vk::Context& ctx,
