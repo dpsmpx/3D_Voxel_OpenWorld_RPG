@@ -1363,6 +1363,111 @@ void testBuildStampIsNotStale() {
 }
 
 
+/// Небо: светила считаются только там, где их видно.
+///
+/// Замер на устройстве (ступень «только небо»): 8.57 мс на полный
+/// экран, 3.44 нс на пиксель — дороже фрагментной математики ландшафта
+/// (2.94). Пять степеней на солнце и луну давали ноль почти везде, но
+/// считались на каждом пикселе неба.
+///
+/// Проверка сторожит не текст, а ВЕЛИЧИНУ отброшенного: порог ветви
+/// берётся из шейдера и подставляется в те же степени. Опусти его —
+/// и обрезанное сияние станет видимым стыком, о чём текстовая сверка
+/// не сказала бы ничего.
+void testSkyCutsOnlyWhatCannotBeSeen() {
+    group("небо: светила считаются только там, где видны");
+
+    const std::string f = readSource("app/src/main/cpp/shaders/sky.frag");
+    if (f.empty()) { check(true, "sky.frag не найден, проверка пропущена"); return; }
+    const std::string src = stripComments(f);
+    const usize NONE = std::string::npos;
+
+    // ---- 1. Широкое сияние считается ВЕЗДЕ и без логарифма ----
+    //
+    // Шестая степень заметна далеко от солнца: на пороге 0.80 она даёт
+    // 0.021 в линейном свете — это до пяти уровней цвета на тёмном
+    // небе. Обрезать её ветвью нельзя, а pow для неё не нужен: три
+    // умножения дают то же самое.
+    check(src.find("powSafe(d, 6.0)") == NONE,
+          "широкое сияние солнца считается без pow");
+    check(src.find("d2 * d2 * d2") != NONE,
+          "оно считается умножениями");
+    check(src.find("powSafe(toSun, 3.0)") == NONE &&
+          src.find("toSun * toSun * toSun") != NONE,
+          "полоса у горизонта — тоже умножениями");
+
+    // ---- 2. Резкие члены — под ветвью ----
+    const usize sunIf  = src.find("if (d > ");
+    const usize moonIf = src.find("if (m > ");
+    check(sunIf != NONE,  "диск и ореол солнца под ветвью");
+    check(moonIf != NONE, "диск и ореол луны под ветвью");
+    if (sunIf == NONE || moonIf == NONE) return;
+
+    double sunCut = 0.0, moonCut = 0.0;
+    std::sscanf(src.c_str() + sunIf + 8,  "%lf", &sunCut);
+    std::sscanf(src.c_str() + moonIf + 8, "%lf", &moonCut);
+    check(sunCut > 0.0 && moonCut > 0.0, "пороги ветвей прочитаны");
+
+    // Всё, что режет ветвь, обязано быть под ветвью, и наоборот:
+    // иначе порог сторожит не то.
+    const usize sunEnd = src.find('}', sunIf);
+    const std::string sunBody = src.substr(sunIf, sunEnd - sunIf);
+    check(sunBody.find("powSafe(d, 900.0)") != NONE &&
+          sunBody.find("powSafe(d, 48.0)") != NONE,
+          "под ветвью солнца ровно диск и ореол");
+    const usize moonEnd = src.find('}', moonIf);
+    const std::string moonBody = src.substr(moonIf, moonEnd - moonIf);
+    check(moonBody.find("powSafe(m, 2400.0)") != NONE &&
+          moonBody.find("powSafe(m, 160.0)") != NONE,
+          "под ветвью луны ровно диск и ореол");
+
+    // ---- 3. Отброшенное не видно НИ НА ЧЁМ ----
+    //
+    // Худший случай — чёрное небо: там прибавка x к линейному нулю
+    // после перевода в sRGB (корень) даёт 255*sqrt(x) уровней. Порог
+    // цели: заведомо меньше половины уровня, то есть x < 3.8e-6.
+    const double LIMIT = 3.8e-6;
+    struct Term { const char* what; double cut, exp_, k; };
+    const Term terms[] = {
+        { "диск солнца",  sunCut,  900.0, 3.00 },
+        { "ореол солнца", sunCut,   48.0, 0.30 },
+        { "диск луны",    moonCut, 2400.0, 2.20 },
+        { "ореол луны",   moonCut,  160.0, 0.10 },
+    };
+    bool ok = true;
+    for (const auto& t : terms) {
+        const double lost = std::pow(t.cut, t.exp_) * t.k;
+        const double levels = 255.0 * std::sqrt(lost);
+        if (lost > LIMIT) {
+            std::printf("       на пороге %.2f «%s» теряет %.2e — это %.2f уровня цвета\n",
+                        t.cut, t.what, lost, levels);
+            ok = false;
+        }
+    }
+    check(ok, "на пороге отброшенное ниже кванта цвета даже на чёрном небе");
+
+    // И порог не должен быть завышен до бессмыслицы: ветвь, которая
+    // никогда не срабатывает, убрала бы солнце с неба.
+    check(sunCut < 0.999 && moonCut < 0.9999,
+          "но ветвь всё-таки срабатывает вблизи светила");
+
+    // Снизу порог сторожится отдельно, и это не про картинку.
+    //
+    // Опустить порог БЕЗОПАСНО: отброшенного становится меньше.
+    // Опасно другое — что ветвь перестанет окупаться. Смысл её в том,
+    // чтобы пропускать почти всё небо; порог 0.60 это конус в 53
+    // градуса, то есть пятая часть полусферы. Ниже — ветвь есть, а
+    // выигрыша нет, и заметить это по картинке нельзя.
+    if (sunCut < 0.60 || moonCut < 0.60) {
+        std::printf("       пороги %.2f и %.2f: конус слишком широк, "
+                    "ветвь перестаёт окупаться\n", sunCut, moonCut);
+        check(false, "ветвь узкая — иначе она не экономит");
+    } else {
+        check(true, "ветвь узкая — иначе она не экономит");
+    }
+}
+
+
 void testWorldSharesOneLightingModel() {
     group("шейдеры: мир освещён по одной модели");
 
@@ -2916,6 +3021,8 @@ void testFrameGpuBreakdown() {
 
     // ---- 5б. Развёртка меряет вычитанием, а не метками ----
     const std::string sw = readSource("app/src/main/cpp/src/render/pass_sweep.h");
+    const std::string swc =
+        readSource("app/src/main/cpp/src/render/pass_sweep.cpp");
     check(!sw.empty(), "развёртка по проходам есть");
     if (!sw.empty()) {
         // Опорный замер обязан идти первым: от него считается разность.
@@ -2998,6 +3105,75 @@ void testFrameGpuBreakdown() {
             }
         }
 
+        // ---- Ярус «проход в одиночку» ----
+        //
+        // Накопительная разность верна, пока проходы складываются.
+        // Замер 11.14 -> 9.89 показал, что не всегда: ландшафт
+        // подешевел на 2.09 мс, а приписанная небу разность выросла на
+        // 1.08 — при том, что sky.frag стал МЕНЬШЕ и делает на одно
+        // умножение меньше. Дорожать ему было не с чего; значит
+        // разность переложила часть стоимости на соседа и не сказала
+        // об этом.
+        //
+        // Лечится третьим ярусом: проход рисуется ОДИН, поверх пустого
+        // кадра. Закрывать его пикселям нечем, и цена — это просто
+        // «сколько стало» минус «пустой кадр», без чужих разностей.
+        check(sw.find("SOLO_FIRST") != NONE, "ярус «в одиночку» размечен");
+        check(sw.find("{ 0x08,") != NONE, "небо меряется в одиночку");
+        {
+            const usize solo = sw.find("{ 0x08,");
+            const usize off  = sw.find("{ 0x7E,");
+            check(off != NONE && solo != NONE && off < solo,
+                  "ярус «в одиночку» идёт последним, после выключения по одному");
+
+            // SOLO_FIRST обязан указывать на НАСТОЯЩИЙ номер этой
+            // ступени. Мутация «SOLO_FIRST = 9» пережила первую
+            // редакцию проверки: ярус становится пустым, ступень
+            // достаётся циклу выключения по одному и печатается
+            // формулой «опорное минус эта строка» — то есть ровно тем
+            // враньём, ради которого ярус и заведён. Молча.
+            const usize st0 = sw.find("STEPS[] = {");
+            const usize stEnd = sw.find("\n    };", st0);
+            usize idx = 0, soloIdx = (usize)-1;
+            for (usize at = sw.find("{ 0x", st0);
+                 at != NONE && at < stEnd;
+                 at = sw.find("{ 0x", at + 1), ++idx)
+                if (at == solo) { soloIdx = idx; break; }
+
+            int declared = -1;
+            const usize sf = sw.find("SOLO_FIRST  = ");
+            if (sf != NONE) std::sscanf(sw.c_str() + sf + 14, "%d", &declared);
+            if (soloIdx == (usize)-1 || declared < 0 ||
+                (usize)declared != soloIdx) {
+                std::printf("       SOLO_FIRST = %d, а ступень стоит %zu-й\n",
+                            declared, soloIdx);
+                check(false, "SOLO_FIRST указывает на первую одиночную ступень");
+            } else {
+                check(true, "SOLO_FIRST указывает на первую одиночную ступень");
+            }
+        }
+        if (!swc.empty()) {
+            // Одиночную ступень нельзя печатать формулой «опорное
+            // минус эта строка»: она мерит не то, чего не хватает
+            // кадру, а то, что стоит сам проход. Ярус выключения по
+            // одному обязан останавливаться на SOLO_FIRST.
+            const usize offLoop  = swc.find("i = CUMUL_LAST + 1");
+            const usize soloLoop = swc.find("i = SOLO_FIRST");
+            check(offLoop != NONE && soloLoop != NONE && offLoop < soloLoop,
+                  "у одиночного яруса свой цикл печати");
+            if (offLoop != NONE)
+                check(swc.compare(offLoop, 40, "i = CUMUL_LAST + 1; i < SOLO_FIRST") == 0
+                          || swc.find("i < SOLO_FIRST", offLoop) < swc.find(';', soloLoop),
+                      "выключение по одному не захватывает одиночные ступени");
+            if (soloLoop != NONE) {
+                const std::string w = swc.substr(soloLoop, 300);
+                check(w.find("- empty") != NONE,
+                      "одиночная ступень считается от пустого кадра");
+                check(w.find("base -") == NONE,
+                      "а не разностью с опорным");
+            }
+        }
+
         // ---- Пустой кадр: нижний предел ----
         //
         // Первый замер на устройстве дал сумму всех проходов 1.5 мс
@@ -3027,8 +3203,6 @@ void testFrameGpuBreakdown() {
             if (std::sscanf(sw.c_str() + r + 9, "%d", &rounds) == 1)
                 check(rounds >= 3, "кругов достаточно, чтобы размазать нагрев");
         }
-        const std::string swc =
-            readSource("app/src/main/cpp/src/render/pass_sweep.cpp");
         if (!swc.empty()) {
             // Шаг обязан меняться раньше круга: иначе это не
             // чередование, а те же блоки подряд.
@@ -5673,6 +5847,7 @@ int main() {
     testFaceShadingHasSingleSource();
     testApkCarriesTheShadersItWasBuiltFrom();
     testBuildStampIsNotStale();
+    testSkyCutsOnlyWhatCannotBeSeen();
     testWorldSharesOneLightingModel();
     testDistantGrassIsNotSubPixel();
     testShadersAvoidUndefinedMath();
