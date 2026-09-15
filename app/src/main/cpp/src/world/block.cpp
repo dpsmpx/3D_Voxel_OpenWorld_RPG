@@ -69,6 +69,20 @@ BlockRegistry& blocks() {
         reg(IRON_ORE, "Iron Ore",  true,  false, false, false, 0, bcolor(176,152,134),   bcolor(176,152,134),   bcolor(176,152,134),   2.5f);
         reg(GOLD_ORE, "Gold Ore",  true,  false, false, false, 0, bcolor(204,174, 84),   bcolor(204,174, 84),   bcolor(204,174, 84),   3.0f);
         reg(BEDROCK,  "Bedrock",   true,  false, false, false, 0, bcolor( 60, 60, 68),   bcolor( 60, 60, 68),   bcolor( 60, 60, 68),  -1.f);
+
+        // Строительные материалы. Подобраны по тому же правилу, что и
+        // всё остальное: соседние по месту материалы обязаны
+        // различаться СВЕТЛОТОЙ. Доска стоит рядом с соломой и с
+        // камнем фундамента, солома — на фоне неба и листвы.
+        reg(PLANK,    "Plank",     true,  false, false, false, 0, bcolor(198,164,116),   bcolor(198,164,116),   bcolor(198,164,116),   1.0f);
+        reg(THATCH,   "Thatch",    true,  false, false, false, 0, bcolor(176,134, 52),   bcolor(162,122, 46),   bcolor(162,122, 46),   0.4f);
+        // Стекло прозрачно, но твёрдо: сквозь него видно, а войти
+        // нельзя. Мешер строит грань на границе с прозрачным, поэтому
+        // окно в стене не дырявит дом.
+        reg(GLASS,    "Glass",     true,  true,  false, false, 0, bcolor(190,218,232,110), bcolor(190,218,232,110), bcolor(190,218,232,110), 0.3f);
+        // Фонарь светит. Раньше в середине деревянного дома лежала
+        // лужа ЛАВЫ — она и была «факелом».
+        reg(LANTERN,  "Lantern",   true,  false, false, true, 13, bcolor(255,198, 96),   bcolor(236,176, 78),   bcolor(236,176, 78),   0.5f);
     }
     return inst;
 }

@@ -422,49 +422,131 @@ void stampWell(Chunk& c, i32 wx, i32 wz, i32 wy) {
             putWorld(c, wx + dx, wy + 4, wz + dz, WOOD, true);
 }
 
-void stampHouse(Chunk& c, const FeatureContext& ctx, i32 wx, i32 wz, i32 w, i32 d, u32 rng) {
-    // Найти высоту поверхности в центре дома
-    i32 centerX = wx + w/2, centerZ = wz + d/2;
-    i32 surf = ctx.terrain->surfaceHeight(centerX, centerZ);
+/// Куда смотрит фасад дома.
+enum class Facing : u8 { NegZ = 0, PosZ, NegX, PosX };
 
-    // Выровнять землю под домом
+/// Дом.
+///
+/// Прежний дом был коробкой из WOOD с плоской нашлёпкой из LEAVES
+/// сверху и лужей ЛАВЫ посередине вместо очага. Дверь всегда стояла в
+/// стене -Z, независимо от того, где центр деревни, поэтому у половины
+/// домов вход смотрел в поле. Окон не было.
+///
+/// Здесь: фундамент и цоколь из камня, стены из доски, угловые стойки
+/// из бревна, окна, соломенная ДВУСКАТНАЯ кровля со свесом, фонарь под
+/// коньком и дверь в той стене, что обращена к центру деревни.
+void stampHouse(Chunk& c, const FeatureContext& ctx,
+                i32 wx, i32 wz, i32 w, i32 d, u32 rng, Facing face)
+{
+    // Дом меньше четырёх блоков по стороне — это не дом, а будка: в
+    // нём не разместить ни двери, ни окна.
+    if (w < 4) w = 4;
+    if (d < 4) d = 4;
+
+    const i32 centerX = wx + w / 2, centerZ = wz + d / 2;
+    const i32 surf = ctx.terrain->surfaceHeight(centerX, centerZ);
+
+    // Выровнять землю под домом и на шаг вокруг.
     for (i32 dx = -1; dx <= w; ++dx)
         for (i32 dz = -1; dz <= d; ++dz) {
-            i32 s = ctx.terrain->surfaceHeight(wx + dx, wz + dz);
-            for (i32 y = surf; y < s; ++y) putWorld(c, wx+dx, y, wz+dz, AIR, true);
-            for (i32 y = s; y < surf; ++y) putWorld(c, wx+dx, y, wz+dz, DIRT, true);
+            const i32 sh = ctx.terrain->surfaceHeight(wx + dx, wz + dz);
+            for (i32 y = surf; y < sh; ++y) putWorld(c, wx+dx, y, wz+dz, AIR, true);
+            for (i32 y = sh; y < surf; ++y) putWorld(c, wx+dx, y, wz+dz, DIRT, true);
         }
 
-    // Фундамент
-    for (i32 dx = 0; dx < w; ++dx)
-        for (i32 dz = 0; dz < d; ++dz)
+    // Фундамент под всем домом и пол внутри.
+    for (i32 dx = -1; dx <= w; ++dx)
+        for (i32 dz = -1; dz <= d; ++dz)
             putWorld(c, wx + dx, surf - 1, wz + dz, STONE, true);
 
-    // Стены + дверь
-    i32 doorX = wx + 1 + (rng % (w > 2 ? w - 2 : 1));
-    for (i32 y = 0; y < 4; ++y)
+    const i32 wallH = 4;
+
+    // Где дверь: в стене, обращённой к центру деревни. Раньше она
+    // всегда была в -Z, и у половины домов вход смотрел в поле.
+    const i32 doorX = wx + 1 + (i32)(rng % (u32)(w - 2));
+    const i32 doorZ = wz + 1 + (i32)((rng >> 8) % (u32)(d - 2));
+
+    auto isDoor = [&](i32 gx, i32 gz, i32 y) {
+        if (y > 1) return false;                 // проём в два блока
+        switch (face) {
+            case Facing::NegZ: return gz == wz         && gx == doorX;
+            case Facing::PosZ: return gz == wz + d - 1 && gx == doorX;
+            case Facing::NegX: return gx == wx         && gz == doorZ;
+            case Facing::PosX: return gx == wx + w - 1 && gz == doorZ;
+        }
+        return false;
+    };
+
+    // Окна — на середине стены, на уровне глаз, и не в дверной стене
+    // рядом с проёмом.
+    auto isWindow = [&](i32 gx, i32 gz, i32 y) {
+        if (y != 2) return false;
+        const bool onX = (gx == wx || gx == wx + w - 1);
+        const bool onZ = (gz == wz || gz == wz + d - 1);
+        if (!onX && !onZ) return false;
+        if (onX && onZ) return false;            // угол — там стойка
+        // По одному окну на стену, ближе к середине.
+        if (onX) return gz == wz + d / 2;
+        return gx == wx + w / 2;
+    };
+
+    // Стены.
+    for (i32 y = 0; y < wallH; ++y)
         for (i32 dx = 0; dx < w; ++dx)
             for (i32 dz = 0; dz < d; ++dz) {
-                bool edge = (dx == 0 || dx == w-1 || dz == 0 || dz == d-1);
-                if (!edge) { putWorld(c, wx+dx, surf+y, wz+dz, AIR, true); continue; }
-                if (y <= 2 && dz == 0 && wx + dx == doorX) continue;
-                putWorld(c, wx + dx, surf + y, wz + dz, WOOD, true);
+                const i32 gx = wx + dx, gz = wz + dz;
+                const bool edge = (dx == 0 || dx == w-1 || dz == 0 || dz == d-1);
+                if (!edge) { putWorld(c, gx, surf + y, gz, AIR, true); continue; }
+                if (isDoor(gx, gz, y)) { putWorld(c, gx, surf + y, gz, AIR, true); continue; }
+                if (isWindow(gx, gz, y)) { putWorld(c, gx, surf + y, gz, GLASS, true); continue; }
+
+                // Угловые стойки из бревна: они и держат силуэт. Без
+                // них стена — однотонная плоскость.
+                const bool corner = (dx == 0 || dx == w-1) && (dz == 0 || dz == d-1);
+                putWorld(c, gx, surf + y, gz, corner ? WOOD : PLANK, true);
             }
 
-    // Крыша — слоями наружу
-    for (i32 level = 0; level < 2; ++level) {
-        i32 x0 = wx - level, x1 = wx + w - 1 + level;
-        i32 z0 = wz - level, z1 = wz + d - 1 + level;
-        for (i32 dx = x0; dx <= x1; ++dx)
-            for (i32 dz = z0; dz <= z1; ++dz)
-                putWorld(c, dx, surf + 4 + level, dz, LEAVES, true);
-    }
-    for (i32 dx = wx - 1; dx <= wx + w; ++dx)
-        for (i32 dz = wz - 1; dz <= wz + d; ++dz)
-            putWorld(c, dx, surf + 6, dz, LEAVES, true);
+    // Двускатная кровля вдоль длинной стороны, со свесом в один блок.
+    //
+    // Плоская нашлёпка сверху читалась кустом, а не крышей: именно
+    // скат и делает дом домом.
+    const bool alongZ = (w <= d);
+    const i32 span = alongZ ? w : d;
+    const i32 steps = span / 2 + 1;
 
-    // Факел — светящийся блок в центре
-    putWorld(c, wx + w/2, surf + 3, wz + d/2, LAVA, true);
+    for (i32 lvl = 0; lvl < steps; ++lvl) {
+        const i32 y = surf + wallH + lvl;
+        const i32 inset = lvl - 1;               // -1 даёт свес
+        if (alongZ) {
+            const i32 x0 = wx + inset, x1 = wx + w - 1 - inset;
+            if (x0 > x1) break;
+            for (i32 gz = wz - 1; gz <= wz + d; ++gz) {
+                putWorld(c, x0, y, gz, THATCH, true);
+                putWorld(c, x1, y, gz, THATCH, true);
+                // Под скатом — воздух, иначе чердак зальётся соломой.
+                for (i32 gx = x0 + 1; gx < x1; ++gx)
+                    putWorld(c, gx, y, gz, AIR, true);
+            }
+            if (x0 == x1)
+                for (i32 gz = wz - 1; gz <= wz + d; ++gz)
+                    putWorld(c, x0, y, gz, THATCH, true);
+        } else {
+            const i32 z0 = wz + inset, z1 = wz + d - 1 - inset;
+            if (z0 > z1) break;
+            for (i32 gx = wx - 1; gx <= wx + w; ++gx) {
+                putWorld(c, gx, y, z0, THATCH, true);
+                putWorld(c, gx, y, z1, THATCH, true);
+                for (i32 gz = z0 + 1; gz < z1; ++gz)
+                    putWorld(c, gx, y, gz, AIR, true);
+            }
+            if (z0 == z1)
+                for (i32 gx = wx - 1; gx <= wx + w; ++gx)
+                    putWorld(c, gx, y, z0, THATCH, true);
+        }
+    }
+
+    // Фонарь под потолком. Раньше здесь лежала лужа ЛАВЫ.
+    putWorld(c, centerX, surf + wallH - 1, centerZ, LANTERN, true);
 }
 
 void stampVillage(Chunk& c, const FeatureContext& ctx, const structs::Layout& L) {
@@ -475,19 +557,31 @@ void stampVillage(Chunk& c, const FeatureContext& ctx, const structs::Layout& L)
     // Колодец в центре
     stampWell(c, cx, cz, wy);
 
-    // 6..10 зданий по кольцу
+    // 6..10 домов по кольцу, фасадами к колодцу.
     u32 h = L.seed;
     i32 count = 6 + (h % 5);
     for (i32 i = 0; i < count; ++i) {
-        f32 angle = (f32)i / (f32)count * 6.28318f;
+        const f32 angle = (f32)i / (f32)count * 6.28318f;
+        const f32 ca = std::cos(angle), sa = std::sin(angle);
         // Радиус кольца 20..36
-        f32 r = 20.f + (f32)((h >> (i % 16)) & 0xF);
-        i32 bx = cx + (i32)(std::cos(angle) * r) - 3;
-        i32 bz = cz + (i32)(std::sin(angle) * r) - 3;
+        const f32 r = 20.f + (f32)((h >> (i % 16)) & 0xF);
         // Размер 5..8
-        i32 w = 5 + ((h >> i) & 3);
-        i32 d = 5 + ((h >> (i + 3)) & 3);
-        stampHouse(c, ctx, bx, bz, w, d, h + i * 31);
+        const i32 w = 5 + (i32)((h >> i) & 3);
+        const i32 d = 5 + (i32)((h >> (i + 3)) & 3);
+        const i32 bx = cx + (i32)(ca * r) - w / 2;
+        const i32 bz = cz + (i32)(sa * r) - d / 2;
+
+        // Дом стоит к деревне лицом. Дверь — в той стене, что ближе к
+        // колодцу: смотрим, какая составляющая направления «от центра»
+        // больше. Раньше дверь всегда была в стене -Z, и у половины
+        // домов вход выходил в поле.
+        Facing face;
+        if (std::fabs(ca) > std::fabs(sa))
+            face = (ca > 0.f) ? Facing::NegX : Facing::PosX;
+        else
+            face = (sa > 0.f) ? Facing::NegZ : Facing::PosZ;
+
+        stampHouse(c, ctx, bx, bz, w, d, h + (u32)i * 31u, face);
     }
 }
 
@@ -583,6 +677,23 @@ DungeonSite dungeonAt(i32 superX, i32 superZ, u64 worldSeed) {
     site.center = {
         (L.minBlock.x + L.maxBlock.x) / 2,
         y0,
+        (L.minBlock.z + L.maxBlock.z) / 2,
+    };
+    return site;
+}
+
+VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed) {
+    VillageSite site;
+    const structs::Layout L = structs::layoutFor(superX, superZ, worldSeed);
+    if (L.kind != structs::Village) return site;
+
+    site.exists = true;
+    site.seed   = L.seed;
+    // Колодец ставится ровно в середину раскладки — там же, где его
+    // рисует stampVillage.
+    site.center = {
+        (L.minBlock.x + L.maxBlock.x) / 2,
+        0,
         (L.minBlock.z + L.maxBlock.z) / 2,
     };
     return site;

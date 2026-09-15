@@ -66,6 +66,7 @@
 #include "entity/mob_rigs.h"
 #include "entity/humanoid_rig.h"
 #include "npc/npc_rig.h"
+#include "npc/npc_spawner.h"
 #include "player/player_rig.h"
 #include "player/player.h"
 #include "entity/rig.h"
@@ -6369,6 +6370,296 @@ void testPlayerHasModel() {
 }
 
 // ------------------------------------------------------------
+// Деревня: дом — это дом, а не коробка с кустом на крыше.
+//
+// Прежний дом был коробкой из WOOD с плоской нашлёпкой из LEAVES
+// сверху и лужей ЛАВЫ посередине вместо очага. Дверь всегда стояла в
+// стене -Z независимо от того, где центр деревни, поэтому у половины
+// домов вход смотрел в поле. Окон не было вовсе.
+// ------------------------------------------------------------
+void testVillageHousesAreBuildings() {
+    group("деревня: дом построен, а не насыпан");
+
+    world::blocks();
+    constexpr u64 SEED = 4242;
+    world::ChunkManager mgr(SEED, 1);
+
+    // Находим настоящую деревню — ту же, что найдёт спавнер NPC.
+    world::VillageSite site;
+    i32 sx = 0, sz = 0;
+    for (i32 r = 0; r < 12 && !site.exists; ++r)
+        for (i32 a = -r; a <= r && !site.exists; ++a)
+            for (i32 b = -r; b <= r && !site.exists; ++b) {
+                if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                const auto s2 = world::villageAt(a, b, SEED);
+                if (s2.exists) { site = s2; sx = a; sz = b; }
+            }
+    if (!site.exists) { check(false, "деревня не нашлась ни в одном супер-чанке"); return; }
+    check(true, "деревня найдена по общей раскладке");
+    (void)sx; (void)sz;
+
+    // Радиус осмотра. Дома стоят на кольце радиусом до 35, плюс
+    // половина размера дома и блок свеса кровли: окна в ±40 не
+    // хватало, и до проверки дверей доходил один дом из десяти.
+    constexpr i32 VR = 56;
+
+    // Генерируем чанки вокруг колодца с запасом на целые чанки.
+    const i32 c0x = (i32)std::floor((f32)(site.center.x - VR) / world::CHUNK_SIZE) - 1;
+    const i32 c1x = (i32)std::floor((f32)(site.center.x + VR) / world::CHUNK_SIZE) + 1;
+    const i32 c0z = (i32)std::floor((f32)(site.center.z - VR) / world::CHUNK_SIZE) - 1;
+    const i32 c1z = (i32)std::floor((f32)(site.center.z + VR) / world::CHUNK_SIZE) + 1;
+
+    struct Col { i32 cx, cz; std::unique_ptr<world::Chunk> ch; };
+    std::vector<Col> world_;
+    std::vector<world::TerrainGenerator::Column> cols;
+    for (i32 cx = c0x; cx <= c1x; ++cx)
+        for (i32 cz = c0z; cz <= c1z; ++cz) {
+            auto ch = std::make_unique<world::Chunk>();
+            ch->coord = { cx, 0, cz };
+            world::computeChunkColumns(mgr.generator(), cx, cz, cols);
+            world::generateChunkVoxels(*ch, mgr.generator(), cols.data(), SEED);
+            world_.push_back({ cx, cz, std::move(ch) });
+        }
+
+    auto blockAt = [&](i32 wx, i32 wy, i32 wz) -> u16 {
+        const i32 cx = (i32)std::floor((f32)wx / world::CHUNK_SIZE);
+        const i32 cz = (i32)std::floor((f32)wz / world::CHUNK_SIZE);
+        for (const auto& e : world_)
+            if (e.cx == cx && e.cz == cz) {
+                const i32 lx = wx - cx * world::CHUNK_SIZE;
+                const i32 lz = wz - cz * world::CHUNK_SIZE;
+                if (!e.ch->inBounds(lx, wy, lz)) return world::AIR;
+                return e.ch->at(lx, wy, lz);
+            }
+        return world::UNKNOWN;
+    };
+
+    // ---- 1. Материалы дома ----
+    int thatch = 0, plank = 0, glass = 0, lantern = 0, lavaInVillage = 0;
+    i32 yLo = 200, yHi = 0;
+    for (i32 wx = site.center.x - VR; wx <= site.center.x + VR; ++wx)
+        for (i32 wz = site.center.z - VR; wz <= site.center.z + VR; ++wz)
+            for (i32 y = 0; y < world::CHUNK_SIZE_Y; ++y) {
+                const u16 b = blockAt(wx, y, wz);
+                if (b == world::THATCH)  { ++thatch;  yLo = std::min(yLo, y); yHi = std::max(yHi, y); }
+                else if (b == world::PLANK)   ++plank;
+                else if (b == world::GLASS)   ++glass;
+                else if (b == world::LANTERN) ++lantern;
+                else if (b == world::LAVA)    ++lavaInVillage;
+            }
+
+    {
+        char dm[200];
+        std::snprintf(dm, sizeof(dm),
+                      "деревня разобрана: доска %d, солома %d, стекло %d, фонарей %d",
+                      plank, thatch, glass, lantern);
+        check(true, dm);
+    }
+    check(plank   > 0, "стены дома из доски");
+    check(thatch  > 0, "кровля соломенная");
+    check(glass   > 0, "в домах есть окна");
+    check(lantern > 0, "и фонарь вместо лужи лавы");
+    check(lavaInVillage == 0, "лавы в деревне нет");
+
+    // ---- 2. Кровля двускатная, а не плоская ----
+    //
+    // Считать солому по уровням НЕЛЬЗЯ: дома стоят на разной высоте,
+    // и уровни разных домов складываются в кашу. Первая версия этой
+    // проверки так и делала — и пережила мутацию «крыша снова
+    // плоская».
+    //
+    // Смотрим на ОДИН дом: собираем связные пятна соломы и в каждом
+    // сравниваем высоту конька с высотой свеса. У ската разница есть,
+    // у плиты все столбцы одной высоты.
+    {
+        check(yHi > yLo + 1, "кровля занимает несколько уровней по высоте");
+
+        const i32 x0 = site.center.x - VR, x1 = site.center.x + VR;
+        const i32 z0 = site.center.z - VR, z1 = site.center.z + VR;
+        const i32 w = x1 - x0 + 1, d = z1 - z0 + 1;
+
+        // Верх соломы в каждом столбце; -1 — соломы нет.
+        std::vector<i32> top((usize)w * d, -1);
+        for (i32 x = x0; x <= x1; ++x)
+            for (i32 z = z0; z <= z1; ++z)
+                for (i32 y = yHi; y >= yLo; --y)
+                    if (blockAt(x, y, z) == world::THATCH) {
+                        top[(usize)(x - x0) * d + (z - z0)] = y;
+                        break;
+                    }
+
+        std::vector<bool> seen((usize)w * d, false);
+        int roofs = 0, pitched = 0;
+        for (i32 ix = 0; ix < w; ++ix)
+            for (i32 iz = 0; iz < d; ++iz) {
+                const usize s0 = (usize)ix * d + iz;
+                if (seen[s0] || top[s0] < 0) continue;
+
+                // Волна по связному пятну соломы — это один дом.
+                std::vector<usize> stack{ s0 };
+                seen[s0] = true;
+                i32 lo = top[s0], hi = top[s0], cells = 0;
+                while (!stack.empty()) {
+                    const usize cur = stack.back(); stack.pop_back();
+                    ++cells;
+                    lo = std::min(lo, top[cur]);
+                    hi = std::max(hi, top[cur]);
+                    const i32 cxi = (i32)(cur / (usize)d), czi = (i32)(cur % (usize)d);
+                    const i32 dx[4] = { 1, -1, 0, 0 }, dz[4] = { 0, 0, 1, -1 };
+                    for (int k = 0; k < 4; ++k) {
+                        const i32 nx = cxi + dx[k], nz = czi + dz[k];
+                        if (nx < 0 || nz < 0 || nx >= w || nz >= d) continue;
+                        const usize ns = (usize)nx * d + nz;
+                        if (seen[ns] || top[ns] < 0) continue;
+                        seen[ns] = true;
+                        stack.push_back(ns);
+                    }
+                }
+                if (cells < 12) continue;      // не крыша, а обрывок
+                ++roofs;
+                if (hi - lo >= 2) ++pitched;
+            }
+
+        check(roofs > 0, "крыши нашлись");
+        check(pitched == roofs,
+              "у каждой крыши есть конёк и свес — это скат, а не плита");
+    }
+
+    // ---- 3. В дом можно войти ----
+    //
+    // Ищем проёмы: воздух в стене из доски на уровне земли. Дверь
+    // высотой в два блока — иначе в неё не пройти.
+    {
+        int doors = 0;
+        for (i32 wx = site.center.x - VR; wx <= site.center.x + VR; ++wx)
+            for (i32 wz = site.center.z - VR; wz <= site.center.z + VR; ++wz)
+                for (i32 y = 1; y < world::CHUNK_SIZE_Y - 3; ++y) {
+                    if (blockAt(wx, y, wz) != world::AIR) continue;
+                    if (blockAt(wx, y + 1, wz) != world::AIR) continue;
+                    if (blockAt(wx, y - 1, wz) != world::STONE) continue;
+                    // По бокам — доска: значит это проём в стене.
+                    auto wall = [&](i32 bx, i32 by, i32 bz) {
+                        const u16 b = blockAt(bx, by, bz);
+                        // Косяком бывает и угловая стойка из бревна.
+                        return b == world::PLANK || b == world::WOOD;
+                    };
+                    const bool jambX = wall(wx-1, y, wz) && wall(wx+1, y, wz);
+                    const bool jambZ = wall(wx, y, wz-1) && wall(wx, y, wz+1);
+                    if (jambX || jambZ) ++doors;
+                }
+        char dm2[120];
+        std::snprintf(dm2, sizeof(dm2), "дверных проёмов в два блока: %d", doors);
+        check(doors > 0, dm2);
+
+        // И смотрят они НА ДЕРЕВНЮ. Раньше дверь всегда была в стене
+        // -Z, и у половины домов вход выходил в поле.
+        //
+        // Где у проёма «внутрь», подсказывает фонарь: он висит под
+        // коньком, то есть в середине дома. Фундамент для этого не
+        // годится — он выходит на блок за стену со ВСЕХ сторон.
+        std::vector<glm::ivec3> lanterns;
+        for (i32 wx = site.center.x - VR; wx <= site.center.x + VR; ++wx)
+            for (i32 wz = site.center.z - VR; wz <= site.center.z + VR; ++wz)
+                for (i32 y = 1; y < world::CHUNK_SIZE_Y - 1; ++y)
+                    if (blockAt(wx, y, wz) == world::LANTERN)
+                        lanterns.push_back({ wx, y, wz });
+
+        int facingWell = 0, facingAway = 0, dropped = 0, zeroDot = 0;
+        for (i32 wx = site.center.x - VR; wx <= site.center.x + VR; ++wx)
+            for (i32 wz = site.center.z - VR; wz <= site.center.z + VR; ++wz)
+                for (i32 y = 1; y < world::CHUNK_SIZE_Y - 3; ++y) {
+                    if (blockAt(wx, y, wz) != world::AIR) continue;
+                    if (blockAt(wx, y + 1, wz) != world::AIR) continue;
+                    if (blockAt(wx, y - 1, wz) != world::STONE) continue;
+                    auto wall2 = [&](i32 bx, i32 by, i32 bz) {
+                        const u16 b = blockAt(bx, by, bz);
+                        return b == world::PLANK || b == world::WOOD;
+                    };
+                    const bool jambX = wall2(wx-1, y, wz) && wall2(wx+1, y, wz);
+                    const bool jambZ = wall2(wx, y, wz-1) && wall2(wx, y, wz+1);
+                    if (!jambX && !jambZ) continue;
+
+                    // Ближайший фонарь — середина этого дома.
+                    i32 best = -1; f32 bestD = 1e9f;
+                    for (usize li = 0; li < lanterns.size(); ++li) {
+                        const f32 dx = (f32)(lanterns[li].x - wx);
+                        const f32 dz = (f32)(lanterns[li].z - wz);
+                        const f32 dd = dx * dx + dz * dz;
+                        if (dd < bestD) { bestD = dd; best = (i32)li; }
+                    }
+                    if (best < 0 || bestD > 100.f) { ++dropped; continue; }
+
+                    // Наружу — от фонаря, поперёк стены.
+                    i32 nx = 0, nz = 0;
+                    if (jambX) nz = (lanterns[(usize)best].z > wz) ? -1 : 1;
+                    else       nx = (lanterns[(usize)best].x > wx) ? -1 : 1;
+
+                    const i32 dot = nx * (site.center.x - wx)
+                                  + nz * (site.center.z - wz);
+                    if (dot > 0) ++facingWell; else if (dot < 0) ++facingAway;
+                    else ++zeroDot;
+                }
+        char dm[160];
+        std::snprintf(dm, sizeof(dm),
+                      "двери к колодцу %d, от него %d, без фонаря %d, поперёк %d",
+                      facingWell, facingAway, dropped, zeroDot);
+        check(facingWell > 0, dm);
+        std::snprintf(dm, sizeof(dm),
+                      "и таких — подавляющее большинство (к %d против %d)",
+                      facingWell, facingAway);
+        check(facingAway * 3 <= facingWell, dm);
+    }
+
+    // ---- 4. Дом не заливает соломой изнутри ----
+    //
+    // Скат кладётся слоями, и если не вычищать пространство под ним,
+    // чердак оказывается сплошным. Фонарь под коньком — свидетель:
+    // он обязан стоять в воздухе, а не в толще соломы.
+    {
+        int buried = 0, checked = 0;
+        for (i32 wx = site.center.x - VR; wx <= site.center.x + VR; ++wx)
+            for (i32 wz = site.center.z - VR; wz <= site.center.z + VR; ++wz)
+                for (i32 y = 1; y < world::CHUNK_SIZE_Y - 1; ++y) {
+                    if (blockAt(wx, y, wz) != world::LANTERN) continue;
+                    ++checked;
+                    // Под фонарём — внутренность дома, она обязана быть
+                    // проходимой.
+                    if (blockAt(wx, y - 1, wz) != world::AIR) ++buried;
+                }
+        check(checked > 0, "фонари нашлись");
+        check(buried == 0, "под фонарём — жилое пространство, а не завал");
+    }
+
+    // ---- 5. Жители появляются В деревне ----
+    //
+    // Спавнер раскладку деревни СПРАШИВАЕТ у генератора, а не
+    // повторяет его правила у себя. Пока повторял, расхождение было
+    // бы молчаливым: сдвинутый порог — и жители стоят в чистом поле.
+    {
+        ecs::Registry reg;
+        npc::NpcSpawner sp;
+        const glm::vec3 at{ (f32)site.center.x, 64.f, (f32)site.center.z };
+        // Спавнер копит свой таймер по 1/60 за вызов и просыпается
+        // раз в 0.75 с. Один вызов не делает ничего.
+        for (int i = 0; i < 60; ++i) sp.update(mgr, reg, at, SEED);
+
+        auto& pool = reg.pool<npc::NpcTag>();
+        int far = 0, total = 0;
+        for (usize i = 0; i < pool.size(); ++i) {
+            const ecs::Entity e = pool.entityAt((u32)i);
+            const auto* tf = reg.get<ecs::Transform>(e);
+            if (!tf) continue;
+            ++total;
+            const f32 dx = tf->position.x - (f32)site.center.x;
+            const f32 dz = tf->position.z - (f32)site.center.z;
+            if (std::sqrt(dx * dx + dz * dz) > 48.f) ++far;
+        }
+        check(total > 0, "жители появились");
+        check(far == 0, "и все — внутри той деревни, которую построил генератор");
+    }
+}
+
+// ------------------------------------------------------------
 // Переходы: покой, шаг, бег, прыжок, падение, приземление.
 //
 // Анимация знала ровно два положения — покой и шаг — и смешивала их
@@ -8785,6 +9076,7 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testVillageHousesAreBuildings();
     testGaitPhaseFollowsDistance();
     testPlayerHasModel();
     testBufferMapContract();
