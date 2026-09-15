@@ -5597,6 +5597,112 @@ void testNoticesQueueAndPrioritise() {
 }
 
 // ------------------------------------------------------------
+// Характеристики: кнопки нажимаемы, недоступность видна.
+//
+// Кнопки «+» и «−» были 50 точек: на рабочем телефоне это 20 dp при
+// норме 48, то есть 3.2 мм под палец в 8..10. Размер задавался в
+// пикселях и не зависел от плотности — тот же дефект, что и везде.
+// ------------------------------------------------------------
+void testAttributeSteppersArePressable() {
+    group("характеристики: кнопки нажимаемы");
+
+    struct Size { f32 w, h; i32 dpi; const char* name; };
+    const Size sizes[] = {
+        { 2306.f, 1080.f, 400, "2306x1080" },
+        { 1280.f,  720.f, 320, "1280x720"  },
+        {  960.f,  540.f, 240, "960x540"   },
+        { 2560.f, 1600.f, 280, "2560x1600" },
+    };
+
+    int problems = 0;
+    for (const auto& sz : sizes) {
+        const ui::HudLayout L(sz.w, sz.h,
+                              ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                              ui::SafeInsets{});
+        const f32 minSide = L.dp(ui::theme::TOUCH_MIN_DP) - 0.01f;
+        const ui::Rect area = L.menuArea();
+
+        for (u32 i = 0; i < 4; ++i) {
+            const ui::Rect row   = L.attrRow(i);
+            const ui::Rect minus = L.attrButton(i, false);
+            const ui::Rect plus  = L.attrButton(i, true);
+
+            if (minus.w < minSide || minus.h < minSide ||
+                plus.w  < minSide || plus.h  < minSide) {
+                ++problems;
+                char msg[128];
+                std::snprintf(msg, sizeof(msg), "%s: кнопка строки %u мельче 48 dp",
+                              sz.name, i);
+                check(false, msg);
+            }
+            // Между «+» и «−» нужен зазор: иначе промах по одной
+            // попадает в другую, а это прибавит вместо убавить.
+            if (plus.x < minus.x + minus.w + L.dp(ui::theme::TOUCH_GAP_DP) - 0.01f) {
+                ++problems;
+                char msg[128];
+                std::snprintf(msg, sizeof(msg),
+                              "%s: «+» и «−» строки %u ближе зазора", sz.name, i);
+                check(false, msg);
+            }
+            // Кнопки внутри своей строки и строка внутри области.
+            if (minus.x < row.x || plus.x + plus.w > row.x + row.w + 0.01f ||
+                minus.y < row.y - 0.01f ||
+                plus.y + plus.h > row.y + row.h + 0.01f) {
+                ++problems;
+                char msg[128];
+                std::snprintf(msg, sizeof(msg), "%s: кнопки строки %u вне строки",
+                              sz.name, i);
+                check(false, msg);
+            }
+            if (row.y < area.y - 0.01f ||
+                row.y + row.h > area.y + area.h + 0.01f) {
+                ++problems;
+                char msg[128];
+                std::snprintf(msg, sizeof(msg), "%s: строка %u вне области меню",
+                              sz.name, i);
+                check(false, msg);
+            }
+            // Строки не налезают друг на друга.
+            if (i > 0) {
+                const ui::Rect prev = L.attrRow(i - 1);
+                if (row.y < prev.y + prev.h - 0.01f) {
+                    ++problems;
+                    check(false, "строки характеристик налезают");
+                }
+            }
+        }
+    }
+    check(problems == 0, "кнопки характеристик нажимаемы на всех экранах");
+
+    // ---- Недоступность показана не только цветом ----
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) return;
+    const usize NONE = std::string::npos;
+    const usize st = src.find("void UiSystem::drawStepper(");
+    check(st != NONE, "кнопка «+»/«−» выделена в общий код");
+    if (st != NONE) {
+        const usize end = src.find("\n}\n", st);
+        const std::string body = src.substr(st, end - st);
+        check(body.find("STROKE_SELECTED_DP") != NONE &&
+              body.find("STROKE_DP") != NONE,
+              "у выключенной кнопки рамка тоньше, а не только цвет другой");
+        check(body.find("TextDisabled") != NONE,
+              "и текст приглушён");
+    }
+
+    // ---- После изменения есть обратная связь ----
+    const usize at = src.find("void UiSystem::drawAttributesScreen(");
+    if (at != NONE) {
+        const usize end = src.find("\n}\n", at);
+        const std::string body = src.substr(at, end - at);
+        check(body.find("notify(") != NONE,
+              "изменение характеристики подтверждается уведомлением");
+        check(body.find("layout_.attrButton(") != NONE,
+              "геометрия кнопок берётся из раскладки");
+    }
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -7195,6 +7301,7 @@ int main() {
     testDialogueReadsAsAConversation();
     testQuestLogAnswersWhatToDoNow();
     testNoticesQueueAndPrioritise();
+    testAttributeSteppersArePressable();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

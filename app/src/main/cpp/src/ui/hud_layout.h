@@ -354,6 +354,44 @@ public:
     static constexpr f32 TRACKER_W_DP = 220.f;
     static constexpr f32 TRACKER_H_DP =  40.f;
 
+    // ---- характеристики: строка и кнопки прибавить/убавить ----
+    //
+    // Кнопки были 50 точек — на рабочем телефоне это 20 dp при норме
+    // 48, то есть 3.2 мм. Ровно тот же дефект, что и везде: размер
+    // задавался в пикселях и не зависел от плотности.
+    Rect attrRow(u32 i) const {
+        const Rect a = menuArea();
+        const f32 g = dp(theme::SPACE_M_DP);
+
+        // Высота подстраивается под область, а не задаётся числом:
+        // четыре строки по 88 dp не помещались ни на один экран,
+        // кроме планшета. Ниже цели касания строка не опускается —
+        // в ней стоят кнопки.
+        f32 h = (a.h - g * (f32)(ATTR_COUNT - 1)) / (f32)ATTR_COUNT;
+        const f32 minH = dp(theme::TOUCH_REGULAR_DP);
+        const f32 maxH = dp(ATTR_ROW_H_DP);
+        if (h > maxH) h = maxH;
+        if (h < minH) h = minH;
+
+        const f32 wdt = a.w < dp(ATTR_ROW_MAX_W_DP) ? a.w : dp(ATTR_ROW_MAX_W_DP);
+        return { a.x + (a.w - wdt) * 0.5f, a.y + (f32)i * (h + g), wdt, h };
+    }
+
+    /// i — номер строки, plus — прибавить (иначе убавить).
+    Rect attrButton(u32 i, bool plus) const {
+        const Rect r = attrRow(i);
+        const f32 sz = dp(theme::TOUCH_REGULAR_DP);
+        const f32 pad = dp(theme::SPACE_M_DP);
+        const f32 gap = dp(theme::TOUCH_GAP_DP);
+        const f32 px = r.x + r.w - pad - sz;
+        return { plus ? px : px - sz - gap,
+                 r.y + (r.h - sz) * 0.5f, sz, sz };
+    }
+
+    static constexpr u32 ATTR_COUNT        =   4;
+    static constexpr f32 ATTR_ROW_H_DP     =  88.f;   ///< потолок
+    static constexpr f32 ATTR_ROW_MAX_W_DP = 520.f;
+
     // ---- уведомления ----
     //
     // Важное по центру, рядовое снизу. Место — тоже признак: по

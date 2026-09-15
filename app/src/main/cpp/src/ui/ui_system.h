@@ -345,6 +345,9 @@ private:
     void drawItemDetails(player::Player& player);
     void drawSkillTreeScreen(player::Player& player);
     void drawAttributesScreen(player::Player& player);
+    /// Кнопка «+»/«−» одного вида на всю игру.
+    void drawStepper(const Rect& r, const char* label,
+                     bool pressed, bool enabled);
 
     void drawDialogueScreen(player::Player& player);
     void drawQuestLogScreen(player::Player& player);

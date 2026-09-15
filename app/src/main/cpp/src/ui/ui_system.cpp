@@ -1452,99 +1452,117 @@ void UiSystem::drawSkillTreeScreen(player::Player& player) {
 // Attributes
 // ============================================================
 void UiSystem::drawAttributesScreen(player::Player& player) {
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(10, 20, 30, 235));
+    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
+             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
 
     auto* prog = player.progression();
     auto* attr = player.attributes();
     if (!prog || !attr) return;
 
-    ui_.text(T(StrKey::Menu_Attributes), (float)screenW_ * 0.35f, 24.f, 3.f, COL_WHITE);
+    const Rect title = layout_.menuTitle();
+    ui_.text(T(StrKey::Menu_Attributes), title.x,
+             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
+             theme::TEXT_TITLE, theme::TextPrimary);
 
-    char ptsBuf[64];
-    std::snprintf(ptsBuf, sizeof(ptsBuf), "Points: %d", prog->availableAttrPoints);
-    ui_.text(ptsBuf, (float)screenW_ - 240.f, 24.f, 2.f,
-             prog->availableAttrPoints > 0 ? rgba(255, 220, 100, 255) : COL_WHITE);
+    // Свободные очки — то, ради чего сюда заходят, поэтому крупно и
+    // акцентом, пока они есть.
+    char pts[64];
+    std::snprintf(pts, sizeof(pts), "%s %d", T(StrKey::Hud_Level),
+                  prog->availableAttrPoints);
+    const f32 pw = ui_.textWidth(pts, theme::TEXT_BODY);
+    ui_.text(pts, title.x + title.w - pw,
+             title.y + (title.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+             theme::TEXT_BODY,
+             prog->availableAttrPoints > 0 ? theme::Accent : theme::TextSecondary);
 
-    Rect close{ (float)screenW_ - 90.f, 74.f, 80.f, 50.f };
-    int closeIdx = ui_.pushInteractiveRect(close, [this]() { screen = Screen::Hud; });
-    if (ui_.button("X", close, closeIdx, rgba(120,60,60,255), COL_WHITE)) {
-        screen = Screen::Hud; return;
-    }
-
-    const f32 rowW = (f32)screenW_ * 0.6f;
-    const f32 rowH = 70.f;
-    const f32 gap  = 20.f;
-    const f32 x0 = ((f32)screenW_ - rowW) * 0.5f;
-    const f32 y0 = (f32)screenH_ * 0.25f;
-
-    struct AttrRow {
-        const char* label;
-        const char* desc;
-        i32* value;
-        UiColor color;
-    };
+    struct AttrRow { const char* label; const char* desc; i32* value; UiColor color; };
     AttrRow rows[4] = {
-        { "STRENGTH",     "+melee damage, +crit dmg",
-          &attr->strength,     rgba(220, 80, 60, 255) },
-        { "AGILITY",      "+attack speed, +crit, +move",
-          &attr->agility,      rgba(80, 200, 80, 255) },
-        { "INTELLIGENCE", "+mana, +spell power",
-          &attr->intelligence, rgba(80, 140, 240, 255) },
-        { "ENDURANCE",    "+health, +resist, +stamina",
-          &attr->endurance,    rgba(220, 160, 60, 255) },
+        { "STRENGTH",     "+MELEE DAMAGE, +CRIT DAMAGE",
+          &attr->strength,     theme::Hp },
+        { "AGILITY",      "+ATTACK SPEED, +CRIT, +MOVE",
+          &attr->agility,      theme::Sp },
+        { "INTELLIGENCE", "+MANA, +SPELL POWER",
+          &attr->intelligence, theme::Mp },
+        { "ENDURANCE",    "+HEALTH, +RESIST, +STAMINA",
+          &attr->endurance,    theme::Accent },
     };
 
-    for (int i = 0; i < 4; ++i) {
-        const f32 y = y0 + i * (rowH + gap);
-        ui_.rect(x0, y, rowW, rowH, rgba(30, 40, 55, 240));
-        ui_.rectOutline(x0, y, rowW, rowH, 2.f, COL_BLACK);
-        ui_.rect(x0, y, 8.f, rowH, rows[i].color);
+    for (u32 i = 0; i < 4; ++i) {
+        const Rect r = layout_.attrRow(i);
+        ui_.rect(r.x, r.y, r.w, r.h, theme::PanelRaised);
+        ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
+                        theme::Stroke);
+        // Цветная полоса слева — опознавательный знак характеристики.
+        ui_.rect(r.x, r.y, layout_.dp(6.f), r.h, rows[i].color);
 
-        ui_.text(rows[i].label, x0 + 24.f, y + 8.f, 2.f, COL_WHITE);
-        ui_.text(rows[i].desc, x0 + 24.f, y + 34.f, 1.3f, rgba(180, 180, 180, 255));
+        const f32 tx = r.x + layout_.dp(theme::SPACE_L_DP);
+        ui_.text(rows[i].label, tx, r.y + layout_.dp(theme::SPACE_M_DP),
+                 theme::TEXT_BODY, theme::TextPrimary);
+        ui_.text(rows[i].desc, tx,
+                 r.y + r.h - layout_.dp(theme::SPACE_M_DP)
+                     - ui_.textHeight(theme::TEXT_CAPTION),
+                 theme::TEXT_CAPTION, theme::TextSecondary);
 
         char val[16];
         std::snprintf(val, sizeof(val), "%d", *rows[i].value);
-        f32 vw = ui_.textWidth(val, 3.f);
-        ui_.text(val, x0 + rowW - 200.f - vw * 0.5f, y + 18.f, 3.f, COL_WHITE);
+        const Rect minus = layout_.attrButton(i, false);
+        const f32 vw = ui_.textWidth(val, theme::TEXT_TITLE);
+        ui_.text(val, minus.x - layout_.dp(theme::SPACE_L_DP) - vw,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
+                 theme::TEXT_TITLE, theme::TextPrimary);
 
-        const f32 btnSize = 50.f;
-        const f32 btnY = y + (rowH - btnSize) * 0.5f;
-        const f32 plusX  = x0 + rowW - btnSize - 12.f;
-        const f32 minusX = plusX - btnSize - 12.f;
-
-        Rect mr{ minusX, btnY, btnSize, btnSize };
-        int mi = ui_.pushInteractiveRect(mr, [prog, i, rows]() {
-            if (*rows[i].value <= 1) return;
-            *rows[i].value -= 1;
-            prog->availableAttrPoints += 1;
-            prog->derivedDirty = true;
-        });
+        // ---- убавить ----
+        const bool canSub = (*rows[i].value > 1);
         {
-            bool p = ui_.isInteractivePressed(mi);
-            UiColor c = p ? rgba(200, 60, 60, 255) : rgba(120, 40, 40, 255);
-            ui_.rect(mr.x, mr.y, mr.w, mr.h, c);
-            ui_.rectOutline(mr.x, mr.y, mr.w, mr.h, 2.f, COL_BLACK);
-            ui_.text("-", mr.x + 16.f, mr.y + 8.f, 3.f, COL_WHITE);
+            const int idx = ui_.pushInteractiveRect(minus, [this, prog, i, rows]() {
+                if (*rows[i].value <= 1) return;
+                *rows[i].value -= 1;
+                prog->availableAttrPoints += 1;
+                prog->derivedDirty = true;
+                notify(rows[i].label, theme::NotifyPriority::Low);
+            });
+            drawStepper(minus, "-", ui_.isInteractivePressed(idx) && canSub, canSub);
         }
 
-        Rect pr{ plusX, btnY, btnSize, btnSize };
-        bool canAdd = prog->availableAttrPoints > 0 && *rows[i].value < 99;
-        int pi = ui_.pushInteractiveRect(pr, [prog, i, rows, canAdd]() {
-            if (!canAdd) return;
-            *rows[i].value += 1;
-            prog->availableAttrPoints -= 1;
-            prog->derivedDirty = true;
-        });
+        // ---- прибавить ----
+        const bool canAdd = prog->availableAttrPoints > 0 && *rows[i].value < 99;
         {
-            bool p = ui_.isInteractivePressed(pi) && canAdd;
-            UiColor c = !canAdd ? rgba(60, 60, 60, 255)
-                       : (p ? rgba(80, 200, 80, 255) : rgba(40, 120, 40, 255));
-            ui_.rect(pr.x, pr.y, pr.w, pr.h, c);
-            ui_.rectOutline(pr.x, pr.y, pr.w, pr.h, 2.f, COL_BLACK);
-            ui_.text("+", pr.x + 14.f, pr.y + 8.f, 3.f, COL_WHITE);
+            const Rect pr = layout_.attrButton(i, true);
+            const int idx = ui_.pushInteractiveRect(pr, [this, prog, i, rows, canAdd]() {
+                if (!canAdd) return;
+                *rows[i].value += 1;
+                prog->availableAttrPoints -= 1;
+                prog->derivedDirty = true;
+                // Обратная связь: иначе непонятно, засчиталось ли.
+                notify(rows[i].label, theme::NotifyPriority::Low);
+            });
+            drawStepper(pr, "+", ui_.isInteractivePressed(idx) && canAdd, canAdd);
         }
     }
+}
+
+// Кнопка «+»/«−» одного вида на всю игру.
+//
+// Недоступность показана не только цветом: у выключенной рамка
+// тоньше и текст приглушён.
+void UiSystem::drawStepper(const Rect& r, const char* label,
+                           bool pressed, bool enabled)
+{
+    const UiColor fill = !enabled ? withAlpha(theme::Panel, theme::ALPHA_DISABLED)
+                       : (pressed ? theme::Accent : theme::PanelRaised);
+    const UiColor edge = !enabled ? withAlpha(theme::Stroke, theme::ALPHA_DISABLED)
+                       : (pressed ? theme::AccentPressed : theme::Stroke);
+    ui_.rect(r.x, r.y, r.w, r.h, fill);
+    ui_.rectOutline(r.x, r.y, r.w, r.h,
+                    layout_.dp(enabled ? theme::STROKE_SELECTED_DP
+                                       : theme::STROKE_DP), edge);
+
+    const f32 tw = ui_.textWidth(label, theme::TEXT_TITLE);
+    ui_.text(label, r.x + (r.w - tw) * 0.5f,
+             r.y + (r.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
+             theme::TEXT_TITLE,
+             !enabled ? theme::TextDisabled
+                      : (pressed ? theme::Ink : theme::TextPrimary));
 }
 
 // ============================================================
