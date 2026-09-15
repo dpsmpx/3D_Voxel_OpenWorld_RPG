@@ -188,6 +188,8 @@ void UiSystem::render(vk::Context& ctx,
 
     drawDragOverlay();
     drawStatusToast();
+    // Подтверждение — поверх всего: оно модальное.
+    drawConfirm();
 
     ui_.endFrame();
     renderer_.flush(ctx);
@@ -662,95 +664,119 @@ void UiSystem::drawHotbar(player::Player& player) {
 // Pause Menu
 // ============================================================
 void UiSystem::drawPauseMenu(player::Player& player) {
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(0,0,0,180));
+    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
+             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
 
-    const float cw = 380.f, ch = 56.f;
-    const float cx = ((float)screenW_ - cw) * 0.5f;
-    const float cy = (float)screenH_ * 0.5f - 280.f;
+    // Первое, что должен сообщать экран, — что игра остановлена.
+    const Rect title = layout_.menuTitle();
+    ui_.text(T(StrKey::Menu_Pause), title.x,
+             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
+             theme::TEXT_TITLE, theme::TextPrimary);
 
-    ui_.text(T(StrKey::Menu_Pause), cx + 100.f, cy - 60.f, 3.f, COL_WHITE);
+    // Пунктов было восемь в столбик, каждый своего цвета: зелёный,
+    // синий, фиолетовый, оранжевый, жёлтый, голубой, оливковый,
+    // красный. Ни группировки, ни иерархии — и инвентаря в списке не
+    // было вовсе, хотя выход ИЗ инвентаря вёл сюда.
+    //
+    // Теперь: продолжить отдельно и крупно, остальное — сеткой по
+    // смыслу, выход отдельно и в опасном виде.
+    struct Item {
+        const char* label;
+        Screen      target;
+        i32         badge;      ///< -1 — не показывать
+    };
 
+    auto* tree = player.skillTree();
+    auto* prog = player.progression();
 
-    // Прямые кнопки
+    const Item items[] = {
+        { T(StrKey::Menu_Inventory),  Screen::Inventory,  -1 },
+        { T(StrKey::Menu_Attributes), Screen::Attributes,
+          prog ? prog->availableAttrPoints : -1 },
+        { T(StrKey::Menu_Skills),     Screen::SkillTree,
+          tree ? tree->unspentPoints : -1 },
+        { T(StrKey::Menu_Quests),     Screen::QuestLog,   -1 },
+        { T(StrKey::Menu_Reputation), Screen::Reputation, -1 },
+        { T(StrKey::Menu_SaveLoad),   Screen::SaveLoad,   -1 },
+        { T(StrKey::Menu_Settings),   Screen::Settings,   -1 },
+    };
+    constexpr u32 ITEM_COUNT = (u32)(sizeof(items) / sizeof(items[0]));
+    constexpr u32 COLS = 3;
+    // Первый ряд занят «Продолжить», последний — выходом.
+    constexpr u32 ROWS = 2 + (ITEM_COUNT + COLS - 1) / COLS;
+
+    auto cell = [&](u32 c, u32 r) { return layout_.menuCell(c, r, COLS, ROWS); };
+
+    // ---- Продолжить: во всю ширину, главное действие ----
     {
-        Rect r{ cx, cy, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { screen = Screen::Hud; });
-        if (ui_.button(T(StrKey::Menu_Resume), r, idx,
-                       rgba(80,120,80,255), COL_WHITE)) {
+        const Rect a = cell(0, 0), c2 = cell(COLS - 1, 0);
+        const Rect r{ a.x, a.y, (c2.x + c2.w) - a.x, a.h };
+        const int idx = ui_.pushInteractiveRect(r, [this]() {
             screen = Screen::Hud;
-        }
-    }
-    {
-        Rect r{ cx, cy + 70.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { screen = Screen::Settings; });
-        if (ui_.button(T(StrKey::Menu_Settings), r, idx,
-                       rgba(80,80,140,255), COL_WHITE)) {
-            screen = Screen::Settings;
-        }
-    }
-    {
-        Rect r{ cx, cy + 140.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { screen = Screen::SkillTree; });
-        auto* tree = player.skillTree();
-        i32 pts = tree ? tree->unspentPoints : 0;
-        char label[64];
-        if (pts > 0) std::snprintf(label, sizeof(label), "%s (%d)",
-                                   T(StrKey::Menu_Skills), pts);
-        else std::snprintf(label, sizeof(label), "%s", T(StrKey::Menu_Skills));
-        if (ui_.button(label, r, idx, rgba(120,80,180,255), COL_WHITE)) {
-            screen = Screen::SkillTree;
-        }
-    }
-    {
-        Rect r{ cx, cy + 210.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { screen = Screen::Attributes; });
-        auto* prog = player.progression();
-        i32 pts = prog ? prog->availableAttrPoints : 0;
-        char label[64];
-        if (pts > 0) std::snprintf(label, sizeof(label), "%s (%d)",
-                                   T(StrKey::Menu_Attributes), pts);
-        else std::snprintf(label, sizeof(label), "%s", T(StrKey::Menu_Attributes));
-        if (ui_.button(label, r, idx, rgba(180,120,60,255), COL_WHITE)) {
-            screen = Screen::Attributes;
-        }
-    }
-    {
-        Rect r{ cx, cy + 280.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { screen = Screen::QuestLog; });
-        if (ui_.button(T(StrKey::Menu_Quests), r, idx,
-                       rgba(200,180,60,255), COL_WHITE)) {
-            screen = Screen::QuestLog;
-        }
-    }
-    {
-        Rect r{ cx, cy + 350.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { screen = Screen::Reputation; });
-        if (ui_.button(T(StrKey::Menu_Reputation), r, idx,
-                       rgba(60,140,180,255), COL_WHITE)) {
-            screen = Screen::Reputation;
-        }
-    }
-    {
-        Rect r{ cx, cy + 420.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() {
-            saveLoadMode = SaveLoadMode::Save;
-            screen = Screen::SaveLoad;
+            returnTo = Screen::Hud;
         });
-        if (ui_.button(T(StrKey::Menu_SaveLoad), r, idx,
-                       rgba(120,120,60,255), COL_WHITE)) {
-            saveLoadMode = SaveLoadMode::Save;
-            screen = Screen::SaveLoad;
-        }
+        const bool pressed = ui_.isInteractivePressed(idx);
+        ui_.rect(r.x, r.y, r.w, r.h, pressed ? theme::Accent : theme::PanelRaised);
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(theme::STROKE_SELECTED_DP),
+                        pressed ? theme::AccentPressed : theme::Accent);
+        const char* lbl = T(StrKey::Menu_Resume);
+        const f32 tw = ui_.textWidth(lbl, theme::TEXT_BODY);
+        ui_.text(lbl, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, pressed ? theme::Ink : theme::TextPrimary);
     }
-    {
-        Rect r{ cx, cy + 490.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { if (onQuit) onQuit(); });
-        if (ui_.button(T(StrKey::Menu_Quit), r, idx,
-                       rgba(120,60,60,255), COL_WHITE)) {
-            if (onQuit) onQuit();
+
+    // ---- Разделы: одинаковые кнопки, один вид на всю игру ----
+    for (u32 i = 0; i < ITEM_COUNT; ++i) {
+        const Rect r = cell(i % COLS, 1 + i / COLS);
+        const Screen target = items[i].target;
+        const int idx = ui_.pushInteractiveRect(r, [this, target]() {
+            openScreen(target);
+            if (target == Screen::Inventory) drag.clear();
+        });
+        const bool pressed = ui_.isInteractivePressed(idx);
+
+        ui_.rect(r.x, r.y, r.w, r.h, pressed ? theme::Accent : theme::PanelRaised);
+        ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
+                        pressed ? theme::AccentPressed : theme::Stroke);
+
+        const f32 tw = ui_.textWidth(items[i].label, theme::TEXT_BODY);
+        ui_.text(items[i].label, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, pressed ? theme::Ink : theme::TextPrimary);
+
+        // Нераспределённые очки — то, ради чего сюда заходят.
+        if (items[i].badge > 0) {
+            char b[16];
+            std::snprintf(b, sizeof(b), "+%d", items[i].badge);
+            const f32 bw = ui_.textWidth(b, theme::TEXT_CAPTION);
+            ui_.text(b, r.x + r.w - bw - layout_.dp(theme::SPACE_S_DP),
+                     r.y + layout_.dp(theme::SPACE_S_DP),
+                     theme::TEXT_CAPTION, pressed ? theme::Ink : theme::Accent);
         }
     }
 
+    // ---- Выход: необратимо, поэтому в опасном виде и с вопросом ----
+    {
+        const Rect r = cell(COLS - 1, ROWS - 1);
+        const int idx = ui_.pushInteractiveRect(r, [this]() {
+            askConfirm(T(StrKey::Menu_Quit), T(StrKey::Menu_Quit),
+                       [this]() { if (onQuit) onQuit(); });
+        });
+        const bool pressed = ui_.isInteractivePressed(idx);
+        // Опасное показано рамкой, а не заливкой: цвет тут не
+        // единственный признак.
+        ui_.rect(r.x, r.y, r.w, r.h,
+                 pressed ? theme::Danger : theme::Panel);
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(theme::STROKE_SELECTED_DP), theme::Danger);
+        const char* lbl = T(StrKey::Menu_Quit);
+        const f32 tw = ui_.textWidth(lbl, theme::TEXT_BODY);
+        ui_.text(lbl, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, pressed ? theme::TextPrimary : theme::Danger);
+    }
 }
 
 // ============================================================
@@ -2220,6 +2246,69 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
 // ============================================================
 // Toast
 // ============================================================
+// ============================================================
+// Модальное подтверждение
+// ============================================================
+//
+// Выход из игры срабатывал сразу: несохранённый прогресс терялся без
+// вопроса. То же относится к удалению и перезаписи сохранения.
+//
+// Модальность здесь не украшение. Попадание ищется среди
+// прямоугольников с конца, то есть выигрывает нарисованный позже; но
+// касание МИМО окна нашло бы кнопку под ним. Поэтому первым кладём
+// прямоугольник во весь экран — он глушит всё, что снаружи.
+void UiSystem::drawConfirm() {
+    if (!confirm.active) return;
+
+    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
+             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
+    ui_.pushInteractiveRect({ 0.f, 0.f, (f32)screenW_, (f32)screenH_ },
+                            [](){});   // глушитель, намеренно пустой
+
+    const Rect p = layout_.confirmPanel();
+    ui_.rect(p.x, p.y, p.w, p.h, theme::Panel);
+    ui_.rectOutline(p.x, p.y, p.w, p.h,
+                    layout_.dp(theme::STROKE_SELECTED_DP), theme::Danger);
+
+    if (confirm.question) {
+        const f32 tw = ui_.textWidth(confirm.question, theme::TEXT_TITLE);
+        ui_.text(confirm.question, p.x + (p.w - tw) * 0.5f,
+                 p.y + layout_.dp(theme::PANEL_PAD_DP),
+                 theme::TEXT_TITLE, theme::TextPrimary);
+    }
+
+    struct Btn { const char* label; bool danger; };
+    const Btn btns[2] = {
+        { T(StrKey::Cancel), false },
+        { confirm.yesLabel ? confirm.yesLabel : T(StrKey::Ok), true },
+    };
+
+    for (u32 i = 0; i < 2; ++i) {
+        const Rect r = layout_.confirmButton(i);
+        const bool isYes = (i == 1);
+        const int idx = ui_.pushInteractiveRect(r, [this, isYes]() {
+            auto act = confirm.onYes;
+            confirm = Confirm{};
+            if (isYes && act) act();
+        });
+        const bool pressed = ui_.isInteractivePressed(idx);
+
+        const UiColor accent = btns[i].danger ? theme::Danger : theme::Stroke;
+        ui_.rect(r.x, r.y, r.w, r.h,
+                 pressed ? accent : theme::PanelRaised);
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(btns[i].danger ? theme::STROKE_SELECTED_DP
+                                                  : theme::STROKE_DP),
+                        accent);
+        const f32 tw = ui_.textWidth(btns[i].label, theme::TEXT_BODY);
+        ui_.text(btns[i].label, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY,
+                 pressed ? theme::TextPrimary
+                         : (btns[i].danger ? theme::Danger : theme::TextPrimary));
+    }
+}
+
 void UiSystem::drawStatusToast() {
     if (statusTimer <= 0.f || statusMessage.empty()) return;
 

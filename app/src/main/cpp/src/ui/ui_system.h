@@ -22,6 +22,7 @@
 #include <functional>
 #include <array>
 #include <string>
+#include <utility>
 
 namespace ui {
 
@@ -134,6 +135,27 @@ public:
     std::function<void(u32 slotIndex)>         onEquipHotbar;
     std::function<void()>                      onSettingsChanged;
 
+    /// Подтверждение необратимого действия.
+    ///
+    /// Выход из игры срабатывал сразу, без вопроса: несохранённый
+    /// прогресс терялся молча. То же относится к удалению и
+    /// перезаписи сохранения.
+    struct Confirm {
+        bool active = false;
+        const char* question = nullptr;
+        const char* yesLabel = nullptr;
+        std::function<void()> onYes;
+    };
+    Confirm confirm{};
+
+    void askConfirm(const char* question, const char* yesLabel,
+                    std::function<void()> onYes) {
+        confirm.active = true;
+        confirm.question = question;
+        confirm.yesLabel = yesLabel;
+        confirm.onYes = std::move(onYes);
+    }
+
     /// ---- Утилиты ----
     void setStatus(const std::string& msg);
     void drawLoadingOverlay();
@@ -172,25 +194,42 @@ public:
     /// Пока включён, обычные действия кнопок не срабатывают.
     bool buttonLayoutMode = false;
 
+    /// Куда вернуться из текущего экрана.
+    ///
+    /// Раньше любой вложенный экран возвращал в паузу, даже если
+    /// открыт был из HUD: игрок оказывался не там, откуда пришёл.
+    Screen returnTo = Screen::Hud;
+
+    /// Открыть экран, запомнив, откуда.
+    void openScreen(Screen s) {
+        if (s != screen) returnTo = screen;
+        screen = s;
+    }
+
     /// Аппаратная кнопка «Назад»: закрывает текущий экран, а не игру.
     /// Из HUD открывает паузу — так же, как это делают все Android-игры.
     void onBackPressed() {
+        // Открытое подтверждение «Назад» отменяет — и только его.
+        if (confirm.active) { confirm = Confirm{}; return; }
+
         switch (screen) {
             case Screen::Hud:
-                screen = Screen::PauseMenu;
+                openScreen(Screen::PauseMenu);
                 break;
             case Screen::PauseMenu:
                 screen = Screen::Hud;
+                returnTo = Screen::Hud;
                 break;
             case Screen::Dialogue:
                 // Диалог закрывается своим обработчиком, чтобы NPC
                 // вышел из состояния Talk.
                 if (onCloseDialogue) onCloseDialogue();
                 screen = Screen::Hud;
+                returnTo = Screen::Hud;
                 break;
             default:
-                // Любой вложенный экран возвращает в паузу.
-                screen = Screen::PauseMenu;
+                screen = returnTo;
+                returnTo = Screen::Hud;
                 break;
         }
     }
@@ -215,23 +254,23 @@ public:
         else if (screen == Screen::Dialogue) screen = Screen::Hud;
     }
 
-    void openInventory() { screen = Screen::Inventory; drag.clear(); }
+    void openInventory() { openScreen(Screen::Inventory); drag.clear(); }
     void openCrafting(crafting::StationType st) {
         nearbyStation = st;
         selectedRecipeIdx = -1;
-        screen = Screen::Crafting;
+        openScreen(Screen::Crafting);
     }
     void openTrade(u32 traderEntity) {
         tradeCtx.traderEntity = traderEntity;
         tradeCtx.tab = 0;
         tradeCtx.selectedIdx = -1;
         tradeCtx.selCount = 1;
-        screen = Screen::Trade;
+        openScreen(Screen::Trade);
     }
     void openEnchant(u32 altarEntity) {
         enchantCtx.altarEntity = altarEntity;
         enchantCtx.selectedIdx = -1;
-        screen = Screen::Enchant;
+        openScreen(Screen::Enchant);
     }
 
 private:
@@ -266,6 +305,8 @@ private:
     void drawSettingsScreen(player::Player& player);
 
     void drawStatusToast();
+    /// Модальное подтверждение поверх всего.
+    void drawConfirm();
 
     /// ---- Помощники ----
     void drawItemIcon(items::ItemStack& stack, float x, float y, float size,

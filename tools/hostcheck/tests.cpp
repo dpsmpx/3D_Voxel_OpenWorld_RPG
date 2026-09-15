@@ -61,6 +61,7 @@
 #include <set>
 #include "ui/hud_layout.h"
 #include "ui/ui_theme.h"
+#include "ui/ui_system.h"
 #include "input/touch_layout.h"
 #include <string>
 #include <vector>
@@ -4870,6 +4871,157 @@ void testDialogueChoiceReachesTheGame() {
 }
 
 // ------------------------------------------------------------
+// Навигация: возврат туда, откуда пришёл; выход — с вопросом.
+//
+// Любой вложенный экран возвращал в паузу, даже открытый из HUD:
+// игрок оказывался не там, откуда пришёл. Инвентаря в паузе не было
+// вовсе, хотя выход ИЗ инвентаря вёл именно туда. Выход из игры
+// срабатывал сразу, молча теряя несохранённый прогресс.
+// ------------------------------------------------------------
+void testNavigationReturnsWhereItCameFrom() {
+    group("навигация: возврат и подтверждение");
+
+    ui::UiSystem sys;   // без init: проверяется только состояние
+
+    // ---- 1. Инвентарь из HUD возвращает в HUD ----
+    sys.screen = ui::Screen::Hud;
+    sys.returnTo = ui::Screen::Hud;
+    sys.openScreen(ui::Screen::Inventory);
+    check(sys.screen == ui::Screen::Inventory, "инвентарь открылся");
+    sys.onBackPressed();
+    check(sys.screen == ui::Screen::Hud,
+          "из инвентаря, открытого из HUD, возврат в HUD");
+
+    // ---- 2. Тот же экран из паузы возвращает в паузу ----
+    sys.screen = ui::Screen::Hud;
+    sys.openScreen(ui::Screen::PauseMenu);
+    sys.openScreen(ui::Screen::Inventory);
+    sys.onBackPressed();
+    check(sys.screen == ui::Screen::PauseMenu,
+          "из инвентаря, открытого из паузы, возврат в паузу");
+
+    // ---- 3. Пауза из HUD закрывается в HUD ----
+    sys.screen = ui::Screen::Hud;
+    sys.openScreen(ui::Screen::PauseMenu);
+    sys.onBackPressed();
+    check(sys.screen == ui::Screen::Hud, "пауза закрывается в игру");
+
+    // ---- 4. Ремесло, открытое подсказкой из HUD, вернёт в HUD ----
+    sys.screen = ui::Screen::Hud;
+    sys.returnTo = ui::Screen::Hud;
+    sys.openCrafting(crafting::StationType::Anvil);
+    check(sys.screen == ui::Screen::Crafting, "ремесло открылось");
+    sys.onBackPressed();
+    check(sys.screen == ui::Screen::Hud,
+          "и вернуло в игру, а не в паузу");
+
+    // ---- 5. Выход спрашивает, а не выходит ----
+    int quits = 0;
+    sys.onQuit = [&]() { ++quits; };
+    sys.askConfirm("QUIT", "QUIT", [&]() { if (sys.onQuit) sys.onQuit(); });
+    check(sys.confirm.active, "вопрос задан");
+    check(quits == 0, "и сам по себе ничего не сделал");
+
+    // «Назад» отменяет подтверждение и НИЧЕГО больше: экран прежний.
+    const ui::Screen before = sys.screen;
+    sys.onBackPressed();
+    check(!sys.confirm.active, "«Назад» снимает вопрос");
+    check(sys.screen == before, "и не уводит с экрана заодно");
+    check(quits == 0, "отменённый выход не выполняется");
+
+    // Подтверждённый — выполняется ровно один раз.
+    sys.askConfirm("QUIT", "QUIT", [&]() { if (sys.onQuit) sys.onQuit(); });
+    auto act = sys.confirm.onYes;
+    sys.confirm = ui::UiSystem::Confirm{};
+    if (act) act();
+    check(quits == 1, "подтверждённый выход выполняется один раз");
+}
+
+// ------------------------------------------------------------
+// Пауза сообщает, что игра остановлена, и ведёт во все разделы.
+// ------------------------------------------------------------
+void testPauseMenuIsGroupedAndComplete() {
+    group("пауза: сгруппирована и полна");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    const usize pm = src.find("void UiSystem::drawPauseMenu(");
+    check(pm != NONE, "экран паузы на месте");
+    if (pm == NONE) return;
+    const usize end = src.find("\n}\n", pm);
+    const std::string body = src.substr(pm, end - pm);
+
+    // Инвентаря в списке не было, хотя выход из него вёл сюда.
+    check(body.find("Screen::Inventory") != NONE,
+          "в паузе есть инвентарь");
+
+    // Все прежние разделы остались достижимы.
+    const char* need[] = { "Screen::Attributes", "Screen::SkillTree",
+                           "Screen::QuestLog", "Screen::Reputation",
+                           "Screen::SaveLoad", "Screen::Settings" };
+    int missing = 0;
+    for (const char* n : need) {
+        if (body.find(n) != NONE) continue;
+        ++missing;
+        char msg[128];
+        std::snprintf(msg, sizeof(msg), "из паузы пропал раздел %s", n);
+        check(false, msg);
+    }
+    check(missing == 0, "ни один прежний раздел не потерян");
+
+    // Сетка, а не столбец: в альбомной ориентации столбец — худшая
+    // из форм, по вертикали места меньше всего.
+    check(body.find("menuCell(") != NONE,
+          "разделы разложены сеткой из раскладки");
+
+    // Выход спрашивает.
+    check(body.find("askConfirm(") != NONE,
+          "выход из игры требует подтверждения");
+    check(body.find("if (onQuit) onQuit();") == NONE ||
+          body.find("askConfirm(") < body.find("if (onQuit) onQuit();"),
+          "и не выходит помимо вопроса");
+}
+
+// ------------------------------------------------------------
+// Подтверждение действительно модально.
+//
+// Попадание ищется среди прямоугольников с конца, поэтому кнопки
+// окна выигрывают у того, что под ними. Но касание МИМО окна нашло бы
+// кнопку внизу — поэтому первым кладётся глушитель во весь экран.
+// ------------------------------------------------------------
+void testConfirmSwallowsTouchesOutsideIt() {
+    group("подтверждение: модальное по-настоящему");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    const usize cf = src.find("void UiSystem::drawConfirm()");
+    check(cf != NONE, "окно подтверждения реализовано");
+    if (cf == NONE) return;
+    const usize end = src.find("\n}\n", cf);
+    const std::string body = src.substr(cf, end - cf);
+
+    const usize swallow = body.find("(f32)screenW_, (f32)screenH_ },");
+    check(swallow != NONE, "во весь экран положен глушитель касаний");
+    check(body.find("confirmButton(") != NONE,
+          "кнопки окна берутся из раскладки");
+    if (swallow != NONE)
+        check(swallow < body.find("confirmButton("),
+              "глушитель кладётся ДО кнопок, иначе он перекроет их");
+
+    // И рисуется оно последним, поверх всего.
+    const usize render = src.find("void UiSystem::render(");
+    const usize rend   = src.find("\n}\n", render);
+    const std::string rb = src.substr(render, rend - render);
+    check(rb.find("drawConfirm()") != NONE, "подтверждение рисуется в кадре");
+    check(rb.find("drawConfirm()") > rb.find("drawStatusToast()"),
+          "и поверх всего остального");
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -6458,6 +6610,9 @@ int main() {
     testUiThemeMatchesItsDocument();
     testInteractPromptUnlocksScreens();
     testDialogueChoiceReachesTheGame();
+    testNavigationReturnsWhereItCameFrom();
+    testPauseMenuIsGroupedAndComplete();
+    testConfirmSwallowsTouchesOutsideIt();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

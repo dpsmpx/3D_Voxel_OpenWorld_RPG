@@ -236,6 +236,64 @@ public:
                  hotbar().y - dp(theme::SPACE_L_DP) - hgt, wdt, hgt };
     }
 
+    // ============================================================
+    // Меню на весь экран: пауза и её разделы
+    // ============================================================
+    //
+    // Пауза была столбцом из восьми кнопок, каждая своего цвета, без
+    // группировки. В альбомной ориентации столбец — худшая из форм:
+    // по вертикали места меньше всего, а по горизонтали оно пустует.
+    // Поэтому сетка.
+
+    /// Область, отведённая содержимому полноэкранного меню.
+    Rect menuArea() const {
+        const f32 pad = dp(theme::SPACE_XL_DP);
+        return { left() + pad, top() + dp(MENU_TITLE_DP) + pad,
+                 (right() - left()) - pad * 2.f,
+                 (bottom() - top()) - dp(MENU_TITLE_DP) - pad * 2.f };
+    }
+
+    /// Заголовок меню — над областью содержимого.
+    Rect menuTitle() const {
+        const f32 pad = dp(theme::SPACE_XL_DP);
+        return { left() + pad, top() + pad,
+                 (right() - left()) - pad * 2.f, dp(MENU_TITLE_DP) };
+    }
+
+    /// Ячейка сетки меню. Ряды считаются сверху, колонки слева.
+    ///
+    /// Высота ячейки не опускается ниже обычной цели касания: если
+    /// рядов столько, что не помещаются, виновата не ячейка, а
+    /// количество пунктов — их и надо группировать.
+    Rect menuCell(u32 col, u32 row, u32 cols, u32 rows) const {
+        const Rect a = menuArea();
+        const f32 gap = dp(theme::SPACE_M_DP);
+        const f32 cw = (a.w - gap * (f32)(cols - 1)) / (f32)cols;
+        f32 ch = (a.h - gap * (f32)(rows - 1)) / (f32)rows;
+        const f32 minH = dp(theme::TOUCH_REGULAR_DP);
+        if (ch < minH) ch = minH;
+        return { a.x + (f32)col * (cw + gap),
+                 a.y + (f32)row * (ch + gap), cw, ch };
+    }
+
+    /// Окно подтверждения: по центру, не шире семидесяти процентов.
+    Rect confirmPanel() const {
+        const f32 wdt = (right() - left()) * CONFIRM_W_FRAC;
+        const f32 hgt = dp(CONFIRM_H_DP);
+        return { (w_ - wdt) * 0.5f, (h_ - hgt) * 0.5f, wdt, hgt };
+    }
+
+    /// Две кнопки внизу окна: отмена слева, подтверждение справа.
+    Rect confirmButton(u32 i) const {
+        const Rect p = confirmPanel();
+        const f32 pad = dp(theme::PANEL_PAD_DP);
+        const f32 gap = dp(theme::SPACE_M_DP);
+        const f32 bh = dp(theme::TOUCH_PRIMARY_DP);
+        const f32 bw = (p.w - pad * 2.f - gap) * 0.5f;
+        return { p.x + pad + (f32)i * (bw + gap),
+                 p.y + p.h - pad - bh, bw, bh };
+    }
+
     // ---- свободный центр: сюда не залезает ничто ----
     Rect clearCenter() const {
         const f32 cw = w_ * theme::HUD_CLEAR_W_FRAC;
@@ -277,6 +335,9 @@ public:
     static constexpr f32 MINIMAP_DP   = 100.f;
     static constexpr f32 HOTBAR_GAP_DP =  6.f;
     static constexpr f32 PROMPT_W_DP  = 260.f;
+    static constexpr f32 MENU_TITLE_DP   = 40.f;
+    static constexpr f32 CONFIRM_W_FRAC  = 0.70f;
+    static constexpr f32 CONFIRM_H_DP    = 220.f;
     static constexpr u32 HOTBAR_SLOTS =   9;   ///< в данных, всегда
     /// Ниже этого пояс не имеет смысла: одна-две ячейки не пояс.
     static constexpr u32 HOTBAR_MIN_VISIBLE = 5;
