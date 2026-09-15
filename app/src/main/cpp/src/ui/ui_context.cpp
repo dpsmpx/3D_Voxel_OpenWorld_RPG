@@ -9,6 +9,7 @@
 #include <cstring>
 #include <functional>
 #include <string>
+#include <vector>
 #include <utility>
 
 namespace ui {
@@ -164,6 +165,69 @@ float UiContext::textWidth(const std::string& s, float scale) const {
     usize n = 0;
     for (usize i = 0; i < s.size(); ) { utf8Next(s.data(), s.size(), i); ++n; }
     return (float)n * 6.f * scale;
+}
+
+// Разбивка на строки по словам.
+//
+// Ширина считается в СИМВОЛАХ: после перевода шрифта на UTF-8 байты
+// и символы больше не одно и то же, и по байтам русская реплика
+// переносилась бы вдвое раньше, чем нужно.
+static std::vector<std::string> wrapLines(const std::string& s,
+                                          float maxWidth, float scale)
+{
+    std::vector<std::string> out;
+    const float cw = 6.f * scale;
+    const usize perLine = (cw > 0.f && maxWidth > cw)
+                        ? (usize)(maxWidth / cw) : (usize)1;
+
+    std::string line, word;
+    usize lineLen = 0, wordLen = 0;
+
+    auto flushWord = [&]() {
+        if (word.empty()) return;
+        if (lineLen != 0 && lineLen + 1 + wordLen > perLine) {
+            out.push_back(line);
+            line.clear(); lineLen = 0;
+        }
+        if (lineLen != 0) { line += ' '; ++lineLen; }
+        line += word; lineLen += wordLen;
+        word.clear(); wordLen = 0;
+    };
+
+    for (usize i = 0; i < s.size(); ) {
+        const usize at = i;
+        const u32 cp = utf8Next(s.data(), s.size(), i);
+        if (cp == (u32)'\n') {
+            flushWord();
+            out.push_back(line);
+            line.clear(); lineLen = 0;
+            continue;
+        }
+        if (cp == (u32)' ') { flushWord(); continue; }
+        word.append(s, at, i - at);
+        ++wordLen;
+        // Слово длиннее строки рвём принудительно, иначе оно уедет.
+        if (wordLen >= perLine) flushWord();
+    }
+    flushWord();
+    if (!line.empty() || out.empty()) out.push_back(line);
+    return out;
+}
+
+float UiContext::textWrapped(const std::string& s, float x, float y,
+                             float maxWidth, float scale, UiColor c)
+{
+    const auto lines = wrapLines(s, maxWidth, scale);
+    const float step = 9.f * scale;
+    for (usize i = 0; i < lines.size(); ++i)
+        text(lines[i], x, y + (float)i * step, scale, c);
+    return (float)lines.size() * step;
+}
+
+float UiContext::wrappedHeight(const std::string& s, float maxWidth,
+                               float scale) const
+{
+    return (float)wrapLines(s, maxWidth, scale).size() * 9.f * scale;
 }
 
 int UiContext::pushInteractiveRect(Rect r, std::function<void()> onTap) {

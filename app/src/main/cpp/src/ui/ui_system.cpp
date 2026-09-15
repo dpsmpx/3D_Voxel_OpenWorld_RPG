@@ -15,6 +15,7 @@
 #include "../quests/quest.h"
 #include "../quests/quest_def.h"
 #include "../npc/dialogue.h"
+#include "../npc/npc_def.h"
 #include "../factions/faction.h"
 #include "../items/item_def.h"
 #include "../items/item_use.h"
@@ -1523,38 +1524,53 @@ void UiSystem::drawDialogueScreen(player::Player& player) {
     auto* dlg = player.activeDialogue();
     if (!dlg || !dlg->active) { screen = Screen::Hud; return; }
 
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(0,0,0,80));
-
-    const float panelH = (float)screenH_ * 0.35f;
-    const float panelY = (float)screenH_ - panelH - 20.f;
-    const float panelX = 40.f;
-    const float panelW = (float)screenW_ - 80.f;
-
-    ui_.rect(panelX, panelY, panelW, panelH, rgba(20, 15, 30, 235));
-    ui_.rectOutline(panelX, panelY, panelW, panelH, 3.f, rgba(220, 200, 120, 255));
-
     npc::DialogueNode* node = dlg->findNode(dlg->currentNodeId);
     if (!node) { screen = Screen::Hud; return; }
 
-    ui_.text(node->text, panelX + 24.f, panelY + 24.f, 2.2f, COL_WHITE);
+    // Затемняем мир слабее, чем под меню: разговор идёт В мире, а не
+    // поверх него, и собеседника должно быть видно.
+    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
+             withAlpha(theme::Ink, (u8)(theme::ALPHA_SCRIM / 2)));
 
-    f32 cy = panelY + 90.f;
-    f32 rowH = 44.f;
+    const Rect panel = layout_.dialoguePanel();
+    ui_.rect(panel.x, panel.y, panel.w, panel.h,
+             withAlpha(theme::Panel, theme::ALPHA_PANEL));
+    ui_.rectOutline(panel.x, panel.y, panel.w, panel.h,
+                    layout_.dp(theme::STROKE_SELECTED_DP), theme::Accent);
 
+    const f32 pad = layout_.dp(theme::PANEL_PAD_DP);
+    f32 y = panel.y + pad;
+
+    // ---- Кто говорит ----
+    //
+    // Имени не было: реплика висела в пустоте, и понять, с кем идёт
+    // разговор, можно было только по тому, на кого смотришь.
+    if (auto* reg = player.registryHandle()) {
+        if (auto* tag = reg->get<npc::NpcTag>(dlg->npcEntity)) {
+            const auto& def = npc::npcRegistry().get(tag->id);
+            if (def.name) {
+                ui_.text(def.name, panel.x + pad, y,
+                         theme::TEXT_LABEL, theme::Accent);
+                y += ui_.textHeight(theme::TEXT_LABEL)
+                   + layout_.dp(theme::SPACE_M_DP);
+            }
+        }
+    }
+
+    // ---- Реплика ----
+    //
+    // С переносом по словам: раньше длинная строка уходила за панель.
+    const f32 textW = panel.w - pad * 2.f;
+    y += ui_.textWrapped(node->text, panel.x + pad, y, textW,
+                         theme::TEXT_BODY, theme::TextPrimary);
+    y += layout_.dp(theme::SPACE_L_DP);
+
+    // ---- Варианты ----
     for (usize i = 0; i < node->choices.size(); ++i) {
-        const auto& c = node->choices[i];
-        Rect cr{ panelX + 24.f, cy, panelW - 48.f, rowH };
+        const Rect cr = layout_.dialogueChoice(y, (u32)i);
+        if (cr.y + cr.h > panel.y + panel.h - pad) break;   // не влезло
 
-        // Здесь была пустая лямбда.
-        //
-        // Нажатие на вариант ответа не делало НИЧЕГО: диалог
-        // открывался, показывал текст и варианты, и выйти из него
-        // можно было только аппаратной кнопкой «Назад». Функция,
-        // применяющая выбор, существовала и была покрыта тестами —
-        // но вызывали её только сами тесты, шесть раз, и ни разу
-        // игра. Вместе с диалогом это обрывало торговлю и ремесло:
-        // они открываются его действием.
-        int idx = ui_.pushInteractiveRect(cr, [this, &player, i]() {
+        const int idx = ui_.pushInteractiveRect(cr, [this, &player, i]() {
             auto* d = player.activeDialogue();
             auto* reg = player.registryHandle();
             if (!d || !d->active || !reg) return;
@@ -1565,22 +1581,25 @@ void UiSystem::drawDialogueScreen(player::Player& player) {
             // выбор живёт внутри прежнего.
             const npc::DialogueChoice chosen = n->choices[i];
             if (!npc::applyChoice(*reg, *d, chosen)) {
-                // Диалог кончился сам — закрываем так же, как это
-                // делает «Назад», чтобы NPC вышел из состояния Talk.
                 if (onCloseDialogue) onCloseDialogue();
                 screen = Screen::Hud;
             }
         });
-        bool pressed = ui_.isInteractivePressed(idx);
-        UiColor fill = pressed ? rgba(120, 100, 60, 255) : rgba(40, 35, 50, 235);
-        ui_.rect(cr.x, cr.y, cr.w, cr.h, fill);
-        ui_.rectOutline(cr.x, cr.y, cr.w, cr.h, 2.f, rgba(200, 180, 100, 255));
+        const bool pressed = ui_.isInteractivePressed(idx);
+
+        ui_.rect(cr.x, cr.y, cr.w, cr.h,
+                 pressed ? theme::Accent : theme::PanelRaised);
+        ui_.rectOutline(cr.x, cr.y, cr.w, cr.h,
+                        layout_.dp(pressed ? theme::STROKE_SELECTED_DP
+                                           : theme::STROKE_DP),
+                        pressed ? theme::AccentPressed : theme::Stroke);
 
         char line[256];
         std::snprintf(line, sizeof(line), "%d. %s",
-                      (int)(i + 1), c.text.c_str());
-        ui_.text(line, cr.x + 12.f, cr.y + 12.f, 2.f, COL_WHITE);
-        cy += rowH + 6.f;
+                      (int)(i + 1), node->choices[i].text.c_str());
+        ui_.text(line, cr.x + layout_.dp(theme::SPACE_M_DP),
+                 cr.y + (cr.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, pressed ? theme::Ink : theme::TextPrimary);
     }
 }
 

@@ -5373,6 +5373,87 @@ void testSettingsFitAndDoSomething() {
 }
 
 // ------------------------------------------------------------
+// Диалог выглядит как разговор, а не как системное окно.
+//
+// Реплика рисовалась ОДНОЙ строкой и уходила за панель; имени
+// говорящего не было вовсе — понять, с кем идёт разговор, можно было
+// только по тому, на кого смотришь.
+// ------------------------------------------------------------
+void testDialogueReadsAsAConversation() {
+    group("диалог: перенос текста и имя говорящего");
+
+    ui::UiContext ctx;
+    ctx.init(nullptr, 1000, 500);
+
+    // ---- 1. Перенос по словам ----
+    const std::string longRu =
+        "ПУТНИК, В ЭТИХ КРАЯХ НЕСПОКОЙНО, И Я БЫ НА ТВОЁМ МЕСТЕ "
+        "ДЕРЖАЛСЯ БЛИЖЕ К ДОРОГЕ, А НЕ ЛЕЗ В ЛЕС ЗА ХОЛМОМ";
+    const f32 scale = 2.f;
+    const f32 maxW = 400.f;
+
+    const f32 h = ctx.wrappedHeight(longRu, maxW, scale);
+    check(h > 9.f * scale, "длинная реплика занимает больше одной строки");
+
+    // Ни одна строка не должна быть шире отведённого.
+    // Проверяем косвенно, но строго: высота должна соответствовать
+    // числу строк, которое влезает по ширине.
+    const f32 oneLine = ctx.textWidth(longRu, scale);
+    const f32 minLines = oneLine / maxW;
+    check(h / (9.f * scale) >= minLines - 0.01f,
+          "строк не меньше, чем требует ширина текста");
+
+    // Узкая колонка — больше строк. Если перенос не работает, число
+    // строк от ширины не зависит.
+    const f32 narrow = ctx.wrappedHeight(longRu, 150.f, scale);
+    check(narrow > h, "в узкой колонке строк больше");
+
+    // ---- 2. Перенос считает СИМВОЛЫ ----
+    //
+    // После перевода шрифта на UTF-8 байты и символы больше не одно и
+    // то же: по байтам русская реплика переносилась бы вдвое раньше.
+    {
+        const std::string ru = "АААААААААА";     // 10 знаков, 20 байт
+        const std::string en = "AAAAAAAAAA";     // 10 знаков, 10 байт
+        check(std::fabs(ctx.wrappedHeight(ru, maxW, scale)
+                      - ctx.wrappedHeight(en, maxW, scale)) < 0.01f,
+              "русский и латинский текст одной длины переносятся одинаково");
+    }
+
+    // ---- 3. Перенос слов, а не букв ----
+    {
+        const std::string two = "ОДИН ДВА";
+        const f32 wide = ctx.wrappedHeight(two, 1000.f, scale);
+        check(std::fabs(wide - 9.f * scale) < 0.01f,
+              "короткая строка остаётся одной строкой");
+    }
+
+    // Пустая строка не должна давать ноль строк: место под неё всё
+    // равно занимается, иначе следующий блок наедет.
+    check(ctx.wrappedHeight("", maxW, scale) > 0.f,
+          "пустой текст занимает одну строку");
+
+    // ---- 4. Имя говорящего и геометрия из раскладки ----
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) return;
+    const usize NONE = std::string::npos;
+    const usize dg = src.find("void UiSystem::drawDialogueScreen(");
+    if (dg == NONE) { check(false, "экран диалога на месте"); return; }
+    const usize end = src.find("\n}\n", dg);
+    const std::string body = src.substr(dg, end - dg);
+
+    check(body.find("npcRegistry()") != NONE,
+          "диалог показывает имя собеседника");
+    check(body.find("textWrapped(") != NONE,
+          "реплика рисуется с переносом");
+    check(body.find("layout_.dialogueChoice(") != NONE,
+          "варианты ответа берут геометрию из раскладки");
+    // Вариант, не влезший в панель, не рисуется за её краем.
+    check(body.find("break;") != NONE,
+          "варианты, не влезшие в панель, не уезжают за неё");
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -6968,6 +7049,7 @@ int main() {
     testInventoryTapDoesOneThing();
     testRussianTextIsActuallyDrawn();
     testSettingsFitAndDoSomething();
+    testDialogueReadsAsAConversation();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

@@ -314,6 +314,28 @@ public:
         return g;
     }
 
+    // ---- диалог: панель у нижнего края ----
+    //
+    // Разговор идёт В мире, поэтому панель не занимает экран целиком:
+    // собеседника должно быть видно.
+    Rect dialoguePanel() const {
+        const f32 pad = dp(theme::SPACE_XL_DP);
+        const f32 hgt = (bottom() - top()) * DIALOGUE_H_FRAC;
+        return { left() + pad, bottom() - pad - hgt,
+                 (right() - left()) - pad * 2.f, hgt };
+    }
+
+    /// Вариант ответа. y — где кончился текст реплики.
+    Rect dialogueChoice(f32 y, u32 i) const {
+        const Rect p = dialoguePanel();
+        const f32 pad = dp(theme::PANEL_PAD_DP);
+        const f32 h = dp(theme::TOUCH_REGULAR_DP);
+        return { p.x + pad, y + (f32)i * (h + dp(theme::SPACE_S_DP)),
+                 p.w - pad * 2.f, h };
+    }
+
+    static constexpr f32 DIALOGUE_H_FRAC = 0.45f;
+
     /// Окно подтверждения: по центру, не шире семидесяти процентов.
     Rect confirmPanel() const {
         const f32 wdt = (right() - left()) * CONFIRM_W_FRAC;
