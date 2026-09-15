@@ -74,6 +74,19 @@ public:
     /// Единственный источник геометрии: и отрисовка, и касание.
     const HudLayout& layout() const { return layout_; }
 
+    /// Цвет слоя HUD с учётом настройки прозрачности.
+    ///
+    /// Слайдер `uiOpacity` двигался и сохранялся, но не читался
+    /// нигде — ровно то, что §10 задания запрещает оставлять. Он
+    /// про HUD поверх мира: меню остаются непрозрачными, иначе
+    /// текст поверх движущейся сцены не прочесть.
+    UiColor hudTint(UiColor c) const {
+        const u32 a = c & 0xFFu;
+        const f32 k = config::settingsConst().uiOpacity;
+        const f32 v = (f32)a * (k < 0.f ? 0.f : (k > 1.f ? 1.f : k));
+        return withAlpha(c, (u8)(v + 0.5f));
+    }
+
     /// Поворот вывода — тот же, что у камеры.
     void setSurfaceRotation(u32 degrees) { renderer_.setSurfaceRotation(degrees); }
 

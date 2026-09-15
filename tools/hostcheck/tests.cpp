@@ -5268,6 +5268,111 @@ void testRussianTextIsActuallyDrawn() {
 }
 
 // ------------------------------------------------------------
+// Настройки: все помещаются и все что-то меняют.
+//
+// Вкладка «Управление» содержит двенадцать строк. В один столбец это
+// 938 точек, а дно панели на экране 1280x720 — 680: последние четыре
+// настройки были недостижимы, прокрутки у настроек нет. Отдельно два
+// слайдера, uiScale и uiOpacity, двигались и сохранялись, но не
+// читались НИГДЕ — ровно то, что §10 задания запрещает оставлять.
+// ------------------------------------------------------------
+void testSettingsFitAndDoSomething() {
+    group("настройки: помещаются и работают");
+
+    // ---- 1. Двенадцать строк влезают на любой экран ----
+    struct Size { f32 w, h; i32 dpi; const char* name; };
+    const Size sizes[] = {
+        { 2306.f, 1080.f, 400, "2306x1080" },
+        { 1280.f,  720.f, 320, "1280x720"  },
+        {  960.f,  540.f, 240, "960x540"   },
+        { 2560.f, 1600.f, 280, "2560x1600" },
+    };
+    const u32 MAX_ROWS = 12;   // столько во вкладке «Управление»
+
+    int problems = 0;
+    for (const auto& sz : sizes) {
+        const ui::HudLayout L(sz.w, sz.h,
+                              ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                              ui::SafeInsets{});
+        const ui::Rect panel = L.menuArea();
+        const f32 rowH = L.dp(ui::theme::TOUCH_REGULAR_DP);
+        const f32 gap  = L.dp(ui::theme::SPACE_S_DP);
+        const f32 pad  = L.dp(ui::theme::PANEL_PAD_DP);
+
+        const f32 availH = panel.h - pad * 2.f;
+        const u32 perCol = (u32)((availH + gap) / (rowH + gap));
+        if (perCol == 0) {
+            ++problems;
+            char msg[128];
+            std::snprintf(msg, sizeof(msg), "%s: в панель не влезает ни одна строка",
+                          sz.name);
+            check(false, msg);
+            continue;
+        }
+        const u32 cols = (MAX_ROWS + perCol - 1) / perCol;
+        const f32 colGap = L.dp(ui::theme::SPACE_L_DP);
+        const f32 colW = (panel.w - pad * 2.f - colGap * (f32)(cols - 1)) / (f32)cols;
+
+        // Последняя строка последней колонки не должна выйти за панель.
+        const u32 lastCol = (MAX_ROWS - 1) / perCol;
+        const u32 lastRow = (MAX_ROWS - 1) % perCol;
+        const f32 x = panel.x + pad + (f32)lastCol * (colW + colGap);
+        const f32 y = panel.y + pad + (f32)lastRow * (rowH + gap);
+        if (y + rowH > panel.y + panel.h + 0.5f ||
+            x + colW > panel.x + panel.w + 0.5f) {
+            ++problems;
+            char msg[176];
+            std::snprintf(msg, sizeof(msg),
+                          "%s: двенадцатая настройка за панелью", sz.name);
+            check(false, msg);
+        }
+        // И строка остаётся нажимаемой.
+        if (rowH + 0.01f < L.dp(ui::theme::TOUCH_MIN_DP)) {
+            ++problems;
+            check(false, "строка настроек мельче 48 dp");
+        }
+    }
+    check(problems == 0, "все двенадцать настроек достижимы на всех экранах");
+
+    // ---- 2. Ни одного слайдера без потребителя ----
+    //
+    // Проверка идёт по коду: у настройки должен быть читатель ВНЕ
+    // экрана настроек. Виджет, который только пишет значение в
+    // структуру, — ложный интерфейс.
+    const std::string uis = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    const std::string uih = readSource("app/src/main/cpp/src/ui/ui_system.h");
+    if (uis.empty()) return;
+    const usize NONE = std::string::npos;
+
+    // uiScale читается при пересборке раскладки.
+    const usize rb = uis.find("void UiSystem::rebuildLayout()");
+    check(rb != NONE, "раскладка пересобирается в одном месте");
+    if (rb != NONE) {
+        const usize end = uis.find("\n}\n", rb);
+        check(uis.substr(rb, end - rb).find("uiScale") != NONE,
+              "uiScale читается раскладкой");
+    }
+
+    // uiOpacity читается слоем HUD.
+    check(uih.find("uiOpacity") != NONE,
+          "uiOpacity читается при отрисовке HUD");
+    check(uis.find("hudTint(") != NONE,
+          "и применяется к элементам HUD");
+
+    // Настройка, которую сохраняют, но никто не читает, — тот же
+    // обман, только без виджета. showDamageNumbers писалась в конфиг,
+    // не имела ни виджета, ни потребителя, и была убрана.
+    const std::string set = readSource("app/src/main/cpp/src/config/settings.h");
+    const std::string scp = readSource("app/src/main/cpp/src/config/settings.cpp");
+    if (!set.empty()) {
+        check(set.find("showDamageNumbers") == NONE,
+              "мёртвого showDamageNumbers в настройках не осталось");
+        check(scp.empty() || scp.find("show_damage_numbers") == NONE,
+              "и в конфиг он больше не пишется");
+    }
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -6862,6 +6967,7 @@ int main() {
     testInventoryShowsEverySlot();
     testInventoryTapDoesOneThing();
     testRussianTextIsActuallyDrawn();
+    testSettingsFitAndDoSomething();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();
