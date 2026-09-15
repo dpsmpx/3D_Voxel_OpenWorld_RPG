@@ -354,6 +354,30 @@ public:
     static constexpr f32 TRACKER_W_DP = 220.f;
     static constexpr f32 TRACKER_H_DP =  40.f;
 
+    // ---- уведомления ----
+    //
+    // Важное по центру, рядовое снизу. Место — тоже признак: по
+    // одному цвету отличить «новый уровень» от «предмет получен»
+    // нельзя.
+    Rect notice(u32 i, bool high, f32 textWidth) const {
+        const f32 pad = dp(theme::SPACE_L_DP);
+        const f32 hgt = dp(high ? NOTICE_HIGH_H_DP : NOTICE_H_DP);
+        const f32 wdt = textWidth + pad * 2.f;
+        const f32 gap = dp(theme::SPACE_S_DP);
+
+        if (high)
+            return { (w_ - wdt) * 0.5f, h_ * NOTICE_HIGH_Y_FRAC, wdt, hgt };
+
+        // Рядовые стопкой снизу вверх, над подсказкой и поясом.
+        const f32 base = interactPrompt().y - dp(theme::SPACE_L_DP);
+        return { (w_ - wdt) * 0.5f,
+                 base - (f32)(i + 1) * (hgt + gap), wdt, hgt };
+    }
+
+    static constexpr f32 NOTICE_H_DP       = 44.f;
+    static constexpr f32 NOTICE_HIGH_H_DP  = 64.f;
+    static constexpr f32 NOTICE_HIGH_Y_FRAC = 0.28f;
+
     // ---- диалог: панель у нижнего края ----
     //
     // Разговор идёт В мире, поэтому панель не занимает экран целиком:

@@ -22,6 +22,7 @@
 #include <functional>
 #include <array>
 #include <string>
+#include <vector>
 #include <utility>
 
 namespace ui {
@@ -179,8 +180,31 @@ public:
         confirm.onYes = std::move(onYes);
     }
 
+    // ============================================================
+    // Уведомления
+    // ============================================================
+    //
+    // Слот был ОДИН: новое сообщение затирало предыдущее. «Предмет
+    // получен» стирало «задание выполнено», и различить важное от
+    // рядового было нечем — вид у всех один.
+    struct Notice {
+        std::string          text;
+        theme::NotifyPriority priority = theme::NotifyPriority::Normal;
+        f32                  timeLeft = 0.f;
+        f32                  age      = 0.f;
+    };
+
+    /// Показать уведомление. Новое встаёт в очередь, а не затирает.
+    void notify(const std::string& text,
+                theme::NotifyPriority p = theme::NotifyPriority::Normal);
+
+    const std::vector<Notice>& notices() const { return notices_; }
+
     /// ---- Утилиты ----
-    void setStatus(const std::string& msg);
+    /// Прежнее имя: рядовое уведомление.
+    void setStatus(const std::string& msg) {
+        notify(msg, theme::NotifyPriority::Normal);
+    }
     void drawLoadingOverlay();
     /// Джойстик и экранные кнопки. Только поверх чистого HUD: под
     /// открытым меню управление не работает, рисовать его незачем.
@@ -359,8 +383,10 @@ private:
     Scroll questScroll;
     Scroll tradeScroll;
 
-    std::string statusMessage;
-    f32         statusTimer = 0.f;
+    /// Очередь уведомлений. Показывается не больше
+    /// theme::NOTIFY_MAX_VISIBLE сразу; важное вытесняет рядовое, а
+    /// не наоборот.
+    std::vector<Notice> notices_;
 
     /// Кэш для HUD (чтобы не дёргать ECS каждый кадр)
     f32 cachedHpPct = 1.f;

@@ -97,16 +97,45 @@ void UiSystem::refreshSlotMeta(save::SaveSlotManager& mgr) {
             slotMeta[p][s] = meta[p][s];
 }
 
-void UiSystem::setStatus(const std::string& msg) {
-    statusMessage = msg;
-    statusTimer = 3.0f;
+// ============================================================
+// Уведомления
+// ============================================================
+//
+// Слот был один, и новое сообщение затирало предыдущее: «предмет
+// получен» стирало «задание выполнено». Теперь очередь с приоритетом.
+void UiSystem::notify(const std::string& text, theme::NotifyPriority p) {
+    if (text.empty()) return;
+
+    // Повтор того же текста не множится, а продлевается: подбор
+    // десяти предметов подряд не должен занимать весь экран.
+    for (auto& n : notices_) {
+        if (n.text != text) continue;
+        n.timeLeft = theme::notifyDuration(p);
+        n.priority = p;
+        return;
+    }
+
+    notices_.push_back({ text, p, theme::notifyDuration(p), 0.f });
+
+    // Важное вперёд. Порядок устойчивый: при равном приоритете
+    // остаётся тот, что пришёл раньше.
+    std::stable_sort(notices_.begin(), notices_.end(),
+                     [](const Notice& a, const Notice& b) {
+                         return (u8)a.priority > (u8)b.priority;
+                     });
+
+    // Очередь не растёт без предела: лишнее рядовое отбрасывается,
+    // а важное — нет.
+    constexpr usize CAP = 8;
+    if (notices_.size() > CAP) notices_.resize(CAP);
 }
 
 void UiSystem::tickUi(f32 dt) {
-    if (statusTimer > 0.f) {
-        statusTimer -= dt;
-        if (statusTimer <= 0.f) statusMessage.clear();
-    }
+    for (auto& n : notices_) { n.timeLeft -= dt; n.age += dt; }
+    notices_.erase(std::remove_if(notices_.begin(), notices_.end(),
+                                  [](const Notice& n) { return n.timeLeft <= 0.f; }),
+                   notices_.end());
+
     craftScroll.tick(dt);
     questScroll.tick(dt);
     tradeScroll.tick(dt);
@@ -2529,19 +2558,45 @@ void UiSystem::drawConfirm() {
 }
 
 void UiSystem::drawStatusToast() {
-    if (statusTimer <= 0.f || statusMessage.empty()) return;
+    if (notices_.empty()) return;
 
-    const f32 tw = ui_.textWidth(statusMessage, 2.f);
-    const f32 bw = tw + 40.f;
-    const f32 bh = 50.f;
-    const f32 bx = ((f32)screenW_ - bw) * 0.5f;
-    const f32 by = (f32)screenH_ * 0.85f;
+    const u32 shown = (u32)std::min<usize>(notices_.size(),
+                                           theme::NOTIFY_MAX_VISIBLE);
+    for (u32 i = 0; i < shown; ++i) {
+        const Notice& n = notices_[i];
+        const bool high = (n.priority == theme::NotifyPriority::High);
 
-    u8 alpha = (u8)(255.f * std::min(1.f, statusTimer));
-    ui_.rect(bx, by, bw, bh, rgba(20, 20, 20, (u8)(alpha * 0.8f)));
-    ui_.rectOutline(bx, by, bw, bh, 2.f, rgba(220, 200, 100, alpha));
-    ui_.text(statusMessage, bx + 20.f, by + 14.f, 2.f,
-             rgba(255, 255, 255, alpha));
+        // Важное — по центру и крупнее, рядовое — снизу. Отличаются
+        // не только цветом: место, кегль и длительность.
+        const f32 scale = high ? theme::TEXT_DISPLAY
+                               : (n.priority == theme::NotifyPriority::Low
+                                      ? theme::TEXT_CAPTION : theme::TEXT_BODY);
+        const Rect r = layout_.notice(i, high, ui_.textWidth(n.text, scale));
+
+        // Вход и выход — сдвигом и затуханием, в пределах потолка.
+        f32 k = 1.f;
+        if (n.age < theme::ANIM_TOAST_IN_S)
+            k = n.age / theme::ANIM_TOAST_IN_S;
+        else if (n.timeLeft < theme::ANIM_TOAST_OUT_S)
+            k = n.timeLeft / theme::ANIM_TOAST_OUT_S;
+        if (k < 0.f) k = 0.f;
+        if (k > 1.f) k = 1.f;
+
+        const f32 slide = (1.f - k) * layout_.dp(12.f);
+        const u8  a     = (u8)(255.f * k);
+
+        ui_.rect(r.x, r.y + slide, r.w, r.h,
+                 withAlpha(theme::Panel, (u8)(a * 0.94f)));
+        ui_.rectOutline(r.x, r.y + slide, r.w, r.h,
+                        layout_.dp(high ? theme::STROKE_SELECTED_DP
+                                        : theme::STROKE_DP),
+                        withAlpha(high ? theme::Accent : theme::Stroke, a));
+
+        const f32 tw = ui_.textWidth(n.text, scale);
+        ui_.text(n.text, r.x + (r.w - tw) * 0.5f,
+                 r.y + slide + (r.h - ui_.textHeight(scale)) * 0.5f,
+                 scale, withAlpha(high ? theme::Accent : theme::TextPrimary, a));
+    }
 }
 
 void UiSystem::destroy() {

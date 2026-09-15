@@ -5521,6 +5521,82 @@ void testQuestLogAnswersWhatToDoNow() {
 }
 
 // ------------------------------------------------------------
+// Уведомления: очередь, приоритет, без спама.
+//
+// Слот был ОДИН: новое сообщение затирало предыдущее. «Предмет
+// получен» стирало «задание выполнено», и отличить важное от
+// рядового было нечем — вид, место и длительность у всех одни.
+// ------------------------------------------------------------
+void testNoticesQueueAndPrioritise() {
+    group("уведомления: очередь и приоритет");
+
+    ui::UiSystem sys;
+
+    // ---- 1. Новое не затирает старое ----
+    sys.notify("ПЕРВОЕ");
+    sys.notify("ВТОРОЕ");
+    check(sys.notices().size() == 2, "оба сообщения в очереди");
+
+    // ---- 2. Важное впереди рядового ----
+    sys.notify("ВАЖНОЕ", ui::theme::NotifyPriority::High);
+    check(sys.notices().front().text == "ВАЖНОЕ",
+          "важное встаёт первым, даже придя последним");
+    // И порядок среди равных сохраняется.
+    check(sys.notices()[1].text == "ПЕРВОЕ",
+          "среди равных остаётся порядок прихода");
+
+    // ---- 3. Важное держится дольше ----
+    check(ui::theme::notifyDuration(ui::theme::NotifyPriority::High) >
+          ui::theme::notifyDuration(ui::theme::NotifyPriority::Low),
+          "важное живёт дольше рядового");
+
+    // ---- 4. Повтор не множится ----
+    //
+    // Подбор десяти одинаковых предметов подряд не должен занимать
+    // весь экран.
+    const usize before = sys.notices().size();
+    for (int i = 0; i < 10; ++i) sys.notify("ПЕРВОЕ");
+    check(sys.notices().size() == before,
+          "повтор того же текста продлевает, а не множит");
+
+    // ---- 5. Очередь не растёт без предела ----
+    for (int i = 0; i < 50; ++i) {
+        char b[32];
+        std::snprintf(b, sizeof(b), "N%d", i);
+        sys.notify(b);
+    }
+    check(sys.notices().size() <= 8, "очередь ограничена сверху");
+
+    // ---- 6. Они гаснут ----
+    ui::UiSystem s2;
+    s2.notify("КОРОТКОЕ", ui::theme::NotifyPriority::Low);
+    check(s2.notices().size() == 1, "уведомление показано");
+    s2.tickUi(ui::theme::notifyDuration(ui::theme::NotifyPriority::Low) + 0.1f);
+    check(s2.notices().empty(), "и по истечении срока исчезает");
+
+    // ---- 7. Показывается не больше, чем условлено ----
+    check(ui::theme::NOTIFY_MAX_VISIBLE >= 2,
+          "видно больше одного: иначе очередь бессмысленна");
+
+    // ---- 8. Важное отличается не только цветом ----
+    //
+    // Место и размер — тоже признаки: по одному цвету «новый
+    // уровень» от «предмет получен» не отличить.
+    const ui::HudLayout L(2306.f, 1080.f,
+                          ui::theme::Metrics::fromDensityDpi(400),
+                          ui::SafeInsets{});
+    const ui::Rect hi = L.notice(0, true, 200.f);
+    const ui::Rect lo = L.notice(0, false, 200.f);
+    check(std::fabs(hi.y - lo.y) > 1.f, "важное и рядовое стоят в разных местах");
+    check(hi.h > lo.h, "важное крупнее");
+
+    // Стопка рядовых не налезает сама на себя.
+    const ui::Rect lo1 = L.notice(1, false, 200.f);
+    check(std::fabs(lo1.y - lo.y) >= lo.h - 0.01f,
+          "рядовые уведомления не налезают друг на друга");
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -7118,6 +7194,7 @@ int main() {
     testSettingsFitAndDoSomething();
     testDialogueReadsAsAConversation();
     testQuestLogAnswersWhatToDoNow();
+    testNoticesQueueAndPrioritise();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();
