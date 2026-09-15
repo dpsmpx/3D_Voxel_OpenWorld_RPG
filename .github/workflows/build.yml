@@ -253,6 +253,18 @@ jobs:
     name: Ссылка на готовый APK
     needs: apk
     runs-on: ubuntu-latest
+    # Релиз latest-apk один на весь репозиторий, а прогонов на коммит
+    # два: события push и pull_request запускают процесс независимо.
+    # Оба доходили сюда и заливали одни и те же файлы в один релиз —
+    # тот, кто опаздывал, получал «ReleaseAsset.name already exists»
+    # даже с --clobber, потому что первый в это время удалял и
+    # заливал заново.
+    #
+    # Отдельная группа с отменой предыдущего: в latest-apk и так
+    # нужен самый свежий APK, а не тот, что успел первым.
+    concurrency:
+      group: release-latest-apk
+      cancel-in-progress: true
     permissions:
       contents: write
     steps:
