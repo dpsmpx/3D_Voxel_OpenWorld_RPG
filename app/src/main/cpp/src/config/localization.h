@@ -64,6 +64,11 @@ enum class StrKey : u16 {
     Notif_LevelUp, Notif_Crafted, Notif_Saved, Notif_Loaded,
     Notif_Deleted, Notif_RepGained, Notif_Loading,
 
+    // --- Подсказка взаимодействия ---
+    // Её не было вовсе, и это стоило игроку трёх экранов: близость
+    // станка и алтаря считалась каждый кадр, а показать было нечем.
+    Hud_Use, Ench_Altar,
+
     Count
 };
 

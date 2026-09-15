@@ -281,6 +281,11 @@ struct Engine {
             LOGE("UI init failed");
             return;
         }
+        // Плотность экрана. Без неё размеры считались от числа
+        // пикселей, и цель касания выходила 20..36 dp при норме 48:
+        // кнопка меню HUD была 3.2 мм при подушечке пальца 8..10 мм.
+        ui->setDensityDpi(app->config ? AConfiguration_getDensity(app->config)
+                                      : 0);
         ui->setScreenSize(ww, wh);
         ui->attachTouch(&touch);
         ui->setSurfaceRotation(vk.surfaceRotationDegrees());
@@ -636,22 +641,25 @@ struct Engine {
     // нижний угол экрана. Порядок регистрации обязан совпадать с
     // config::ButtonSlot, иначе сохранённые сдвиги уедут не туда.
     // ============================================================
+    /// Видны ли сейчас круглые кнопки. Меняется вместе с тем,
+    /// открыто ли меню, и ровно тогда же меняется их доступность
+    /// для касания.
+    bool padButtonsVisible_ = true;
+
     void setupButtons() {
-        // Положения и размеры — в input/touch_layout.h, рядом с такой
-        // же таблицей HUD. Здесь остаются только действия: сами числа
-        // нужны ещё и проверке раскладки, а две копии чисел уже
-        // однажды разъехались — «CAM» оказалась поверх «ATT».
-        using input::DEFAULT_BUTTONS;
-        const f32 sw = (f32)(winW_ > 0 ? winW_ : 1920);
-        const f32 sh = (f32)(winH_ > 0 ? winH_ : 1080);
+        // Положения и размеры — в ui/hud_layout.h, вместе со всей
+        // остальной экранной геометрией. Здесь остаются только
+        // действия: две копии чисел уже однажды разъехались, и
+        // «CAM» оказалась поверх «ATT».
+        if (!ui) return;
+        const ui::HudLayout& L = ui->layout();
         auto add = [&](u32 slot, std::function<void(u32)> onPress) {
-            const auto& L = DEFAULT_BUTTONS[slot];
-            const u32 id = touch.addButton(input::buttonCenterNdc(L, sw, sh),
-                                           input::buttonRadiusPx(L, sh),
+            const u32 id = touch.addButton(input::buttonCenterNdc(L, slot),
+                                           input::buttonRadiusPx(L, slot),
                                            std::move(onPress), nullptr);
             // Шрифт HUD знает только латиницу до 95-го кода, поэтому
             // подписи короткие и заглавными.
-            touch.setButtonLabel(id, L.label);
+            touch.setButtonLabel(id, input::buttonLabel(slot));
             return id;
         };
 
@@ -894,6 +902,25 @@ struct Engine {
         }
 
         const bool uiBlockingInput = ui && ui->paused();
+
+        // Кнопку, которую не видно, нельзя нажать.
+        //
+        // Рисуются круглые кнопки только поверх чистого HUD, а ловили
+        // касание всегда: setButtonVisible не вызывал никто, и все
+        // они оставались visible навсегда. Фон инвентаря не является
+        // интерактивным прямоугольником, поэтому тап по пустому месту
+        // проваливался сквозь меню на невидимую кнопку — включая DIG
+        // и PUT, которые меняют мир.
+        if (padButtonsVisible_ != !uiBlockingInput) {
+            padButtonsVisible_ = !uiBlockingInput;
+            for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i)
+                if (buttonIds_[i])
+                    touch.setButtonVisible(buttonIds_[i], padButtonsVisible_);
+            // Зажатую кнопку и джойстик тоже снимаем: иначе палец,
+            // опущенный до открытия меню, остаётся «нажатым» внутри
+            // него и отпускается уже неизвестно где.
+            if (!padButtonsVisible_) touch.cancelAll();
+        }
 
         auto* dlg = player->activeDialogue();
         bool dialogueActive = dlg && dlg->active;

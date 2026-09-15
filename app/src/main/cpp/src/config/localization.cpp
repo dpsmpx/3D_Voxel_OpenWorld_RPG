@@ -139,6 +139,9 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Notif_Deleted */     "Deleted",
     /* Notif_RepGained */   "Reputation changed",
     /* Notif_Loading */     "Generating world...",
+
+    /* Hud_Use */           "USE",
+    /* Ench_Altar */        "Enchant Altar",
 };
 
 } // namespace en
@@ -272,6 +275,9 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Notif_Deleted */     "Удалено",
     /* Notif_RepGained */   "Репутация изменена",
     /* Notif_Loading */     "Генерация мира...",
+
+    /* Hud_Use */           "ИСПОЛЬЗОВАТЬ",
+    /* Ench_Altar */        "Алтарь зачарования",
 };
 
 } // namespace ru

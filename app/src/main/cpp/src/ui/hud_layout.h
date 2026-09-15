@@ -1,78 +1,352 @@
 /**
  * @file hud_layout.h
- * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ * @brief Раскладка HUD — единственный источник геометрии интерфейса.
  */
 #pragma once
 #include "../core/types.h"
+#include "ui_types.h"
+#include "ui_theme.h"
 
 namespace ui {
 
-/// Геометрия HUD, вынесенная из drawHud.
+/// Безопасная зона: отступы от краёв экрана в точках.
 ///
-/// Отдельный заголовок нужен затем, что на этом же экране стоят
-/// круглые кнопки экранного управления, и их раскладка живёт в другом
-/// файле (input/touch_layout.h). Пока каждая сторона знала только свои
-/// числа, наложения были видны только на устройстве: «CAM» приходилась
-/// ровно на «ATT», «JMP» целиком пряталась под миникартой, «ITM»
-/// налезала на пояс предметов. Причём касание в таких местах
-/// доставалось HUD — интерфейс проверяется первым, — то есть кнопка не
-/// работала вовсе. Теперь оба набора можно сверить на хосте.
-struct HudRect { f32 x, y, w, h; };
+/// Сейчас все нули: манифест не просит `layoutInDisplayCutoutMode`, и
+/// система сама держит окно вне выреза — наблюдаемые 2306 точек при
+/// панели 2400 это и есть её отступ. Поле заведено затем, что как
+/// только кто-нибудь включит SHORT_EDGES ради полной панели, все
+/// привязанные к краю элементы поедут разом, и чинить придётся в
+/// четырнадцати местах вместо одного.
+struct SafeInsets {
+    f32 left = 0.f, top = 0.f, right = 0.f, bottom = 0.f;
+};
 
-/// Общий масштаб HUD.
+/// К какому углу экрана привязана круглая кнопка.
+enum class PadAnchor : u8 { BottomLeft, BottomRight, TopRight };
+
+/// Круглая кнопка по умолчанию: отступ от угла и диаметр, всё в dp.
 ///
-/// Все размеры ниже заданы в точках экрана высотой 1080 — на нём игру
-/// и смотрели, — а на другом экране пересчитываются пропорционально.
-/// Без этого на невысоком экране миникарта, пояс и столбец меню
-/// занимают половину площади: семь кнопок по 58 точек это 410 точек
-/// из 720.
-inline f32 hudScale(f32 screenH) {
-    const f32 s = screenH / 1080.f;
-    return s < 0.6f ? 0.6f : (s > 1.4f ? 1.4f : s);
-}
+/// Порядок обязан совпадать с config::ButtonSlot — по нему
+/// раскладываются сохранённые пользовательские сдвиги.
+struct PadDef {
+    PadAnchor   anchor;
+    f32         dx, dy;
+    f32         diameter;
+    const char* label;
+};
 
-// ---- правый столбец меню: |||, INV, SKL, ATT, QST, REP, SAV ----
-constexpr u32 HUD_MENU_COUNT = 7;
-constexpr f32 HUD_MENU_H     = 50.f;
-constexpr f32 HUD_MENU_W     = 60.f;
-constexpr f32 HUD_MENU_STEP  = 58.f;
-constexpr f32 HUD_MENU_TOP   = 12.f;
-constexpr f32 HUD_MENU_RIGHT = 20.f;
+/// Места подобраны счётом, а не на глаз: проверка перебирает шесть
+/// разрешений и требует ноль пересечений с HUD и между собой.
+/// Диаметры — не меньше 48 dp, ниже палец промахивается; прежние
+/// ITM и CAM были 44 dp.
+inline constexpr PadDef PAD_BUTTONS[] = {
+    { PadAnchor::BottomRight, 150.f, 150.f, 84.f, "ATK" },
+    { PadAnchor::BottomRight, 140.f, 236.f, 52.f, "FIN" },
+    { PadAnchor::BottomRight, 238.f, 104.f, 60.f, "JMP" },
+    { PadAnchor::BottomLeft,   62.f, 150.f, 64.f, "RUN" },
+    { PadAnchor::BottomRight, 252.f, 192.f, 52.f, "DIG" },
+    { PadAnchor::BottomLeft,   56.f, 226.f, 52.f, "PUT" },
+    { PadAnchor::BottomLeft,  150.f, 196.f, 52.f, "USE" },
+    { PadAnchor::BottomLeft,  152.f, 116.f, 52.f, "ITM" },
+    { PadAnchor::TopRight,     42.f, 212.f, 52.f, "CAM" },
+};
+constexpr u32 PAD_BUTTON_COUNT =
+    (u32)(sizeof(PAD_BUTTONS) / sizeof(PAD_BUTTONS[0]));
 
-inline HudRect hudMenuRect(u32 i, f32 screenW, f32 screenH) {
-    const f32 k = hudScale(screenH);
-    return { screenW - HUD_MENU_W * k - HUD_MENU_RIGHT * k,
-             HUD_MENU_TOP * k + (f32)i * HUD_MENU_STEP * k,
-             HUD_MENU_W * k, HUD_MENU_H * k };
-}
+/// Геометрия HUD.
+///
+/// И отрисовка, и проверка касания берут прямоугольники ОТСЮДА.
+///
+/// Раньше модель жила здесь, а drawMinimap и drawHotbar считали свои
+/// числа заново и без общего масштаба. На 1280x720 расхождение
+/// доходило до 191 точки, четыре кнопки реально накрывали HUD, а
+/// проверка наложений рапортовала «ни одного»: она сверяла модель с
+/// моделью. При высоте 1080 расхождение было ровно ноль — на таком
+/// телефоне игру и смотрели.
+///
+/// Все размеры заданы в dp и переводятся через настоящую плотность
+/// экрана (ui_theme.h, раздел 1). Прежний hudScale = screenH / 1080
+/// считал от числа пикселей и давал на двух телефонах одного размера
+/// кнопки, различающиеся в полтора раза.
+class HudLayout {
+public:
+    HudLayout() = default;
+    HudLayout(f32 screenW, f32 screenH, theme::Metrics m, SafeInsets si,
+              bool mirrored = false)
+        : w_(screenW), h_(screenH), m_(m), si_(si), mirror_(mirrored) {}
 
-/// Нижняя граница столбца: ниже неё правый край экрана свободен.
-inline f32 hudMenuBottom(f32 screenH) {
-    const f32 k = hudScale(screenH);
-    return (HUD_MENU_TOP + (f32)(HUD_MENU_COUNT - 1) * HUD_MENU_STEP
-            + HUD_MENU_H) * k;
-}
+    /// Раскладка для левши: зеркалится ВЕСЬ экран, а не одни кнопки.
+    ///
+    /// Раньше отражалось только управление, а столбец навигации и
+    /// миникарта оставались справа — и кнопки левши приезжали ровно
+    /// под них. На 1280x720 «PUT» попадала под навигацию. Ловить это
+    /// подбором координат бессмысленно: если зеркалить всё, зеркальный
+    /// случай устроен точно так же, как обычный, и проверять его
+    /// достаточно один раз.
+    bool mirrored() const { return mirror_; }
 
-// ---- миникарта: квадрат в правом нижнем углу вместе с рамкой ----
-constexpr f32 MINIMAP_SIZE   = 180.f;
-constexpr f32 MINIMAP_MARGIN = 20.f;
-constexpr f32 MINIMAP_FRAME  = 4.f;
-inline HudRect minimapRect(f32 screenW, f32 screenH) {
-    const f32 k = hudScale(screenH);
-    const f32 s = MINIMAP_SIZE * k, m = MINIMAP_MARGIN * k, f = MINIMAP_FRAME * k;
-    return { screenW - s - m - f, screenH - s - m - f, s + f * 2.f, s + f * 2.f };
-}
+    f32 width()  const { return w_; }
+    f32 height() const { return h_; }
+    const theme::Metrics& metrics() const { return m_; }
 
-// ---- пояс предметов: девять ячеек по центру нижнего края ----
-constexpr u32 HOTBAR_SLOTS  = 9;
-constexpr f32 HOTBAR_SLOT   = 60.f;
-constexpr f32 HOTBAR_GAP    = 4.f;
-constexpr f32 HOTBAR_BOTTOM = 84.f;
-inline HudRect hotbarRect(f32 screenW, f32 screenH) {
-    const f32 k = hudScale(screenH);
-    const f32 total = ((f32)HOTBAR_SLOTS * (HOTBAR_SLOT + HOTBAR_GAP) - HOTBAR_GAP) * k;
-    return { (screenW - total) * 0.5f, screenH - HOTBAR_BOTTOM * k,
-             total, HOTBAR_SLOT * k };
-}
+    f32 dp(f32 v) const { return m_.dp(v); }
+
+private:
+    /// Отражение по горизонтали. Применяется в самом конце, ко всему
+    /// одинаково, — поэтому зеркальная раскладка не может разойтись с
+    /// обычной.
+    Rect flip(Rect r) const {
+        if (mirror_) r.x = w_ - (r.x + r.w);
+        return r;
+    }
+    f32 flipX(f32 x) const { return mirror_ ? w_ - x : x; }
+
+public:
+
+    // ---- края рабочей области ----
+    f32 left()   const { return si_.left; }
+    f32 top()    const { return si_.top; }
+    f32 right()  const { return w_ - si_.right; }
+    f32 bottom() const { return h_ - si_.bottom; }
+
+    // ---- полоса опыта: во всю рабочую ширину, вверху ----
+    Rect xpBar() const {
+        return flip({ left(), top() + dp(theme::SPACE_XS_DP),
+                      right() - left(), dp(XP_BAR_H_DP) });
+    }
+
+    // ---- полосы ресурсов: слева под опытом ----
+    Rect resourceBar(u32 i) const {
+        const f32 h = dp(RES_BAR_H_DP), gap = dp(theme::SPACE_XS_DP);
+        const Rect xb = xpBar();
+        return flip({ left() + dp(theme::SPACE_L_DP),
+                      xb.y + xb.h + dp(theme::SPACE_M_DP) + (f32)i * (h + gap),
+                      dp(RES_BAR_W_DP), h });
+    }
+
+    // ---- две кнопки навигации справа вверху ----
+    //
+    // Их было семь. При нормальном размере касания столбец из семи
+    // занял бы 78 % высоты экрана — раскладка была несовместима с
+    // размером пальца. Остальное живёт в паузе, куда ведёт первая же
+    // кнопка.
+    Rect navButton(u32 i) const {
+        const f32 s = dp(theme::TOUCH_REGULAR_DP);
+        return flip({ right() - dp(theme::SPACE_L_DP) - s,
+                      top() + dp(theme::SPACE_L_DP)
+                          + (f32)i * (s + dp(theme::TOUCH_GAP_DP)),
+                      s, s });
+    }
+    static constexpr u32 NAV_COUNT = 2;   ///< пауза, инвентарь
+
+    /// Нижняя граница столбца навигации: ниже правый край свободен.
+    f32 navBottom() const {
+        const Rect r = navButton(NAV_COUNT - 1);
+        return r.y + r.h;
+    }
+
+    // ---- миникарта: квадрат справа внизу, вместе с рамкой ----
+    Rect minimap() const {
+        const f32 s = dp(MINIMAP_DP);
+        return flip({ right() - dp(theme::SPACE_M_DP) - s,
+                      bottom() - dp(theme::SPACE_M_DP) - s, s, s });
+    }
+
+    // ---- пояс предметов: по центру нижнего края ----
+    //
+    // Число ВИДИМЫХ ячеек подбирается под ширину. Девять ячеек по
+    // 56 dp занимают 60 % ширины рабочего телефона и 86 % бюджетного
+    // 1280x720 — там они просто налезают на миникарту. Уменьшать
+    // ячейку нельзя: ниже 48 dp палец промахивается. Значит на узком
+    // экране ячеек показывается меньше.
+    //
+    // В ДАННЫХ их по-прежнему девять: число лежит в формате
+    // сохранения и меняться не должно. Видимость и ёмкость — разные
+    // вещи, и доступ к остальным ячейкам даёт инвентарь.
+    f32 hotbarSlotSize() const { return dp(theme::TOUCH_REGULAR_DP); }
+    f32 hotbarGap()      const { return dp(HOTBAR_GAP_DP); }
+
+    /// Сколько ячеек помещается между зонами управления.
+    ///
+    /// Пояс стоит по центру, поэтому ограничение симметрично: он не
+    /// должен заходить ни за миникарту, ни за круглые кнопки по обе
+    /// стороны. На телефоне помещается пять ячеек, на планшете все
+    /// девять — это прямое следствие того, что ячейку нельзя сделать
+    /// мельче 48 dp, а углы заняты управлением.
+    u32 hotbarVisibleSlots() const {
+        const f32 s = hotbarSlotSize(), g = hotbarGap();
+        const f32 gap = dp(theme::TOUCH_GAP_DP);
+
+        // Сторону определяем по фактическому положению, а не по
+        // якорю: при зеркальной раскладке «правая» кнопка стоит
+        // слева, и якорь сказал бы неправду.
+        const f32 mid = w_ * 0.5f;
+        const f32 rowTop = bottom() - dp(theme::SPACE_M_DP) - s;
+        const f32 rowBot = rowTop + s;
+
+        f32 rlim = w_, llim = 0.f;
+        auto consider = [&](f32 cx, f32 cL, f32 cR, f32 top, f32 bot) {
+            // Мешает только то, что стоит на высоте пояса.
+            if (bot <= rowTop || top >= rowBot) return;
+            if (cx > mid) { if (cL < rlim) rlim = cL; }
+            else          { if (cR > llim) llim = cR; }
+        };
+
+        const Rect mm = minimap();
+        consider(mm.x + mm.w * 0.5f, mm.x, mm.x + mm.w, mm.y, mm.y + mm.h);
+        for (u32 i = 0; i < PAD_BUTTON_COUNT; ++i) {
+            const PadCircle c = padButton(i);
+            consider(c.cx, c.cx - c.r, c.cx + c.r, c.cy - c.r, c.cy + c.r);
+        }
+        rlim -= gap;
+        llim += gap;
+
+        // Симметрично относительно центра: узкая сторона и решает.
+        const f32 half = (rlim - w_ * 0.5f) < (w_ * 0.5f - llim)
+                       ? (rlim - w_ * 0.5f) : (w_ * 0.5f - llim);
+        const f32 avail = half * 2.f;
+        if (avail <= s) return HOTBAR_MIN_VISIBLE;
+        f32 n = (avail + g) / (s + g);
+        u32 k = n <= 0.f ? 0u : (u32)n;
+        if (k > HOTBAR_SLOTS) k = HOTBAR_SLOTS;
+        if (k < HOTBAR_MIN_VISIBLE) k = HOTBAR_MIN_VISIBLE;
+        return k;
+    }
+
+    Rect hotbar() const {
+        const f32 s = hotbarSlotSize(), g = hotbarGap();
+        const f32 total = (f32)hotbarVisibleSlots() * (s + g) - g;
+        return { (w_ - total) * 0.5f, bottom() - dp(theme::SPACE_M_DP) - s,
+                 total, s };
+    }
+
+    Rect hotbarSlot(u32 i) const {
+        const Rect hb = hotbar();
+        const f32 s = hotbarSlotSize();
+        return { hb.x + (f32)i * (s + hotbarGap()), hb.y, s, s };
+    }
+
+    // ---- подсказка взаимодействия: над поясом, по центру ----
+    //
+    // Её не было вовсе, и это стоило игроку трёх экранов: близость
+    // станка и алтаря игра считает каждый кадр, а показать было нечем.
+    Rect interactPrompt() const {
+        const f32 wdt = dp(PROMPT_W_DP), hgt = dp(theme::TOUCH_PRIMARY_DP);
+        return { (w_ - wdt) * 0.5f,
+                 hotbar().y - dp(theme::SPACE_L_DP) - hgt, wdt, hgt };
+    }
+
+    // ============================================================
+    // Меню на весь экран: пауза и её разделы
+    // ============================================================
+    //
+    // Пауза была столбцом из восьми кнопок, каждая своего цвета, без
+    // группировки. В альбомной ориентации столбец — худшая из форм:
+    // по вертикали места меньше всего, а по горизонтали оно пустует.
+    // Поэтому сетка.
+
+    /// Область, отведённая содержимому полноэкранного меню.
+    Rect menuArea() const {
+        const f32 pad = dp(theme::SPACE_XL_DP);
+        return { left() + pad, top() + dp(MENU_TITLE_DP) + pad,
+                 (right() - left()) - pad * 2.f,
+                 (bottom() - top()) - dp(MENU_TITLE_DP) - pad * 2.f };
+    }
+
+    /// Заголовок меню — над областью содержимого.
+    Rect menuTitle() const {
+        const f32 pad = dp(theme::SPACE_XL_DP);
+        return { left() + pad, top() + pad,
+                 (right() - left()) - pad * 2.f, dp(MENU_TITLE_DP) };
+    }
+
+    /// Ячейка сетки меню. Ряды считаются сверху, колонки слева.
+    ///
+    /// Высота ячейки не опускается ниже обычной цели касания: если
+    /// рядов столько, что не помещаются, виновата не ячейка, а
+    /// количество пунктов — их и надо группировать.
+    Rect menuCell(u32 col, u32 row, u32 cols, u32 rows) const {
+        const Rect a = menuArea();
+        const f32 gap = dp(theme::SPACE_M_DP);
+        const f32 cw = (a.w - gap * (f32)(cols - 1)) / (f32)cols;
+        f32 ch = (a.h - gap * (f32)(rows - 1)) / (f32)rows;
+        const f32 minH = dp(theme::TOUCH_REGULAR_DP);
+        if (ch < minH) ch = minH;
+        return { a.x + (f32)col * (cw + gap),
+                 a.y + (f32)row * (ch + gap), cw, ch };
+    }
+
+    /// Окно подтверждения: по центру, не шире семидесяти процентов.
+    Rect confirmPanel() const {
+        const f32 wdt = (right() - left()) * CONFIRM_W_FRAC;
+        const f32 hgt = dp(CONFIRM_H_DP);
+        return { (w_ - wdt) * 0.5f, (h_ - hgt) * 0.5f, wdt, hgt };
+    }
+
+    /// Две кнопки внизу окна: отмена слева, подтверждение справа.
+    Rect confirmButton(u32 i) const {
+        const Rect p = confirmPanel();
+        const f32 pad = dp(theme::PANEL_PAD_DP);
+        const f32 gap = dp(theme::SPACE_M_DP);
+        const f32 bh = dp(theme::TOUCH_PRIMARY_DP);
+        const f32 bw = (p.w - pad * 2.f - gap) * 0.5f;
+        return { p.x + pad + (f32)i * (bw + gap),
+                 p.y + p.h - pad - bh, bw, bh };
+    }
+
+    // ---- свободный центр: сюда не залезает ничто ----
+    Rect clearCenter() const {
+        const f32 cw = w_ * theme::HUD_CLEAR_W_FRAC;
+        const f32 ch = h_ * theme::HUD_CLEAR_H_FRAC;
+        return { (w_ - cw) * 0.5f, (h_ - ch) * 0.5f, cw, ch };
+    }
+
+    // ============================================================
+    // Круглые кнопки поверх мира
+    // ============================================================
+    //
+    // Раньше они жили в input/touch_layout.h, отдельно от HUD, и
+    // каждая сторона знала только свои числа. Наложения были видны
+    // только на устройстве. Теперь вся экранная геометрия в одном
+    // файле — иначе «согласовать два набора» превращается в работу,
+    // которую делают глазами.
+    struct PadCircle {
+        PadAnchor   anchor;
+        f32         cx, cy, r;
+        const char* label;
+    };
+
+    PadCircle padButton(u32 i) const {
+        const PadDef& d = PAD_BUTTONS[i < PAD_BUTTON_COUNT ? i : 0];
+        const f32 dx = dp(d.dx), dy = dp(d.dy), r = dp(d.diameter) * 0.5f;
+        f32 cx = 0.f, cy = 0.f;
+        switch (d.anchor) {
+            case PadAnchor::BottomLeft:  cx = left()  + dx; cy = bottom() - dy; break;
+            case PadAnchor::BottomRight: cx = right() - dx; cy = bottom() - dy; break;
+            case PadAnchor::TopRight:    cx = right() - dx; cy = top()    + dy; break;
+        }
+        return { d.anchor, flipX(cx), cy, r, d.label };
+    }
+
+    // ---- размеры в dp ----
+    static constexpr f32 XP_BAR_H_DP  =   8.f;
+    static constexpr f32 RES_BAR_H_DP =  14.f;
+    static constexpr f32 RES_BAR_W_DP = 160.f;
+    static constexpr f32 MINIMAP_DP   = 100.f;
+    static constexpr f32 HOTBAR_GAP_DP =  6.f;
+    static constexpr f32 PROMPT_W_DP  = 260.f;
+    static constexpr f32 MENU_TITLE_DP   = 40.f;
+    static constexpr f32 CONFIRM_W_FRAC  = 0.70f;
+    static constexpr f32 CONFIRM_H_DP    = 220.f;
+    static constexpr u32 HOTBAR_SLOTS =   9;   ///< в данных, всегда
+    /// Ниже этого пояс не имеет смысла: одна-две ячейки не пояс.
+    static constexpr u32 HOTBAR_MIN_VISIBLE = 5;
+
+private:
+    f32 w_ = 1920.f, h_ = 1080.f;
+    theme::Metrics m_{};
+    SafeInsets     si_{};
+    bool           mirror_ = false;
+};
 
 } // namespace ui

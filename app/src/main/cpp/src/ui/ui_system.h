@@ -10,6 +10,7 @@
 #include "drag_drop.h"
 #include "scroll.h"
 #include "minimap.h"
+#include "hud_layout.h"
 #include "../player/player.h"
 #include "../world/chunk_manager.h"
 #include "../save/save_slot.h"
@@ -21,6 +22,7 @@
 #include <functional>
 #include <array>
 #include <string>
+#include <utility>
 
 namespace ui {
 
@@ -61,6 +63,16 @@ public:
     void destroy();
 
     void setScreenSize(i32 w, i32 h);
+
+    /// Плотность экрана из AConfiguration_getDensity.
+    ///
+    /// До неё размеры считались от числа пикселей, и цель касания
+    /// выходила 20..36 dp при норме 48: кнопка меню — 3.2 мм при
+    /// подушечке пальца 8..10 мм.
+    void setDensityDpi(i32 dpi);
+
+    /// Единственный источник геометрии: и отрисовка, и касание.
+    const HudLayout& layout() const { return layout_; }
 
     /// Поворот вывода — тот же, что у камеры.
     void setSurfaceRotation(u32 degrees) { renderer_.setSurfaceRotation(degrees); }
@@ -123,6 +135,27 @@ public:
     std::function<void(u32 slotIndex)>         onEquipHotbar;
     std::function<void()>                      onSettingsChanged;
 
+    /// Подтверждение необратимого действия.
+    ///
+    /// Выход из игры срабатывал сразу, без вопроса: несохранённый
+    /// прогресс терялся молча. То же относится к удалению и
+    /// перезаписи сохранения.
+    struct Confirm {
+        bool active = false;
+        const char* question = nullptr;
+        const char* yesLabel = nullptr;
+        std::function<void()> onYes;
+    };
+    Confirm confirm{};
+
+    void askConfirm(const char* question, const char* yesLabel,
+                    std::function<void()> onYes) {
+        confirm.active = true;
+        confirm.question = question;
+        confirm.yesLabel = yesLabel;
+        confirm.onYes = std::move(onYes);
+    }
+
     /// ---- Утилиты ----
     void setStatus(const std::string& msg);
     void drawLoadingOverlay();
@@ -161,25 +194,42 @@ public:
     /// Пока включён, обычные действия кнопок не срабатывают.
     bool buttonLayoutMode = false;
 
+    /// Куда вернуться из текущего экрана.
+    ///
+    /// Раньше любой вложенный экран возвращал в паузу, даже если
+    /// открыт был из HUD: игрок оказывался не там, откуда пришёл.
+    Screen returnTo = Screen::Hud;
+
+    /// Открыть экран, запомнив, откуда.
+    void openScreen(Screen s) {
+        if (s != screen) returnTo = screen;
+        screen = s;
+    }
+
     /// Аппаратная кнопка «Назад»: закрывает текущий экран, а не игру.
     /// Из HUD открывает паузу — так же, как это делают все Android-игры.
     void onBackPressed() {
+        // Открытое подтверждение «Назад» отменяет — и только его.
+        if (confirm.active) { confirm = Confirm{}; return; }
+
         switch (screen) {
             case Screen::Hud:
-                screen = Screen::PauseMenu;
+                openScreen(Screen::PauseMenu);
                 break;
             case Screen::PauseMenu:
                 screen = Screen::Hud;
+                returnTo = Screen::Hud;
                 break;
             case Screen::Dialogue:
                 // Диалог закрывается своим обработчиком, чтобы NPC
                 // вышел из состояния Talk.
                 if (onCloseDialogue) onCloseDialogue();
                 screen = Screen::Hud;
+                returnTo = Screen::Hud;
                 break;
             default:
-                // Любой вложенный экран возвращает в паузу.
-                screen = Screen::PauseMenu;
+                screen = returnTo;
+                returnTo = Screen::Hud;
                 break;
         }
     }
@@ -204,23 +254,23 @@ public:
         else if (screen == Screen::Dialogue) screen = Screen::Hud;
     }
 
-    void openInventory() { screen = Screen::Inventory; drag.clear(); }
+    void openInventory() { openScreen(Screen::Inventory); drag.clear(); }
     void openCrafting(crafting::StationType st) {
         nearbyStation = st;
         selectedRecipeIdx = -1;
-        screen = Screen::Crafting;
+        openScreen(Screen::Crafting);
     }
     void openTrade(u32 traderEntity) {
         tradeCtx.traderEntity = traderEntity;
         tradeCtx.tab = 0;
         tradeCtx.selectedIdx = -1;
         tradeCtx.selCount = 1;
-        screen = Screen::Trade;
+        openScreen(Screen::Trade);
     }
     void openEnchant(u32 altarEntity) {
         enchantCtx.altarEntity = altarEntity;
         enchantCtx.selectedIdx = -1;
-        screen = Screen::Enchant;
+        openScreen(Screen::Enchant);
     }
 
 private:
@@ -234,6 +284,8 @@ private:
     void drawLevelUpNotification(player::Player& player);
     void drawReputationNotification(player::Player& player);
     void drawMinimap(player::Player& player);
+    /// Подсказка «использовать»: отпирает ремесло и зачарование.
+    void drawInteractPrompt();
     void drawHudResources(player::Player& player);
 
     void drawPauseMenu(player::Player& player);
@@ -253,6 +305,8 @@ private:
     void drawSettingsScreen(player::Player& player);
 
     void drawStatusToast();
+    /// Модальное подтверждение поверх всего.
+    void drawConfirm();
 
     /// ---- Помощники ----
     void drawItemIcon(items::ItemStack& stack, float x, float y, float size,
@@ -261,8 +315,11 @@ private:
 
     UiRenderer renderer_;
     UiContext  ui_;
+    HudLayout  layout_;
     i32        screenW_ = 1080;
     i32        screenH_ = 1920;
+    i32        densityDpi_ = 0;      ///< 0 — система не сообщила
+    void       rebuildLayout();
     VkDevice   dev_ = VK_NULL_HANDLE;
 
     /// Скролл

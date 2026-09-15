@@ -61,6 +61,7 @@
 #include <set>
 #include "ui/hud_layout.h"
 #include "ui/ui_theme.h"
+#include "ui/ui_system.h"
 #include "input/touch_layout.h"
 #include <string>
 #include <vector>
@@ -4304,86 +4305,175 @@ void testUiTapSurvivesRedraw() {
 void testHudAndButtonsDoNotOverlap() {
     group("раскладка: HUD и экранные кнопки не налезают");
 
-    struct Size { f32 w, h; const char* name; };
+    // Проверяется ТА ЖЕ раскладка, по которой рисуется.
+    //
+    // Раньше здесь сверялись ui::minimapRect и ui::hotbarRect, которые
+    // не вызывал никто, кроме этой проверки: drawMinimap и drawHotbar
+    // считали свои числа без общего масштаба. На 1280x720 расхождение
+    // доходило до 191 точки, четыре кнопки реально накрывали HUD, а
+    // проверка рапортовала «ни одного наложения» — она сверяла модель
+    // с моделью. При высоте 1080 расхождение было ровно ноль, и на
+    // этом телефоне игру и смотрели.
+    struct Size { f32 w, h; i32 dpi; const char* name; };
     const Size sizes[] = {
-        { 2306.f, 1080.f, "2306x1080" },   // тот самый телефон
-        { 2400.f, 1080.f, "2400x1080" },
-        { 1920.f, 1080.f, "1920x1080" },
-        { 1280.f,  720.f, "1280x720"  },
-        { 2560.f, 1600.f, "2560x1600" },   // планшет
+        { 2306.f, 1080.f, 400, "2306x1080 @400" },   // тот самый телефон
+        { 2400.f, 1080.f, 440, "2400x1080 @440" },
+        { 1920.f, 1080.f, 400, "1920x1080 @400" },
+        { 1280.f,  720.f, 320, "1280x720 @320"  },   // бюджетный
+        { 2560.f, 1600.f, 280, "2560x1600 @280" },   // планшет
+        { 3200.f, 1440.f, 560, "3200x1440 @560" },   // плотный
+        {  960.f,  540.f, 240, "960x540 @240"   },   // самый слабый
     };
 
-    // Ближайшая точка прямоугольника к центру круга: если она ближе
-    // радиуса, фигуры пересекаются.
-    auto circleHitsRect = [](f32 cx, f32 cy, f32 rad, const ui::HudRect& r) {
+    auto overlaps = [](const ui::Rect& a, const ui::Rect& b) {
+        return !(a.x + a.w <= b.x || b.x + b.w <= a.x ||
+                 a.y + a.h <= b.y || b.y + b.h <= a.y);
+    };
+    auto circleHitsRect = [](f32 cx, f32 cy, f32 rad, const ui::Rect& r) {
         const f32 nx = cx < r.x ? r.x : (cx > r.x + r.w ? r.x + r.w : cx);
         const f32 ny = cy < r.y ? r.y : (cy > r.y + r.h ? r.y + r.h : cy);
         const f32 dx = nx - cx, dy = ny - cy;
-        return dx * dx + dy * dy < rad * rad;
+        return dx * dx + dy * dy < rad * rad - 0.01f;
     };
 
-    int collisions = 0;
-    for (const auto& s : sizes) {
-        // Все прямоугольники HUD, которые всегда на экране.
-        std::vector<std::pair<const char*, ui::HudRect>> rects;
-        static const char* MENU[ui::HUD_MENU_COUNT] =
-            { "|||", "INV", "SKL", "ATT", "QST", "REP", "SAV" };
-        for (u32 i = 0; i < ui::HUD_MENU_COUNT; ++i)
-            rects.push_back({ MENU[i], ui::hudMenuRect(i, s.w, s.h) });
-        rects.push_back({ "миникарта", ui::minimapRect(s.w, s.h) });
-        rects.push_back({ "пояс",      ui::hotbarRect(s.w, s.h) });
+    int problems = 0;
+    for (const auto& sz : sizes)
+      // Зеркальная раскладка для левши — это отдельная раскладка, а
+      // не отражённые кнопки поверх прежнего HUD. Пока отражалось
+      // только управление, кнопки левши приезжали под столбец
+      // навигации: на 1280x720 «PUT» попадала ровно на него. Теперь
+      // зеркалится весь экран, и проверяются оба варианта целиком.
+      for (int mirror = 0; mirror < 2; ++mirror) {
+        const char* mode = mirror ? " (левша)" : "";
+        const ui::HudLayout L(sz.w, sz.h,
+                              ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                              ui::SafeInsets{}, mirror != 0);
 
-        // Оба варианта: обычный и зеркальный для левшей — TouchInput
-        // отражает центр по горизонтали, а HUD остаётся на месте.
-        for (int mirror = 0; mirror < 2; ++mirror) {
-            auto centerOf = [&](const input::ButtonLayout& L) {
-                glm::vec2 c = input::buttonCenterPx(L, s.w, s.h);
-                if (mirror) c.x = s.w - c.x;
-                return c;
+        // ---- прямоугольники HUD, которые всегда на экране ----
+        std::vector<std::pair<const char*, ui::Rect>> rects;
+        rects.push_back({ "полоса опыта", L.xpBar() });
+        for (u32 i = 0; i < 3; ++i)
+            rects.push_back({ "полоса ресурса", L.resourceBar(i) });
+        for (u32 i = 0; i < ui::HudLayout::NAV_COUNT; ++i)
+            rects.push_back({ "кнопка навигации", L.navButton(i) });
+        rects.push_back({ "миникарта", L.minimap() });
+        for (u32 i = 0; i < L.hotbarVisibleSlots(); ++i)
+            rects.push_back({ "ячейка пояса", L.hotbarSlot(i) });
+
+        // ---- ничто не уходит за экран ----
+        for (const auto& [name, r] : rects) {
+            if (r.x >= -0.5f && r.y >= -0.5f &&
+                r.x + r.w <= sz.w + 0.5f && r.y + r.h <= sz.h + 0.5f) continue;
+            ++problems;
+            char msg[160];
+            std::snprintf(msg, sizeof(msg), "%s%s: %s за краем экрана",
+                          sz.name, mode, name);
+            check(false, msg);
+        }
+
+        // ---- прямоугольники HUD не налезают друг на друга ----
+        for (usize a = 0; a < rects.size(); ++a)
+            for (usize b = a + 1; b < rects.size(); ++b) {
+                if (!overlaps(rects[a].second, rects[b].second)) continue;
+                ++problems;
+                char msg[160];
+                std::snprintf(msg, sizeof(msg), "%s%s: %s налезает на %s",
+                              sz.name, mode, rects[a].first, rects[b].first);
+                check(false, msg);
+            }
+
+        // ---- круглые кнопки ----
+        {
+            auto centerOf = [&](u32 i) {
+                const auto c = L.padButton(i);
+                return glm::vec2{ c.cx, c.cy };
             };
-            const char* mode = mirror ? " (левша)" : "";
 
-            for (u32 b = 0; b < input::DEFAULT_BUTTON_COUNT; ++b) {
-                const auto& L = input::DEFAULT_BUTTONS[b];
-                const glm::vec2 c = centerOf(L);
-                const f32 rad = input::buttonRadiusPx(L, s.h);
-                if (c.x - rad < 0.f || c.y - rad < 0.f ||
-                    c.x + rad > s.w || c.y + rad > s.h) {
-                    ++collisions;
+            for (u32 b = 0; b < ui::PAD_BUTTON_COUNT; ++b) {
+                const auto def = L.padButton(b);
+                const glm::vec2 c = centerOf(b);
+                if (c.x - def.r < -0.5f || c.y - def.r < -0.5f ||
+                    c.x + def.r > sz.w + 0.5f || c.y + def.r > sz.h + 0.5f) {
+                    ++problems;
                     char msg[160];
-                    std::snprintf(msg, sizeof(msg), "%s%s: кнопка %s за краем экрана",
-                                  s.name, mode, L.label);
+                    std::snprintf(msg, sizeof(msg), "%s%s: кнопка %s за краем",
+                                  sz.name, mode, def.label);
                     check(false, msg);
                 }
                 for (const auto& [name, r] : rects) {
-                    if (!circleHitsRect(c.x, c.y, rad, r)) continue;
-                    ++collisions;
-                    char msg[160];
+                    if (!circleHitsRect(c.x, c.y, def.r, r)) continue;
+                    ++problems;
+                    char msg[176];
                     std::snprintf(msg, sizeof(msg), "%s%s: кнопка %s накрывает %s",
-                                  s.name, mode, L.label, name);
+                                  sz.name, mode, def.label, name);
                     check(false, msg);
                 }
             }
 
-            // И сами круглые кнопки не должны налезать друг на друга.
-            for (u32 a = 0; a < input::DEFAULT_BUTTON_COUNT; ++a)
-                for (u32 b = a + 1; b < input::DEFAULT_BUTTON_COUNT; ++b) {
-                    const auto& A = input::DEFAULT_BUTTONS[a];
-                    const auto& B = input::DEFAULT_BUTTONS[b];
-                    const glm::vec2 ca = centerOf(A), cb = centerOf(B);
+            // Между соседними целями нужен зазор, иначе промах по
+            // одной попадает в другую.
+            for (u32 a = 0; a < ui::PAD_BUTTON_COUNT; ++a)
+                for (u32 b = a + 1; b < ui::PAD_BUTTON_COUNT; ++b) {
+                    const auto A = L.padButton(a), B = L.padButton(b);
+                    const glm::vec2 ca = centerOf(a), cb = centerOf(b);
                     const f32 dx = ca.x - cb.x, dy = ca.y - cb.y;
-                    const f32 rr = input::buttonRadiusPx(A, s.h)
-                                 + input::buttonRadiusPx(B, s.h);
-                    if (dx * dx + dy * dy >= rr * rr) continue;
-                    ++collisions;
-                    char msg[160];
-                    std::snprintf(msg, sizeof(msg), "%s%s: кнопки %s и %s налезают",
-                                  s.name, mode, A.label, B.label);
+                    const f32 need = A.r + B.r + L.dp(ui::theme::TOUCH_GAP_DP);
+                    if (dx * dx + dy * dy >= need * need - 0.01f) continue;
+                    ++problems;
+                    char msg[176];
+                    std::snprintf(msg, sizeof(msg), "%s%s: кнопки %s и %s ближе зазора",
+                                  sz.name, mode, A.label, B.label);
                     check(false, msg);
                 }
         }
+
+        // ---- ни одна цель касания не мельче нормы ----
+        const f32 minSide = L.dp(ui::theme::TOUCH_MIN_DP) - 0.01f;
+        for (u32 i = 0; i < ui::HudLayout::NAV_COUNT; ++i) {
+            const ui::Rect r = L.navButton(i);
+            if (r.w >= minSide && r.h >= minSide) continue;
+            ++problems;
+            char msg[160];
+            std::snprintf(msg, sizeof(msg),
+                          "%s%s: кнопка навигации мельче 48 dp", sz.name, mode);
+            check(false, msg);
+        }
+        {
+            const ui::Rect r = L.hotbarSlot(0);
+            if (r.w < minSide || r.h < minSide) {
+                ++problems;
+                char msg[160];
+                std::snprintf(msg, sizeof(msg),
+                              "%s%s: ячейка пояса мельче 48 dp", sz.name, mode);
+                check(false, msg);
+            }
+        }
+        for (u32 b = 0; b < ui::PAD_BUTTON_COUNT; ++b) {
+            const auto def = L.padButton(b);
+            if (def.r * 2.f >= minSide) continue;
+            ++problems;
+            char msg[160];
+            std::snprintf(msg, sizeof(msg), "%s%s: кнопка %s мельче 48 dp",
+                          sz.name, mode, def.label);
+            check(false, msg);
+        }
+
+        // ---- пояс показывает не меньше разумного минимума ----
+        if (L.hotbarVisibleSlots() < ui::HudLayout::HOTBAR_MIN_VISIBLE) {
+            ++problems;
+            char msg[160];
+            std::snprintf(msg, sizeof(msg), "%s%s: пояс показывает меньше пяти ячеек",
+                          sz.name, mode);
+            check(false, msg);
+        }
+        if (L.hotbarVisibleSlots() > ui::HudLayout::HOTBAR_SLOTS) {
+            ++problems;
+            check(false, "пояс показывает больше ячеек, чем есть в данных");
+        }
     }
-    check(collisions == 0, "ни одного наложения на проверенных экранах");
+
+    check(problems == 0,
+          "на семи экранах: ни наложений, ни целей мельче 48 dp");
 }
 
 // ------------------------------------------------------------
@@ -4668,6 +4758,267 @@ void testUiThemeMatchesItsDocument() {
     // Запрет, который легче всего нарушить молча.
     check(mentions("hudScale"),
           "документ объясняет, почему hudScale уходит");
+}
+
+// ------------------------------------------------------------
+// Подсказка взаимодействия доводит до экранов, а не просто есть.
+//
+// Аудит нашёл три готовых экрана, недостижимых из игры: ремесло и
+// торговля открывались только из диалога, который не проходится, а
+// openEnchant не вызывался вообще ниоткуда. При этом близость станка
+// и алтаря считалась каждый кадр — по ней даже переключалась музыка.
+//
+// Проверка смотрит именно на ПРОВОДКУ: что подсказка рисуется из
+// HUD и что из неё есть путь к обоим экранам. Проверять «функция
+// объявлена» бессмысленно — объявлены они были и до этого.
+// ------------------------------------------------------------
+void testInteractPromptUnlocksScreens() {
+    group("подсказка взаимодействия отпирает экраны");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    // ---- 1. Подсказка вызывается из HUD ----
+    const usize hud = src.find("void UiSystem::drawHud(");
+    check(hud != NONE, "drawHud на месте");
+    const usize hudEnd = src.find("\n}\n", hud);
+    const std::string hudBody = src.substr(hud, hudEnd - hud);
+    check(hudBody.find("drawInteractPrompt()") != NONE,
+          "HUD рисует подсказку взаимодействия");
+
+    // ---- 2. Из подсказки есть путь к обоим экранам ----
+    const usize pr = src.find("void UiSystem::drawInteractPrompt()");
+    check(pr != NONE, "подсказка реализована");
+    if (pr == NONE) return;
+    const usize prEnd = src.find("\n}\n", pr);
+    const std::string body = src.substr(pr, prEnd - pr);
+
+    check(body.find("openCrafting(") != NONE,
+          "подсказка открывает ремесло");
+    check(body.find("openEnchant(") != NONE,
+          "подсказка открывает зачарование");
+
+    // ---- 3. Она реагирует на близость, а не висит всегда ----
+    check(body.find("nearbyStation") != NONE && body.find("nearbyAltar") != NONE,
+          "подсказка смотрит на близость станка и алтаря");
+    check(body.find("if (!station && !altar) return;") != NONE,
+          "и не показывается, когда рядом ничего нет");
+
+    // ---- 4. Она нажимается ----
+    check(body.find("pushInteractiveRect") != NONE,
+          "подсказка принимает нажатие");
+    // Геометрия — из раскладки, а не своя: иначе нарисованное и
+    // нажимаемое снова разъедутся.
+    check(body.find("layout_.interactPrompt()") != NONE,
+          "её прямоугольник берётся из раскладки");
+
+    // ---- 5. Экраны, ради которых всё это, достижимы ----
+    //
+    // openEnchant не вызывался НИОТКУДА — ровно это и проверяем:
+    // хотя бы один вызов вне самого объявления в заголовке.
+    const std::string main_ = readSource("app/src/main/cpp/src/main.cpp");
+    const bool enchantFromUi   = body.find("openEnchant(") != NONE;
+    const bool craftFromUi     = body.find("openCrafting(") != NONE;
+    const bool craftFromDialog = !main_.empty() &&
+                                 main_.find("openCrafting(") != NONE;
+    check(enchantFromUi, "у зачарования появился вызывающий");
+    check(craftFromUi || craftFromDialog, "у ремесла есть вызывающий");
+}
+
+// ------------------------------------------------------------
+// Выбор в диалоге доходит до игры.
+//
+// Обработчик варианта ответа был пустой лямбдой: нажатие не делало
+// ничего, и выйти из разговора можно было только аппаратной кнопкой.
+// Функция applyChoice при этом существовала и была покрыта тестами —
+// но вызывали её ТОЛЬКО тесты, шесть раз, и ни разу игра. Проверена
+// была логика, не проводка, и тесты оставались зелёными.
+//
+// Поэтому здесь проверяется именно вызов из интерфейса.
+// ------------------------------------------------------------
+void testDialogueChoiceReachesTheGame() {
+    group("диалог: выбор доходит до игры");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    const usize dlg = src.find("void UiSystem::drawDialogueScreen(");
+    check(dlg != NONE, "экран диалога на месте");
+    if (dlg == NONE) return;
+    const usize end = src.find("\n}\n", dlg);
+    const std::string body = src.substr(dlg, end - dlg);
+
+    check(body.find("applyChoice(") != NONE,
+          "нажатие на вариант применяет выбор");
+
+    // Пустая лямбда — ровно то, чем это было. Её возвращение должно
+    // ронять проверку, как бы ни выглядел остальной код.
+    check(body.find("pushInteractiveRect(cr, [](){})") == NONE &&
+          body.find("pushInteractiveRect(cr, [] () {})") == NONE,
+          "обработчик варианта не пустой");
+
+    // Разговор должен и заканчиваться: applyChoice возвращает false,
+    // когда диалог закрылся сам, и NPC надо вывести из состояния Talk.
+    check(body.find("onCloseDialogue") != NONE,
+          "закончившийся разговор закрывается как положено");
+
+    // Выбор берётся заново по текущему узлу: applyChoice меняет узел,
+    // и ссылка на прежний список вариантов после этого не годится.
+    check(body.find("findNode(") != NONE,
+          "вариант ищется по текущему узлу в момент нажатия");
+}
+
+// ------------------------------------------------------------
+// Навигация: возврат туда, откуда пришёл; выход — с вопросом.
+//
+// Любой вложенный экран возвращал в паузу, даже открытый из HUD:
+// игрок оказывался не там, откуда пришёл. Инвентаря в паузе не было
+// вовсе, хотя выход ИЗ инвентаря вёл именно туда. Выход из игры
+// срабатывал сразу, молча теряя несохранённый прогресс.
+// ------------------------------------------------------------
+void testNavigationReturnsWhereItCameFrom() {
+    group("навигация: возврат и подтверждение");
+
+    ui::UiSystem sys;   // без init: проверяется только состояние
+
+    // ---- 1. Инвентарь из HUD возвращает в HUD ----
+    sys.screen = ui::Screen::Hud;
+    sys.returnTo = ui::Screen::Hud;
+    sys.openScreen(ui::Screen::Inventory);
+    check(sys.screen == ui::Screen::Inventory, "инвентарь открылся");
+    sys.onBackPressed();
+    check(sys.screen == ui::Screen::Hud,
+          "из инвентаря, открытого из HUD, возврат в HUD");
+
+    // ---- 2. Тот же экран из паузы возвращает в паузу ----
+    sys.screen = ui::Screen::Hud;
+    sys.openScreen(ui::Screen::PauseMenu);
+    sys.openScreen(ui::Screen::Inventory);
+    sys.onBackPressed();
+    check(sys.screen == ui::Screen::PauseMenu,
+          "из инвентаря, открытого из паузы, возврат в паузу");
+
+    // ---- 3. Пауза из HUD закрывается в HUD ----
+    sys.screen = ui::Screen::Hud;
+    sys.openScreen(ui::Screen::PauseMenu);
+    sys.onBackPressed();
+    check(sys.screen == ui::Screen::Hud, "пауза закрывается в игру");
+
+    // ---- 4. Ремесло, открытое подсказкой из HUD, вернёт в HUD ----
+    sys.screen = ui::Screen::Hud;
+    sys.returnTo = ui::Screen::Hud;
+    sys.openCrafting(crafting::StationType::Anvil);
+    check(sys.screen == ui::Screen::Crafting, "ремесло открылось");
+    sys.onBackPressed();
+    check(sys.screen == ui::Screen::Hud,
+          "и вернуло в игру, а не в паузу");
+
+    // ---- 5. Выход спрашивает, а не выходит ----
+    int quits = 0;
+    sys.onQuit = [&]() { ++quits; };
+    sys.askConfirm("QUIT", "QUIT", [&]() { if (sys.onQuit) sys.onQuit(); });
+    check(sys.confirm.active, "вопрос задан");
+    check(quits == 0, "и сам по себе ничего не сделал");
+
+    // «Назад» отменяет подтверждение и НИЧЕГО больше: экран прежний.
+    const ui::Screen before = sys.screen;
+    sys.onBackPressed();
+    check(!sys.confirm.active, "«Назад» снимает вопрос");
+    check(sys.screen == before, "и не уводит с экрана заодно");
+    check(quits == 0, "отменённый выход не выполняется");
+
+    // Подтверждённый — выполняется ровно один раз.
+    sys.askConfirm("QUIT", "QUIT", [&]() { if (sys.onQuit) sys.onQuit(); });
+    auto act = sys.confirm.onYes;
+    sys.confirm = ui::UiSystem::Confirm{};
+    if (act) act();
+    check(quits == 1, "подтверждённый выход выполняется один раз");
+}
+
+// ------------------------------------------------------------
+// Пауза сообщает, что игра остановлена, и ведёт во все разделы.
+// ------------------------------------------------------------
+void testPauseMenuIsGroupedAndComplete() {
+    group("пауза: сгруппирована и полна");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    const usize pm = src.find("void UiSystem::drawPauseMenu(");
+    check(pm != NONE, "экран паузы на месте");
+    if (pm == NONE) return;
+    const usize end = src.find("\n}\n", pm);
+    const std::string body = src.substr(pm, end - pm);
+
+    // Инвентаря в списке не было, хотя выход из него вёл сюда.
+    check(body.find("Screen::Inventory") != NONE,
+          "в паузе есть инвентарь");
+
+    // Все прежние разделы остались достижимы.
+    const char* need[] = { "Screen::Attributes", "Screen::SkillTree",
+                           "Screen::QuestLog", "Screen::Reputation",
+                           "Screen::SaveLoad", "Screen::Settings" };
+    int missing = 0;
+    for (const char* n : need) {
+        if (body.find(n) != NONE) continue;
+        ++missing;
+        char msg[128];
+        std::snprintf(msg, sizeof(msg), "из паузы пропал раздел %s", n);
+        check(false, msg);
+    }
+    check(missing == 0, "ни один прежний раздел не потерян");
+
+    // Сетка, а не столбец: в альбомной ориентации столбец — худшая
+    // из форм, по вертикали места меньше всего.
+    check(body.find("menuCell(") != NONE,
+          "разделы разложены сеткой из раскладки");
+
+    // Выход спрашивает.
+    check(body.find("askConfirm(") != NONE,
+          "выход из игры требует подтверждения");
+    check(body.find("if (onQuit) onQuit();") == NONE ||
+          body.find("askConfirm(") < body.find("if (onQuit) onQuit();"),
+          "и не выходит помимо вопроса");
+}
+
+// ------------------------------------------------------------
+// Подтверждение действительно модально.
+//
+// Попадание ищется среди прямоугольников с конца, поэтому кнопки
+// окна выигрывают у того, что под ними. Но касание МИМО окна нашло бы
+// кнопку внизу — поэтому первым кладётся глушитель во весь экран.
+// ------------------------------------------------------------
+void testConfirmSwallowsTouchesOutsideIt() {
+    group("подтверждение: модальное по-настоящему");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    const usize cf = src.find("void UiSystem::drawConfirm()");
+    check(cf != NONE, "окно подтверждения реализовано");
+    if (cf == NONE) return;
+    const usize end = src.find("\n}\n", cf);
+    const std::string body = src.substr(cf, end - cf);
+
+    const usize swallow = body.find("(f32)screenW_, (f32)screenH_ },");
+    check(swallow != NONE, "во весь экран положен глушитель касаний");
+    check(body.find("confirmButton(") != NONE,
+          "кнопки окна берутся из раскладки");
+    if (swallow != NONE)
+        check(swallow < body.find("confirmButton("),
+              "глушитель кладётся ДО кнопок, иначе он перекроет их");
+
+    // И рисуется оно последним, поверх всего.
+    const usize render = src.find("void UiSystem::render(");
+    const usize rend   = src.find("\n}\n", render);
+    const std::string rb = src.substr(render, rend - render);
+    check(rb.find("drawConfirm()") != NONE, "подтверждение рисуется в кадре");
+    check(rb.find("drawConfirm()") > rb.find("drawStatusToast()"),
+          "и поверх всего остального");
 }
 
 // ------------------------------------------------------------
@@ -6257,6 +6608,11 @@ int main() {
     testHudAndButtonsDoNotOverlap();
     testUiThemeObeysItsOwnRules();
     testUiThemeMatchesItsDocument();
+    testInteractPromptUnlocksScreens();
+    testDialogueChoiceReachesTheGame();
+    testNavigationReturnsWhereItCameFrom();
+    testPauseMenuIsGroupedAndComplete();
+    testConfirmSwallowsTouchesOutsideIt();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

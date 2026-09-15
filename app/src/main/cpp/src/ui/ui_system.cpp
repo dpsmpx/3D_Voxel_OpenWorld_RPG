@@ -63,6 +63,24 @@ void UiSystem::setScreenSize(i32 w, i32 h) {
     screenW_ = w;
     screenH_ = h;
     ui_.setScreen(w, h);
+    rebuildLayout();
+}
+
+void UiSystem::setDensityDpi(i32 dpi) {
+    densityDpi_ = dpi;
+    rebuildLayout();
+}
+
+/// Раскладка пересобирается только здесь: и отрисовка, и касание
+/// обязаны видеть одни и те же числа. Раньше каждая сторона считала
+/// свои, и на 1280x720 они расходились на 191 точку.
+void UiSystem::rebuildLayout() {
+    const auto m = theme::Metrics::fromDensityDpi(
+        densityDpi_, cfg::settingsConst().uiScale);
+    // Безопасная зона пока нулевая: система сама держит окно вне
+    // выреза, пока манифест не просит SHORT_EDGES. Место для неё
+    // заведено, чтобы правка была в одном месте, а не в четырнадцати.
+    layout_ = HudLayout((f32)screenW_, (f32)screenH_, m, SafeInsets{});
 }
 
 bool UiSystem::routeTouch(i32 id, float px, float py, int phase) {
@@ -170,6 +188,8 @@ void UiSystem::render(vk::Context& ctx,
 
     drawDragOverlay();
     drawStatusToast();
+    // Подтверждение — поверх всего: оно модальное.
+    drawConfirm();
 
     ui_.endFrame();
     renderer_.flush(ctx);
@@ -272,23 +292,14 @@ void UiSystem::drawHud(vk::Context& /*ctx*/,
                  2.f, COL_WHITE);
     };
 
-    // Геометрия столбца — в ui/hud_layout.h: её же читает проверка
-    // раскладки, иначе наложение с круглыми кнопками видно только на
-    // устройстве.
-    auto menuSlot = [&](u32 i) {
-        const HudRect r = hudMenuRect(i, (float)screenW_, (float)screenH_);
-        return Rect{ r.x, r.y, r.w, r.h };
-    };
-    drawMenuButton(menuSlot(0), "|||", [this]() { screen = Screen::PauseMenu; });
-    drawMenuButton(menuSlot(1), "INV", [this]() { screen = Screen::Inventory; });
-    drawMenuButton(menuSlot(2), "SKL", [this]() { screen = Screen::SkillTree; });
-    drawMenuButton(menuSlot(3), "ATT", [this]() { screen = Screen::Attributes; });
-    drawMenuButton(menuSlot(4), "QST", [this]() { screen = Screen::QuestLog; });
-    drawMenuButton(menuSlot(5), "REP", [this]() { screen = Screen::Reputation; });
-    drawMenuButton(menuSlot(6), "SAV", [this]() {
-                       saveLoadMode = SaveLoadMode::Save;
-                       screen = Screen::SaveLoad;
-                   });
+    // Кнопок было семь. При нормальном размере касания столбец из
+    // семи занял бы 78 % высоты экрана: раскладка была несовместима
+    // с размером пальца. Осталось две — пауза и инвентарь, самый
+    // частый экран. Всё прочее живёт в паузе, куда ведёт первая.
+    drawMenuButton(layout_.navButton(0), "|||",
+                   [this]() { screen = Screen::PauseMenu; });
+    drawMenuButton(layout_.navButton(1), "INV",
+                   [this]() { screen = Screen::Inventory; drag.clear(); });
 
     drawXpBar(player);
     drawHudResources(player);
@@ -309,6 +320,8 @@ void UiSystem::drawHud(vk::Context& /*ctx*/,
         ui_.rect(cx - 10.f, cy - 1.f, 20.f, 2.f, COL_WHITE);
         ui_.rect(cx - 1.f, cy - 10.f, 2.f, 20.f, COL_WHITE);
     }
+
+    drawInteractPrompt();
 
     drawLevelUpNotification(player);
     drawReputationNotification(player);
@@ -371,102 +384,141 @@ void UiSystem::drawTouchControls() {
     }
 }
 
+// ============================================================
+// Подсказка взаимодействия
+// ============================================================
+//
+// Игра каждый кадр считает, стоит ли игрок у станка или алтаря
+// (main.cpp: detectNearbyStation, EnchantAltar). По этому признаку
+// даже переключалась музыка. А показать было нечем: подсказки не
+// существовало, openEnchant не вызывался ниоткуда, а ремесло и
+// торговля висели на диалоге, который не проходится. Три готовых
+// экрана были недостижимы из-за отсутствия одной кнопки.
+void UiSystem::drawInteractPrompt() {
+    const bool station = nearbyStation != crafting::StationType::None;
+    const bool altar   = nearbyAltar != 0;
+    if (!station && !altar) return;
+
+    // Станок ближе по смыслу: если рядом и то и другое, предлагаем его.
+    const char* what = station ? crafting::stationName(nearbyStation)
+                               : T(StrKey::Ench_Altar);
+
+    const Rect r = layout_.interactPrompt();
+    const f32 chamfer = layout_.dp(theme::CHAMFER_PANEL_DP);
+    (void)chamfer;   // срез появится вместе с общим примитивом панели
+
+    const int idx = ui_.pushInteractiveRect(r, [this, station]() {
+        if (station) openCrafting(nearbyStation);
+        else if (nearbyAltar) openEnchant(nearbyAltar);
+    });
+    const bool pressed = ui_.isInteractivePressed(idx);
+
+    ui_.rect(r.x, r.y, r.w, r.h,
+             pressed ? theme::Accent : theme::Panel);
+    ui_.rectOutline(r.x, r.y, r.w, r.h,
+                    layout_.dp(theme::STROKE_SELECTED_DP),
+                    pressed ? theme::AccentPressed : theme::Accent);
+
+    const UiColor fg = pressed ? theme::Ink : theme::TextPrimary;
+    const f32 lw = ui_.textWidth(T(StrKey::Hud_Use), theme::TEXT_LABEL);
+    ui_.text(T(StrKey::Hud_Use), r.x + (r.w - lw) * 0.5f,
+             r.y + layout_.dp(theme::SPACE_S_DP),
+             theme::TEXT_LABEL, pressed ? theme::Ink : theme::Accent);
+
+    const f32 nw = ui_.textWidth(what, theme::TEXT_BODY);
+    ui_.text(what, r.x + (r.w - nw) * 0.5f,
+             r.y + r.h - layout_.dp(theme::SPACE_S_DP)
+                 - ui_.textHeight(theme::TEXT_BODY),
+             theme::TEXT_BODY, fg);
+}
+
 void UiSystem::drawXpBar(player::Player& player) {
     auto* prog = player.progression();
     if (!prog) return;
 
-    const float barH = 12.f;
-    const float y = 12.f;
-
-    ui_.rect(0, y - 2, (float)screenW_, barH + 4, COL_BLACK);
-    ui_.rect(0, y, (float)screenW_, barH, rgba(30,20,50,255));
-    ui_.rect(0, y, (float)screenW_ * prog->levelProgress(), barH,
-             rgba(180, 100, 240, 255));
+    const Rect r = layout_.xpBar();
+    ui_.rect(r.x, r.y - layout_.dp(2.f), r.w, r.h + layout_.dp(4.f),
+             theme::Ink);
+    ui_.rect(r.x, r.y, r.w, r.h, theme::XpBed);
+    ui_.rect(r.x, r.y, r.w * prog->levelProgress(), r.h, theme::Xp);
 
     char buf[64];
     std::snprintf(buf, sizeof(buf), "LV %u", prog->level);
-    ui_.text(buf, 8.f, y - 1.f, 1.6f, COL_WHITE);
+    ui_.text(buf, r.x + layout_.dp(theme::SPACE_S_DP),
+             r.y + r.h + layout_.dp(theme::SPACE_XS_DP),
+             theme::TEXT_LABEL, theme::TextPrimary);
 
     char xpText[64];
     std::snprintf(xpText, sizeof(xpText), "%llu / %llu",
                   (unsigned long long)prog->xpWithinLevel(),
                   (unsigned long long)prog->xpForNextLevel());
-    float tw = ui_.textWidth(xpText, 1.5f);
-    ui_.text(xpText, (float)screenW_ - tw - 8.f, y - 1.f, 1.5f, COL_WHITE);
+    const f32 tw = ui_.textWidth(xpText, theme::TEXT_CAPTION);
+    ui_.text(xpText, r.x + r.w - tw - layout_.dp(theme::SPACE_S_DP),
+             r.y + r.h + layout_.dp(theme::SPACE_XS_DP),
+             theme::TEXT_CAPTION, theme::TextSecondary);
 }
 
 void UiSystem::drawHudResources(player::Player& player) {
-    const float bx = 24.f;
-    float by = (float)screenH_ - 260.f;
-    const float bw = 260.f;
-    const float bh = 22.f;
+    struct Bar { f32 pct; UiColor fill; UiColor bed; StrKey label; };
+    const Bar bars[3] = {
+        { cachedHpPct, cachedHpPct < 0.3f ? theme::Danger : theme::Hp,
+          theme::HpBed, StrKey::Hud_Health },
+        { cachedMpPct, theme::Mp, theme::MpBed, StrKey::Hud_Mana },
+        { cachedSpPct, theme::Sp, theme::SpBed, StrKey::Hud_Stamina },
+    };
 
-    // HP
-    ui_.rect(bx - 2, by - 2, bw + 4, bh + 4, COL_BLACK);
-    ui_.rect(bx, by, bw, bh, rgba(60,20,20,255));
-    ui_.rect(bx, by, bw * cachedHpPct, bh,
-             cachedHpPct < 0.3f ? rgba(255, 60, 60, 255) : COL_RED);
-    ui_.text(T(StrKey::Hud_Health), bx + 6, by + 4, 2.f, COL_WHITE);
+    for (u32 i = 0; i < 3; ++i) {
+        const Rect r = layout_.resourceBar(i);
+        const f32 o = layout_.dp(2.f);
+        ui_.rect(r.x - o, r.y - o, r.w + o * 2.f, r.h + o * 2.f, theme::Ink);
+        ui_.rect(r.x, r.y, r.w, r.h, bars[i].bed);
+        ui_.rect(r.x, r.y, r.w * bars[i].pct, r.h, bars[i].fill);
+        ui_.text(T(bars[i].label), r.x + layout_.dp(theme::SPACE_XS_DP),
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_CAPTION)) * 0.5f,
+                 theme::TEXT_CAPTION, theme::TextPrimary);
+    }
 
-    // MP
-    by += bh + 6.f;
-    ui_.rect(bx - 2, by - 2, bw + 4, bh + 4, COL_BLACK);
-    ui_.rect(bx, by, bw, bh, rgba(20,30,60,255));
-    ui_.rect(bx, by, bw * cachedMpPct, bh, COL_BLUE);
-    ui_.text(T(StrKey::Hud_Mana), bx + 6, by + 4, 2.f, COL_WHITE);
-
-    // SP
-    by += bh + 6.f;
-    ui_.rect(bx - 2, by - 2, bw + 4, bh + 4, COL_BLACK);
-    ui_.rect(bx, by, bw, bh, rgba(20,60,20,255));
-    ui_.rect(bx, by, bw * cachedSpPct, bh, COL_GREEN);
-    ui_.text(T(StrKey::Hud_Stamina), bx + 6, by + 4, 2.f, COL_WHITE);
-
-    // Золото
     if (auto* wal = player.wallet()) {
         char goldBuf[32];
         wal->format(goldBuf, sizeof(goldBuf));
-        ui_.text(goldBuf, bx, by + bh + 6.f, 2.f, rgba(255, 220, 100, 255));
+        const Rect last = layout_.resourceBar(2);
+        ui_.text(goldBuf, last.x,
+                 last.y + last.h + layout_.dp(theme::SPACE_S_DP),
+                 theme::TEXT_LABEL, theme::Accent);
     }
 }
 
 void UiSystem::drawMinimap(player::Player& player) {
     if (minimap.size() == 0) return;
 
-    // Числа — в ui/hud_layout.h, вместе с остальной раскладкой HUD.
-    const float mSize = MINIMAP_SIZE;
-    const float mx = (float)screenW_ - mSize - MINIMAP_MARGIN;
-    const float my = (float)screenH_ - mSize - MINIMAP_MARGIN;
+    // Числа берутся из раскладки — из той же, по которой проверяются
+    // наложения. Раньше здесь стояли свои константы без общего
+    // масштаба, и на 1280x720 карта рисовалась на 68 точек левее и
+    // выше, чем считала проверка.
+    const Rect r = layout_.minimap();
+    const f32 fr = layout_.dp(theme::STROKE_DP);
 
-    // Рамка
-    ui_.rect(mx - 4.f, my - 4.f, mSize + 8.f, mSize + 8.f, COL_BLACK);
-    ui_.rectOutline(mx - 4.f, my - 4.f, mSize + 8.f, mSize + 8.f,
-                    2.f, rgba(180, 160, 100, 255));
+    ui_.rect(r.x - fr, r.y - fr, r.w + fr * 2.f, r.h + fr * 2.f, theme::Ink);
+    ui_.rectOutline(r.x - fr, r.y - fr, r.w + fr * 2.f, r.h + fr * 2.f,
+                    fr, theme::Stroke);
 
-    // Настоящая карта. Текстуру Minimap пересобирает раз в секунду;
-    // она подключена к UiRenderer вторым атласом. До этого здесь была
-    // заглушка — ровная зелёная плашка, — а сама текстура строилась
-    // каждую секунду и не рисовалась нигде.
-    ui_.rect(mx, my, mSize, mSize, rgba(20, 26, 20, 255));
-    ui_.image(mx, my, mSize, mSize);
+    ui_.rect(r.x, r.y, r.w, r.h, theme::Panel);
+    ui_.image(r.x, r.y, r.w, r.h);
 
-    // Маркер игрока (центр)
-    float pxc = mx + mSize * 0.5f;
-    float pyc = my + mSize * 0.5f;
-    ui_.rect(pxc - 4.f, pyc - 4.f, 8.f, 8.f, rgba(255, 240, 100, 255));
-    ui_.rectOutline(pxc - 4.f, pyc - 4.f, 8.f, 8.f, 1.f, COL_BLACK);
+    const f32 cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
+    const f32 mk = layout_.dp(4.f);
+    ui_.rect(cx - mk, cy - mk, mk * 2.f, mk * 2.f, theme::Accent);
+    ui_.rectOutline(cx - mk, cy - mk, mk * 2.f, mk * 2.f,
+                    layout_.dp(1.f), theme::Ink);
 
-    // Стрелка направления
-    glm::vec3 fwd = player.aimDir();
-    float fLen = 12.f;
-    ui_.rect(pxc + fwd.x * fLen - 2.f,
-             pyc + fwd.z * fLen - 2.f,
-             4.f, 4.f, rgba(255, 100, 100, 255));
+    const glm::vec3 fwd = player.aimDir();
+    const f32 fl = layout_.dp(12.f);
+    ui_.rect(cx + fwd.x * fl - mk * 0.5f, cy + fwd.z * fl - mk * 0.5f,
+             mk, mk, theme::Danger);
 
-    // Компас (N наверху)
-    ui_.text("N", pxc - 4.f, my + 4.f, 1.6f, COL_WHITE);
-
-    (void)player;
+    ui_.text("N", cx - ui_.textWidth("N", theme::TEXT_CAPTION) * 0.5f,
+             r.y + layout_.dp(theme::SPACE_XS_DP),
+             theme::TEXT_CAPTION, theme::TextPrimary);
 }
 
 void UiSystem::drawResonanceBar(player::Player& player) {
@@ -562,50 +614,49 @@ void UiSystem::drawReputationNotification(player::Player& player) {
 }
 
 void UiSystem::drawHotbar(player::Player& player) {
-    const int slots = (int)HOTBAR_SLOTS;
-    const float sw = HOTBAR_SLOT, sh = HOTBAR_SLOT;
-    const float totalW = slots * (sw + HOTBAR_GAP) - HOTBAR_GAP;
-    const float x0 = ((float)screenW_ - totalW) * 0.5f;
-    const float y0 = (float)screenH_ - HOTBAR_BOTTOM;
+    // Ячеек В ДАННЫХ девять — это формат сохранения. На экране их
+    // столько, сколько помещается при размере касания не ниже 48 dp:
+    // на телефоне пять, на планшете все девять. Остальные достаются
+    // из инвентаря.
+    const u32 shown = layout_.hotbarVisibleSlots();
 
     auto* inv = player.inventory();
-    u8 activeHotbar = inv ? inv->activeHotbar : 0;
+    const u8 active = inv ? inv->activeHotbar : 0;
 
-    for (int i = 0; i < slots; ++i) {
-        float x = x0 + i * (sw + 4.f);
-        bool isActive = (i == (int)activeHotbar);
+    for (u32 i = 0; i < shown; ++i) {
+        const Rect r = layout_.hotbarSlot(i);
+        const bool isActive = (i == (u32)active);
 
-        UiColor bg = isActive ? rgba(120,120,80,255) : rgba(40,40,40,220);
-        ui_.rect(x, y0, sw, sh, bg);
-        ui_.rectOutline(x, y0, sw, sh, 2.f,
-                        isActive ? rgba(255, 220, 100, 255) : COL_BLACK);
+        ui_.rect(r.x, r.y, r.w, r.h,
+                 isActive ? theme::PanelRaised : theme::Panel);
+        // Выбранная ячейка отличается не только цветом: рамка толще.
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(isActive ? theme::STROKE_SELECTED_DP
+                                            : theme::STROKE_DP),
+                        isActive ? theme::Accent : theme::Stroke);
 
         if (inv) {
-            auto& s = inv->at(items::INV_HOTBAR_OFFSET + i);
-            if (!s.empty()) {
-                drawItemIcon(s, x + 6.f, y0 + 6.f, sw - 12.f, false);
+            auto& st = inv->at(items::INV_HOTBAR_OFFSET + i);
+            if (!st.empty()) {
+                const f32 pad = layout_.dp(theme::SPACE_XS_DP);
+                drawItemIcon(st, r.x + pad, r.y + pad, r.w - pad * 2.f, false);
             }
         }
 
         char num[4];
-        std::snprintf(num, sizeof(num), "%d", i + 1);
-        ui_.text(num, x + 4.f, y0 + 4.f, 1.3f, rgba(200, 200, 200, 200));
+        std::snprintf(num, sizeof(num), "%u", (unsigned)(i + 1));
+        ui_.text(num, r.x + layout_.dp(theme::SPACE_XS_DP),
+                 r.y + layout_.dp(theme::SPACE_XS_DP),
+                 theme::TEXT_CAPTION, theme::TextSecondary);
     }
 
+    const Rect hb = layout_.hotbar();
     const auto& wdef = combat::weapons().get(player.equipped.weaponId);
     if (wdef.name) {
-        float tw = ui_.textWidth(wdef.name, 2.f);
-        ui_.text(wdef.name,
-                 x0 + totalW * 0.5f - tw * 0.5f,
-                 y0 - 26.f, 2.f, COL_WHITE);
-
-        if (player.equipped.enchant.id != combat::EnchantmentId::None) {
-            const char* en = combat::enchantmentName(player.equipped.enchant.id);
-            float ew = ui_.textWidth(en, 1.5f);
-            ui_.text(en,
-                     x0 + totalW * 0.5f - ew * 0.5f,
-                     y0 - 46.f, 1.5f, rgba(180, 120, 240, 255));
-        }
+        const f32 tw = ui_.textWidth(wdef.name, theme::TEXT_LABEL);
+        ui_.text(wdef.name, hb.x + hb.w * 0.5f - tw * 0.5f,
+                 hb.y - layout_.dp(theme::SPACE_L_DP),
+                 theme::TEXT_LABEL, theme::TextPrimary);
     }
 }
 
@@ -613,95 +664,119 @@ void UiSystem::drawHotbar(player::Player& player) {
 // Pause Menu
 // ============================================================
 void UiSystem::drawPauseMenu(player::Player& player) {
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(0,0,0,180));
+    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
+             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
 
-    const float cw = 380.f, ch = 56.f;
-    const float cx = ((float)screenW_ - cw) * 0.5f;
-    const float cy = (float)screenH_ * 0.5f - 280.f;
+    // Первое, что должен сообщать экран, — что игра остановлена.
+    const Rect title = layout_.menuTitle();
+    ui_.text(T(StrKey::Menu_Pause), title.x,
+             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
+             theme::TEXT_TITLE, theme::TextPrimary);
 
-    ui_.text(T(StrKey::Menu_Pause), cx + 100.f, cy - 60.f, 3.f, COL_WHITE);
+    // Пунктов было восемь в столбик, каждый своего цвета: зелёный,
+    // синий, фиолетовый, оранжевый, жёлтый, голубой, оливковый,
+    // красный. Ни группировки, ни иерархии — и инвентаря в списке не
+    // было вовсе, хотя выход ИЗ инвентаря вёл сюда.
+    //
+    // Теперь: продолжить отдельно и крупно, остальное — сеткой по
+    // смыслу, выход отдельно и в опасном виде.
+    struct Item {
+        const char* label;
+        Screen      target;
+        i32         badge;      ///< -1 — не показывать
+    };
 
+    auto* tree = player.skillTree();
+    auto* prog = player.progression();
 
-    // Прямые кнопки
+    const Item items[] = {
+        { T(StrKey::Menu_Inventory),  Screen::Inventory,  -1 },
+        { T(StrKey::Menu_Attributes), Screen::Attributes,
+          prog ? prog->availableAttrPoints : -1 },
+        { T(StrKey::Menu_Skills),     Screen::SkillTree,
+          tree ? tree->unspentPoints : -1 },
+        { T(StrKey::Menu_Quests),     Screen::QuestLog,   -1 },
+        { T(StrKey::Menu_Reputation), Screen::Reputation, -1 },
+        { T(StrKey::Menu_SaveLoad),   Screen::SaveLoad,   -1 },
+        { T(StrKey::Menu_Settings),   Screen::Settings,   -1 },
+    };
+    constexpr u32 ITEM_COUNT = (u32)(sizeof(items) / sizeof(items[0]));
+    constexpr u32 COLS = 3;
+    // Первый ряд занят «Продолжить», последний — выходом.
+    constexpr u32 ROWS = 2 + (ITEM_COUNT + COLS - 1) / COLS;
+
+    auto cell = [&](u32 c, u32 r) { return layout_.menuCell(c, r, COLS, ROWS); };
+
+    // ---- Продолжить: во всю ширину, главное действие ----
     {
-        Rect r{ cx, cy, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { screen = Screen::Hud; });
-        if (ui_.button(T(StrKey::Menu_Resume), r, idx,
-                       rgba(80,120,80,255), COL_WHITE)) {
+        const Rect a = cell(0, 0), c2 = cell(COLS - 1, 0);
+        const Rect r{ a.x, a.y, (c2.x + c2.w) - a.x, a.h };
+        const int idx = ui_.pushInteractiveRect(r, [this]() {
             screen = Screen::Hud;
-        }
-    }
-    {
-        Rect r{ cx, cy + 70.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { screen = Screen::Settings; });
-        if (ui_.button(T(StrKey::Menu_Settings), r, idx,
-                       rgba(80,80,140,255), COL_WHITE)) {
-            screen = Screen::Settings;
-        }
-    }
-    {
-        Rect r{ cx, cy + 140.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { screen = Screen::SkillTree; });
-        auto* tree = player.skillTree();
-        i32 pts = tree ? tree->unspentPoints : 0;
-        char label[64];
-        if (pts > 0) std::snprintf(label, sizeof(label), "%s (%d)",
-                                   T(StrKey::Menu_Skills), pts);
-        else std::snprintf(label, sizeof(label), "%s", T(StrKey::Menu_Skills));
-        if (ui_.button(label, r, idx, rgba(120,80,180,255), COL_WHITE)) {
-            screen = Screen::SkillTree;
-        }
-    }
-    {
-        Rect r{ cx, cy + 210.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { screen = Screen::Attributes; });
-        auto* prog = player.progression();
-        i32 pts = prog ? prog->availableAttrPoints : 0;
-        char label[64];
-        if (pts > 0) std::snprintf(label, sizeof(label), "%s (%d)",
-                                   T(StrKey::Menu_Attributes), pts);
-        else std::snprintf(label, sizeof(label), "%s", T(StrKey::Menu_Attributes));
-        if (ui_.button(label, r, idx, rgba(180,120,60,255), COL_WHITE)) {
-            screen = Screen::Attributes;
-        }
-    }
-    {
-        Rect r{ cx, cy + 280.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { screen = Screen::QuestLog; });
-        if (ui_.button(T(StrKey::Menu_Quests), r, idx,
-                       rgba(200,180,60,255), COL_WHITE)) {
-            screen = Screen::QuestLog;
-        }
-    }
-    {
-        Rect r{ cx, cy + 350.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { screen = Screen::Reputation; });
-        if (ui_.button(T(StrKey::Menu_Reputation), r, idx,
-                       rgba(60,140,180,255), COL_WHITE)) {
-            screen = Screen::Reputation;
-        }
-    }
-    {
-        Rect r{ cx, cy + 420.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() {
-            saveLoadMode = SaveLoadMode::Save;
-            screen = Screen::SaveLoad;
+            returnTo = Screen::Hud;
         });
-        if (ui_.button(T(StrKey::Menu_SaveLoad), r, idx,
-                       rgba(120,120,60,255), COL_WHITE)) {
-            saveLoadMode = SaveLoadMode::Save;
-            screen = Screen::SaveLoad;
-        }
+        const bool pressed = ui_.isInteractivePressed(idx);
+        ui_.rect(r.x, r.y, r.w, r.h, pressed ? theme::Accent : theme::PanelRaised);
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(theme::STROKE_SELECTED_DP),
+                        pressed ? theme::AccentPressed : theme::Accent);
+        const char* lbl = T(StrKey::Menu_Resume);
+        const f32 tw = ui_.textWidth(lbl, theme::TEXT_BODY);
+        ui_.text(lbl, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, pressed ? theme::Ink : theme::TextPrimary);
     }
-    {
-        Rect r{ cx, cy + 490.f, cw, ch };
-        int idx = ui_.pushInteractiveRect(r, [this]() { if (onQuit) onQuit(); });
-        if (ui_.button(T(StrKey::Menu_Quit), r, idx,
-                       rgba(120,60,60,255), COL_WHITE)) {
-            if (onQuit) onQuit();
+
+    // ---- Разделы: одинаковые кнопки, один вид на всю игру ----
+    for (u32 i = 0; i < ITEM_COUNT; ++i) {
+        const Rect r = cell(i % COLS, 1 + i / COLS);
+        const Screen target = items[i].target;
+        const int idx = ui_.pushInteractiveRect(r, [this, target]() {
+            openScreen(target);
+            if (target == Screen::Inventory) drag.clear();
+        });
+        const bool pressed = ui_.isInteractivePressed(idx);
+
+        ui_.rect(r.x, r.y, r.w, r.h, pressed ? theme::Accent : theme::PanelRaised);
+        ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
+                        pressed ? theme::AccentPressed : theme::Stroke);
+
+        const f32 tw = ui_.textWidth(items[i].label, theme::TEXT_BODY);
+        ui_.text(items[i].label, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, pressed ? theme::Ink : theme::TextPrimary);
+
+        // Нераспределённые очки — то, ради чего сюда заходят.
+        if (items[i].badge > 0) {
+            char b[16];
+            std::snprintf(b, sizeof(b), "+%d", items[i].badge);
+            const f32 bw = ui_.textWidth(b, theme::TEXT_CAPTION);
+            ui_.text(b, r.x + r.w - bw - layout_.dp(theme::SPACE_S_DP),
+                     r.y + layout_.dp(theme::SPACE_S_DP),
+                     theme::TEXT_CAPTION, pressed ? theme::Ink : theme::Accent);
         }
     }
 
+    // ---- Выход: необратимо, поэтому в опасном виде и с вопросом ----
+    {
+        const Rect r = cell(COLS - 1, ROWS - 1);
+        const int idx = ui_.pushInteractiveRect(r, [this]() {
+            askConfirm(T(StrKey::Menu_Quit), T(StrKey::Menu_Quit),
+                       [this]() { if (onQuit) onQuit(); });
+        });
+        const bool pressed = ui_.isInteractivePressed(idx);
+        // Опасное показано рамкой, а не заливкой: цвет тут не
+        // единственный признак.
+        ui_.rect(r.x, r.y, r.w, r.h,
+                 pressed ? theme::Danger : theme::Panel);
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(theme::STROKE_SELECTED_DP), theme::Danger);
+        const char* lbl = T(StrKey::Menu_Quit);
+        const f32 tw = ui_.textWidth(lbl, theme::TEXT_BODY);
+        ui_.text(lbl, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, pressed ? theme::TextPrimary : theme::Danger);
+    }
 }
 
 // ============================================================
@@ -1405,7 +1480,33 @@ void UiSystem::drawDialogueScreen(player::Player& player) {
     for (usize i = 0; i < node->choices.size(); ++i) {
         const auto& c = node->choices[i];
         Rect cr{ panelX + 24.f, cy, panelW - 48.f, rowH };
-        int idx = ui_.pushInteractiveRect(cr, [](){});
+
+        // Здесь была пустая лямбда.
+        //
+        // Нажатие на вариант ответа не делало НИЧЕГО: диалог
+        // открывался, показывал текст и варианты, и выйти из него
+        // можно было только аппаратной кнопкой «Назад». Функция,
+        // применяющая выбор, существовала и была покрыта тестами —
+        // но вызывали её только сами тесты, шесть раз, и ни разу
+        // игра. Вместе с диалогом это обрывало торговлю и ремесло:
+        // они открываются его действием.
+        int idx = ui_.pushInteractiveRect(cr, [this, &player, i]() {
+            auto* d = player.activeDialogue();
+            auto* reg = player.registryHandle();
+            if (!d || !d->active || !reg) return;
+            npc::DialogueNode* n = d->findNode(d->currentNodeId);
+            if (!n || i >= n->choices.size()) return;
+
+            // Копия: applyChoice может сменить узел, а ссылка на
+            // выбор живёт внутри прежнего.
+            const npc::DialogueChoice chosen = n->choices[i];
+            if (!npc::applyChoice(*reg, *d, chosen)) {
+                // Диалог кончился сам — закрываем так же, как это
+                // делает «Назад», чтобы NPC вышел из состояния Talk.
+                if (onCloseDialogue) onCloseDialogue();
+                screen = Screen::Hud;
+            }
+        });
         bool pressed = ui_.isInteractivePressed(idx);
         UiColor fill = pressed ? rgba(120, 100, 60, 255) : rgba(40, 35, 50, 235);
         ui_.rect(cr.x, cr.y, cr.w, cr.h, fill);
@@ -2145,6 +2246,69 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
 // ============================================================
 // Toast
 // ============================================================
+// ============================================================
+// Модальное подтверждение
+// ============================================================
+//
+// Выход из игры срабатывал сразу: несохранённый прогресс терялся без
+// вопроса. То же относится к удалению и перезаписи сохранения.
+//
+// Модальность здесь не украшение. Попадание ищется среди
+// прямоугольников с конца, то есть выигрывает нарисованный позже; но
+// касание МИМО окна нашло бы кнопку под ним. Поэтому первым кладём
+// прямоугольник во весь экран — он глушит всё, что снаружи.
+void UiSystem::drawConfirm() {
+    if (!confirm.active) return;
+
+    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
+             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
+    ui_.pushInteractiveRect({ 0.f, 0.f, (f32)screenW_, (f32)screenH_ },
+                            [](){});   // глушитель, намеренно пустой
+
+    const Rect p = layout_.confirmPanel();
+    ui_.rect(p.x, p.y, p.w, p.h, theme::Panel);
+    ui_.rectOutline(p.x, p.y, p.w, p.h,
+                    layout_.dp(theme::STROKE_SELECTED_DP), theme::Danger);
+
+    if (confirm.question) {
+        const f32 tw = ui_.textWidth(confirm.question, theme::TEXT_TITLE);
+        ui_.text(confirm.question, p.x + (p.w - tw) * 0.5f,
+                 p.y + layout_.dp(theme::PANEL_PAD_DP),
+                 theme::TEXT_TITLE, theme::TextPrimary);
+    }
+
+    struct Btn { const char* label; bool danger; };
+    const Btn btns[2] = {
+        { T(StrKey::Cancel), false },
+        { confirm.yesLabel ? confirm.yesLabel : T(StrKey::Ok), true },
+    };
+
+    for (u32 i = 0; i < 2; ++i) {
+        const Rect r = layout_.confirmButton(i);
+        const bool isYes = (i == 1);
+        const int idx = ui_.pushInteractiveRect(r, [this, isYes]() {
+            auto act = confirm.onYes;
+            confirm = Confirm{};
+            if (isYes && act) act();
+        });
+        const bool pressed = ui_.isInteractivePressed(idx);
+
+        const UiColor accent = btns[i].danger ? theme::Danger : theme::Stroke;
+        ui_.rect(r.x, r.y, r.w, r.h,
+                 pressed ? accent : theme::PanelRaised);
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(btns[i].danger ? theme::STROKE_SELECTED_DP
+                                                  : theme::STROKE_DP),
+                        accent);
+        const f32 tw = ui_.textWidth(btns[i].label, theme::TEXT_BODY);
+        ui_.text(btns[i].label, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY,
+                 pressed ? theme::TextPrimary
+                         : (btns[i].danger ? theme::Danger : theme::TextPrimary));
+    }
+}
+
 void UiSystem::drawStatusToast() {
     if (statusTimer <= 0.f || statusMessage.empty()) return;
 
