@@ -3,6 +3,7 @@
  * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
  */
 #include "ui_context.h"
+#include "font_data.h"
 #include "../core/log.h"
 #include <cmath>
 #include <cstring>
@@ -86,17 +87,21 @@ void UiContext::text(const std::string& s, float x, float y, float scale, UiColo
     float cx = x;
     const float cw = 6.f * scale;
 
-    for (char ch : s) {
-        if (ch == '\n') {
+    // Строка читается ПО СИМВОЛАМ, а не по байтам.
+    //
+    // Кириллица в UTF-8 двухбайтовая, и побайтное чтение давало на
+    // каждую букву два пробела: русский язык стирал интерфейс, а
+    // ширина строки выходила вдвое больше настоящей.
+    for (usize i = 0; i < s.size(); ) {
+        const u32 cp = utf8Next(s.data(), s.size(), i);
+        if (cp == (u32)'\n') {
             y += 9.f * scale;
             cx = x;
             continue;
         }
-        int cc = (unsigned char)ch;
-        if (cc >= 'a' && cc <= 'z') cc = cc - 'a' + 'A';
-        if (cc < 32 || cc > 95) cc = ' ';
+        int idx = glyphIndex(cp);
+        if (idx < 0) idx = (int)' ' - FONT_FIRST;   // нечем рисовать
 
-        int idx = cc - 32;
         int col = idx % 16, row = idx / 16;
         float u0 = (float)(col * 6)      / 128.f;
         float v0 = (float)(row * 8)      /  64.f;
@@ -154,7 +159,11 @@ void UiContext::ring(float cx, float cy, float rInner, float rOuter,
 }
 
 float UiContext::textWidth(const std::string& s, float scale) const {
-    return s.size() * 6.f * scale;
+    // Считаем СИМВОЛЫ, а не байты: «ПРОДОЛЖИТЬ» это десять знаков и
+    // двадцать байт, и по байтам центрирование уезжало вдвое.
+    usize n = 0;
+    for (usize i = 0; i < s.size(); ) { utf8Next(s.data(), s.size(), i); ++n; }
+    return (float)n * 6.f * scale;
 }
 
 int UiContext::pushInteractiveRect(Rect r, std::function<void()> onTap) {

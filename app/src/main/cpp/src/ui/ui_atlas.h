@@ -18,8 +18,9 @@ struct UiAtlasData {
     // UV белого пикселя (центр текселя)
     float whiteU = 0.f;
     float whiteV = 0.f;
-    /// UV клетки символа c (ASCII): возвращает [u0,v0,u1,v1]
-    void glyphUv(int ascii, float out[4]) const;
+    /// UV клетки символа по коду Юникода: [u0,v0,u1,v1].
+    /// Латиница и кириллица лежат в одном атласе.
+    void glyphUv(int codepoint, float out[4]) const;
 };
 
 /// Собирает атлас интерфейса: шрифт 5x7, рамки, иконки.

@@ -60,7 +60,10 @@
 #include <cstring>
 #include <set>
 #include "ui/hud_layout.h"
+#include "config/localization.h"
 #include "ui/ui_theme.h"
+#include "ui/ui_atlas.h"
+#include "ui/font_data.h"
 #include "ui/ui_system.h"
 #include "input/touch_layout.h"
 #include <string>
@@ -5151,6 +5154,120 @@ void testInventoryTapDoesOneThing() {
 }
 
 // ------------------------------------------------------------
+// Русский язык виден.
+//
+// Таблица русских строк была заполнена целиком, переключатель в
+// настройках работал и сохранялся в конфиг — а шрифт знал только
+// ASCII 32..95, и всякий байт кириллицы (они все больше 95)
+// превращался в пробел. Переключение на русский СТИРАЛО интерфейс.
+// Вдобавок ширина считалась по байтам: «ПРОДОЛЖИТЬ» мерилось как
+// двадцать знаков вместо десяти, и центрирование уезжало вдвое.
+// ------------------------------------------------------------
+void testRussianTextIsActuallyDrawn() {
+    group("шрифт: русский язык виден");
+
+    // ---- 1. Атлас вмещает оба набора ----
+    ui::UiAtlasData atlas;
+    const int cells = (int)((atlas.width / atlas.cellW) * (atlas.height / atlas.cellH));
+    check(ui::GLYPH_COUNT <= cells, "все глифы помещаются в атлас");
+    check(ui::GLYPH_COUNT == ui::FONT_COUNT + ui::CYR_COUNT,
+          "в атласе латиница и кириллица вместе");
+    // Индексация идёт по 16 в ряд — последний ряд не должен вылезти.
+    check((ui::GLYPH_COUNT + 15) / 16 <= (int)(atlas.height / atlas.cellH),
+          "рядов глифов не больше, чем рядов клеток");
+
+    // ---- 2. Разбор UTF-8 ----
+    {
+        const std::string s = "ДА";        // 4 байта, 2 символа
+        usize i = 0;
+        const u32 a = ui::utf8Next(s.data(), s.size(), i);
+        const u32 b = ui::utf8Next(s.data(), s.size(), i);
+        check(a == 0x414, "Д разобрана как один символ");
+        check(b == 0x410, "А тоже");
+        check(i == s.size(), "и строка прочитана целиком");
+    }
+
+    // ---- 3. Соответствие букв клеткам ----
+    check(ui::glyphIndex(0x410) == ui::FONT_COUNT, "А — первая кириллическая");
+    check(ui::glyphIndex(0x42F) == ui::FONT_COUNT + 31, "Я — тридцать вторая");
+    check(ui::glyphIndex(0x401) == ui::FONT_COUNT + 32, "Ё вынесена в конец");
+    check(ui::glyphIndex(0x2014) >= 0, "длинное тире рисуется");
+    // Строчные приводятся к заглавным: шрифт заглавный целиком.
+    check(ui::glyphIndex(0x430) == ui::glyphIndex(0x410), "а и А — одна клетка");
+    check(ui::glyphIndex(0x44F) == ui::glyphIndex(0x42F), "я и Я — одна клетка");
+    check(ui::glyphIndex(0x451) == ui::glyphIndex(0x401), "ё и Ё — одна клетка");
+    check(ui::glyphIndex('a') == ui::glyphIndex('A'), "латиница по-прежнему заглавная");
+
+    // ---- 4. Ни одна буква не пустая ----
+    //
+    // Пустой глиф выглядит как пробел — ровно как выглядела вся
+    // кириллица до этого. Молчаливая дыра в алфавите недопустима.
+    int blanks = 0;
+    for (int g = 0; g < ui::CYR_COUNT; ++g) {
+        u8 any = 0;
+        for (int r = 0; r < ui::FONT_H; ++r) any |= ui::FONT_CYR[g][r];
+        if (any) continue;
+        ++blanks;
+        char msg[96];
+        std::snprintf(msg, sizeof(msg), "кириллическая буква %d пустая", g);
+        check(false, msg);
+    }
+    check(blanks == 0, "каждый знак кириллического набора что-то рисует");
+
+    // Буквы должны и различаться: одинаковые говорят об опечатке.
+    int dupes = 0;
+    for (int a = 0; a < ui::CYR_COUNT; ++a)
+        for (int b = a + 1; b < ui::CYR_COUNT; ++b) {
+            bool same = true;
+            for (int r = 0; r < ui::FONT_H; ++r)
+                if (ui::FONT_CYR[a][r] != ui::FONT_CYR[b][r]) { same = false; break; }
+            if (!same) continue;
+            ++dupes;
+            char msg[96];
+            std::snprintf(msg, sizeof(msg), "буквы %d и %d нарисованы одинаково", a, b);
+            check(false, msg);
+        }
+    check(dupes == 0, "разные буквы выглядят по-разному");
+
+    // ---- 5. Ширина считается в символах ----
+    {
+        ui::UiContext ctx;
+        ctx.init(nullptr, 1000, 500);
+        const f32 lat = ctx.textWidth("ABCDEFGHIJ", 1.f);   // 10 знаков
+        const f32 cyr = ctx.textWidth("ПРОДОЛЖИТЬ", 1.f);   // 10 знаков, 20 байт
+        check(std::fabs(lat - cyr) < 0.01f,
+              "десять русских букв шире не чем десять латинских");
+    }
+
+    // ---- 6. ВСЯ русская таблица рисуется ----
+    //
+    // Главная проверка: не «кириллица вообще работает», а что каждый
+    // символ каждой строки, которую игра покажет, имеет свою клетку.
+    config::L().setLanguage(config::Language::Russian);
+    int missing = 0;
+    for (u16 k = 0; k < config::STR_KEY_COUNT; ++k) {
+        const char* str = config::L().get((config::StrKey)k);
+        if (!str) continue;
+        const std::string v = str;
+        for (usize i = 0; i < v.size(); ) {
+            const usize at = i;
+            const u32 cp = ui::utf8Next(v.data(), v.size(), i);
+            if (cp == (u32)'\n' || ui::glyphIndex(cp) >= 0) continue;
+            ++missing;
+            if (missing <= 5) {
+                char msg[192];
+                std::snprintf(msg, sizeof(msg),
+                              "строка %u: символ U+%04X (байт %u) рисовать нечем",
+                              (unsigned)k, (unsigned)cp, (unsigned)at);
+                check(false, msg);
+            }
+        }
+    }
+    check(missing == 0, "каждый символ русской таблицы имеет глиф");
+    config::L().setLanguage(config::Language::English);
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -6744,6 +6861,7 @@ int main() {
     testConfirmSwallowsTouchesOutsideIt();
     testInventoryShowsEverySlot();
     testInventoryTapDoesOneThing();
+    testRussianTextIsActuallyDrawn();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

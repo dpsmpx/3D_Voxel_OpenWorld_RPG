@@ -7,11 +7,9 @@
 
 namespace ui {
 
-void UiAtlasData::glyphUv(int ascii, float out[4]) const {
-    int c = ascii;
-    if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
-    if (c < FONT_FIRST || c > FONT_LAST) c = ' ';
-    int idx = c - FONT_FIRST;
+void UiAtlasData::glyphUv(int codepoint, float out[4]) const {
+    int idx = glyphIndex((u32)codepoint);
+    if (idx < 0) idx = (int)' ' - FONT_FIRST;
     int col = idx % 16;
     int row = idx / 16;
 
@@ -27,15 +25,17 @@ UiAtlasData buildUiAtlas() {
     UiAtlasData a;
     a.pixels.assign(a.width * a.height * 4, 0);
 
-    // 64 символа в сетке 16×4
-    for (int ci = 0; ci < FONT_COUNT; ++ci) {
+    // 64 латинских плюс 33 кириллических — 97 клеток в сетке по 16.
+    // Атлас 128x64 даёт 128 клеток, так что расширять его не пришлось.
+    for (int ci = 0; ci < GLYPH_COUNT; ++ci) {
         int col = ci % 16;
         int row = ci / 16;
         u32 baseX = col * a.cellW;
         u32 baseY = row * a.cellH;
 
         for (int r = 0; r < FONT_H; ++r) {
-            u8 line = FONT[ci][r];
+            u8 line = (ci < FONT_COUNT) ? FONT[ci][r]
+                                        : FONT_CYR[ci - FONT_COUNT][r];
             for (int x = 0; x < FONT_W; ++x) {
                 bool on = (line >> (4 - x)) & 1;
                 u32 px = baseX + x;
