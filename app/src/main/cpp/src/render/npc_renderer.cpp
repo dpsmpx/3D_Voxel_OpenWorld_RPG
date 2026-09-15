@@ -110,7 +110,10 @@ void NpcRenderer::rebuild(ecs::Registry& reg, f32 timeSec, bool showPlayer) {
         // опоры (наполовину под землёй), а голова висела на 1.45 — с
         // просветом там, где полагалась грудь. Теперь геометрию даёт
         // оснастка, позу — общая локомоция, сборку — entity::resolve.
-        const entity::Rig& rig = npc::rigFor(tag->id);
+        // Облик особи, а не вида: шесть селян в деревне обязаны
+        // отличаться друг от друга не только координатами.
+        const auto* look = reg.get<ecs::Appearance>(e);
+        const entity::Rig& rig = npc::rigFor(tag->id, look ? look->seed : 0u);
 
         anim::AnimState st;
         // Фаза шага — состояние сущности, посчитанное ПУТЁМ, а не

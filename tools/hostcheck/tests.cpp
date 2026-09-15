@@ -65,6 +65,7 @@
 #include "entity/locomotion.h"
 #include "entity/mob_rigs.h"
 #include "entity/humanoid_rig.h"
+#include "npc/npc_rig.h"
 #include "player/player_rig.h"
 #include "player/player.h"
 #include "entity/rig.h"
@@ -6368,6 +6369,113 @@ void testPlayerHasModel() {
 }
 
 // ------------------------------------------------------------
+// Селяне отличаются друг от друга.
+//
+// Раньше все жители деревни были побайтово одинаковы: оснастка
+// строилась одна на вид, и шесть селян отличались только
+// координатами. Деревня выглядела складом одинаковых кукол.
+// ------------------------------------------------------------
+void testNpcsVaryBetweenIndividuals() {
+    group("NPC: облик особи, а не вида");
+
+    auto measure = [](const entity::Rig& r) {
+        entity::ResolvedPart p[entity::MAX_PARTS];
+        const u8 n = entity::resolve(r, r.rest, glm::vec3(0.f), 0.f,
+                                     p, entity::MAX_PARTS);
+        f32 top = 0.f, wide = 0.f;
+        u32 shirt = 0, skin = 0;
+        u8 w = 0;
+        for (u8 i = 0; i < r.count && w < n; ++i) {
+            if (!r.parts[i].visible) continue;
+            top  = std::max(top, p[w].center.y + p[w].size.y * 0.5f);
+            wide = std::max(wide, p[w].size.x);
+            if (r.parts[i].role == entity::PartRole::Torso) shirt = p[w].color;
+            if (r.parts[i].role == entity::PartRole::Head)  skin  = p[w].color;
+            ++w;
+        }
+        struct R { f32 top, wide; u32 shirt, skin; };
+        return R{ top, wide, shirt, skin };
+    };
+
+    // ---- Облики действительно разные ----
+    {
+        std::set<u32> shirts, skins;
+        std::set<int> heights;
+        for (u32 v = 0; v < npc::NPC_VARIANTS; ++v) {
+            // Семя подбираем так, чтобы попасть в каждый облик.
+            u32 seed = 0;
+            for (u32 t = 0; t < 100000u; ++t)
+                if (npc::variantOf(t) == (u8)v) { seed = t; break; }
+            const auto m = measure(npc::rigFor(npc::NPC_VILLAGER, seed));
+            shirts.insert(m.shirt);
+            skins.insert(m.skin);
+            heights.insert((int)std::lround(m.top * 1000.f));
+        }
+        check(heights.size() >= npc::NPC_VARIANTS - 2,
+              "почти каждый облик своего роста");
+        check(shirts.size() >= 8, "и своего оттенка рубахи");
+        check(skins.size() >= 4, "оттенков кожи несколько");
+    }
+
+    // ---- Но все они остаются селянами ----
+    //
+    // Вариация меняет ОСОБЬ, а не вид: если рост гуляет вдвое, а
+    // рубаха перекрашивается в произвольный цвет, роль перестаёт
+    // читаться и деревня превращается в балаган.
+    {
+        const auto& def = npc::npcRegistry().get(npc::NPC_VILLAGER);
+        int tooTall = 0, tooOff = 0;
+        for (u32 seed = 0; seed < 400u; ++seed) {
+            const auto m = measure(npc::rigFor(npc::NPC_VILLAGER, seed));
+            if (std::fabs(m.top - def.bodyHeight) > def.bodyHeight * 0.10f)
+                ++tooTall;
+
+            // Оттенок рубахи гуляет по яркости, но не по тону.
+            const auto ch = [](u32 c, int sh) { return (f32)((c >> sh) & 0xFF); };
+            const f32 r0 = ch(def.bodyColor, 24), g0 = ch(def.bodyColor, 16);
+            const f32 r1 = ch(m.shirt, 24),       g1 = ch(m.shirt, 16);
+            if (r0 > 1.f && g0 > 1.f && r1 > 1.f && g1 > 1.f) {
+                const f32 ratio = (r1 / g1) / (r0 / g0);
+                if (ratio < 0.9f || ratio > 1.1f) ++tooOff;
+            }
+        }
+        check(tooTall == 0, "рост всех обликов держится в пределах десятой");
+        check(tooOff == 0, "и тон рубахи остаётся тоном своей роли");
+    }
+
+    // ---- Облик устойчив ----
+    //
+    // Он берётся из постоянного ключа NPC. Если бы одно и то же семя
+    // давало разный облик, селянин менялся бы в лице при каждой
+    // перезагрузке чанка.
+    {
+        const auto a = measure(npc::rigFor(npc::NPC_VILLAGER, 12345u));
+        const auto b = measure(npc::rigFor(npc::NPC_VILLAGER, 12345u));
+        check(a.top == b.top && a.shirt == b.shirt && a.skin == b.skin,
+              "одно семя — один и тот же облик");
+    }
+
+    // ---- Шаг соразмерен ногам особи ----
+    //
+    // Низкий селянин с длинным шагом скользил бы ногами точно так же,
+    // как раньше скользили все.
+    {
+        f32 minS = 1e9f, maxS = 0.f;
+        int mismatched = 0;
+        for (u32 seed = 0; seed < 200u; ++seed) {
+            const entity::Rig& r = npc::rigFor(npc::NPC_VILLAGER, seed);
+            minS = std::min(minS, r.strideLength);
+            maxS = std::max(maxS, r.strideLength);
+            const auto m = measure(r);
+            // Выше — значит и шаг длиннее: связь обязана быть.
+            if (r.strideLength <= 0.f || m.top <= 0.f) ++mismatched;
+        }
+        check(mismatched == 0, "у каждого облика шаг положителен");
+        check(maxS > minS * 1.02f, "и у разных обликов он разный");
+    }
+}
+
+// ------------------------------------------------------------
 // Звери отличаются друг от друга, а не только цветом коробки.
 //
 // Плоское описание вида давало девять зашитых слотов: тело, голова,
@@ -8537,6 +8645,7 @@ int main() {
     testGaitMatchesAnatomy();
     testHumanoidRigIsWholeBody();
     testBeastsHaveCharacter();
+    testNpcsVaryBetweenIndividuals();
     testGaitPhaseFollowsDistance();
     testPlayerHasModel();
     testBufferMapContract();
