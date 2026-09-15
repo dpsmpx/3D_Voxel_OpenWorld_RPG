@@ -6,6 +6,7 @@
 #include "../core/types.h"
 #include "../vk/vk_context.h"
 #include "../config/localization.h"
+#include "ui_types.h"
 #include "ui_renderer.h"
 #include <functional>
 #include <vector>
@@ -13,12 +14,6 @@
 #include <utility>
 
 namespace ui {
-
-using UiColor = u32;   // RGBA8 packed (R в старшем байте)
-
-constexpr UiColor rgba(u8 r, u8 g, u8 b, u8 a) {
-    return ((u32)r << 24) | ((u32)g << 16) | ((u32)b << 8) | (u32)a;
-}
 
 constexpr UiColor COL_WHITE  = rgba(255,255,255,255);
 constexpr UiColor COL_BLACK  = rgba(  0,  0,  0,255);
@@ -28,13 +23,6 @@ constexpr UiColor COL_BLUE   = rgba( 60,120,220,255);
 constexpr UiColor COL_PURPLE = rgba(160, 80,220,255);
 constexpr UiColor COL_YELLOW = rgba(240,220, 60,255);
 constexpr UiColor COL_GRAY   = rgba(140,140,140,255);
-
-struct Rect {
-    float x, y, w, h;
-    bool contains(float px, float py) const {
-        return px >= x && px < x + w && py >= y && py < y + h;
-    }
-};
 
 class UiContext {
 public:

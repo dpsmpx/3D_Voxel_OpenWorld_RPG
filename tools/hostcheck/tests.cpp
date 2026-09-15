@@ -60,6 +60,7 @@
 #include <cstring>
 #include <set>
 #include "ui/hud_layout.h"
+#include "ui/ui_theme.h"
 #include "input/touch_layout.h"
 #include <string>
 #include <vector>
@@ -4386,6 +4387,290 @@ void testHudAndButtonsDoNotOverlap() {
 }
 
 // ------------------------------------------------------------
+// Дизайн-система: её собственные правила выполняются.
+//
+// ui_theme.h — исполняемая половина docs/UI_DESIGN_SYSTEM.md. Если
+// правила в ней можно нарушить незаметно, это не система, а ещё один
+// набор чисел. Здесь проверяется каждое утверждение документа,
+// которое вообще можно проверить арифметикой.
+// ------------------------------------------------------------
+namespace {
+
+/// Относительная яркость по WCAG из упакованного RGBA8.
+f64 wcagLuminance(ui::UiColor c) {
+    auto ch = [](u32 v) {
+        const f64 s = (f64)v / 255.0;
+        return s <= 0.03928 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4);
+    };
+    const f64 r = ch((c >> 24) & 0xFF);
+    const f64 g = ch((c >> 16) & 0xFF);
+    const f64 b = ch((c >>  8) & 0xFF);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+f64 wcagContrast(ui::UiColor a, ui::UiColor b) {
+    f64 la = wcagLuminance(a), lb = wcagLuminance(b);
+    if (la < lb) std::swap(la, lb);
+    return (la + 0.05) / (lb + 0.05);
+}
+
+} // namespace
+
+void testUiThemeObeysItsOwnRules() {
+    group("тема: дизайн-система выполняет собственные правила");
+    namespace th = ui::theme;
+
+    // ---- 1. dp считается от плотности, а не от числа пикселей ----
+    //
+    // Это и есть главная правка системы: прежний hudScale = screenH/1080
+    // давал на двух телефонах одного размера цели, различающиеся в
+    // полтора раза.
+    {
+        const auto m = th::Metrics::fromDensityDpi(320);
+        check(std::fabs(m.pxPerDp - 2.0f) < 1e-5f,
+              "xhdpi (320) даёт 2 пикселя на dp");
+        const auto hi = th::Metrics::fromDensityDpi(480);
+        check(std::fabs(hi.pxPerDp - 3.0f) < 1e-5f,
+              "xxhdpi (480) даёт 3 пикселя на dp");
+
+        // Одна и та же цель в dp — один и тот же физический размер.
+        const f32 a = th::Metrics::fromDensityDpi(320).dp(th::TOUCH_MIN_DP);
+        const f32 b = th::Metrics::fromDensityDpi(480).dp(th::TOUCH_MIN_DP);
+        check(std::fabs(a / 320.f - b / 480.f) < 1e-6f,
+              "48 dp — один физический размер на любой плотности");
+    }
+
+    // Служебные значения AConfiguration_getDensity означают «не знаю».
+    check(std::fabs(th::Metrics::fromDensityDpi(0).pxPerDp
+                    - th::DENSITY_FALLBACK) < 1e-5f,
+          "нулевая плотность заменяется запасной");
+    check(std::fabs(th::Metrics::fromDensityDpi(0xFFFE).pxPerDp
+                    - th::DENSITY_FALLBACK) < 1e-5f,
+          "ACONFIGURATION_DENSITY_ANY заменяется запасной");
+
+    // Настройка игрока — единственный общий множитель, и он ограничен.
+    check(std::fabs(th::Metrics::fromDensityDpi(320, 5.f).userScale
+                    - th::USER_SCALE_MAX) < 1e-5f,
+          "масштаб игрока сверху ограничен");
+    check(std::fabs(th::Metrics::fromDensityDpi(320, 0.1f).userScale
+                    - th::USER_SCALE_MIN) < 1e-5f,
+          "и снизу тоже");
+
+    // ---- 2. Размеры касания ----
+    //
+    // 48 dp — не рекомендация, а граница: ниже палец промахивается.
+    check(th::TOUCH_MIN_DP >= 48.f, "минимальная цель касания не ниже 48 dp");
+    check(th::TOUCH_REGULAR_DP >= th::TOUCH_MIN_DP,
+          "обычная цель не меньше минимальной");
+    check(th::TOUCH_PRIMARY_DP >= th::TOUCH_REGULAR_DP,
+          "главное действие не меньше обычного");
+    check(th::PAD_BUTTON_MIN_DP >= th::TOUCH_MIN_DP,
+          "круглая кнопка боя тоже не меньше минимума");
+    check(th::PAD_BUTTON_MAX_DP > th::PAD_BUTTON_MIN_DP,
+          "у круглой кнопки есть и верхняя граница");
+    check(th::TOUCH_GAP_DP >= 8.f, "зазор между целями не меньше 8 dp");
+
+    // ---- 3. Контраст ----
+    //
+    // Пороги документа: основной текст >= 4.5, вторичный и
+    // недоступный >= 3.0. Недоступное всё равно надо прочитать —
+    // первый вариант TextDisabled (#626C7C) давал 2.5 и был отвергнут.
+    {
+        const ui::UiColor beds[] = { th::Panel, th::PanelRaised, th::Ink };
+        const char* bedNames[] = { "панели", "приподнятой панели", "затемнении" };
+        int low = 0;
+        for (int i = 0; i < 3; ++i) {
+            if (wcagContrast(th::TextPrimary, beds[i]) < 4.5) ++low;
+            if (wcagContrast(th::TextSecondary, beds[i]) < 3.0) ++low;
+            if (wcagContrast(th::TextDisabled, beds[i]) < 3.0) {
+                ++low;
+                char msg[128];
+                std::snprintf(msg, sizeof(msg),
+                              "недоступный текст на %s: %.2f", bedNames[i],
+                              wcagContrast(th::TextDisabled, beds[i]));
+                check(false, msg);
+            }
+        }
+        check(low == 0, "весь текст проходит порог контраста на всех фонах");
+
+        // Иерархия обязана читаться: вторичный заметно тусклее
+        // основного, недоступный — вторичного.
+        check(wcagContrast(th::TextPrimary, th::Panel)
+                  > wcagContrast(th::TextSecondary, th::Panel),
+              "вторичный текст тусклее основного");
+        check(wcagContrast(th::TextSecondary, th::Panel)
+                  > wcagContrast(th::TextDisabled, th::Panel),
+              "недоступный тусклее вторичного");
+
+        check(wcagContrast(th::Accent, th::Panel) >= 3.0,
+              "акцент различим на панели");
+    }
+
+    // Полоса ресурса должна отличаться от собственного ложа, иначе
+    // пустая часть читается как заполненная.
+    {
+        const ui::UiColor fill[] = { th::Hp, th::Mp, th::Sp, th::Xp };
+        const ui::UiColor bed[]  = { th::HpBed, th::MpBed, th::SpBed, th::XpBed };
+        const char* nm[] = { "здоровья", "маны", "выносливости", "опыта" };
+        int weak = 0;
+        for (int i = 0; i < 4; ++i) {
+            if (wcagContrast(fill[i], bed[i]) >= 3.0) continue;
+            ++weak;
+            char msg[128];
+            std::snprintf(msg, sizeof(msg), "полоса %s сливается с ложем: %.2f",
+                          nm[i], wcagContrast(fill[i], bed[i]));
+            check(false, msg);
+        }
+        check(weak == 0, "каждая полоса ресурса отличима от своего ложа");
+    }
+
+    // ---- 4. Типографика: ровно пять ступеней ----
+    //
+    // До системы их было десять. Промежуточных значений быть не должно.
+    check(th::TEXT_SCALE_COUNT == 5, "ступеней шрифта ровно пять");
+    {
+        bool ordered = true;
+        for (u32 i = 1; i < th::TEXT_SCALE_COUNT; ++i)
+            if (th::TEXT_SCALES[i] <= th::TEXT_SCALES[i - 1]) ordered = false;
+        check(ordered, "ступени строго возрастают и не повторяются");
+    }
+    check(std::fabs(th::lineHeight(th::TEXT_BODY)
+                    - th::textHeight(th::TEXT_BODY) * 1.4f) < 1e-5f,
+          "межстрочное расстояние — 1.4 от высоты ступени");
+
+    // ---- 5. Отступы на сетке 4 dp ----
+    {
+        const f32 sp[] = { th::SPACE_XS_DP, th::SPACE_S_DP, th::SPACE_M_DP,
+                           th::SPACE_L_DP, th::SPACE_XL_DP, th::SPACE_XXL_DP };
+        bool onGrid = true;
+        for (f32 v : sp)
+            if (std::fabs(v / 4.f - std::round(v / 4.f)) > 1e-5f) onGrid = false;
+        check(onGrid, "все отступы кратны четырём");
+    }
+
+    // ---- 6. Движение: ввод его не ждёт ----
+    check(th::ANIM_PRESS_S == 0.f,
+          "нажатие видно в том же кадре, без анимации");
+    {
+        const f32 an[] = { th::ANIM_PANEL_IN_S, th::ANIM_PANEL_OUT_S,
+                           th::ANIM_TOAST_IN_S, th::ANIM_TOAST_OUT_S,
+                           th::ANIM_BAR_S, th::ANIM_SELECT_S };
+        bool tooSlow = false;
+        for (f32 v : an) if (v > th::ANIM_MAX_S) tooSlow = true;
+        check(!tooSlow, "ни одна анимация не длиннее потолка в 250 мс");
+    }
+
+    // ---- 7. Уведомления: приоритет виден в длительности ----
+    check(th::notifyDuration(th::NotifyPriority::High)
+              > th::notifyDuration(th::NotifyPriority::Normal) &&
+          th::notifyDuration(th::NotifyPriority::Normal)
+              > th::notifyDuration(th::NotifyPriority::Low),
+          "важное держится на экране дольше рядового");
+    check(th::NOTIFY_MAX_VISIBLE >= 2,
+          "очередь показывает больше одного: новое не затирает старое");
+
+    // ---- 8. Выключенное состояние заметно приглушено ----
+    check(th::ALPHA_DISABLED < th::ALPHA_HUD &&
+          th::ALPHA_HUD <= th::ALPHA_PANEL,
+          "прозрачности упорядочены: выключенное < HUD <= панель");
+    check(ui::withAlpha(th::Panel, th::ALPHA_DISABLED)
+              == ((th::Panel & 0xFFFFFF00u) | th::ALPHA_DISABLED),
+          "withAlpha меняет только прозрачность");
+
+    // ---- 9. Свободный центр экрана ----
+    check(th::HUD_CLEAR_W_FRAC > 0.f && th::HUD_CLEAR_W_FRAC < 1.f &&
+          th::HUD_CLEAR_H_FRAC > 0.f && th::HUD_CLEAR_H_FRAC < 1.f,
+          "свободная область центра — доля экрана, а не весь экран");
+}
+
+// ------------------------------------------------------------
+// Документ и код не разъезжаются.
+//
+// docs/UI_DESIGN_SYSTEM.md — не пересказ, а вторая половина системы.
+// Если число поменять в заголовке и забыть в документе, следующий
+// правящий поверит документу. Поэтому числа сверяются напрямую.
+// ------------------------------------------------------------
+void testUiThemeMatchesItsDocument() {
+    group("тема: документ описывает тот же код");
+    namespace th = ui::theme;
+
+    const std::string doc = readSource("docs/UI_DESIGN_SYSTEM.md");
+    if (doc.empty()) {
+        check(true, "документ не найден, проверка пропущена");
+        return;
+    }
+    const usize NONE = std::string::npos;
+
+    auto mentions = [&](const char* what) { return doc.find(what) != NONE; };
+
+    // Единица длины и порог касания — то, ради чего система написана.
+    check(mentions("48 dp"), "документ называет порог касания 48 dp");
+    check(th::TOUCH_MIN_DP == 48.f, "и код держит ровно его");
+    check(mentions("densityDpi / 160") || mentions("densityDpi/160"),
+          "документ описывает перевод dp через плотность");
+    check(th::DENSITY_BASE_DPI == 160.f, "и код переводит через 160");
+
+    // Цвета: каждый токен должен быть в документе своей записью.
+    struct Named { const char* hex; ui::UiColor c; const char* name; };
+    const Named palette[] = {
+        { "#0E1219", th::Ink,           "Ink" },
+        { "#1B212C", th::Panel,         "Panel" },
+        { "#27303F", th::PanelRaised,   "PanelRaised" },
+        { "#3C4657", th::Stroke,        "Stroke" },
+        { "#F2F5FA", th::TextPrimary,   "TextPrimary" },
+        { "#AAB4C6", th::TextSecondary, "TextSecondary" },
+        { "#727C8C", th::TextDisabled,  "TextDisabled" },
+        { "#F2B33D", th::Accent,        "Accent" },
+        { "#FFD478", th::AccentPressed, "AccentPressed" },
+        { "#C4443C", th::Danger,        "Danger" },
+        { "#4FA84A", th::Success,       "Success" },
+        { "#D9483F", th::Hp,            "Hp" },
+        { "#3D7FD9", th::Mp,            "Mp" },
+        { "#5FB84A", th::Sp,            "Sp" },
+        { "#A868E0", th::Xp,            "Xp" },
+    };
+    int drift = 0;
+    for (const auto& p : palette) {
+        // Записанное в документе шестнадцатеричное значение обязано
+        // совпасть с байтами токена.
+        const u32 r = (u32)std::stoul(std::string(p.hex + 1, 2), nullptr, 16);
+        const u32 g = (u32)std::stoul(std::string(p.hex + 3, 2), nullptr, 16);
+        const u32 b = (u32)std::stoul(std::string(p.hex + 5, 2), nullptr, 16);
+        if (ui::rgba((u8)r, (u8)g, (u8)b, 255) != p.c) {
+            ++drift;
+            char msg[160];
+            std::snprintf(msg, sizeof(msg),
+                          "%s: в документе %s, в коде другое", p.name, p.hex);
+            check(false, msg);
+        }
+        if (!mentions(p.hex)) {
+            ++drift;
+            char msg[160];
+            std::snprintf(msg, sizeof(msg),
+                          "%s (%s) в документе не назван", p.name, p.hex);
+            check(false, msg);
+        }
+    }
+    check(drift == 0, "вся палитра совпадает с документом");
+
+    // Ступени шрифта названы в документе поимённо.
+    check(mentions("`Display`") && mentions("`Title`") && mentions("`Body`") &&
+          mentions("`Label`") && mentions("`Caption`"),
+          "документ перечисляет все пять ступеней шрифта");
+
+    // Решение о форме: срез, а не скругление.
+    check(mentions("Срез") || mentions("срез"),
+          "документ объясняет срезанный угол");
+    check(th::CHAMFER_PANEL_DP > 0.f && th::CHAMFER_CELL_DP > 0.f &&
+          th::CHAMFER_NONE_DP == 0.f,
+          "и код задаёт срез панели, ячейки и его отсутствие");
+
+    // Запрет, который легче всего нарушить молча.
+    check(mentions("hudScale"),
+          "документ объясняет, почему hudScale уходит");
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -5970,6 +6255,8 @@ int main() {
     testWaterSortedByWaterCenter();
     testUiTapSurvivesRedraw();
     testHudAndButtonsDoNotOverlap();
+    testUiThemeObeysItsOwnRules();
+    testUiThemeMatchesItsDocument();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();
