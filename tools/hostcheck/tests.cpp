@@ -4826,6 +4826,50 @@ void testInteractPromptUnlocksScreens() {
 }
 
 // ------------------------------------------------------------
+// Выбор в диалоге доходит до игры.
+//
+// Обработчик варианта ответа был пустой лямбдой: нажатие не делало
+// ничего, и выйти из разговора можно было только аппаратной кнопкой.
+// Функция applyChoice при этом существовала и была покрыта тестами —
+// но вызывали её ТОЛЬКО тесты, шесть раз, и ни разу игра. Проверена
+// была логика, не проводка, и тесты оставались зелёными.
+//
+// Поэтому здесь проверяется именно вызов из интерфейса.
+// ------------------------------------------------------------
+void testDialogueChoiceReachesTheGame() {
+    group("диалог: выбор доходит до игры");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    const usize dlg = src.find("void UiSystem::drawDialogueScreen(");
+    check(dlg != NONE, "экран диалога на месте");
+    if (dlg == NONE) return;
+    const usize end = src.find("\n}\n", dlg);
+    const std::string body = src.substr(dlg, end - dlg);
+
+    check(body.find("applyChoice(") != NONE,
+          "нажатие на вариант применяет выбор");
+
+    // Пустая лямбда — ровно то, чем это было. Её возвращение должно
+    // ронять проверку, как бы ни выглядел остальной код.
+    check(body.find("pushInteractiveRect(cr, [](){})") == NONE &&
+          body.find("pushInteractiveRect(cr, [] () {})") == NONE,
+          "обработчик варианта не пустой");
+
+    // Разговор должен и заканчиваться: applyChoice возвращает false,
+    // когда диалог закрылся сам, и NPC надо вывести из состояния Talk.
+    check(body.find("onCloseDialogue") != NONE,
+          "закончившийся разговор закрывается как положено");
+
+    // Выбор берётся заново по текущему узлу: applyChoice меняет узел,
+    // и ссылка на прежний список вариантов после этого не годится.
+    check(body.find("findNode(") != NONE,
+          "вариант ищется по текущему узлу в момент нажатия");
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -6413,6 +6457,7 @@ int main() {
     testUiThemeObeysItsOwnRules();
     testUiThemeMatchesItsDocument();
     testInteractPromptUnlocksScreens();
+    testDialogueChoiceReachesTheGame();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

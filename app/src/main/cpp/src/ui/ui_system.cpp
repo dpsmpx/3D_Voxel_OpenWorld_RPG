@@ -1454,7 +1454,33 @@ void UiSystem::drawDialogueScreen(player::Player& player) {
     for (usize i = 0; i < node->choices.size(); ++i) {
         const auto& c = node->choices[i];
         Rect cr{ panelX + 24.f, cy, panelW - 48.f, rowH };
-        int idx = ui_.pushInteractiveRect(cr, [](){});
+
+        // Здесь была пустая лямбда.
+        //
+        // Нажатие на вариант ответа не делало НИЧЕГО: диалог
+        // открывался, показывал текст и варианты, и выйти из него
+        // можно было только аппаратной кнопкой «Назад». Функция,
+        // применяющая выбор, существовала и была покрыта тестами —
+        // но вызывали её только сами тесты, шесть раз, и ни разу
+        // игра. Вместе с диалогом это обрывало торговлю и ремесло:
+        // они открываются его действием.
+        int idx = ui_.pushInteractiveRect(cr, [this, &player, i]() {
+            auto* d = player.activeDialogue();
+            auto* reg = player.registryHandle();
+            if (!d || !d->active || !reg) return;
+            npc::DialogueNode* n = d->findNode(d->currentNodeId);
+            if (!n || i >= n->choices.size()) return;
+
+            // Копия: applyChoice может сменить узел, а ссылка на
+            // выбор живёт внутри прежнего.
+            const npc::DialogueChoice chosen = n->choices[i];
+            if (!npc::applyChoice(*reg, *d, chosen)) {
+                // Диалог кончился сам — закрываем так же, как это
+                // делает «Назад», чтобы NPC вышел из состояния Talk.
+                if (onCloseDialogue) onCloseDialogue();
+                screen = Screen::Hud;
+            }
+        });
         bool pressed = ui_.isInteractivePressed(idx);
         UiColor fill = pressed ? rgba(120, 100, 60, 255) : rgba(40, 35, 50, 235);
         ui_.rect(cr.x, cr.y, cr.w, cr.h, fill);
