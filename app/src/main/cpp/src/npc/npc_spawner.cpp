@@ -23,15 +23,9 @@ using namespace ecs;
 
 namespace {
 
-// Тот же хэш, что в features.cpp structs::layoutFor
-u32 hashXZ(i32 x, i32 z, u64 seed) {
-    u64 h = (u64)(u32)x * 0x9E3779B97F4A7C15ULL;
-    h ^= (u64)(u32)z * 0xC4CEB9FE1A85EC53ULL;
-    h ^= seed;
-    h ^= h >> 33; h *= 0xFF51AFD7ED558CCDULL;
-    h ^= h >> 33;
-    return (u32)h;
-}
+// Здесь лежала копия хэша из features.cpp — «тот же, что в
+// structs::layoutFor». Раскладку деревни теперь спрашивают у
+// генератора, и копия не нужна.
 
 // Детерминированный уникальный ключ для NPC.
 // Комбинируем координаты super-chunk + индекс внутри деревни.
@@ -56,18 +50,20 @@ bool generateVillageNpcs(world::ChunkManager& world,
                          std::vector<NpcSpec>& out,
                          std::vector<u64>& keysOut)
 {
-    const u32 h = hashXZ(sx, sz, worldSeed ^ 0x517);
-    const u32 sel = h & 0xFF;
-    if (sel >= 51) return false;   // не деревня (по логике features)
+    // Раскладку спрашиваем у генератора, а не повторяем его правила.
+    //
+    // Здесь лежала копия: тот же хэш, тот же порог 51, то же смещение
+    // — с комментарием «совпадает с features::structs::layoutFor».
+    // Две копии одного правила расходятся молча: достаточно сдвинуть
+    // порог в одном месте, и жители останутся стоять в чистом поле,
+    // где деревни больше нет.
+    const world::VillageSite site =
+        world::villageAt(sx, sz, worldSeed, &world.generator());
+    if (!site.exists) return false;
 
-    // Совпадает с features::structs::layoutFor
-    const i32 baseX = sx * 256;
-    const i32 baseZ = sz * 256;
-    const i32 ox = (i32)((h >> 8) & 0x3F);
-    const i32 oz = (i32)((h >> 14) & 0x3F);
-    const i32 half = 48;
-    const i32 cx = baseX + ox + 32;
-    const i32 cz = baseZ + oz + 32;
+    const u32 h  = site.seed;
+    const i32 cx = site.center.x;
+    const i32 cz = site.center.z;
 
     const i32 wy = world.generator().surfaceHeight(cx, cz);
 
@@ -113,7 +109,7 @@ bool generateVillageNpcs(world::ChunkManager& world,
         keysOut.push_back(npcPersistentKey(sx, sz, i));
     }
 
-    (void)half; (void)wy;
+    (void)wy;
     return true;
 }
 
