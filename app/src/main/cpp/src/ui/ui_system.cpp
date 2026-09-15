@@ -323,6 +323,7 @@ void UiSystem::drawHud(vk::Context& /*ctx*/,
         ui_.rect(cx - 1.f, cy - 10.f, 2.f, 20.f, COL_WHITE);
     }
 
+    drawQuestTracker(player);
     drawInteractPrompt();
 
     drawLevelUpNotification(player);
@@ -1607,57 +1608,192 @@ void UiSystem::drawDialogueScreen(player::Player& player) {
 // Quest Log
 // ============================================================
 void UiSystem::drawQuestLogScreen(player::Player& player) {
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(10, 15, 25, 235));
+    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
+             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
 
     auto* log = player.questLog();
-    if (!log) return;
+    auto* reg = player.registryHandle();
+    if (!log || !reg) return;
 
-    ui_.text(T(StrKey::Quest_Title), (float)screenW_ * 0.36f, 24.f, 3.f, COL_WHITE);
+    const Rect title = layout_.menuTitle();
+    ui_.text(T(StrKey::Quest_Title), title.x,
+             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
+             theme::TEXT_TITLE, theme::TextPrimary);
 
-    Rect close{ (float)screenW_ - 90.f, 74.f, 80.f, 50.f };
-    int closeIdx = ui_.pushInteractiveRect(close, [this]() { screen = Screen::Hud; });
-    if (ui_.button("X", close, closeIdx, rgba(120,60,60,255), COL_WHITE)) {
-        screen = Screen::Hud; return;
-    }
+    // ---- Список ----
+    //
+    // Раньше здесь для активных заданий печаталось ТОЛЬКО ИХ ЧИСЛО:
+    // игрок с тремя заданиями видел «3». Ни названий, ни целей, ни
+    // прогресса — то есть главный вопрос «что мне делать сейчас»
+    // журнал не отвечал вовсе.
+    const u32 maxRows = layout_.questRowsVisible();
+    u32 row = 0;
 
-    const f32 panelX = 40.f;
-    const f32 panelY = 140.f;
-    const f32 panelW = (f32)screenW_ - 80.f;
-    const f32 panelH = (f32)screenH_ - 200.f;
+    auto rowButton = [&](const char* label, f32 pct, bool done, i32 questIdx) {
+        if (row >= maxRows) return;
+        const Rect r = layout_.questRow(row++);
 
-    ui_.rect(panelX, panelY, panelW, panelH, rgba(25, 30, 45, 240));
-    ui_.rectOutline(panelX, panelY, panelW, panelH, 2.f, COL_BLACK);
+        const int idx = ui_.pushInteractiveRect(r, [this, questIdx]() {
+            selectedQuest = (selectedQuest == questIdx) ? -1 : questIdx;
+        });
+        const bool pressed  = ui_.isInteractivePressed(idx);
+        const bool selected = (questIdx >= 0 && selectedQuest == questIdx);
 
-    ui_.text(T(StrKey::Quest_Active), panelX + 16.f, panelY + 12.f, 2.2f,
-             rgba(255, 220, 120, 255));
+        ui_.rect(r.x, r.y, r.w, r.h,
+                 pressed ? theme::Accent : theme::PanelRaised);
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(selected ? theme::STROKE_SELECTED_DP
+                                            : theme::STROKE_DP),
+                        selected ? theme::Accent : theme::Stroke);
 
-    f32 y = panelY + 60.f;
+        ui_.text(label, r.x + layout_.dp(theme::SPACE_M_DP),
+                 r.y + layout_.dp(theme::SPACE_S_DP),
+                 theme::TEXT_BODY,
+                 pressed ? theme::Ink
+                         : (done ? theme::TextSecondary : theme::TextPrimary));
+
+        // Полоса прогресса прямо в строке: сколько осталось, видно
+        // не открывая подробности.
+        const f32 bh = layout_.dp(4.f);
+        const f32 by = r.y + r.h - bh - layout_.dp(theme::SPACE_S_DP);
+        const f32 bx = r.x + layout_.dp(theme::SPACE_M_DP);
+        const f32 bw = r.w - layout_.dp(theme::SPACE_M_DP) * 2.f;
+        ui_.rect(bx, by, bw, bh, theme::XpBed);
+        ui_.rect(bx, by, bw * pct, bh, done ? theme::Success : theme::Accent);
+    };
+
+    // Активные — первыми: они и есть ответ на «что делать сейчас».
+    ui_.text(T(StrKey::Quest_Active), layout_.questList().x,
+             layout_.questList().y - layout_.dp(theme::SPACE_M_DP)
+                 - ui_.textHeight(theme::TEXT_LABEL),
+             theme::TEXT_LABEL, theme::Accent);
+
     if (log->activeQuests.empty()) {
-        ui_.text(T(StrKey::Quest_None), panelX + 24.f, y, 2.f,
-                 rgba(180,180,180,255));
-    } else {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "%zu", log->activeQuests.size());
-        ui_.text(buf, panelX + 24.f, y, 2.f, COL_WHITE);
-        y += 80.f;
+        const Rect r = layout_.questRow(row++);
+        ui_.text(T(StrKey::Quest_None), r.x + layout_.dp(theme::SPACE_M_DP),
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, theme::TextDisabled);
     }
 
-    ui_.text(T(StrKey::Quest_Completed), panelX + 16.f, y + 20.f, 2.2f,
-             rgba(120, 220, 140, 255));
-    y += 60.f;
-
-    if (log->history.empty()) {
-        ui_.text("-", panelX + 24.f, y, 2.f, rgba(140,140,140,255));
-    } else {
-        usize start = log->history.size() > 8 ? log->history.size() - 8 : 0;
-        for (usize i = start; i < log->history.size(); ++i) {
-            const auto& h = log->history[i];
-            char buf[128];
-            std::snprintf(buf, sizeof(buf), "%s", h.title);
-            ui_.text(buf, panelX + 24.f, y, 1.8f, COL_WHITE);
-            y += 30.f;
-        }
+    for (usize i = 0; i < log->activeQuests.size(); ++i) {
+        auto* q = reg->get<quests::Quest>(log->activeQuests[i]);
+        if (!q) continue;
+        rowButton(q->title[0] ? q->title : "?", q->progressPct(),
+                  q->isComplete(), (i32)i);
     }
+
+    // Выполненные — ниже и приглушённо.
+    for (usize i = 0; i < log->history.size() && row < maxRows; ++i) {
+        const auto& h = log->history[log->history.size() - 1 - i];
+        rowButton(h.title[0] ? h.title : "?", 1.f, true, -1);
+    }
+
+    drawQuestDetails(player);
+}
+
+// ============================================================
+// Подробности задания
+// ============================================================
+void UiSystem::drawQuestDetails(player::Player& player) {
+    const Rect d = layout_.questDetails();
+    ui_.rect(d.x, d.y, d.w, d.h, theme::Panel);
+    ui_.rectOutline(d.x, d.y, d.w, d.h, layout_.dp(theme::STROKE_DP),
+                    theme::Stroke);
+
+    auto* log = player.questLog();
+    auto* reg = player.registryHandle();
+    const f32 pad = layout_.dp(theme::PANEL_PAD_DP);
+
+    if (!log || !reg || selectedQuest < 0 ||
+        selectedQuest >= (i32)log->activeQuests.size()) {
+        ui_.text(T(StrKey::Quest_None), d.x + pad, d.y + pad,
+                 theme::TEXT_LABEL, theme::TextDisabled);
+        return;
+    }
+
+    auto* q = reg->get<quests::Quest>(log->activeQuests[(usize)selectedQuest]);
+    if (!q) return;
+
+    const f32 tw = d.w - pad * 2.f;
+    f32 y = d.y + pad;
+
+    if (q->title[0]) {
+        y += ui_.textWrapped(q->title, d.x + pad, y, tw,
+                             theme::TEXT_BODY, theme::TextPrimary);
+        y += layout_.dp(theme::SPACE_M_DP);
+    }
+    if (q->description[0]) {
+        y += ui_.textWrapped(q->description, d.x + pad, y, tw,
+                             theme::TEXT_CAPTION, theme::TextSecondary);
+        y += layout_.dp(theme::SPACE_L_DP);
+    }
+
+    // ---- Сколько сделано ----
+    char prog[64];
+    std::snprintf(prog, sizeof(prog), "%d / %d",
+                  (int)q->progress, (int)q->tmpl.requiredCount);
+    ui_.text(prog, d.x + pad, y, theme::TEXT_BODY,
+             q->isComplete() ? theme::Success : theme::TextPrimary);
+    y += ui_.textHeight(theme::TEXT_BODY) + layout_.dp(theme::SPACE_S_DP);
+
+    const f32 bh = layout_.dp(6.f);
+    ui_.rect(d.x + pad, y, tw, bh, theme::XpBed);
+    ui_.rect(d.x + pad, y, tw * q->progressPct(), bh,
+             q->isComplete() ? theme::Success : theme::Accent);
+    y += bh + layout_.dp(theme::SPACE_L_DP);
+
+    // ---- За что ----
+    ui_.text(T(StrKey::Quest_Rewards), d.x + pad, y,
+             theme::TEXT_LABEL, theme::Accent);
+    y += ui_.textHeight(theme::TEXT_LABEL) + layout_.dp(theme::SPACE_S_DP);
+
+    char rew[96];
+    if (q->rewards.xp) {
+        std::snprintf(rew, sizeof(rew), "%s +%llu", T(StrKey::Hud_Xp),
+                      (unsigned long long)q->rewards.xp);
+        ui_.text(rew, d.x + pad, y, theme::TEXT_CAPTION, theme::Xp);
+        y += ui_.textHeight(theme::TEXT_CAPTION) + layout_.dp(theme::SPACE_XS_DP);
+    }
+    if (q->rewards.gold) {
+        std::snprintf(rew, sizeof(rew), "%s +%u", T(StrKey::Hud_Gold),
+                      (unsigned)q->rewards.gold);
+        ui_.text(rew, d.x + pad, y, theme::TEXT_CAPTION, theme::Accent);
+        y += ui_.textHeight(theme::TEXT_CAPTION) + layout_.dp(theme::SPACE_XS_DP);
+    }
+    if (q->rewards.itemCount) {
+        std::snprintf(rew, sizeof(rew), "x%u", (unsigned)q->rewards.itemCount);
+        ui_.text(rew, d.x + pad, y, theme::TEXT_CAPTION, theme::TextSecondary);
+    }
+}
+
+// ============================================================
+// Текущая цель на HUD
+// ============================================================
+//
+// Чтобы узнать, что делать, приходилось открывать журнал — а журнал
+// показывал только ЧИСЛО активных заданий. Строка на HUD отвечает на
+// этот вопрос, не прерывая игру.
+void UiSystem::drawQuestTracker(player::Player& player) {
+    auto* log = player.questLog();
+    auto* reg = player.registryHandle();
+    if (!log || !reg || log->activeQuests.empty()) return;
+
+    const quests::Quest* q = nullptr;
+    for (auto e : log->activeQuests) {
+        if (auto* c = reg->get<quests::Quest>(e)) { q = c; break; }
+    }
+    if (!q || !q->title[0]) return;
+
+    const Rect r = layout_.questTracker();
+    ui_.text(q->title, r.x, r.y, theme::TEXT_CAPTION,
+             hudTint(q->isComplete() ? theme::Success : theme::TextPrimary));
+
+    char prog[48];
+    std::snprintf(prog, sizeof(prog), "%d / %d",
+                  (int)q->progress, (int)q->tmpl.requiredCount);
+    ui_.text(prog, r.x, r.y + ui_.textHeight(theme::TEXT_CAPTION)
+                      + layout_.dp(theme::SPACE_XS_DP),
+             theme::TEXT_CAPTION, hudTint(theme::TextSecondary));
 }
 
 // ============================================================

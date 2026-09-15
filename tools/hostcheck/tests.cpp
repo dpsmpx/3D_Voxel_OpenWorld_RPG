@@ -5454,6 +5454,73 @@ void testDialogueReadsAsAConversation() {
 }
 
 // ------------------------------------------------------------
+// Журнал отвечает на вопрос «что мне делать сейчас».
+//
+// Для активных заданий он печатал ТОЛЬКО ИХ ЧИСЛО: игрок с тремя
+// заданиями видел «3». Ни названий, ни целей, ни прогресса. §12
+// задания называет этот вопрос одной из главных функций интерфейса —
+// а журнал на него не отвечал вовсе.
+// ------------------------------------------------------------
+void testQuestLogAnswersWhatToDoNow() {
+    group("журнал: что делать сейчас");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    const usize ql = src.find("void UiSystem::drawQuestLogScreen(");
+    check(ql != NONE, "журнал на месте");
+    if (ql == NONE) return;
+    const usize end = src.find("\n}\n", ql);
+    const std::string body = src.substr(ql, end - ql);
+
+    // ---- 1. Показываются сами задания, а не их количество ----
+    check(body.find("q->title") != NONE, "в списке названия заданий");
+    check(body.find("progressPct()") != NONE, "и их прогресс");
+    // Печать размера списка — ровно то, чем это было.
+    check(body.find("activeQuests.size());") == NONE,
+          "числа активных заданий вместо списка не осталось");
+
+    // ---- 2. Есть подробности выбранного ----
+    const usize qd = src.find("void UiSystem::drawQuestDetails(");
+    check(qd != NONE, "подробности задания появились");
+    if (qd != NONE) {
+        const usize dend = src.find("\n}\n", qd);
+        const std::string db = src.substr(qd, dend - qd);
+        check(db.find("description") != NONE, "в подробностях есть описание");
+        check(db.find("rewards") != NONE, "и награда");
+        check(db.find("requiredCount") != NONE, "и сколько осталось");
+        check(db.find("textWrapped(") != NONE,
+              "описание рисуется с переносом, а не одной строкой");
+    }
+
+    // ---- 3. Цель видна, не открывая журнал ----
+    const usize qt = src.find("void UiSystem::drawQuestTracker(");
+    check(qt != NONE, "на HUD есть строка текущей цели");
+    const usize hud = src.find("void UiSystem::drawHud(");
+    if (hud != NONE) {
+        const usize hend = src.find("\n}\n", hud);
+        check(src.substr(hud, hend - hud).find("drawQuestTracker(") != NONE,
+              "и она рисуется в составе HUD");
+    }
+
+    // ---- 4. Строки списка — цели касания, не мельче нормы ----
+    const ui::HudLayout L(1280.f, 720.f,
+                          ui::theme::Metrics::fromDensityDpi(320),
+                          ui::SafeInsets{});
+    const ui::Rect r0 = L.questRow(0), r1 = L.questRow(1);
+    check(r0.h + 0.01f >= L.dp(ui::theme::TOUCH_MIN_DP),
+          "строка журнала не мельче 48 dp");
+    check(r1.y >= r0.y + r0.h - 0.01f, "строки не налезают друг на друга");
+    check(L.questRowsVisible() >= 1, "хотя бы одна строка помещается");
+
+    // Список и подробности не пересекаются.
+    const ui::Rect list = L.questList(), det = L.questDetails();
+    check(list.x + list.w <= det.x + 0.01f,
+          "список и подробности не налезают");
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -7050,6 +7117,7 @@ int main() {
     testRussianTextIsActuallyDrawn();
     testSettingsFitAndDoSomething();
     testDialogueReadsAsAConversation();
+    testQuestLogAnswersWhatToDoNow();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

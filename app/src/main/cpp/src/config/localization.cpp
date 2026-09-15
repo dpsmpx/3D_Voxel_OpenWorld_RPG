@@ -90,6 +90,7 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Quest_Active */      "Active Quests",
     /* Quest_Completed */   "Completed",
     /* Quest_None */        "No active quests.",
+    /* Quest_Rewards */    "Rewards",
 
     /* Rep_Title */         "REPUTATION",
     /* Rep_Hated */         "Hated",
@@ -226,6 +227,7 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Quest_Active */      "Активные",
     /* Quest_Completed */   "Завершённые",
     /* Quest_None */        "Нет активных квестов.",
+    /* Quest_Rewards */    "Награда",
 
     /* Rep_Title */         "РЕПУТАЦИЯ",
     /* Rep_Hated */         "Ненависть",

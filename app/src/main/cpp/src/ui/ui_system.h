@@ -125,6 +125,9 @@ public:
     EnchantContext enchantCtx{};
     u32 nearbyAltar = 0;
 
+    /// Выбранное задание в журнале, -1 — ничего.
+    i32 selectedQuest = -1;
+
     /// Выбранная ячейка инвентаря, -1 — ничего.
     ///
     /// Раньше тап по предмету ОДНОВРЕМЕННО использовал его и начинал
@@ -321,6 +324,10 @@ private:
 
     void drawDialogueScreen(player::Player& player);
     void drawQuestLogScreen(player::Player& player);
+    /// Текущая цель на HUD: что делать прямо сейчас.
+    void drawQuestTracker(player::Player& player);
+    /// Подробности выбранного задания: цель, прогресс, награда.
+    void drawQuestDetails(player::Player& player);
     void drawReputationScreen(player::Player& player);
 
     void drawSaveLoadScreen(player::Player& player);

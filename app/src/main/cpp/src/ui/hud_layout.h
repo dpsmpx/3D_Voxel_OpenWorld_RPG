@@ -314,6 +314,46 @@ public:
         return g;
     }
 
+    // ---- журнал заданий: список слева, подробности справа ----
+    Rect questList() const {
+        const Rect a = menuArea();
+        return { a.x, a.y, a.w * (1.f - QUEST_DETAILS_FRAC)
+                            - dp(theme::SPACE_L_DP), a.h };
+    }
+    Rect questDetails() const {
+        const Rect a = menuArea();
+        const f32 wdt = a.w * QUEST_DETAILS_FRAC;
+        return { a.x + a.w - wdt, a.y, wdt, a.h };
+    }
+    /// Строка списка. Высота — обычная цель касания плюс место под
+    /// полосу прогресса.
+    Rect questRow(u32 i) const {
+        const Rect l = questList();
+        const f32 h = dp(theme::TOUCH_REGULAR_DP);
+        const f32 g = dp(theme::SPACE_S_DP);
+        return { l.x, l.y + (f32)i * (h + g), l.w, h };
+    }
+    u32 questRowsVisible() const {
+        const Rect l = questList();
+        const f32 h = dp(theme::TOUCH_REGULAR_DP) + dp(theme::SPACE_S_DP);
+        const f32 n = h > 0.f ? l.h / h : 0.f;
+        return n < 1.f ? 1u : (u32)n;
+    }
+
+    /// Строка текущей цели на HUD — под полосой опыта, слева.
+    ///
+    /// Её не было: чтобы узнать, что делать, приходилось открывать
+    /// журнал, а журнал показывал только ЧИСЛО активных заданий.
+    Rect questTracker() const {
+        const Rect last = resourceBar(2);
+        return { last.x, last.y + last.h + dp(theme::SPACE_XL_DP),
+                 dp(TRACKER_W_DP), dp(TRACKER_H_DP) };
+    }
+
+    static constexpr f32 QUEST_DETAILS_FRAC = 0.40f;
+    static constexpr f32 TRACKER_W_DP = 220.f;
+    static constexpr f32 TRACKER_H_DP =  40.f;
+
     // ---- диалог: панель у нижнего края ----
     //
     // Разговор идёт В мире, поэтому панель не занимает экран целиком:
