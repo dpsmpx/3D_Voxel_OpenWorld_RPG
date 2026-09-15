@@ -178,7 +178,6 @@ void updateNpcs(world::ChunkManager& world,
         if (ai->inDialogue) {
             vel->linear.x *= std::exp(-8.f * dt);
             vel->linear.z *= std::exp(-8.f * dt);
-            ai->walkPhase += dt * 1.f;
             continue;
         }
 
@@ -187,7 +186,6 @@ void updateNpcs(world::ChunkManager& world,
         case NpcAI::Idle: {
             vel->linear.x *= std::exp(-6.f * dt);
             vel->linear.z *= std::exp(-6.f * dt);
-            ai->walkPhase += dt * 2.f;
 
             // Guard — сканирует врагов
             if (def.role == NpcRole::Guard && def.aggroRange > 0.f) {
@@ -226,7 +224,6 @@ void updateNpcs(world::ChunkManager& world,
             d /= len;
             vel->linear.x = d.x * def.moveSpeed;
             vel->linear.z = d.z * def.moveSpeed;
-            ai->walkPhase += dt * 6.f;
 
             // Guard снова сканирует
             if (def.role == NpcRole::Guard && def.aggroRange > 0.f) {
@@ -267,7 +264,6 @@ void updateNpcs(world::ChunkManager& world,
                 if (dist > 0.01f) d /= dist;
                 vel->linear.x = d.x * def.moveSpeed;
                 vel->linear.z = d.z * def.moveSpeed;
-                ai->walkPhase += dt * 8.f;
             }
             break;
         }
@@ -279,7 +275,6 @@ void updateNpcs(world::ChunkManager& world,
             if (len > 0.1f) away /= len;
             vel->linear.x = away.x * def.moveSpeed * 1.5f;
             vel->linear.z = away.z * def.moveSpeed * 1.5f;
-            ai->walkPhase += dt * 9.f;
 
             if (ai->stateTime > 6.f) {
                 ai->state = NpcAI::Idle;

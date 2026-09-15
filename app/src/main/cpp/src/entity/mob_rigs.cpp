@@ -151,6 +151,7 @@ Rig buildRig(const MobDef& def) {
     {
         entity::Pose rest;                          // нулевая поза
         rig.groundOffset = -entity::lowestPoint(rig, rest, 0.f);
+        rig.strideLength = entity::strideFromLegs(rig);
     }
 
     return rig;

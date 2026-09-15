@@ -161,11 +161,38 @@ inline void idlePose(const entity::Rig& rig, entity::Pose& pose, f32 t) {
 /// самодельные `sin(walkPhase)` в рендере NPC, двигавшие ногу
 /// параллельно себе.
 struct AnimState {
-    f32 phase     = 0.f;   ///< фаза шага, радианы
+    f32 phase     = 0.f;   ///< фаза шага, радианы; идёт ПУТЁМ
+    f32 time      = 0.f;   ///< монотонное время, секунды; для дыхания
     f32 speedNorm = 0.f;   ///< скорость к максимальной, 0..1
     f32 attack    = 0.f;   ///< 0..1, замах
     f32 death     = 0.f;   ///< секунды с момента смерти, 0 — жив
 };
+
+/// Продвинуть фазу шага пройденным путём.
+///
+/// Раньше фазу двигало время: `walkPhase += dt * 9.f` в погоне,
+/// `* 6.f` в ходьбе, `* 2.f` в покое. Скорость и длина шага при этом
+/// не связаны ничем, поэтому ноги скользят — и «правильного»
+/// множителя не существует: он верен ровно для одной скорости.
+///
+/// Здесь согласованность — следствие формулы: за длину шага модель
+/// проходит ровно один цикл, какой бы ни была скорость.
+///
+/// При остановке фаза ЗАМИРАЕТ. Не сбрасывается: иначе существо
+/// дёргает ногой всякий раз, как встанет.
+template <class GaitT>
+inline void advanceGait(GaitT& g, const glm::vec3& velocity, f32 dt) {
+    constexpr f32 TAU = 6.28318530718f;
+    const f32 speed = std::sqrt(velocity.x * velocity.x +
+                                velocity.z * velocity.z);
+    if (speed < 0.05f) return;
+
+    const f32 stride = g.stride > 0.01f ? g.stride : 1.6f;
+    g.phase += (speed * dt) / stride * TAU;
+    // Держим фазу в разумных пределах: за час игры она иначе
+    // вырастает настолько, что синус теряет точность.
+    if (g.phase >= TAU) g.phase = std::fmod(g.phase, TAU);
+}
 
 /// Поза сущности: покой смешивается с шагом по нормированной скорости.
 ///
@@ -175,7 +202,9 @@ inline void poseFor(const entity::Rig& rig, entity::Pose& pose,
 {
     entity::Pose walk, idle;
     walkPose(rig, walk, st.phase, st.speedNorm);
-    idlePose(rig, idle, st.phase);
+    // Дыхание идёт ВРЕМЕНЕМ: фаза шага у стоящего замерла, и покой,
+    // построенный на ней, замер бы вместе с ней.
+    idlePose(rig, idle, st.time);
 
     const f32 k = st.speedNorm < 0.f ? 0.f : (st.speedNorm > 1.f ? 1.f : st.speedNorm);
     for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i)

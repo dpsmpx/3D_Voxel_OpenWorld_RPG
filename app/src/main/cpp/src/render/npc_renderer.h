@@ -22,7 +22,9 @@ public:
     bool init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout);
     void destroy();
 
-    void rebuild(ecs::Registry& reg);
+    /// timeSec — монотонное время кадра: на нём идёт дыхание
+/// в покое. Фаза шага берётся из ecs::Gait, она идёт путём.
+    void rebuild(ecs::Registry& reg, f32 timeSec);
     void upload(vk::Context& ctx);
     /// set передаётся явно и привязывается своим layout'ом. Раньше
     /// дескрипторы брались те, что оставил после себя рендер чанков:

@@ -105,6 +105,7 @@ Rig humanoidRig(const HumanoidSpec& spec) {
     {
         Pose rest;
         rig.groundOffset = -lowestPoint(rig, rest, 0.f);
+        rig.strideLength = strideFromLegs(rig);
     }
     return rig;
 }

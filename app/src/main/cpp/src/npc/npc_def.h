@@ -92,7 +92,6 @@ struct NpcAI {
     glm::vec3 homePos{0};
     glm::vec3 wanderTarget{0};
 
-    f32   walkPhase = 0.f;
     f32   attackCooldown = 0.f;
     f32   damageFlash = 0.f;
     f32   deathTimer = 0.f;

@@ -23,6 +23,7 @@
 #include "core/job_system.h"
 #include "core/math.h"
 #include "core/orientation.h"
+#include "entity/locomotion.h"
 
 #include "config/settings.h"
 #include "config/localization.h"
@@ -963,6 +964,13 @@ struct Engine {
                 auto* fv = registry.get<ecs::Velocity>(fe);
                 if (!fc || !fv) continue;
                 orient::advanceFacing(*fc, fv->linear, dt);
+
+                // Фаза шага — здесь же и из той же скорости. Раньше её
+                // двигал ИИ строчками `walkPhase += dt * 9.f`, своими
+                // на каждое состояние: скорость и длина шага не были
+                // связаны ничем, и ноги скользили.
+                if (auto* g = registry.get<ecs::Gait>(fe))
+                    anim::advanceGait(*g, fv->linear, dt);
             }
         }
 

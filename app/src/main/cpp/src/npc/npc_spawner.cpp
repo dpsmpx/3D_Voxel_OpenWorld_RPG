@@ -3,6 +3,7 @@
  * @brief NPC: роли, диалоги с ветвлением, поведение жителей.
  */
 #include "npc_spawner.h"
+#include "npc_rig.h"
 #include "npc_def.h"
 #include "npc_ai.h"
 #include "../ecs/components.h"
@@ -184,6 +185,9 @@ void NpcSpawner::update(world::ChunkManager& world,
                     // Поворот — состояние сущности, а не вычисление
                     // в рендере. NPC доворачивается спокойнее мобов.
                     reg.add(e, ecs::Facing{ 0.f, 0.f, 5.f });
+                    // Длина шага — из оснастки вида: она выведена из
+                    // длины ног, а не подобрана множителем ко времени.
+                    reg.add(e, ecs::Gait{ 0.f, rigFor(s.typeId).strideLength });
                     reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
 
                     ecs::Collider col;

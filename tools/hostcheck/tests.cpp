@@ -6318,6 +6318,142 @@ void testRigResolveRotatesParts() {
 }
 
 // ------------------------------------------------------------
+// Фаза шага идёт путём, а не временем.
+//
+// Раньше её двигали строчки `walkPhase += dt * 9.f`, разные на каждое
+// состояние ИИ: в покое 2, в ходьбе 6, в погоне 9. Скорость и длина
+// шага при этом не связаны ничем, поэтому ноги скользят по земле — и
+// «правильного» множителя не существует: он верен ровно для одной
+// скорости.
+// ------------------------------------------------------------
+void testGaitPhaseFollowsDistance() {
+    group("походка: фаза идёт путём, а не временем");
+
+    // ---- 1. Один шаг на длину шага, какой бы ни была скорость ----
+    //
+    // Это и есть определение «нога не скользит»: за путь в stride
+    // модель обязана проделать ровно один цикл.
+    {
+        constexpr f32 TAU = 6.28318530718f;
+        int bad = 0;
+        for (const f32 speed : { 0.5f, 2.f, 4.5f, 7.5f, 12.f }) {
+            ecs::Gait g{};
+            g.stride = 1.6f;
+            // Шаг по времени подбираем так, чтобы за 240 кадров
+            // пройти РОВНО одну длину шага: округление числа кадров
+            // само по себе дало бы расхождение и проверяло бы его, а
+            // не формулу.
+            const int steps = 240;
+            const f32 dt = g.stride / (speed * (f32)steps);
+            for (int i = 0; i < steps; ++i)
+                anim::advanceGait(g, glm::vec3(0.f, 0.f, speed), dt);
+
+            // Фаза приведена к [0, TAU), поэтому полный цикл читается
+            // как возврат к началу.
+            const f32 off = std::min(g.phase, TAU - g.phase);
+            if (off > 0.05f) ++bad;
+        }
+        check(bad == 0, "за длину шага — ровно один цикл, на любой скорости");
+    }
+
+    // ---- 2. Вдвое быстрее — вдвое чаще, а не шире ----
+    {
+        ecs::Gait slow{}, fast{};
+        slow.stride = fast.stride = 1.6f;
+        const f32 dt = 1.f / 60.f;
+        for (int i = 0; i < 60; ++i) {
+            anim::advanceGait(slow, glm::vec3(0, 0, 2.f), dt);
+            anim::advanceGait(fast, glm::vec3(0, 0, 4.f), dt);
+        }
+        // Фаза свёрнута, поэтому сравниваем накопленный путь напрямую:
+        // два метра против четырёх за ту же секунду.
+        ecs::Gait s2{}, f2{};
+        s2.stride = f2.stride = 1000.f;   // достаточно, чтобы не свернулась
+        for (int i = 0; i < 60; ++i) {
+            anim::advanceGait(s2, glm::vec3(0, 0, 2.f), dt);
+            anim::advanceGait(f2, glm::vec3(0, 0, 4.f), dt);
+        }
+        check(std::fabs(f2.phase - 2.f * s2.phase) < 1e-3f,
+              "вдвое быстрее — вдвое больше циклов");
+    }
+
+    // ---- 3. Длинная нога — редкий шаг ----
+    {
+        ecs::Gait shortLeg{}, longLeg{};
+        shortLeg.stride = 1000.f;
+        longLeg.stride  = 2000.f;
+        const f32 dt = 1.f / 60.f;
+        for (int i = 0; i < 60; ++i) {
+            anim::advanceGait(shortLeg, glm::vec3(0, 0, 3.f), dt);
+            anim::advanceGait(longLeg,  glm::vec3(0, 0, 3.f), dt);
+        }
+        check(longLeg.phase < shortLeg.phase - 1e-4f,
+              "при том же пути длинноногий делает меньше шагов");
+    }
+
+    // ---- 4. На месте фаза замирает, а не сбрасывается ----
+    {
+        ecs::Gait g{};
+        g.stride = 1.6f;
+        for (int i = 0; i < 30; ++i)
+            anim::advanceGait(g, glm::vec3(0, 0, 3.f), 1.f / 60.f);
+        const f32 walked = g.phase;
+        check(walked > 0.1f, "на ходу фаза растёт");
+
+        for (int i = 0; i < 120; ++i)
+            anim::advanceGait(g, glm::vec3(0.f), 1.f / 60.f);
+        check(std::fabs(g.phase - walked) < 1e-6f,
+              "встал — фаза замерла там, где была, а не обнулилась");
+
+        // Дрожание скорости тоже не должно двигать ноги.
+        for (int i = 0; i < 120; ++i)
+            anim::advanceGait(g, glm::vec3((i % 2 ? 0.01f : -0.01f), 0.f, 0.f),
+                              1.f / 60.f);
+        check(std::fabs(g.phase - walked) < 1e-6f,
+              "и от дрожания скорости не дёргается");
+    }
+
+    // ---- 5. Падение с высоты не считается шагом ----
+    {
+        ecs::Gait g{};
+        g.stride = 1.6f;
+        for (int i = 0; i < 120; ++i)
+            anim::advanceGait(g, glm::vec3(0.f, -20.f, 0.f), 1.f / 60.f);
+        check(g.phase == 0.f, "вертикальная скорость шагов не делает");
+    }
+
+    // ---- 6. Фаза не растёт неограниченно ----
+    //
+    // За час игры она иначе доходит до величин, на которых синус
+    // теряет точность, и походка начинает дёргаться.
+    {
+        ecs::Gait g{};
+        g.stride = 1.6f;
+        for (int i = 0; i < 20000; ++i)
+            anim::advanceGait(g, glm::vec3(0, 0, 8.f), 1.f / 60.f);
+        check(g.phase >= 0.f && g.phase < 6.2832f,
+              "фаза остаётся в пределах одного оборота");
+    }
+
+    // ---- 7. Длина шага берётся из оснастки ----
+    {
+        int bad = 0;
+        f32 minStride = 1e9f, maxStride = 0.f;
+        for (u16 id = 1; id < mobs::MOB_COUNT; ++id) {
+            const entity::Rig& rg = mobs::rigFor(id);
+            if (rg.count == 0) continue;
+            if (!(rg.strideLength > 0.05f)) ++bad;
+            minStride = std::min(minStride, rg.strideLength);
+            maxStride = std::max(maxStride, rg.strideLength);
+        }
+        check(bad == 0, "у каждого вида длина шага положительна");
+        // У курицы и у коровы ноги разной длины — значит и шаг разный.
+        check(maxStride > minStride * 1.5f,
+              "коротконогим и длинноногим шаг задан разный");
+    }
+}
+
+// ------------------------------------------------------------
 // Двуногий: цельное тело, а не набор парящих коробок.
 //
 // Прежний NPC собирался в рендере руками, и собирался неправильно:
@@ -8168,6 +8304,7 @@ int main() {
     testRigResolveRotatesParts();
     testGaitMatchesAnatomy();
     testHumanoidRigIsWholeBody();
+    testGaitPhaseFollowsDistance();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

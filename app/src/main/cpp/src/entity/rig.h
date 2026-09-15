@@ -7,6 +7,8 @@
 #include "../core/orientation.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <algorithm>
+#include <cmath>
 
 namespace entity {
 
@@ -80,6 +82,14 @@ struct Rig {
     /// Это единственное законное место для такой поправки: подгонять
     /// высоту в рендере нельзя.
     f32 groundOffset = 0.f;
+
+    /// Путь, который модель проходит за полный цикл шага, метры.
+    ///
+    /// Свойство модели, а не состояния: у курицы и у коровы он разный
+    /// просто потому, что ноги разной длины. Выводится из геометрии
+    /// при сборке оснастки, чтобы фазу шага можно было считать путём,
+    /// а не подбирать множитель к времени.
+    f32 strideLength = 1.6f;
 
     /// Поправка ориентации модели, если её «вперёд» не совпадает с +Z.
     ///
@@ -187,6 +197,34 @@ inline f32 lowestPoint(const Rig& rig, const Pose& pose, f32 rootYaw) {
         if (first || bottom < lo) { lo = bottom; first = false; }
     }
     return lo;
+}
+
+/// Длина шага по геометрии оснастки.
+///
+/// Шаг соразмерен ноге: у курицы и у коровы он разный просто потому,
+/// что ноги разной длины. За полный цикл нога делает два шага, каждый
+/// примерно в 0.8 своей длины — отсюда множитель.
+inline f32 strideFromLegs(const Rig& rig) {
+    f32 hip = 0.f;
+    Pose rest;
+    ResolvedPart p[MAX_PARTS];
+    const u8 n = resolve(rig, rest, glm::vec3(0.f), 0.f, p, MAX_PARTS);
+    u8 w = 0;
+    for (u8 i = 0; i < rig.count && w < n; ++i) {
+        if (!rig.parts[i].visible) continue;
+        switch (rig.parts[i].role) {
+            case PartRole::UpperLegFL: case PartRole::UpperLegFR:
+            case PartRole::UpperLegBL: case PartRole::UpperLegBR:
+                hip = std::max(hip, p[w].center.y + p[w].size.y * 0.5f);
+                break;
+            default: break;
+        }
+        ++w;
+    }
+    // Оснастка без ног (рыба, призрак) — шага у неё нет, но делить на
+    // ноль нельзя: берём заметную величину.
+    if (hip < 0.05f) return 1.6f;
+    return hip * 1.6f;
 }
 
 } // namespace entity

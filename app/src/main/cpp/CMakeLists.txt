@@ -175,6 +175,7 @@ add_library(native-lib SHARED
     # NPC
     src/npc/dialogue.cpp
     src/npc/npc_ai.cpp
+    src/npc/npc_rig.cpp
     src/npc/npc_def.cpp
     src/npc/npc_spawner.cpp
 

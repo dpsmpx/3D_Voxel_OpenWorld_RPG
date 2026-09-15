@@ -8,7 +8,7 @@
 #include "../ecs/components.h"
 #include "../core/orientation.h"
 #include "../entity/rig.h"
-#include "../entity/humanoid_rig.h"
+#include "../npc/npc_rig.h"
 #include "../entity/locomotion.h"
 #include "../core/log.h"
 #include <cstring>
@@ -20,31 +20,6 @@ namespace render {
 // Вершинный формат и геометрия куба — общие для всех рендеров
 // MobInstance, см. MOB_ATTRS в mob_renderer.h.
 
-namespace {
-
-/// Оснастка вида, построенная один раз.
-///
-/// Двуногий один на всех: и на селянина, и на стража, и на игрока.
-/// Отличают их пропорции и цвета из определения вида — не отдельный
-/// код на каждого.
-const entity::Rig& npcRig(u16 id, const npc::NpcDef& def) {
-    static entity::Rig cache[npc::NPC_COUNT]{};
-    static bool built[npc::NPC_COUNT]{};
-
-    const u16 k = (id < npc::NPC_COUNT) ? id : (u16)npc::NPC_NONE;
-    if (!built[k]) {
-        entity::HumanoidSpec spec;
-        spec.height      = def.bodyHeight;
-        spec.bodyColor   = def.bodyColor;
-        spec.headColor   = def.headColor;
-        spec.accentColor = def.accentColor;
-        cache[k] = entity::humanoidRig(spec);
-        built[k] = true;
-    }
-    return cache[k];
-}
-
-} // namespace
 
 bool NpcRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout) {
     dev_ = ctx.device();
@@ -98,7 +73,7 @@ bool NpcRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayo
     return true;
 }
 
-void NpcRenderer::rebuild(ecs::Registry& reg) {
+void NpcRenderer::rebuild(ecs::Registry& reg, f32 timeSec) {
     cpu_.clear();
 
     auto& pool = reg.pool<npc::NpcAI>();
@@ -133,10 +108,14 @@ void NpcRenderer::rebuild(ecs::Registry& reg) {
         // опоры (наполовину под землёй), а голова висела на 1.45 — с
         // просветом там, где полагалась грудь. Теперь геометрию даёт
         // оснастка, позу — общая локомоция, сборку — entity::resolve.
-        const entity::Rig& rig = npcRig(tag->id, def);
+        const entity::Rig& rig = npc::rigFor(tag->id);
 
         anim::AnimState st;
-        st.phase     = ai->walkPhase;
+        // Фаза шага — состояние сущности, посчитанное ПУТЁМ, а не
+        // множителем ко времени в ИИ.
+        const auto* gt = reg.get<ecs::Gait>(e);
+        st.phase     = gt ? gt->phase : 0.f;
+        st.time      = timeSec;
         st.speedNorm = speedNorm;
         st.death     = (ai->state == npc::NpcAI::Dead) ? ai->deathTimer : 0.f;
 
