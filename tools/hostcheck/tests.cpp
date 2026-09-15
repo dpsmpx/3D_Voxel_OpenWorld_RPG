@@ -5022,6 +5022,135 @@ void testConfirmSwallowsTouchesOutsideIt() {
 }
 
 // ------------------------------------------------------------
+// Инвентарь показывает все ячейки, какие есть в данных.
+//
+// Рисовалась сетка 6x4 = 24 из 27, а брони и аксессуаров не было в
+// интерфейсе вовсе: игрок видел 33 ячейки из 42. При этом sortMain()
+// вправе положить предмет в любую из 27 — в том числе в невидимую,
+// откуда его не достать.
+// ------------------------------------------------------------
+void testInventoryShowsEverySlot() {
+    group("инвентарь: видны все ячейки");
+
+    // ---- 1. Сетка вмещает столько, сколько есть ----
+    //
+    // Число столбцов подбирается под ширину, а размер ячейки не
+    // опускается ниже цели касания. Значит на любом экране сетка
+    // обязана вместить ВСЕ ячейки, пусть и в больше рядов.
+    struct Size { f32 w, h; i32 dpi; const char* name; };
+    const Size sizes[] = {
+        { 2306.f, 1080.f, 400, "2306x1080" },
+        { 1280.f,  720.f, 320, "1280x720"  },
+        { 2560.f, 1600.f, 280, "2560x1600" },
+        {  960.f,  540.f, 240, "960x540"   },
+    };
+
+    int problems = 0;
+    for (const auto& sz : sizes) {
+        const ui::HudLayout L(sz.w, sz.h,
+                              ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                              ui::SafeInsets{});
+        const ui::Rect left = L.invLeft();
+
+        struct Part { const char* name; u32 count; };
+        const Part parts[] = {
+            { "сумка",      items::INV_MAIN_SLOTS },
+            { "экипировка", items::INV_ARMOR_SLOTS + items::INV_ACC_SLOTS },
+            { "пояс",       items::INV_HOTBAR_SLOTS },
+        };
+        for (const auto& pt : parts) {
+            const auto g = L.cellGrid(left, pt.count);
+            if (g.cols * g.rows < pt.count) {
+                ++problems;
+                char msg[160];
+                std::snprintf(msg, sizeof(msg),
+                              "%s: %s вмещает %u из %u",
+                              sz.name, pt.name, g.cols * g.rows, pt.count);
+                check(false, msg);
+            }
+            // Ячейка не может стать мельче цели касания.
+            if (g.cell + 0.01f < L.dp(ui::theme::TOUCH_MIN_DP)) {
+                ++problems;
+                char msg[160];
+                std::snprintf(msg, sizeof(msg), "%s: ячейка %s мельче 48 dp",
+                              sz.name, pt.name);
+                check(false, msg);
+            }
+            // Ячейки не налезают друг на друга.
+            if (pt.count >= 2) {
+                const ui::Rect a = g.at(0), b = g.at(1);
+                if (a.x + a.w > b.x + 0.01f && a.y == b.y) {
+                    ++problems;
+                    check(false, "соседние ячейки налезают");
+                }
+            }
+        }
+    }
+    check(problems == 0, "на всех экранах видны все 42 ячейки");
+
+    // ---- 2. Отрисовка обходит именно полные диапазоны ----
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) return;
+    const usize NONE = std::string::npos;
+    const usize inv = src.find("void UiSystem::drawInventory(");
+    check(inv != NONE, "экран инвентаря на месте");
+    if (inv == NONE) return;
+    const usize end = src.find("\n}\n", inv);
+    const std::string body = src.substr(inv, end - inv);
+
+    check(body.find("items::INV_MAIN_SLOTS") != NONE,
+          "сумка рисуется по числу ячеек из данных, а не по 6x4");
+    check(body.find("items::INV_ARMOR_OFFSET") != NONE,
+          "броня и аксессуары появились в интерфейсе");
+    check(body.find("items::INV_HOTBAR_SLOTS") != NONE,
+          "пояс рисуется целиком");
+    // Зашитая сетка 6x4 — ровно то, чем это было.
+    check(body.find("cols = 6") == NONE && body.find("rows = 4") == NONE,
+          "зашитой сетки 6x4 не осталось");
+}
+
+// ------------------------------------------------------------
+// Одно касание — одно действие.
+//
+// Тап по ячейке ОДНОВРЕМЕННО использовал предмет и начинал его
+// перенос: зелье выпивалось и бралось в руку одним касанием. В самом
+// коде об этом стоял честный комментарий «упрощённо».
+// ------------------------------------------------------------
+void testInventoryTapDoesOneThing() {
+    group("инвентарь: одно касание — одно действие");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    const usize gd = src.find("void UiSystem::drawSlotGrid(");
+    check(gd != NONE, "сетка ячеек выделена в общий код");
+    if (gd == NONE) return;
+    const usize end = src.find("\n}\n", gd);
+    const std::string body = src.substr(gd, end - gd);
+
+    check(body.find("selectedInvSlot") != NONE,
+          "тап по ячейке выбирает её");
+    check(body.find("onUseItem") == NONE,
+          "и НЕ использует предмет заодно");
+    check(body.find("drag.begin(") == NONE,
+          "и не начинает перенос заодно");
+
+    // Действия живут отдельно, в панели сведений.
+    const usize dt = src.find("void UiSystem::drawItemDetails(");
+    check(dt != NONE, "панель сведений о предмете появилась");
+    if (dt == NONE) return;
+    const usize dend = src.find("\n}\n", dt);
+    const std::string dbody = src.substr(dt, dend - dt);
+
+    check(dbody.find("onUseItem") != NONE, "использовать — отдельной кнопкой");
+    check(dbody.find("onDropItem") != NONE, "выбросить — отдельной кнопкой");
+    // Выброс необратим.
+    check(dbody.find("askConfirm(") != NONE,
+          "выброс предмета требует подтверждения");
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -6613,6 +6742,8 @@ int main() {
     testNavigationReturnsWhereItCameFrom();
     testPauseMenuIsGroupedAndComplete();
     testConfirmSwallowsTouchesOutsideIt();
+    testInventoryShowsEverySlot();
+    testInventoryTapDoesOneThing();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

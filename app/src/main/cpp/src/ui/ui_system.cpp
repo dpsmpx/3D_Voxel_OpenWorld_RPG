@@ -783,171 +783,233 @@ void UiSystem::drawPauseMenu(player::Player& player) {
 // Inventory
 // ============================================================
 void UiSystem::drawInventory(player::Player& player) {
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(0,0,0,200));
+    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
+             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
 
     auto* inv = player.inventory();
     if (!inv) return;
 
-    ui_.text(T(StrKey::Inv_Title), 40.f, 24.f, 3.f, COL_WHITE);
+    const Rect title = layout_.menuTitle();
+    ui_.text(T(StrKey::Inv_Title), title.x,
+             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
+             theme::TEXT_TITLE, theme::TextPrimary);
 
     if (auto* wal = player.wallet()) {
-        char goldBuf[32];
-        wal->format(goldBuf, sizeof(goldBuf));
-        float tw = ui_.textWidth(goldBuf, 2.f);
-        ui_.text(goldBuf, (float)screenW_ - tw - 40.f, 24.f, 2.f,
-                 rgba(255, 220, 100, 255));
+        char gold[32];
+        wal->format(gold, sizeof(gold));
+        const f32 tw = ui_.textWidth(gold, theme::TEXT_BODY);
+        ui_.text(gold, title.x + title.w - tw,
+                 title.y + (title.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, theme::Accent);
     }
 
-    // Кнопка сортировки
-    {
-        Rect r{ 200.f, 24.f, 120.f, 50.f };
-        int idx = ui_.pushInteractiveRect(r, [inv]() { inv->sortMain(); });
-        if (ui_.button(T(StrKey::Inv_Sort), r, idx,
-                       rgba(80, 80, 120, 255), COL_WHITE)) {
-            inv->sortMain();
+    const Rect left = layout_.invLeft();
+
+    // ---- Сумка: ВСЕ 27 ячеек ----
+    //
+    // Рисовалось 6x4 = 24 из 27. Три ячейки не были видны вовсе, а
+    // sortMain() вправе положить предмет в любую — в том числе в
+    // невидимую, откуда его не достать. Брони и аксессуаров не было
+    // в интерфейсе тоже: игрок видел 33 ячейки из 42.
+    const HudLayout::CellGrid main = layout_.cellGrid(left, items::INV_MAIN_SLOTS);
+    drawSlotGrid(player, main, items::INV_MAIN_OFFSET, items::INV_MAIN_SLOTS);
+
+    // ---- Экипировка: броня и аксессуары ----
+    const Rect mb = main.bounds();
+    const Rect eqArea{ left.x, mb.y + mb.h + layout_.dp(theme::SPACE_L_DP),
+                       left.w, layout_.dp(theme::TOUCH_REGULAR_DP) };
+    ui_.text(T(StrKey::Inv_Equipped), eqArea.x,
+             eqArea.y - layout_.dp(theme::SPACE_M_DP)
+                 - ui_.textHeight(theme::TEXT_LABEL),
+             theme::TEXT_LABEL, theme::TextSecondary);
+
+    const u32 eqCount = items::INV_ARMOR_SLOTS + items::INV_ACC_SLOTS;
+    const HudLayout::CellGrid eq = layout_.cellGrid(eqArea, eqCount);
+    drawSlotGrid(player, eq, items::INV_ARMOR_OFFSET, eqCount);
+
+    // ---- Пояс: здесь видны все девять ----
+    const Rect eb = eq.bounds();
+    const Rect hbArea{ left.x, eb.y + eb.h + layout_.dp(theme::SPACE_L_DP),
+                       left.w, layout_.dp(theme::TOUCH_REGULAR_DP) };
+    ui_.text(T(StrKey::Inv_Hotbar), hbArea.x,
+             hbArea.y - layout_.dp(theme::SPACE_M_DP)
+                 - ui_.textHeight(theme::TEXT_LABEL),
+             theme::TEXT_LABEL, theme::TextSecondary);
+
+    const HudLayout::CellGrid hb =
+        layout_.cellGrid(hbArea, items::INV_HOTBAR_SLOTS);
+    drawSlotGrid(player, hb, items::INV_HOTBAR_OFFSET, items::INV_HOTBAR_SLOTS);
+
+    drawItemDetails(player);
+}
+
+// ============================================================
+// Сетка ячеек инвентаря
+// ============================================================
+//
+// Один вид ячейки на всю игру: сумка, экипировка и пояс рисуются
+// этим же кодом. Тап ВЫБИРАЕТ — и только: раньше он одновременно
+// использовал предмет и начинал его перенос.
+void UiSystem::drawSlotGrid(player::Player& player,
+                            const HudLayout::CellGrid& g,
+                            u32 firstSlot, u32 count)
+{
+    auto* inv = player.inventory();
+    if (!inv) return;
+
+    for (u32 i = 0; i < count; ++i) {
+        const Rect r = g.at(i);
+        const u32 slot = firstSlot + i;
+
+        const int idx = ui_.pushInteractiveRect(r, [this, slot]() {
+            selectedInvSlot = (selectedInvSlot == (i32)slot) ? -1 : (i32)slot;
+        });
+        const bool pressed  = ui_.isInteractivePressed(idx);
+        const bool selected = (selectedInvSlot == (i32)slot);
+
+        ui_.rect(r.x, r.y, r.w, r.h,
+                 pressed ? theme::PanelRaised : theme::Panel);
+
+        // Выбранное отличается не только цветом: рамка толще.
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(selected ? theme::STROKE_SELECTED_DP
+                                            : theme::STROKE_DP),
+                        selected ? theme::Accent : theme::Stroke);
+
+        auto& st = inv->at(slot);
+        if (!st.empty()) {
+            const f32 pad = layout_.dp(theme::SPACE_XS_DP);
+            drawItemIcon(st, r.x + pad, r.y + pad, r.w - pad * 2.f, selected);
+        }
+
+        // Активная ячейка пояса помечена уголком — признак помимо цвета.
+        if (slot >= items::INV_HOTBAR_OFFSET &&
+            slot <  items::INV_HOTBAR_OFFSET + items::INV_HOTBAR_SLOTS &&
+            (slot - items::INV_HOTBAR_OFFSET) == (u32)inv->activeHotbar) {
+            const f32 m = layout_.dp(theme::SPACE_S_DP);
+            ui_.rect(r.x, r.y, m, m, theme::Accent);
         }
     }
-
-    Rect close{ (float)screenW_ - 90.f, 74.f, 80.f, 50.f };
-    int closeIdx = ui_.pushInteractiveRect(close, [this]() {
-        screen = Screen::Hud;
-        drag.clear();
-    });
-    if (ui_.button("X", close, closeIdx, rgba(120,60,60,255), COL_WHITE)) {
-        screen = Screen::Hud;
-        drag.clear();
-    }
-
-    // Основная сетка 6×4
-    const int cols = 6, rows = 4;
-    const float sw = 90.f, sh = 90.f, gap = 8.f;
-    const float totalW = cols * sw + (cols - 1) * gap;
-    const float x0 = ((float)screenW_ - totalW) * 0.5f;
-    const float y0 = 140.f;
-
-    for (int r = 0; r < rows; ++r) {
-        for (int c = 0; c < cols; ++c) {
-            u32 slotIdx = items::INV_MAIN_OFFSET + (u32)(r * cols + c);
-            float x = x0 + c * (sw + gap);
-            float y = y0 + r * (sh + gap);
-
-            Rect slotRect{ x, y, sw, sh };
-
-            int idx = ui_.pushInteractiveRect(slotRect, [this, &player, slotIdx]() {
-                auto* inv2 = player.inventory();
-                if (!inv2) return;
-
-                if (drag.active) {
-                    // Дроп в этот слот
-                    if (drag.fromSlot == slotIdx) {
-                        // Тот же слот — отмена
-                        drag.end();
-                        return;
-                    }
-                    auto res = inv2->putStack(slotIdx, drag.stack);
-                    if (res.leftover == 0) {
-                        drag.end();
-                    } else {
-                        drag.stack.count = res.leftover;
-                    }
-                } else {
-                    // Обычное использование
-                    auto& s = inv2->at(slotIdx);
-                    if (s.empty()) return;
-
-                    // Начать drag, если зажат долго
-                    // (упрощённо: сразу начинаем drag; UI-контекст даст
-                    //  нам координаты через pointerX/Y)
-                    drag.begin(ui_.activePointerId(), slotIdx,
-                               { ui_.pointerX(), ui_.pointerY() }, s);
-
-                    if (onUseItem) onUseItem(slotIdx);
-                }
-            });
-
-            bool pressed = ui_.isInteractivePressed(idx);
-            bool isDragSrc = drag.active && drag.fromSlot == slotIdx;
-
-            ui_.rect(x, y, sw, sh, pressed ? rgba(80, 80, 80, 220)
-                                            : rgba(40, 40, 40, 220));
-            ui_.rectOutline(x, y, sw, sh, 2.f,
-                            pressed ? rgba(255, 220, 100, 255) : COL_BLACK);
-
-            if (isDragSrc) continue;
-
-            auto& s = inv->at(slotIdx);
-            if (!s.empty()) {
-                drawItemIcon(s, x + 6.f, y + 6.f, sw - 12.f, false);
-            }
-        }
-    }
-
-    // Хотбар внизу
-    {
-        const float hsw = 60.f;
-        const float totalHW = 9.f * (hsw + 4.f) - 4.f;
-        const float hx = ((float)screenW_ - totalHW) * 0.5f;
-        const float hy = (float)screenH_ - 110.f;
-
-        for (int i = 0; i < 9; ++i) {
-            u32 slotIdx = items::INV_HOTBAR_OFFSET + (u32)i;
-            float x = hx + i * (hsw + 4.f);
-
-            Rect slotRect{ x, hy, hsw, hsw };
-            int idx = ui_.pushInteractiveRect(slotRect, [this, &player, slotIdx]() {
-                auto* inv2 = player.inventory();
-                if (!inv2) return;
-                if (drag.active) {
-                    if (drag.fromSlot == slotIdx) { drag.end(); return; }
-                    auto res = inv2->putStack(slotIdx, drag.stack);
-                    if (res.leftover == 0) drag.end();
-                    else drag.stack.count = res.leftover;
-                } else if (onEquipHotbar) {
-                    onEquipHotbar(slotIdx);
-                }
-            });
-
-            bool pressed = ui_.isInteractivePressed(idx);
-            ui_.rect(x, hy, hsw, hsw, pressed ? rgba(80, 80, 80, 220)
-                                                : rgba(40, 40, 40, 220));
-            ui_.rectOutline(x, hy, hsw, hsw, 2.f, COL_BLACK);
-
-            bool isDragSrc = drag.active && drag.fromSlot == slotIdx;
-            if (isDragSrc) continue;
-
-            auto& s = inv->at(slotIdx);
-            if (!s.empty()) {
-                drawItemIcon(s, x + 4.f, hy + 4.f, hsw - 8.f, false);
-            }
-        }
-    }
-
-    // Экипированное
-    {
-        const float ex = (float)screenW_ - 200.f;
-        const float ey = 200.f;
-        const float es = 120.f;
-
-        ui_.text(T(StrKey::Inv_Equipped), ex, ey - 30.f, 1.8f,
-                 rgba(200,200,200,255));
-
-        ui_.rect(ex, ey, es, es, rgba(60, 40, 20, 220));
-        ui_.rectOutline(ex, ey, es, es, 2.f, rgba(200, 160, 60, 255));
-
-        const auto& wdef = combat::weapons().get(player.equipped.weaponId);
-        if (wdef.name) {
-            ui_.text(wdef.name, ex + 8.f, ey + es + 8.f, 1.6f, COL_WHITE);
-        }
-    }
-
-    // Подсказка
-    ui_.text(T(StrKey::Inv_Hint_Tap), 40.f,
-             (float)screenH_ - 160.f, 1.5f, rgba(180, 180, 180, 255));
 }
 
 // ============================================================
 // Settings
 // ============================================================
+// ============================================================
+// Сведения о выбранном предмете
+// ============================================================
+//
+// Их не было нигде: игрок не мог узнать, что это, сколько у него и
+// можно ли этим воспользоваться. При этом тап по ячейке сразу
+// использовал предмет — то есть узнать можно было только выпив.
+//
+// Не стена текста: название, редкость, количество и ровно те
+// действия, которые к предмету применимы.
+void UiSystem::drawItemDetails(player::Player& player) {
+    const Rect d = layout_.invDetails();
+    ui_.rect(d.x, d.y, d.w, d.h, theme::Panel);
+    ui_.rectOutline(d.x, d.y, d.w, d.h, layout_.dp(theme::STROKE_DP),
+                    theme::Stroke);
+
+    auto* inv = player.inventory();
+    const f32 pad = layout_.dp(theme::PANEL_PAD_DP);
+
+    if (!inv || selectedInvSlot < 0 ||
+        selectedInvSlot >= (i32)items::INV_TOTAL_SLOTS ||
+        inv->at((u32)selectedInvSlot).empty()) {
+        ui_.text(T(StrKey::Inv_Hint_Tap), d.x + pad, d.y + pad,
+                 theme::TEXT_LABEL, theme::TextDisabled);
+        return;
+    }
+
+    const u32 slot = (u32)selectedInvSlot;
+    auto& st = inv->at(slot);
+    const auto& def = items::items().get(st.itemId);
+
+    f32 y = d.y + pad;
+
+    // Название цветом редкости — и рядом словом, потому что одним
+    // цветом ценность передавать нельзя.
+    if (def.name) {
+        ui_.text(def.name, d.x + pad, y, theme::TEXT_BODY,
+                 items::rarityColor(def.rarity));
+        y += layout_.dp(theme::SPACE_L_DP) + ui_.textHeight(theme::TEXT_BODY);
+    }
+    if (const char* rn = items::rarityName(def.rarity)) {
+        ui_.text(rn, d.x + pad, y, theme::TEXT_CAPTION, theme::TextSecondary);
+        y += layout_.dp(theme::SPACE_M_DP) + ui_.textHeight(theme::TEXT_CAPTION);
+    }
+
+    char cnt[48];
+    std::snprintf(cnt, sizeof(cnt), "x%u", (unsigned)st.count);
+    ui_.text(cnt, d.x + pad, y, theme::TEXT_LABEL, theme::TextPrimary);
+    y += layout_.dp(theme::SPACE_M_DP) + ui_.textHeight(theme::TEXT_LABEL);
+
+    if (st.enchant.id != combat::EnchantmentId::None) {
+        if (const char* en = combat::enchantmentName(st.enchant.id))
+            ui_.text(en, d.x + pad, y, theme::TEXT_CAPTION, theme::Xp);
+    }
+
+    // ---- Действия ----
+    //
+    // Каждое — отдельной кнопкой. Одно касание делает ровно одно.
+    const bool inHotbar = slot >= items::INV_HOTBAR_OFFSET &&
+                          slot <  items::INV_HOTBAR_OFFSET + items::INV_HOTBAR_SLOTS;
+
+    struct Action { const char* label; bool danger; std::function<void()> run; };
+    std::vector<Action> acts;
+
+    acts.push_back({ T(StrKey::Inv_Use), false, [this, slot]() {
+        if (onUseItem) onUseItem(slot);
+    }});
+
+    if (inHotbar) {
+        acts.push_back({ T(StrKey::Inv_Equipped), false, [this, slot]() {
+            if (onEquipHotbar) onEquipHotbar(slot);
+        }});
+    } else {
+        acts.push_back({ T(StrKey::Inv_Hotbar), false, [this, inv, slot]() {
+            // В первую свободную ячейку пояса, иначе в активную.
+            u32 dst = items::INV_HOTBAR_OFFSET + inv->activeHotbar;
+            for (u32 i = 0; i < items::INV_HOTBAR_SLOTS; ++i) {
+                if (!inv->at(items::INV_HOTBAR_OFFSET + i).empty()) continue;
+                dst = items::INV_HOTBAR_OFFSET + i;
+                break;
+            }
+            if (onMoveItem) onMoveItem(slot, (i32)dst);
+            selectedInvSlot = -1;
+        }});
+    }
+
+    // Выбросить необратимо — поэтому с вопросом и в опасном виде.
+    acts.push_back({ T(StrKey::Inv_Drop), true, [this, slot]() {
+        askConfirm(T(StrKey::Inv_Drop), T(StrKey::Inv_Drop), [this, slot]() {
+            if (onDropItem) onDropItem(slot);
+            selectedInvSlot = -1;
+        });
+    }});
+
+    for (u32 i = 0; i < (u32)acts.size(); ++i) {
+        const Rect r = layout_.invAction(i, (u32)acts.size());
+        const int idx = ui_.pushInteractiveRect(r, acts[i].run);
+        const bool pressed = ui_.isInteractivePressed(idx);
+        const UiColor accent = acts[i].danger ? theme::Danger : theme::Stroke;
+
+        ui_.rect(r.x, r.y, r.w, r.h,
+                 pressed ? accent : theme::PanelRaised);
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(acts[i].danger ? theme::STROKE_SELECTED_DP
+                                                  : theme::STROKE_DP),
+                        accent);
+        const f32 tw = ui_.textWidth(acts[i].label, theme::TEXT_BODY);
+        ui_.text(acts[i].label, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY,
+                 pressed ? theme::TextPrimary
+                         : (acts[i].danger ? theme::Danger : theme::TextPrimary));
+    }
+}
+
 void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
     ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(10, 15, 25, 240));
 

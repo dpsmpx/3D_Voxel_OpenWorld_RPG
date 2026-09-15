@@ -276,6 +276,44 @@ public:
                  a.y + (f32)row * (ch + gap), cw, ch };
     }
 
+    // ---- сетка ячеек фиксированного размера ----
+    //
+    // Ячейка не может быть мельче цели касания, поэтому под данное
+    // количество подбирается не размер, а число столбцов. Сумка из
+    // 27 ячеек в девять столбцов занимает 552 dp — на узком экране их
+    // просто меньше, а рядов больше.
+    struct CellGrid {
+        Rect area;
+        f32  cell = 0.f, gap = 0.f;
+        u32  cols = 1, rows = 1;
+
+        Rect at(u32 i) const {
+            const u32 c = cols ? (i % cols) : 0;
+            const u32 r = cols ? (i / cols) : 0;
+            return { area.x + (f32)c * (cell + gap),
+                     area.y + (f32)r * (cell + gap), cell, cell };
+        }
+        /// Сколько места сетка занимает на самом деле.
+        Rect bounds() const {
+            return { area.x, area.y,
+                     (f32)cols * (cell + gap) - gap,
+                     (f32)rows * (cell + gap) - gap };
+        }
+    };
+
+    CellGrid cellGrid(Rect area, u32 count) const {
+        CellGrid g;
+        g.area = area;
+        g.cell = dp(theme::TOUCH_REGULAR_DP);
+        g.gap  = dp(theme::SPACE_S_DP);
+        if (count == 0) { g.cols = g.rows = 0; return g; }
+        f32 fit = (area.w + g.gap) / (g.cell + g.gap);
+        g.cols = fit < 1.f ? 1u : (u32)fit;
+        if (g.cols > count) g.cols = count;
+        g.rows = (count + g.cols - 1) / g.cols;
+        return g;
+    }
+
     /// Окно подтверждения: по центру, не шире семидесяти процентов.
     Rect confirmPanel() const {
         const f32 wdt = (right() - left()) * CONFIRM_W_FRAC;
@@ -293,6 +331,37 @@ public:
         return { p.x + pad + (f32)i * (bw + gap),
                  p.y + p.h - pad - bh, bw, bh };
     }
+
+    // ============================================================
+    // Инвентарь
+    // ============================================================
+    //
+    // Слева сумка и экипировка, справа — сведения о выбранном
+    // предмете. Игрок должен понимать, что это и можно ли с этим
+    // что-то сделать, не гадая по цвету рамки.
+    Rect invDetails() const {
+        const Rect a = menuArea();
+        const f32 wdt = a.w * INV_DETAILS_FRAC;
+        return { a.x + a.w - wdt, a.y, wdt, a.h };
+    }
+    Rect invLeft() const {
+        const Rect a = menuArea();
+        return { a.x, a.y, a.w * (1.f - INV_DETAILS_FRAC)
+                            - dp(theme::SPACE_L_DP), a.h };
+    }
+
+    /// Кнопка действия над предметом, внизу панели сведений.
+    Rect invAction(u32 i, u32 count) const {
+        const Rect d = invDetails();
+        const f32 pad = dp(theme::PANEL_PAD_DP);
+        const f32 gap = dp(theme::SPACE_S_DP);
+        const f32 bh = dp(theme::TOUCH_REGULAR_DP);
+        const f32 total = (f32)count * (bh + gap) - gap;
+        return { d.x + pad, d.y + d.h - pad - total + (f32)i * (bh + gap),
+                 d.w - pad * 2.f, bh };
+    }
+
+    static constexpr f32 INV_DETAILS_FRAC = 0.30f;
 
     // ---- свободный центр: сюда не залезает ничто ----
     Rect clearCenter() const {

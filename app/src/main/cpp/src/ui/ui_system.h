@@ -112,6 +112,13 @@ public:
     EnchantContext enchantCtx{};
     u32 nearbyAltar = 0;
 
+    /// Выбранная ячейка инвентаря, -1 — ничего.
+    ///
+    /// Раньше тап по предмету ОДНОВРЕМЕННО использовал его и начинал
+    /// перенос: зелье выпивалось и бралось в руку одним касанием.
+    /// Теперь тап только выбирает, а действия — кнопками справа.
+    i32 selectedInvSlot = -1;
+
     /// ---- Drag & drop ----
     DragDrop drag{};
 
@@ -291,6 +298,11 @@ private:
     void drawPauseMenu(player::Player& player);
     void drawInventory(player::Player& player);
     void drawHotbar(player::Player& player);
+    /// Одна сетка ячеек: сумка, экипировка и пояс рисуются ею же.
+    void drawSlotGrid(player::Player& player, const HudLayout::CellGrid& g,
+                      u32 firstSlot, u32 count);
+    /// Что за предмет и что с ним можно сделать.
+    void drawItemDetails(player::Player& player);
     void drawSkillTreeScreen(player::Player& player);
     void drawAttributesScreen(player::Player& player);
 
