@@ -6,6 +6,7 @@
 #include "../npc/npc_def.h"
 #include "../npc/npc_ai.h"
 #include "../ecs/components.h"
+#include "../core/orientation.h"
 #include "../core/log.h"
 #include <cstring>
 #include <cmath>
@@ -123,10 +124,12 @@ void NpcRenderer::rebuild(ecs::Registry& reg) {
 
         // Ориентация
         glm::vec2 velXZ { vel->linear.x, vel->linear.z };
-        f32 yaw = 0.f;
-        if (glm::length(velXZ) > 0.1f) {
-            yaw = std::atan2(velXZ.x, velXZ.y);
-        }
+        // Поворот БЕРЁТСЯ из состояния сущности, а не вычисляется
+        // здесь. Прежний код считал его из мгновенной скорости в
+        // локальную переменную и обнулял при остановке — отсюда
+        // мгновенный разворот на север, стоило NPC встать.
+        const auto* fc = reg.get<ecs::Facing>(e);
+        const f32 yaw = fc ? fc->yaw : orient::yawFromDirection(velXZ.x, velXZ.y);
         const f32 speedNorm = glm::min(1.f, glm::length(velXZ) /
                                               std::max(0.1f, def.moveSpeed));
 
@@ -180,11 +183,10 @@ void NpcRenderer::rebuild(ecs::Registry& reg) {
         };
         for (const auto& off : legOffsets) {
             MobInstance inst{};
-            f32 c = std::cos(yaw), s = std::sin(yaw);
-            inst.pos = tf->position + glm::vec3(
-                off.x * c - off.z * s,
-                off.y,
-                off.x * s + off.z * c);
+            // Тот же поворот, что и в шейдере. Раньше здесь стоял
+            // поворот противоположной ручности, и тело собиралось
+            // наизнанку при любом движении с составляющей по X.
+            inst.pos = tf->position + orient::rotateY(off, yaw);
             inst.size  = glm::vec3(0.18f, 0.7f, 0.18f);
             inst.color = def.accentColor;
             inst.yaw   = yaw;

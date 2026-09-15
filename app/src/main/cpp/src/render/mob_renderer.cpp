@@ -6,6 +6,7 @@
 #include "../mobs/mob_def.h"
 #include "../mobs/mob_ai.h"
 #include "../ecs/components.h"
+#include "../core/orientation.h"
 #include "../core/log.h"
 #include <cstring>
 #include <cmath>
@@ -165,11 +166,13 @@ void MobRenderer::rebuild(ecs::Registry& reg) {
         if (tag->id == mobs::MOB_NONE) continue;
 
         // Ориентация: смотрим вдоль velocity (XZ)
-        glm::vec2 velXZ { vel->linear.x, vel->linear.z };
-        f32 yaw = 0.f;
-        if (glm::length(velXZ) > 0.1f) {
-            yaw = std::atan2(velXZ.x, velXZ.y);   // 0 = +Z
-        }
+        // Поворот БЕРЁТСЯ из состояния сущности, а не вычисляется
+        // здесь. Прежний код считал его из мгновенной скорости в
+        // локальную переменную и обнулял при остановке — отсюда
+        // мгновенный разворот на север, стоило существу встать.
+        const glm::vec2 velXZ { vel->linear.x, vel->linear.z };
+        const auto* fc = reg.get<ecs::Facing>(e);
+        const f32 yaw = fc ? fc->yaw : orient::yawFromDirection(velXZ.x, velXZ.y);
 
         const f32 speedNorm = glm::min(1.f, glm::length(velXZ) / std::max(0.1f, def.chaseSpeed));
         const bool attacking = (ai->attackAnim > 0.01f);
@@ -184,9 +187,12 @@ void MobRenderer::rebuild(ecs::Registry& reg) {
             MobInstance inst{};
             inst.pos   = tf->position + glm::vec3(0, off.y, 0);
             // offset x/z — с учётом yaw
-            f32 c = std::cos(yaw), s = std::sin(yaw);
-            inst.pos.x += off.x * c - off.z * s;
-            inst.pos.z += off.x * s + off.z * c;
+            // Тот же поворот, что и в шейдере. Раньше здесь стоял
+            // поворот противоположной ручности, и тело собиралось
+            // наизнанку при любом движении с составляющей по X.
+            const glm::vec3 wr = orient::rotateY(glm::vec3(off.x, 0.f, off.z), yaw);
+            inst.pos.x += wr.x;
+            inst.pos.z += wr.z;
             inst.size  = part.size;
             inst.color = part.color;
             inst.yaw   = yaw;

@@ -61,6 +61,7 @@
 #include <set>
 #include "ui/hud_layout.h"
 #include "config/localization.h"
+#include "core/orientation.h"
 #include "ui/ui_theme.h"
 #include "ui/ui_atlas.h"
 #include "ui/font_data.h"
@@ -5810,6 +5811,197 @@ void testCraftTradeEnchantShareOneLook() {
 }
 
 // ------------------------------------------------------------
+// Ориентация сущностей: ни одно направление не даёт бокового хода.
+//
+// Соглашение задаёт yaw = atan2(vel.x, vel.z): ноль в +Z, угол растёт
+// к +X. Шейдер mob.vert ему следовал, а mob_renderer.cpp и
+// npc_renderer.cpp применяли поворот ПРОТИВОПОЛОЖНОЙ ручности.
+// Совпадение получалось только при движении вдоль Z; при любой
+// составляющей по X положения частей зеркалились, а геометрия частей
+// нет — тело собиралось наизнанку. Это и был «идёт боком».
+//
+// Проверок на направления не было вовсе, поэтому ошибка дожила до
+// экрана.
+// ------------------------------------------------------------
+void testEntityFacingHasNoSidewaysMotion() {
+    group("ориентация: боком никто не ходит");
+
+    constexpr f32 PI = 3.14159265359f;
+
+    // ---- 1. yaw смотрит туда, куда движется ----
+    struct Dir { f32 x, z; const char* name; };
+    const Dir dirs[] = {
+        {  0.f,  1.f, "+Z север"    },
+        {  1.f,  0.f, "+X восток"   },
+        {  0.f, -1.f, "-Z юг"       },
+        { -1.f,  0.f, "-X запад"    },
+        {  1.f,  1.f, "северо-восток" },
+        { -1.f,  1.f, "северо-запад"  },
+        {  1.f, -1.f, "юго-восток"    },
+        { -1.f, -1.f, "юго-запад"     },
+    };
+
+    int bad = 0;
+    for (const auto& d : dirs) {
+        const f32 len = std::sqrt(d.x * d.x + d.z * d.z);
+        const glm::vec3 want{ d.x / len, 0.f, d.z / len };
+        const f32 yaw = orient::yawFromDirection(d.x, d.z);
+        const glm::vec3 fwd = orient::forward(yaw);
+
+        // Направление взгляда должно совпасть с направлением движения.
+        const f32 dot = fwd.x * want.x + fwd.z * want.z;
+        if (dot < 0.999f) {
+            ++bad;
+            char m[160];
+            std::snprintf(m, sizeof(m), "%s: взгляд не совпал с движением (dot %.3f)",
+                          d.name, dot);
+            check(false, m);
+        }
+
+        // Боковая составляющая взгляда относительно движения — ноль.
+        // Именно она и означает «идёт боком».
+        const glm::vec3 rt = orient::right(yaw);
+        const f32 side = rt.x * want.x + rt.z * want.z;
+        if (std::fabs(side) > 0.001f) {
+            ++bad;
+            char m[160];
+            std::snprintf(m, sizeof(m), "%s: боковая составляющая %.3f", d.name, side);
+            check(false, m);
+        }
+    }
+    check(bad == 0, "во всех восьми направлениях модель смотрит вперёд");
+
+    // ---- 2. Процессорный поворот совпадает с шейдерным ----
+    //
+    // Ровно та ошибка, которая была: две формулы разной ручности.
+    // Сверяем orient::rotateY с формулой из mob.vert ЧИСЛЕННО.
+    {
+        int mism = 0;
+        for (int i = 0; i < 16; ++i) {
+            const f32 yaw = -PI + (f32)i * (2.f * PI / 16.f);
+            const f32 c = std::cos(yaw), s = std::sin(yaw);
+            for (const glm::vec3 v : { glm::vec3(1,0,0), glm::vec3(0,0,1),
+                                       glm::vec3(0.3f,0.5f,-0.7f) }) {
+                // Дословно из mob.vert.
+                const glm::vec3 shader{ v.x * c + v.z * s, v.y, -v.x * s + v.z * c };
+                const glm::vec3 cpu = orient::rotateY(v, yaw);
+                if (std::fabs(shader.x - cpu.x) > 1e-5f ||
+                    std::fabs(shader.y - cpu.y) > 1e-5f ||
+                    std::fabs(shader.z - cpu.z) > 1e-5f) ++mism;
+            }
+        }
+        check(mism == 0, "поворот на процессоре совпадает с шейдерным");
+    }
+
+    // Локальное +Z обязано уходить в направление взгляда: это и есть
+    // определение «модель смотрит вперёд».
+    {
+        int bad2 = 0;
+        for (int i = 0; i < 16; ++i) {
+            const f32 yaw = -PI + (f32)i * (2.f * PI / 16.f);
+            const glm::vec3 nose = orient::rotateY(glm::vec3(0, 0, 1), yaw);
+            const glm::vec3 fwd  = orient::forward(yaw);
+            if (std::fabs(nose.x - fwd.x) > 1e-5f ||
+                std::fabs(nose.z - fwd.z) > 1e-5f) ++bad2;
+        }
+        check(bad2 == 0, "локальное +Z уходит ровно в направление взгляда");
+    }
+
+    // ---- 3. Шейдер не разошёлся с соглашением ----
+    {
+        const std::string vs = readSource("app/src/main/cpp/shaders/mob.vert");
+        if (!vs.empty()) {
+            check(vs.find("local.x * c + local.z * s") != std::string::npos &&
+                  vs.find("-local.x * s + local.z * c") != std::string::npos,
+                  "mob.vert поворачивает по тому же соглашению");
+        }
+    }
+
+    // ---- 4. Рендеры не считают поворот сами ----
+    //
+    // Именно самодельный расчёт в рендере и разошёлся с шейдером.
+    for (const char* f : { "app/src/main/cpp/src/render/mob_renderer.cpp",
+                           "app/src/main/cpp/src/render/npc_renderer.cpp" }) {
+        const std::string src = readSource(f);
+        if (src.empty()) continue;
+        check(src.find("off.x * c - off.z * s") == std::string::npos,
+              "в рендере не осталось поворота противоположной ручности");
+        check(src.find("orient::rotateY(") != std::string::npos,
+              "рендер поворачивает общей функцией");
+        check(src.find("ecs::Facing") != std::string::npos,
+              "и берёт угол из состояния сущности, а не считает его");
+    }
+}
+
+// ------------------------------------------------------------
+// Доворот: плавный, по кратчайшей дуге, и без сброса на остановке.
+// ------------------------------------------------------------
+void testFacingTurnsSmoothly() {
+    group("ориентация: доворот плавный");
+
+    constexpr f32 PI = 3.14159265359f;
+
+    // ---- 1. Кратчайшая дуга ----
+    //
+    // Без приведения разницы к (-pi, pi] существо, поворачиваясь с
+    // 170° на -170°, поедет через весь круг вместо двадцати градусов.
+    {
+        const f32 from =  170.f * PI / 180.f;
+        const f32 to   = -170.f * PI / 180.f;
+        const f32 d = orient::angleDelta(from, to);
+        check(std::fabs(std::fabs(d) - 20.f * PI / 180.f) < 1e-4f,
+              "с 170° на -170° это двадцать градусов, а не триста сорок");
+        check(d > 0.f, "и в сторону возрастания угла");
+    }
+
+    // ---- 2. Доворот занимает время, а не кадр ----
+    {
+        ecs::Facing f{};
+        f.turnRate = 4.f;                 // рад/с
+        const glm::vec3 east{ 3.f, 0.f, 0.f };
+
+        orient::advanceFacing(f, east, 1.f / 60.f);
+        check(std::fabs(f.moveYaw - PI * 0.5f) < 1e-4f,
+              "направление движения обновилось сразу");
+        check(f.yaw < PI * 0.5f - 0.01f,
+              "а модель ещё только начала доворачиваться");
+
+        // За достаточное время доворот завершается.
+        for (int i = 0; i < 200; ++i) orient::advanceFacing(f, east, 1.f / 60.f);
+        check(std::fabs(f.yaw - PI * 0.5f) < 1e-3f, "и в итоге довернулась");
+    }
+
+    // ---- 3. Остановка НЕ разворачивает на север ----
+    //
+    // Прежний код обнулял угол при скорости ниже порога: существо
+    // мгновенно разворачивалось на север, стоило ему встать.
+    {
+        ecs::Facing f{};
+        const glm::vec3 west{ -3.f, 0.f, 0.f };
+        for (int i = 0; i < 200; ++i) orient::advanceFacing(f, west, 1.f / 60.f);
+        const f32 facedWest = f.yaw;
+        check(std::fabs(facedWest + PI * 0.5f) < 1e-3f, "шёл на запад");
+
+        for (int i = 0; i < 120; ++i)
+            orient::advanceFacing(f, glm::vec3(0.f), 1.f / 60.f);
+        check(std::fabs(f.yaw - facedWest) < 1e-4f,
+              "встал — и остался смотреть на запад, а не на север");
+    }
+
+    // ---- 4. Дрожание скорости не дёргает модель ----
+    {
+        ecs::Facing f{};
+        const f32 tiny = orient::MOVE_EPSILON * 0.5f;
+        for (int i = 0; i < 60; ++i) {
+            const glm::vec3 jitter{ (i % 2 ? tiny : -tiny), 0.f, 0.f };
+            orient::advanceFacing(f, jitter, 1.f / 60.f);
+        }
+        check(std::fabs(f.yaw) < 1e-4f,
+              "скорость ниже порога значимости направление не меняет");
+    }
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -7410,6 +7602,8 @@ int main() {
     testNoticesQueueAndPrioritise();
     testAttributeSteppersArePressable();
     testCraftTradeEnchantShareOneLook();
+    testEntityFacingHasNoSidewaysMotion();
+    testFacingTurnsSmoothly();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();
