@@ -319,6 +319,8 @@ void UiSystem::drawHud(vk::Context& /*ctx*/,
         ui_.rect(cx - 1.f, cy - 10.f, 2.f, 20.f, COL_WHITE);
     }
 
+    drawInteractPrompt();
+
     drawLevelUpNotification(player);
     drawReputationNotification(player);
 
@@ -378,6 +380,54 @@ void UiSystem::drawTouchControls() {
         ui_.circle(j.center.x + d.x, j.center.y + d.y,
                    j.radius * 0.34f, rgba(245, 245, 250, ja));
     }
+}
+
+// ============================================================
+// Подсказка взаимодействия
+// ============================================================
+//
+// Игра каждый кадр считает, стоит ли игрок у станка или алтаря
+// (main.cpp: detectNearbyStation, EnchantAltar). По этому признаку
+// даже переключалась музыка. А показать было нечем: подсказки не
+// существовало, openEnchant не вызывался ниоткуда, а ремесло и
+// торговля висели на диалоге, который не проходится. Три готовых
+// экрана были недостижимы из-за отсутствия одной кнопки.
+void UiSystem::drawInteractPrompt() {
+    const bool station = nearbyStation != crafting::StationType::None;
+    const bool altar   = nearbyAltar != 0;
+    if (!station && !altar) return;
+
+    // Станок ближе по смыслу: если рядом и то и другое, предлагаем его.
+    const char* what = station ? crafting::stationName(nearbyStation)
+                               : T(StrKey::Ench_Altar);
+
+    const Rect r = layout_.interactPrompt();
+    const f32 chamfer = layout_.dp(theme::CHAMFER_PANEL_DP);
+    (void)chamfer;   // срез появится вместе с общим примитивом панели
+
+    const int idx = ui_.pushInteractiveRect(r, [this, station]() {
+        if (station) openCrafting(nearbyStation);
+        else if (nearbyAltar) openEnchant(nearbyAltar);
+    });
+    const bool pressed = ui_.isInteractivePressed(idx);
+
+    ui_.rect(r.x, r.y, r.w, r.h,
+             pressed ? theme::Accent : theme::Panel);
+    ui_.rectOutline(r.x, r.y, r.w, r.h,
+                    layout_.dp(theme::STROKE_SELECTED_DP),
+                    pressed ? theme::AccentPressed : theme::Accent);
+
+    const UiColor fg = pressed ? theme::Ink : theme::TextPrimary;
+    const f32 lw = ui_.textWidth(T(StrKey::Hud_Use), theme::TEXT_LABEL);
+    ui_.text(T(StrKey::Hud_Use), r.x + (r.w - lw) * 0.5f,
+             r.y + layout_.dp(theme::SPACE_S_DP),
+             theme::TEXT_LABEL, pressed ? theme::Ink : theme::Accent);
+
+    const f32 nw = ui_.textWidth(what, theme::TEXT_BODY);
+    ui_.text(what, r.x + (r.w - nw) * 0.5f,
+             r.y + r.h - layout_.dp(theme::SPACE_S_DP)
+                 - ui_.textHeight(theme::TEXT_BODY),
+             theme::TEXT_BODY, fg);
 }
 
 void UiSystem::drawXpBar(player::Player& player) {

@@ -245,6 +245,8 @@ private:
     void drawLevelUpNotification(player::Player& player);
     void drawReputationNotification(player::Player& player);
     void drawMinimap(player::Player& player);
+    /// Подсказка «использовать»: отпирает ремесло и зачарование.
+    void drawInteractPrompt();
     void drawHudResources(player::Player& player);
 
     void drawPauseMenu(player::Player& player);

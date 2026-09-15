@@ -4760,6 +4760,72 @@ void testUiThemeMatchesItsDocument() {
 }
 
 // ------------------------------------------------------------
+// Подсказка взаимодействия доводит до экранов, а не просто есть.
+//
+// Аудит нашёл три готовых экрана, недостижимых из игры: ремесло и
+// торговля открывались только из диалога, который не проходится, а
+// openEnchant не вызывался вообще ниоткуда. При этом близость станка
+// и алтаря считалась каждый кадр — по ней даже переключалась музыка.
+//
+// Проверка смотрит именно на ПРОВОДКУ: что подсказка рисуется из
+// HUD и что из неё есть путь к обоим экранам. Проверять «функция
+// объявлена» бессмысленно — объявлены они были и до этого.
+// ------------------------------------------------------------
+void testInteractPromptUnlocksScreens() {
+    group("подсказка взаимодействия отпирает экраны");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    // ---- 1. Подсказка вызывается из HUD ----
+    const usize hud = src.find("void UiSystem::drawHud(");
+    check(hud != NONE, "drawHud на месте");
+    const usize hudEnd = src.find("\n}\n", hud);
+    const std::string hudBody = src.substr(hud, hudEnd - hud);
+    check(hudBody.find("drawInteractPrompt()") != NONE,
+          "HUD рисует подсказку взаимодействия");
+
+    // ---- 2. Из подсказки есть путь к обоим экранам ----
+    const usize pr = src.find("void UiSystem::drawInteractPrompt()");
+    check(pr != NONE, "подсказка реализована");
+    if (pr == NONE) return;
+    const usize prEnd = src.find("\n}\n", pr);
+    const std::string body = src.substr(pr, prEnd - pr);
+
+    check(body.find("openCrafting(") != NONE,
+          "подсказка открывает ремесло");
+    check(body.find("openEnchant(") != NONE,
+          "подсказка открывает зачарование");
+
+    // ---- 3. Она реагирует на близость, а не висит всегда ----
+    check(body.find("nearbyStation") != NONE && body.find("nearbyAltar") != NONE,
+          "подсказка смотрит на близость станка и алтаря");
+    check(body.find("if (!station && !altar) return;") != NONE,
+          "и не показывается, когда рядом ничего нет");
+
+    // ---- 4. Она нажимается ----
+    check(body.find("pushInteractiveRect") != NONE,
+          "подсказка принимает нажатие");
+    // Геометрия — из раскладки, а не своя: иначе нарисованное и
+    // нажимаемое снова разъедутся.
+    check(body.find("layout_.interactPrompt()") != NONE,
+          "её прямоугольник берётся из раскладки");
+
+    // ---- 5. Экраны, ради которых всё это, достижимы ----
+    //
+    // openEnchant не вызывался НИОТКУДА — ровно это и проверяем:
+    // хотя бы один вызов вне самого объявления в заголовке.
+    const std::string main_ = readSource("app/src/main/cpp/src/main.cpp");
+    const bool enchantFromUi   = body.find("openEnchant(") != NONE;
+    const bool craftFromUi     = body.find("openCrafting(") != NONE;
+    const bool craftFromDialog = !main_.empty() &&
+                                 main_.find("openCrafting(") != NONE;
+    check(enchantFromUi, "у зачарования появился вызывающий");
+    check(craftFromUi || craftFromDialog, "у ремесла есть вызывающий");
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -6346,6 +6412,7 @@ int main() {
     testHudAndButtonsDoNotOverlap();
     testUiThemeObeysItsOwnRules();
     testUiThemeMatchesItsDocument();
+    testInteractPromptUnlocksScreens();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();
