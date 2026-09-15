@@ -62,6 +62,10 @@
 #include "ui/hud_layout.h"
 #include "config/localization.h"
 #include "core/orientation.h"
+#include "entity/locomotion.h"
+#include "entity/mob_rigs.h"
+#include "entity/humanoid_rig.h"
+#include "entity/rig.h"
 #include "ui/ui_theme.h"
 #include "ui/ui_atlas.h"
 #include "ui/font_data.h"
@@ -5908,25 +5912,115 @@ void testEntityFacingHasNoSidewaysMotion() {
     }
 
     // ---- 3. Шейдер не разошёлся с соглашением ----
+    //
+    // Поворот в шейдере теперь кватернионный: одним углом повёрнутую
+    // в суставе конечность выразить нельзя. Значит и сверять надо
+    // кватернион — но ровно так же, как раньше сверяли матрицу:
+    // дословной транскрипцией шейдерной формулы и численным
+    // сравнением. Раньше здесь искалась строка `local.x * c + ...`,
+    // и после перехода на кватернион такая проверка ловила бы не
+    // расхождение соглашений, а лишь то, что текст шейдера изменился.
     {
-        const std::string vs = readSource("app/src/main/cpp/shaders/mob.vert");
-        if (!vs.empty()) {
-            check(vs.find("local.x * c + local.z * s") != std::string::npos &&
-                  vs.find("-local.x * s + local.z * c") != std::string::npos,
-                  "mob.vert поворачивает по тому же соглашению");
+        // Дословно из mob.vert:
+        //   return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+        auto shaderQrot = [](const glm::vec4& q, const glm::vec3& v) {
+            const glm::vec3 x{ q.x, q.y, q.z };
+            return v + 2.f * glm::cross(x, glm::cross(x, v) + q.w * v);
+        };
+
+        int mism = 0, mismYaw = 0;
+        for (int i = 0; i < 16; ++i) {
+            const f32 yaw = -PI + (f32)i * (2.f * PI / 16.f);
+            const glm::vec4 q = orient::yawQuat(yaw);
+            for (const glm::vec3 v : { glm::vec3(1,0,0), glm::vec3(0,0,1),
+                                       glm::vec3(0.3f,0.5f,-0.7f) }) {
+                const glm::vec3 sh  = shaderQrot(q, v);
+                const glm::vec3 cpu = orient::qrot(q, v);
+                if (glm::length(sh - cpu) > 1e-5f) ++mism;
+                // И главное: кватернион вокруг +Y обязан давать ровно
+                // тот же поворот, что единственная законная матрица.
+                if (glm::length(sh - orient::rotateY(v, yaw)) > 1e-5f) ++mismYaw;
+            }
         }
+        check(mism == 0, "orient::qrot повторяет формулу шейдера");
+        check(mismYaw == 0, "кватернион вокруг +Y совпадает с rotateY");
+
+        // Текст шейдера всё же читаем — но на форму поворота, а не на
+        // конкретные символы: подмена qrot матрицей другой ручности
+        // численную проверку выше обошла бы стороной.
+        for (const char* n : { "app/src/main/cpp/shaders/mob.vert",
+                               "app/src/main/cpp/shaders/projectile.vert" }) {
+            const std::string vs = readSource(n);
+            if (vs.empty()) continue;
+            const bool ok =
+                vs.find("qrot(vec4 q, vec3 v)") != std::string::npos &&
+                vs.find("v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v)")
+                    != std::string::npos &&
+                vs.find("in vec4 iRot") != std::string::npos;
+            check(ok, "шейдер поворачивает тем же кватернионом");
+        }
+    }
+
+    // ---- 3б. Кватернион по направлению ----
+    //
+    // Нужен там, где движение не горизонтально: стрела с гравитацией
+    // падает, и одного yaw ей мало.
+    {
+        int bad3 = 0;
+        const glm::vec3 dirs[] = {
+            { 0, 0, 1 }, { 1, 0, 0 }, { 0, 0, -1 }, { -1, 0, 0 },
+            { 0, 1, 0 }, { 0, -1, 0 }, { 0.3f, -0.8f, 0.5f },
+            { -2.f, 1.f, -3.f },
+        };
+        for (const glm::vec3& d : dirs) {
+            const glm::vec3 nose =
+                orient::qrot(orient::dirQuat(d), glm::vec3(0, 0, 1));
+            if (glm::length(nose - glm::normalize(d)) > 1e-4f) ++bad3;
+        }
+        check(bad3 == 0, "dirQuat уводит модельное +Z ровно в направление");
+
+        // Кватернион обязан быть единичным: ненормированный растянет
+        // коробку вместе с поворотом.
+        int notUnit = 0;
+        for (const glm::vec3& d : dirs)
+            if (std::fabs(glm::length(orient::dirQuat(d)) - 1.f) > 1e-4f)
+                ++notUnit;
+        check(notUnit == 0, "и остаётся единичным");
+
+        const glm::vec4 z = orient::dirQuat(glm::vec3(0.f));
+        check(std::fabs(z.w - 1.f) < 1e-6f,
+              "нулевое направление не поворачивает ни на что");
+
+        // Горизонтальное направление обязано совпасть с yaw: иначе у
+        // стрелы и у существа «вперёд» разные.
+        int mismYaw2 = 0;
+        for (int i = 0; i < 16; ++i) {
+            const f32 yaw = -PI + (f32)i * (2.f * PI / 16.f);
+            const glm::vec3 f = orient::forward(yaw);
+            const glm::vec3 a = orient::qrot(orient::dirQuat(f), glm::vec3(0,0,1));
+            const glm::vec3 b = orient::qrot(orient::yawQuat(yaw), glm::vec3(0,0,1));
+            if (glm::length(a - b) > 1e-4f) ++mismYaw2;
+        }
+        check(mismYaw2 == 0, "по горизонтали dirQuat и yawQuat согласны");
     }
 
     // ---- 4. Рендеры не считают поворот сами ----
     //
     // Именно самодельный расчёт в рендере и разошёлся с шейдером.
+    // Поэтому требование не «вызывай rotateY», а строже: своей
+    // тригонометрии в рендере быть не должно вовсе, поворот приходит
+    // из общего места — orient:: или entity::resolve.
     for (const char* f : { "app/src/main/cpp/src/render/mob_renderer.cpp",
                            "app/src/main/cpp/src/render/npc_renderer.cpp" }) {
         const std::string src = readSource(f);
         if (src.empty()) continue;
         check(src.find("off.x * c - off.z * s") == std::string::npos,
               "в рендере не осталось поворота противоположной ручности");
-        check(src.find("orient::rotateY(") != std::string::npos,
+        check(src.find("std::cos(") == std::string::npos &&
+              src.find("std::sin(") == std::string::npos,
+              "рендер не считает синусов и косинусов сам");
+        check(src.find("orient::") != std::string::npos ||
+              src.find("entity::resolve(") != std::string::npos,
               "рендер поворачивает общей функцией");
         check(src.find("ecs::Facing") != std::string::npos,
               "и берёт угол из состояния сущности, а не считает его");
@@ -5998,6 +6092,472 @@ void testFacingTurnsSmoothly() {
         }
         check(std::fabs(f.yaw) < 1e-4f,
               "скорость ниже порога значимости направление не меняет");
+    }
+}
+
+// ------------------------------------------------------------
+// Оснастка: иерархия, опора, вращение вместо сдвига.
+//
+// Прежняя «оснастка» была плоским списком коробок со смещением от
+// начала сущности: ни родителя, ни своей системы координат. Собрать
+// «торс → бедро → голень» было не на чем, и анимация СДВИГАЛА
+// коробку вперёд-назад вместо поворота в суставе — нога ехала
+// параллельно себе, отсюда «плывущая» походка.
+//
+// Причина лежала глубже: формат инстанса нёс один угол на коробку и
+// повёрнутую конечность выразить не мог.
+// ------------------------------------------------------------
+void testRigHierarchyIsSound() {
+    group("оснастка: иерархия и опора");
+
+    int problems = 0;
+    for (u16 id = 1; id < mobs::MOB_COUNT; ++id) {
+        const entity::Rig& rig = mobs::rigFor(id);
+        const mobs::MobDef& d = mobs::mobRegistry().get(id);
+        const char* name = d.name;
+        if (rig.count == 0) continue;
+
+        // ---- 1. Родитель стоит РАНЬШЕ ребёнка ----
+        //
+        // Иначе сборка в один проход прочитает недосчитанного
+        // родителя, и часть уедет неизвестно куда.
+        for (u8 i = 0; i < rig.count; ++i) {
+            const i8 par = rig.parts[i].parent;
+            if (par < 0) continue;
+            if (par < (i8)i) continue;
+            ++problems;
+            char m[160];
+            std::snprintf(m, sizeof(m), "%s: часть %u ссылается на родителя %d впереди себя",
+                          name ? name : "?", i, (int)par);
+            check(false, m);
+        }
+
+        // ---- 2. Корень один и он невидим ----
+        int roots = 0;
+        for (u8 i = 0; i < rig.count; ++i)
+            if (rig.parts[i].parent < 0) ++roots;
+        if (roots != 1) {
+            ++problems;
+            char m[160];
+            std::snprintf(m, sizeof(m), "%s: корней %d, а должен быть один", 
+                          name ? name : "?", roots);
+            check(false, m);
+        }
+
+        // ---- 3. У каждой ноги есть голень ----
+        //
+        // Нога одной коробкой гнуться не может: колено нужно, чтобы
+        // ступня описывала дугу, а не ехала прямой.
+        const entity::PartRole ups[] = {
+            entity::PartRole::UpperLegFL, entity::PartRole::UpperLegFR,
+            entity::PartRole::UpperLegBL, entity::PartRole::UpperLegBR };
+        const entity::PartRole los[] = {
+            entity::PartRole::LowerLegFL, entity::PartRole::LowerLegFR,
+            entity::PartRole::LowerLegBL, entity::PartRole::LowerLegBR };
+        for (int k = 0; k < 4; ++k) {
+            bool hasUp = false, hasLo = false;
+            for (u8 i = 0; i < rig.count; ++i) {
+                if (rig.parts[i].role == ups[k]) hasUp = true;
+                if (rig.parts[i].role == los[k]) hasLo = true;
+            }
+            if (hasUp == hasLo) continue;
+            ++problems;
+            char m[160];
+            std::snprintf(m, sizeof(m), "%s: у ноги %d есть бедро без голени или наоборот",
+                          name ? name : "?", k);
+            check(false, m);
+        }
+
+        // ---- 3б. Оснастка не меняет размер модели ----
+        //
+        // Оснастка — то же существо, пересобранное с суставами, а не
+        // другое. Если звенья ноги в сумме длиннее исходной коробки,
+        // существо молча вырастает: опора этого уже не покажет —
+        // подошва всё равно садится на ноль, просто макушка уезжает
+        // вверх. Ровно так и было: половинки ноги брали по 0.55 длины
+        // вместо 0.5, и каждый зверь оказывался выше задуманного.
+        {
+            f32 flatLo = 0.f, flatHi = 0.f;
+            bool any = false;
+            for (u8 q = 0; q < d.partCount; ++q) {
+                const mobs::MobPart& sp = d.parts[q];
+                if (sp.size.x <= 0.f || sp.size.y <= 0.f || sp.size.z <= 0.f)
+                    continue;
+                const f32 b = sp.offset.y - sp.size.y * 0.5f;
+                const f32 t = sp.offset.y + sp.size.y * 0.5f;
+                if (!any) { flatLo = b; flatHi = t; any = true; }
+                else { flatLo = std::min(flatLo, b); flatHi = std::max(flatHi, t); }
+            }
+            if (any) {
+                entity::Pose rest;
+                entity::ResolvedPart rp[entity::MAX_PARTS];
+                const u8 rn = entity::resolve(rig, rest, glm::vec3(0.f), 0.f,
+                                              rp, entity::MAX_PARTS);
+                f32 rigLo = 0.f, rigHi = 0.f;
+                for (u8 q = 0; q < rn; ++q) {
+                    const f32 b = rp[q].center.y - rp[q].size.y * 0.5f;
+                    const f32 t = rp[q].center.y + rp[q].size.y * 0.5f;
+                    if (q == 0) { rigLo = b; rigHi = t; }
+                    else { rigLo = std::min(rigLo, b); rigHi = std::max(rigHi, t); }
+                }
+                const f32 flatH = flatHi - flatLo;
+                const f32 rigH  = rigHi - rigLo;
+                if (rn > 0 && std::fabs(rigH - flatH) > 0.02f * flatH + 0.01f) {
+                    ++problems;
+                    char m[176];
+                    std::snprintf(m, sizeof(m),
+                                  "%s: оснастка ростом %.2f вместо %.2f",
+                                  name ? name : "?", rigH, flatH);
+                    check(false, m);
+                }
+            }
+        }
+
+        // ---- 4. Опора: существо стоит на земле ----
+        //
+        // Ни парящих, ни утопленных. Начало сущности — точка опоры,
+        // значит низ модели в покое должен быть у нуля.
+        entity::Pose idle;
+        anim::idlePose(rig, idle, 0.f);
+        const f32 lo = entity::lowestPoint(rig, idle, 0.f);
+        if (std::fabs(lo) > 0.35f) {
+            ++problems;
+            char m[176];
+            std::snprintf(m, sizeof(m), "%s: низ модели на %.2f от точки опоры",
+                          name ? name : "?", lo);
+            check(false, m);
+        }
+    }
+    check(problems == 0, "оснастка всех видов состоятельна");
+}
+
+// ------------------------------------------------------------
+// Сборка позы: части вращаются и держатся друг за друга.
+// ------------------------------------------------------------
+void testRigResolveRotatesParts() {
+    group("оснастка: суставы вращаются, а не сдвигаются");
+
+    constexpr f32 PI = 3.14159265359f;
+
+    // Простая оснастка: корень → торс → бедро → голень.
+    entity::Rig rig;
+    entity::Part root; root.parent = -1; root.role = entity::PartRole::Root;
+    root.visible = false;
+    const u8 iR = rig.add(root);
+
+    entity::Part torso; torso.parent = (i8)iR; torso.role = entity::PartRole::Torso;
+    torso.pivot = { 0.f, 1.f, 0.f }; torso.size = { 0.6f, 0.6f, 1.0f };
+    const u8 iT = rig.add(torso);
+
+    entity::Part up; up.parent = (i8)iT; up.role = entity::PartRole::UpperLegFR;
+    up.pivot = { 0.2f, -0.3f, 0.3f }; up.boxOffset = { 0.f, -0.25f, 0.f };
+    up.size = { 0.15f, 0.5f, 0.15f };
+    const u8 iU = rig.add(up);
+
+    entity::Part lo; lo.parent = (i8)iU; lo.role = entity::PartRole::LowerLegFR;
+    lo.pivot = { 0.f, -0.5f, 0.f }; lo.boxOffset = { 0.f, -0.25f, 0.f };
+    lo.size = { 0.14f, 0.5f, 0.14f };
+    rig.add(lo);
+
+    entity::ResolvedPart out[entity::MAX_PARTS];
+
+    // ---- 1. В нулевой позе части стоят там, где описаны ----
+    {
+        entity::Pose p; p.clear();
+        const u8 n = entity::resolve(rig, p, glm::vec3(0.f), 0.f, out, entity::MAX_PARTS);
+        check(n == 3, "невидимый корень не рисуется");
+        check(std::fabs(out[0].center.y - 1.f) < 1e-4f, "торс на своей высоте");
+        check(std::fabs(out[1].center.y - 0.45f) < 1e-4f, "бедро висит под торсом");
+        check(std::fabs(out[2].center.y - (-0.05f)) < 1e-4f, "голень под бедром");
+    }
+
+    // ---- 2. Поворот бедра УВОДИТ голень ----
+    //
+    // Это и есть проверка иерархии: в плоском списке голень осталась
+    // бы на месте.
+    {
+        entity::Pose p; p.clear();
+        p.euler[2].x = 0.6f;              // качнули бедро
+        entity::resolve(rig, p, glm::vec3(0.f), 0.f, out, entity::MAX_PARTS);
+        const f32 kneeZ = out[2].center.z;
+        entity::Pose z; z.clear();
+        entity::ResolvedPart ref[entity::MAX_PARTS];
+        entity::resolve(rig, z, glm::vec3(0.f), 0.f, ref, entity::MAX_PARTS);
+        check(std::fabs(kneeZ - ref[2].center.z) > 0.1f,
+              "поворот бедра уводит голень: части держатся друг за друга");
+        // И сама коробка бедра ПОВЕРНУТА, а не просто сдвинута.
+        check(std::fabs(out[1].rot.x) > 1e-3f,
+              "бедро повёрнуто, а не сдвинуто параллельно себе");
+    }
+
+    // ---- 3. Поворот сущности разворачивает всю оснастку ----
+    {
+        entity::Pose p; p.clear();
+        entity::resolve(rig, p, glm::vec3(0.f), PI * 0.5f, out, entity::MAX_PARTS);
+        // Бедро было справа-впереди (x +0.2, z +0.3); при развороте
+        // на восток «вперёд» уходит в +X.
+        check(out[1].center.x > 0.2f, "оснастка развернулась вместе с сущностью");
+        check(std::fabs(out[1].center.z + 0.2f) < 0.05f, "и ровно на девяносто градусов");
+    }
+
+    // ---- 4. Поправка ориентации модели — только через оснастку ----
+    //
+    // Единственное законное место. Прятать её в рендере или ИИ
+    // нельзя: именно так появляются «этому мобу +90 градусов».
+    {
+        entity::Rig r2 = rig;
+        r2.modelYawOffset = PI * 0.5f;
+        entity::Pose p; p.clear();
+        entity::ResolvedPart a[entity::MAX_PARTS], b[entity::MAX_PARTS];
+        entity::resolve(rig, p, glm::vec3(0.f), PI * 0.5f, a, entity::MAX_PARTS);
+        entity::resolve(r2,  p, glm::vec3(0.f), 0.f,       b, entity::MAX_PARTS);
+        check(std::fabs(a[1].center.x - b[1].center.x) < 1e-4f &&
+              std::fabs(a[1].center.z - b[1].center.z) < 1e-4f,
+              "поправка модели равносильна повороту сущности");
+    }
+}
+
+// ------------------------------------------------------------
+// Двуногий: цельное тело, а не набор парящих коробок.
+//
+// Прежний NPC собирался в рендере руками, и собирался неправильно:
+// коробка тела стояла ЦЕНТРОМ в точке опоры, то есть наполовину под
+// землёй, голова висела на фиксированных 1.45, а между ними, там где
+// полагалась грудь, был просвет в три четверти метра. Ноги при этом
+// «шагали» сдвигом коробки по Z. Ни компилятор, ни проверки этого не
+// видели: рендер никто не разбирал.
+// ------------------------------------------------------------
+void testHumanoidRigIsWholeBody() {
+    group("двуногий: тело цельное и стоит на земле");
+
+    for (const f32 H : { 1.5f, 1.8f, 2.2f }) {
+        entity::HumanoidSpec spec;
+        spec.height = H;
+        const entity::Rig rig = entity::humanoidRig(spec);
+
+        entity::Pose rest;
+        entity::ResolvedPart p[entity::MAX_PARTS];
+        const u8 n = entity::resolve(rig, rest, glm::vec3(0.f), 0.f,
+                                     p, entity::MAX_PARTS);
+        if (n == 0) { check(false, "оснастка пуста"); continue; }
+
+        char m[176];
+
+        // ---- Подошва на опоре ----
+        const f32 lo = entity::lowestPoint(rig, rest, 0.f);
+        std::snprintf(m, sizeof(m), "рост %.1f: подошва на опоре (%.3f)", H, lo);
+        check(std::fabs(lo) < 1e-3f, m);
+
+        // ---- Макушка на заданной высоте ----
+        f32 top = p[0].center.y + p[0].size.y * 0.5f;
+        for (u8 i = 1; i < n; ++i)
+            top = std::max(top, p[i].center.y + p[i].size.y * 0.5f);
+        std::snprintf(m, sizeof(m), "рост %.1f: макушка там, где заказано (%.3f)",
+                      H, top);
+        check(std::fabs(top - H) < 1e-3f, m);
+
+        // ---- Ни одна часть не под землёй ----
+        int sunk = 0;
+        for (u8 i = 0; i < n; ++i)
+            if (p[i].center.y + p[i].size.y * 0.5f < -1e-3f) ++sunk;
+        std::snprintf(m, sizeof(m), "рост %.1f: ничего не закопано", H);
+        check(sunk == 0, m);
+
+        // ---- Тело без разрывов по вертикали ----
+        //
+        // Именно разрыв и был виден: голова сама по себе, тело само.
+        // Берём туловище, голову и ноги — то, что образует силуэт, —
+        // и требуем, чтобы их отрезки по Y смыкались.
+        f32 torsoBottom = 0.f, torsoTop = 0.f, headBottom = 0.f, legTop = 0.f;
+        bool haveTorso = false, haveHead = false, haveLeg = false;
+        u8 w = 0;
+        for (u8 i = 0; i < rig.count && w < n; ++i) {
+            if (!rig.parts[i].visible) continue;
+            const f32 b = p[w].center.y - p[w].size.y * 0.5f;
+            const f32 t = p[w].center.y + p[w].size.y * 0.5f;
+            switch (rig.parts[i].role) {
+                case entity::PartRole::Torso:
+                    torsoBottom = b; torsoTop = t; haveTorso = true; break;
+                case entity::PartRole::Head:
+                    headBottom = b; haveHead = true; break;
+                case entity::PartRole::UpperLegFL:
+                case entity::PartRole::UpperLegFR:
+                    legTop = std::max(legTop, t); haveLeg = true; break;
+                default: break;
+            }
+            ++w;
+        }
+        check(haveTorso && haveHead && haveLeg,
+              "у двуногого есть торс, голова и ноги");
+        if (haveTorso && haveHead) {
+            std::snprintf(m, sizeof(m),
+                          "рост %.1f: голова сидит на плечах, а не парит "
+                          "(зазор %.3f)", H, headBottom - torsoTop);
+            check(std::fabs(headBottom - torsoTop) < 1e-3f, m);
+        }
+        if (haveTorso && haveLeg) {
+            std::snprintf(m, sizeof(m),
+                          "рост %.1f: торс сидит на бёдрах (зазор %.3f)",
+                          H, torsoBottom - legTop);
+            check(std::fabs(torsoBottom - legTop) < 1e-3f, m);
+        }
+
+        // ---- Ноги шагают ВРАЩЕНИЕМ ----
+        //
+        // Проверка на ту самую ошибку: коробка не должна ехать
+        // параллельно себе. При повороте в бедре ступня и опускается,
+        // и уходит вперёд; при сдвиге — только уходит.
+        {
+            entity::Pose walk;
+            anim::walkPose(rig, walk, 1.2f, 1.f);
+            entity::ResolvedPart q[entity::MAX_PARTS];
+            entity::resolve(rig, walk, glm::vec3(0.f), 0.f, q, entity::MAX_PARTS);
+            int rotated = 0;
+            u8 v = 0;
+            for (u8 i = 0; i < rig.count && v < n; ++i) {
+                if (!rig.parts[i].visible) continue;
+                if (anim::isUpperLimb(rig.parts[i].role)) {
+                    // Коробка бедра обязана быть ПОВЁРНУТА, а не
+                    // просто переставлена.
+                    const glm::vec3 down = q[v].rot * glm::vec3(0, -1, 0);
+                    if (std::fabs(down.z) > 1e-3f) ++rotated;
+                }
+                ++v;
+            }
+            std::snprintf(m, sizeof(m), "рост %.1f: бедро поворачивается, "
+                                        "а не сдвигается", H);
+            check(rotated > 0, m);
+        }
+    }
+
+    // Пропорции задаются долями роста, значит модель обязана
+    // масштабироваться целиком, а не тянуться одними ногами.
+    {
+        entity::HumanoidSpec a; a.height = 1.5f;
+        entity::HumanoidSpec b; b.height = 3.0f;
+        const entity::Rig ra = entity::humanoidRig(a);
+        const entity::Rig rb = entity::humanoidRig(b);
+        check(ra.count == rb.count, "у высокого и низкого частей поровну");
+
+        bool proportional = true;
+        for (u8 i = 0; i < ra.count && i < rb.count; ++i) {
+            const glm::vec3 sa = ra.parts[i].size * 2.f;
+            const glm::vec3 sb = rb.parts[i].size;
+            if (glm::length(sa - sb) > 1e-3f) proportional = false;
+        }
+        check(proportional, "вдвое выше — значит вдвое крупнее целиком");
+    }
+}
+
+// ------------------------------------------------------------
+// Походка соответствует анатомии.
+// ------------------------------------------------------------
+void testGaitMatchesAnatomy() {
+    group("походка: диагональные пары и сгиб колена");
+
+    // Четвероногое шагает ДИАГОНАЛЬНЫМИ парами: правая передняя с
+    // левой задней. Иначе получается иноходь и существо
+    // переваливается боком.
+    check(anim::limbPhaseSign(entity::PartRole::UpperLegFR) ==
+          anim::limbPhaseSign(entity::PartRole::UpperLegBL),
+          "правая передняя идёт с левой задней");
+    check(anim::limbPhaseSign(entity::PartRole::UpperLegFL) ==
+          anim::limbPhaseSign(entity::PartRole::UpperLegBR),
+          "левая передняя — с правой задней");
+    check(anim::limbPhaseSign(entity::PartRole::UpperLegFR) !=
+          anim::limbPhaseSign(entity::PartRole::UpperLegFL),
+          "а передние между собой — врозь");
+
+    // Голень и бедро одной ноги идут в одной фазе.
+    check(anim::limbPhaseSign(entity::PartRole::UpperLegFR) ==
+          anim::limbPhaseSign(entity::PartRole::LowerLegFR),
+          "голень следует за своим бедром");
+
+    const entity::Rig& rig = mobs::rigFor(1);
+    if (rig.count == 0) return;
+
+    // На нулевой скорости конечности неподвижны: иначе существо
+    // «идёт» стоя на месте.
+    {
+        entity::Pose p;
+        anim::walkPose(rig, p, 1.3f, 0.f);
+        f32 maxAngle = 0.f;
+        for (u8 i = 0; i < rig.count; ++i)
+            for (int k = 0; k < 3; ++k)
+                maxAngle = std::max(maxAngle, std::fabs(p.euler[i][k]));
+        check(maxAngle < 1e-4f, "при нулевой скорости конечности неподвижны");
+    }
+
+    // Амплитуда растёт со скоростью.
+    {
+        entity::Pose slow, fast;
+        anim::walkPose(rig, slow, 1.3f, 0.3f);
+        anim::walkPose(rig, fast, 1.3f, 1.0f);
+        f32 sMax = 0.f, fMax = 0.f;
+        for (u8 i = 0; i < rig.count; ++i) {
+            sMax = std::max(sMax, std::fabs(slow.euler[i].x));
+            fMax = std::max(fMax, std::fabs(fast.euler[i].x));
+        }
+        check(fMax > sMax + 0.05f, "шире шаг на большей скорости");
+    }
+
+    // Колено гнётся только в одну сторону, и сторона эта — своя у
+    // передних ног и у задних.
+    //
+    // Проверяем ГЕОМЕТРИЮ, а не знак угла. Прежняя проверка требовала
+    // «угол по X не положительный» — и пропускала ровно ту ошибку, от
+    // которой сторожила: с отрицательным углом голень уезжает в +Z,
+    // то есть колено выгибается ВПЕРЁД. Сторожить надо положение
+    // голени относительно колена.
+    {
+        int wrongWay = 0, moved = 0;
+        for (int k = 0; k < 24; ++k) {
+            entity::Pose full;
+            anim::walkPose(rig, full, (f32)k * 0.26f, 1.f);
+
+            for (u8 i = 0; i < rig.count; ++i) {
+                const entity::PartRole r = rig.parts[i].role;
+                if (!anim::isLowerLimb(r)) continue;
+
+                // Берём ОДИН сустав: иначе к смещению голени
+                // примешивается качание бедра, и сторона сгиба
+                // перестаёт читаться.
+                entity::Pose only;
+                only.euler[i] = full.euler[i];
+
+                entity::Pose rest;
+                entity::ResolvedPart bent[entity::MAX_PARTS];
+                entity::ResolvedPart straight[entity::MAX_PARTS];
+                const u8 n = entity::resolve(rig, only, glm::vec3(0.f), 0.f,
+                                             bent, entity::MAX_PARTS);
+                entity::resolve(rig, rest, glm::vec3(0.f), 0.f,
+                                straight, entity::MAX_PARTS);
+                u8 w = 0;
+                for (u8 j = 0; j < i; ++j)
+                    if (rig.parts[j].visible) ++w;
+                if (w >= n) continue;
+
+                // Сравниваем с той же голенью в РАСПРЯМЛЁННОЙ ноге.
+                // Просто z коробки не годится: он в основном говорит,
+                // передняя это нога или задняя, а не куда согнулось
+                // колено.
+                const f32 dz = bent[w].center.z - straight[w].center.z;
+                if (std::fabs(dz) > 1e-4f) ++moved;
+
+                // Сторона сгиба названа ЗДЕСЬ, а не взята из
+                // kneeBendSign: иначе проверка сверяет функцию с самой
+                // собой и молча принимает любой её знак.
+                //   передняя нога складывается назад, в -Z;
+                //   задняя  — вперёд, в +Z.
+                const bool rear = (r == entity::PartRole::LowerLegBL ||
+                                   r == entity::PartRole::LowerLegBR);
+                const f32 want = rear ? 1.f : -1.f;
+                if (dz * want < -1e-4f) ++wrongWay;
+            }
+        }
+        check(moved > 0, "колено вообще сгибается");
+        check(wrongWay == 0, "и складывается в свою сторону: "
+                             "передние назад, задние вперёд");
     }
 }
 
@@ -7604,6 +8164,10 @@ int main() {
     testCraftTradeEnchantShareOneLook();
     testEntityFacingHasNoSidewaysMotion();
     testFacingTurnsSmoothly();
+    testRigHierarchyIsSound();
+    testRigResolveRotatesParts();
+    testGaitMatchesAnatomy();
+    testHumanoidRigIsWholeBody();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();
