@@ -78,7 +78,6 @@ struct Settings {
     f32 uiOpacity           = 1.0f;    // 0.4 .. 1.0
     bool showFps            = true;
     bool showDebugPos       = false;
-    bool showDamageNumbers  = true;
 
     /// --- Аудио (используется Phase 14) ---
     f32 masterVolume        = 1.0f;

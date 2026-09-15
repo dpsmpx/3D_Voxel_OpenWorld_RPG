@@ -203,7 +203,6 @@ bool Settings::save(const std::string& path) const {
     wf("ui_opacity",         uiOpacity);
     wb("show_fps",           showFps);
     wb("show_debug_pos",     showDebugPos);
-    wb("show_damage_numbers",showDamageNumbers);
 
     std::fprintf(f, "\n[Audio]\n");
     wf("master_volume",      masterVolume);
@@ -282,8 +281,6 @@ bool Settings::load(const std::string& path) {
             showFps = readBool(kv.value, showFps);
         else if (std::strcmp(kv.key, "show_debug_pos") == 0)
             showDebugPos = readBool(kv.value, showDebugPos);
-        else if (std::strcmp(kv.key, "show_damage_numbers") == 0)
-            showDamageNumbers = readBool(kv.value, showDamageNumbers);
 
         else if (std::strcmp(kv.key, "master_volume") == 0)
             masterVolume = readF32(kv.value, masterVolume);

@@ -3,11 +3,13 @@
  * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
  */
 #include "ui_context.h"
+#include "font_data.h"
 #include "../core/log.h"
 #include <cmath>
 #include <cstring>
 #include <functional>
 #include <string>
+#include <vector>
 #include <utility>
 
 namespace ui {
@@ -86,17 +88,21 @@ void UiContext::text(const std::string& s, float x, float y, float scale, UiColo
     float cx = x;
     const float cw = 6.f * scale;
 
-    for (char ch : s) {
-        if (ch == '\n') {
+    // Строка читается ПО СИМВОЛАМ, а не по байтам.
+    //
+    // Кириллица в UTF-8 двухбайтовая, и побайтное чтение давало на
+    // каждую букву два пробела: русский язык стирал интерфейс, а
+    // ширина строки выходила вдвое больше настоящей.
+    for (usize i = 0; i < s.size(); ) {
+        const u32 cp = utf8Next(s.data(), s.size(), i);
+        if (cp == (u32)'\n') {
             y += 9.f * scale;
             cx = x;
             continue;
         }
-        int cc = (unsigned char)ch;
-        if (cc >= 'a' && cc <= 'z') cc = cc - 'a' + 'A';
-        if (cc < 32 || cc > 95) cc = ' ';
+        int idx = glyphIndex(cp);
+        if (idx < 0) idx = (int)' ' - FONT_FIRST;   // нечем рисовать
 
-        int idx = cc - 32;
         int col = idx % 16, row = idx / 16;
         float u0 = (float)(col * 6)      / 128.f;
         float v0 = (float)(row * 8)      /  64.f;
@@ -154,7 +160,74 @@ void UiContext::ring(float cx, float cy, float rInner, float rOuter,
 }
 
 float UiContext::textWidth(const std::string& s, float scale) const {
-    return s.size() * 6.f * scale;
+    // Считаем СИМВОЛЫ, а не байты: «ПРОДОЛЖИТЬ» это десять знаков и
+    // двадцать байт, и по байтам центрирование уезжало вдвое.
+    usize n = 0;
+    for (usize i = 0; i < s.size(); ) { utf8Next(s.data(), s.size(), i); ++n; }
+    return (float)n * 6.f * scale;
+}
+
+// Разбивка на строки по словам.
+//
+// Ширина считается в СИМВОЛАХ: после перевода шрифта на UTF-8 байты
+// и символы больше не одно и то же, и по байтам русская реплика
+// переносилась бы вдвое раньше, чем нужно.
+static std::vector<std::string> wrapLines(const std::string& s,
+                                          float maxWidth, float scale)
+{
+    std::vector<std::string> out;
+    const float cw = 6.f * scale;
+    const usize perLine = (cw > 0.f && maxWidth > cw)
+                        ? (usize)(maxWidth / cw) : (usize)1;
+
+    std::string line, word;
+    usize lineLen = 0, wordLen = 0;
+
+    auto flushWord = [&]() {
+        if (word.empty()) return;
+        if (lineLen != 0 && lineLen + 1 + wordLen > perLine) {
+            out.push_back(line);
+            line.clear(); lineLen = 0;
+        }
+        if (lineLen != 0) { line += ' '; ++lineLen; }
+        line += word; lineLen += wordLen;
+        word.clear(); wordLen = 0;
+    };
+
+    for (usize i = 0; i < s.size(); ) {
+        const usize at = i;
+        const u32 cp = utf8Next(s.data(), s.size(), i);
+        if (cp == (u32)'\n') {
+            flushWord();
+            out.push_back(line);
+            line.clear(); lineLen = 0;
+            continue;
+        }
+        if (cp == (u32)' ') { flushWord(); continue; }
+        word.append(s, at, i - at);
+        ++wordLen;
+        // Слово длиннее строки рвём принудительно, иначе оно уедет.
+        if (wordLen >= perLine) flushWord();
+    }
+    flushWord();
+    if (!line.empty() || out.empty()) out.push_back(line);
+    return out;
+}
+
+float UiContext::textWrapped(const std::string& s, float x, float y,
+                             float maxWidth, float scale, UiColor c)
+{
+    const auto lines = wrapLines(s, maxWidth, scale);
+    const float step = 9.f * scale;
+    for (usize i = 0; i < lines.size(); ++i)
+        text(lines[i], x, y + (float)i * step, scale, c);
+    return (float)lines.size() * step;
+}
+
+float UiContext::wrappedHeight(const std::string& s, float maxWidth,
+                               float scale) const
+{
+    return (float)wrapLines(s, maxWidth, scale).size() * 9.f * scale;
 }
 
 int UiContext::pushInteractiveRect(Rect r, std::function<void()> onTap) {

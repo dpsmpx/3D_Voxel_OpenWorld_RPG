@@ -45,6 +45,15 @@ public:
     void ring(float cx, float cy, float rInner, float rOuter, UiColor c,
               int segments = 24);
     float textWidth(const std::string& s, float scale) const;
+    /// Текст с переносом по словам. Возвращает занятую высоту.
+    ///
+    /// Реплика NPC рисовалась одной строкой и уходила за панель.
+    /// Перенос по словам, а не по символам: рвать слово посреди —
+    /// хуже, чем перенести его целиком.
+    float textWrapped(const std::string& s, float x, float y,
+                      float maxWidth, float scale, UiColor c);
+    /// Сколько места займёт такой текст, ничего не рисуя.
+    float wrappedHeight(const std::string& s, float maxWidth, float scale) const;
     float textHeight(float scale) const { return 7.f * scale; }
 
     /// ---- Кнопка ----

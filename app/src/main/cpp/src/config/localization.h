@@ -42,6 +42,7 @@ enum class StrKey : u16 {
 
     // --- Квесты ---
     Quest_Title, Quest_Active, Quest_Completed, Quest_None,
+    Quest_Rewards,
 
     // --- Репутация ---
     Rep_Title, Rep_Hated, Rep_Hostile, Rep_Unfriendly, Rep_Neutral,

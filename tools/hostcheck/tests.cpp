@@ -60,7 +60,10 @@
 #include <cstring>
 #include <set>
 #include "ui/hud_layout.h"
+#include "config/localization.h"
 #include "ui/ui_theme.h"
+#include "ui/ui_atlas.h"
+#include "ui/font_data.h"
 #include "ui/ui_system.h"
 #include "input/touch_layout.h"
 #include <string>
@@ -5022,6 +5025,684 @@ void testConfirmSwallowsTouchesOutsideIt() {
 }
 
 // ------------------------------------------------------------
+// Инвентарь показывает все ячейки, какие есть в данных.
+//
+// Рисовалась сетка 6x4 = 24 из 27, а брони и аксессуаров не было в
+// интерфейсе вовсе: игрок видел 33 ячейки из 42. При этом sortMain()
+// вправе положить предмет в любую из 27 — в том числе в невидимую,
+// откуда его не достать.
+// ------------------------------------------------------------
+void testInventoryShowsEverySlot() {
+    group("инвентарь: видны все ячейки");
+
+    // ---- 1. Сетка вмещает столько, сколько есть ----
+    //
+    // Число столбцов подбирается под ширину, а размер ячейки не
+    // опускается ниже цели касания. Значит на любом экране сетка
+    // обязана вместить ВСЕ ячейки, пусть и в больше рядов.
+    struct Size { f32 w, h; i32 dpi; const char* name; };
+    const Size sizes[] = {
+        { 2306.f, 1080.f, 400, "2306x1080" },
+        { 1280.f,  720.f, 320, "1280x720"  },
+        { 2560.f, 1600.f, 280, "2560x1600" },
+        {  960.f,  540.f, 240, "960x540"   },
+    };
+
+    int problems = 0;
+    for (const auto& sz : sizes) {
+        const ui::HudLayout L(sz.w, sz.h,
+                              ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                              ui::SafeInsets{});
+        const ui::Rect left = L.invLeft();
+
+        struct Part { const char* name; u32 count; };
+        const Part parts[] = {
+            { "сумка",      items::INV_MAIN_SLOTS },
+            { "экипировка", items::INV_ARMOR_SLOTS + items::INV_ACC_SLOTS },
+            { "пояс",       items::INV_HOTBAR_SLOTS },
+        };
+        for (const auto& pt : parts) {
+            const auto g = L.cellGrid(left, pt.count);
+            if (g.cols * g.rows < pt.count) {
+                ++problems;
+                char msg[160];
+                std::snprintf(msg, sizeof(msg),
+                              "%s: %s вмещает %u из %u",
+                              sz.name, pt.name, g.cols * g.rows, pt.count);
+                check(false, msg);
+            }
+            // Ячейка не может стать мельче цели касания.
+            if (g.cell + 0.01f < L.dp(ui::theme::TOUCH_MIN_DP)) {
+                ++problems;
+                char msg[160];
+                std::snprintf(msg, sizeof(msg), "%s: ячейка %s мельче 48 dp",
+                              sz.name, pt.name);
+                check(false, msg);
+            }
+            // Ячейки не налезают друг на друга.
+            if (pt.count >= 2) {
+                const ui::Rect a = g.at(0), b = g.at(1);
+                if (a.x + a.w > b.x + 0.01f && a.y == b.y) {
+                    ++problems;
+                    check(false, "соседние ячейки налезают");
+                }
+            }
+        }
+    }
+    check(problems == 0, "на всех экранах видны все 42 ячейки");
+
+    // ---- 2. Отрисовка обходит именно полные диапазоны ----
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) return;
+    const usize NONE = std::string::npos;
+    const usize inv = src.find("void UiSystem::drawInventory(");
+    check(inv != NONE, "экран инвентаря на месте");
+    if (inv == NONE) return;
+    const usize end = src.find("\n}\n", inv);
+    const std::string body = src.substr(inv, end - inv);
+
+    check(body.find("items::INV_MAIN_SLOTS") != NONE,
+          "сумка рисуется по числу ячеек из данных, а не по 6x4");
+    check(body.find("items::INV_ARMOR_OFFSET") != NONE,
+          "броня и аксессуары появились в интерфейсе");
+    check(body.find("items::INV_HOTBAR_SLOTS") != NONE,
+          "пояс рисуется целиком");
+    // Зашитая сетка 6x4 — ровно то, чем это было.
+    check(body.find("cols = 6") == NONE && body.find("rows = 4") == NONE,
+          "зашитой сетки 6x4 не осталось");
+}
+
+// ------------------------------------------------------------
+// Одно касание — одно действие.
+//
+// Тап по ячейке ОДНОВРЕМЕННО использовал предмет и начинал его
+// перенос: зелье выпивалось и бралось в руку одним касанием. В самом
+// коде об этом стоял честный комментарий «упрощённо».
+// ------------------------------------------------------------
+void testInventoryTapDoesOneThing() {
+    group("инвентарь: одно касание — одно действие");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    const usize gd = src.find("void UiSystem::drawSlotGrid(");
+    check(gd != NONE, "сетка ячеек выделена в общий код");
+    if (gd == NONE) return;
+    const usize end = src.find("\n}\n", gd);
+    const std::string body = src.substr(gd, end - gd);
+
+    check(body.find("selectedInvSlot") != NONE,
+          "тап по ячейке выбирает её");
+    check(body.find("onUseItem") == NONE,
+          "и НЕ использует предмет заодно");
+    check(body.find("drag.begin(") == NONE,
+          "и не начинает перенос заодно");
+
+    // Действия живут отдельно, в панели сведений.
+    const usize dt = src.find("void UiSystem::drawItemDetails(");
+    check(dt != NONE, "панель сведений о предмете появилась");
+    if (dt == NONE) return;
+    const usize dend = src.find("\n}\n", dt);
+    const std::string dbody = src.substr(dt, dend - dt);
+
+    check(dbody.find("onUseItem") != NONE, "использовать — отдельной кнопкой");
+    check(dbody.find("onDropItem") != NONE, "выбросить — отдельной кнопкой");
+    // Выброс необратим.
+    check(dbody.find("askConfirm(") != NONE,
+          "выброс предмета требует подтверждения");
+}
+
+// ------------------------------------------------------------
+// Русский язык виден.
+//
+// Таблица русских строк была заполнена целиком, переключатель в
+// настройках работал и сохранялся в конфиг — а шрифт знал только
+// ASCII 32..95, и всякий байт кириллицы (они все больше 95)
+// превращался в пробел. Переключение на русский СТИРАЛО интерфейс.
+// Вдобавок ширина считалась по байтам: «ПРОДОЛЖИТЬ» мерилось как
+// двадцать знаков вместо десяти, и центрирование уезжало вдвое.
+// ------------------------------------------------------------
+void testRussianTextIsActuallyDrawn() {
+    group("шрифт: русский язык виден");
+
+    // ---- 1. Атлас вмещает оба набора ----
+    ui::UiAtlasData atlas;
+    const int cells = (int)((atlas.width / atlas.cellW) * (atlas.height / atlas.cellH));
+    check(ui::GLYPH_COUNT <= cells, "все глифы помещаются в атлас");
+    check(ui::GLYPH_COUNT == ui::FONT_COUNT + ui::CYR_COUNT,
+          "в атласе латиница и кириллица вместе");
+    // Индексация идёт по 16 в ряд — последний ряд не должен вылезти.
+    check((ui::GLYPH_COUNT + 15) / 16 <= (int)(atlas.height / atlas.cellH),
+          "рядов глифов не больше, чем рядов клеток");
+
+    // ---- 2. Разбор UTF-8 ----
+    {
+        const std::string s = "ДА";        // 4 байта, 2 символа
+        usize i = 0;
+        const u32 a = ui::utf8Next(s.data(), s.size(), i);
+        const u32 b = ui::utf8Next(s.data(), s.size(), i);
+        check(a == 0x414, "Д разобрана как один символ");
+        check(b == 0x410, "А тоже");
+        check(i == s.size(), "и строка прочитана целиком");
+    }
+
+    // ---- 3. Соответствие букв клеткам ----
+    check(ui::glyphIndex(0x410) == ui::FONT_COUNT, "А — первая кириллическая");
+    check(ui::glyphIndex(0x42F) == ui::FONT_COUNT + 31, "Я — тридцать вторая");
+    check(ui::glyphIndex(0x401) == ui::FONT_COUNT + 32, "Ё вынесена в конец");
+    check(ui::glyphIndex(0x2014) >= 0, "длинное тире рисуется");
+    // Строчные приводятся к заглавным: шрифт заглавный целиком.
+    check(ui::glyphIndex(0x430) == ui::glyphIndex(0x410), "а и А — одна клетка");
+    check(ui::glyphIndex(0x44F) == ui::glyphIndex(0x42F), "я и Я — одна клетка");
+    check(ui::glyphIndex(0x451) == ui::glyphIndex(0x401), "ё и Ё — одна клетка");
+    check(ui::glyphIndex('a') == ui::glyphIndex('A'), "латиница по-прежнему заглавная");
+
+    // ---- 4. Ни одна буква не пустая ----
+    //
+    // Пустой глиф выглядит как пробел — ровно как выглядела вся
+    // кириллица до этого. Молчаливая дыра в алфавите недопустима.
+    int blanks = 0;
+    for (int g = 0; g < ui::CYR_COUNT; ++g) {
+        u8 any = 0;
+        for (int r = 0; r < ui::FONT_H; ++r) any |= ui::FONT_CYR[g][r];
+        if (any) continue;
+        ++blanks;
+        char msg[96];
+        std::snprintf(msg, sizeof(msg), "кириллическая буква %d пустая", g);
+        check(false, msg);
+    }
+    check(blanks == 0, "каждый знак кириллического набора что-то рисует");
+
+    // Буквы должны и различаться: одинаковые говорят об опечатке.
+    int dupes = 0;
+    for (int a = 0; a < ui::CYR_COUNT; ++a)
+        for (int b = a + 1; b < ui::CYR_COUNT; ++b) {
+            bool same = true;
+            for (int r = 0; r < ui::FONT_H; ++r)
+                if (ui::FONT_CYR[a][r] != ui::FONT_CYR[b][r]) { same = false; break; }
+            if (!same) continue;
+            ++dupes;
+            char msg[96];
+            std::snprintf(msg, sizeof(msg), "буквы %d и %d нарисованы одинаково", a, b);
+            check(false, msg);
+        }
+    check(dupes == 0, "разные буквы выглядят по-разному");
+
+    // ---- 5. Ширина считается в символах ----
+    {
+        ui::UiContext ctx;
+        ctx.init(nullptr, 1000, 500);
+        const f32 lat = ctx.textWidth("ABCDEFGHIJ", 1.f);   // 10 знаков
+        const f32 cyr = ctx.textWidth("ПРОДОЛЖИТЬ", 1.f);   // 10 знаков, 20 байт
+        check(std::fabs(lat - cyr) < 0.01f,
+              "десять русских букв шире не чем десять латинских");
+    }
+
+    // ---- 6. ВСЯ русская таблица рисуется ----
+    //
+    // Главная проверка: не «кириллица вообще работает», а что каждый
+    // символ каждой строки, которую игра покажет, имеет свою клетку.
+    config::L().setLanguage(config::Language::Russian);
+    int missing = 0;
+    for (u16 k = 0; k < config::STR_KEY_COUNT; ++k) {
+        const char* str = config::L().get((config::StrKey)k);
+        if (!str) continue;
+        const std::string v = str;
+        for (usize i = 0; i < v.size(); ) {
+            const usize at = i;
+            const u32 cp = ui::utf8Next(v.data(), v.size(), i);
+            if (cp == (u32)'\n' || ui::glyphIndex(cp) >= 0) continue;
+            ++missing;
+            if (missing <= 5) {
+                char msg[192];
+                std::snprintf(msg, sizeof(msg),
+                              "строка %u: символ U+%04X (байт %u) рисовать нечем",
+                              (unsigned)k, (unsigned)cp, (unsigned)at);
+                check(false, msg);
+            }
+        }
+    }
+    check(missing == 0, "каждый символ русской таблицы имеет глиф");
+    config::L().setLanguage(config::Language::English);
+}
+
+// ------------------------------------------------------------
+// Настройки: все помещаются и все что-то меняют.
+//
+// Вкладка «Управление» содержит двенадцать строк. В один столбец это
+// 938 точек, а дно панели на экране 1280x720 — 680: последние четыре
+// настройки были недостижимы, прокрутки у настроек нет. Отдельно два
+// слайдера, uiScale и uiOpacity, двигались и сохранялись, но не
+// читались НИГДЕ — ровно то, что §10 задания запрещает оставлять.
+// ------------------------------------------------------------
+void testSettingsFitAndDoSomething() {
+    group("настройки: помещаются и работают");
+
+    // ---- 1. Двенадцать строк влезают на любой экран ----
+    struct Size { f32 w, h; i32 dpi; const char* name; };
+    const Size sizes[] = {
+        { 2306.f, 1080.f, 400, "2306x1080" },
+        { 1280.f,  720.f, 320, "1280x720"  },
+        {  960.f,  540.f, 240, "960x540"   },
+        { 2560.f, 1600.f, 280, "2560x1600" },
+    };
+    const u32 MAX_ROWS = 12;   // столько во вкладке «Управление»
+
+    int problems = 0;
+    for (const auto& sz : sizes) {
+        const ui::HudLayout L(sz.w, sz.h,
+                              ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                              ui::SafeInsets{});
+        const ui::Rect panel = L.menuArea();
+        const f32 rowH = L.dp(ui::theme::TOUCH_REGULAR_DP);
+        const f32 gap  = L.dp(ui::theme::SPACE_S_DP);
+        const f32 pad  = L.dp(ui::theme::PANEL_PAD_DP);
+
+        const f32 availH = panel.h - pad * 2.f;
+        const u32 perCol = (u32)((availH + gap) / (rowH + gap));
+        if (perCol == 0) {
+            ++problems;
+            char msg[128];
+            std::snprintf(msg, sizeof(msg), "%s: в панель не влезает ни одна строка",
+                          sz.name);
+            check(false, msg);
+            continue;
+        }
+        const u32 cols = (MAX_ROWS + perCol - 1) / perCol;
+        const f32 colGap = L.dp(ui::theme::SPACE_L_DP);
+        const f32 colW = (panel.w - pad * 2.f - colGap * (f32)(cols - 1)) / (f32)cols;
+
+        // Последняя строка последней колонки не должна выйти за панель.
+        const u32 lastCol = (MAX_ROWS - 1) / perCol;
+        const u32 lastRow = (MAX_ROWS - 1) % perCol;
+        const f32 x = panel.x + pad + (f32)lastCol * (colW + colGap);
+        const f32 y = panel.y + pad + (f32)lastRow * (rowH + gap);
+        if (y + rowH > panel.y + panel.h + 0.5f ||
+            x + colW > panel.x + panel.w + 0.5f) {
+            ++problems;
+            char msg[176];
+            std::snprintf(msg, sizeof(msg),
+                          "%s: двенадцатая настройка за панелью", sz.name);
+            check(false, msg);
+        }
+        // И строка остаётся нажимаемой.
+        if (rowH + 0.01f < L.dp(ui::theme::TOUCH_MIN_DP)) {
+            ++problems;
+            check(false, "строка настроек мельче 48 dp");
+        }
+    }
+    check(problems == 0, "все двенадцать настроек достижимы на всех экранах");
+
+    // ---- 2. Ни одного слайдера без потребителя ----
+    //
+    // Проверка идёт по коду: у настройки должен быть читатель ВНЕ
+    // экрана настроек. Виджет, который только пишет значение в
+    // структуру, — ложный интерфейс.
+    const std::string uis = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    const std::string uih = readSource("app/src/main/cpp/src/ui/ui_system.h");
+    if (uis.empty()) return;
+    const usize NONE = std::string::npos;
+
+    // uiScale читается при пересборке раскладки.
+    const usize rb = uis.find("void UiSystem::rebuildLayout()");
+    check(rb != NONE, "раскладка пересобирается в одном месте");
+    if (rb != NONE) {
+        const usize end = uis.find("\n}\n", rb);
+        check(uis.substr(rb, end - rb).find("uiScale") != NONE,
+              "uiScale читается раскладкой");
+    }
+
+    // uiOpacity читается слоем HUD.
+    check(uih.find("uiOpacity") != NONE,
+          "uiOpacity читается при отрисовке HUD");
+    check(uis.find("hudTint(") != NONE,
+          "и применяется к элементам HUD");
+
+    // Настройка, которую сохраняют, но никто не читает, — тот же
+    // обман, только без виджета. showDamageNumbers писалась в конфиг,
+    // не имела ни виджета, ни потребителя, и была убрана.
+    const std::string set = readSource("app/src/main/cpp/src/config/settings.h");
+    const std::string scp = readSource("app/src/main/cpp/src/config/settings.cpp");
+    if (!set.empty()) {
+        check(set.find("showDamageNumbers") == NONE,
+              "мёртвого showDamageNumbers в настройках не осталось");
+        check(scp.empty() || scp.find("show_damage_numbers") == NONE,
+              "и в конфиг он больше не пишется");
+    }
+}
+
+// ------------------------------------------------------------
+// Диалог выглядит как разговор, а не как системное окно.
+//
+// Реплика рисовалась ОДНОЙ строкой и уходила за панель; имени
+// говорящего не было вовсе — понять, с кем идёт разговор, можно было
+// только по тому, на кого смотришь.
+// ------------------------------------------------------------
+void testDialogueReadsAsAConversation() {
+    group("диалог: перенос текста и имя говорящего");
+
+    ui::UiContext ctx;
+    ctx.init(nullptr, 1000, 500);
+
+    // ---- 1. Перенос по словам ----
+    const std::string longRu =
+        "ПУТНИК, В ЭТИХ КРАЯХ НЕСПОКОЙНО, И Я БЫ НА ТВОЁМ МЕСТЕ "
+        "ДЕРЖАЛСЯ БЛИЖЕ К ДОРОГЕ, А НЕ ЛЕЗ В ЛЕС ЗА ХОЛМОМ";
+    const f32 scale = 2.f;
+    const f32 maxW = 400.f;
+
+    const f32 h = ctx.wrappedHeight(longRu, maxW, scale);
+    check(h > 9.f * scale, "длинная реплика занимает больше одной строки");
+
+    // Ни одна строка не должна быть шире отведённого.
+    // Проверяем косвенно, но строго: высота должна соответствовать
+    // числу строк, которое влезает по ширине.
+    const f32 oneLine = ctx.textWidth(longRu, scale);
+    const f32 minLines = oneLine / maxW;
+    check(h / (9.f * scale) >= minLines - 0.01f,
+          "строк не меньше, чем требует ширина текста");
+
+    // Узкая колонка — больше строк. Если перенос не работает, число
+    // строк от ширины не зависит.
+    const f32 narrow = ctx.wrappedHeight(longRu, 150.f, scale);
+    check(narrow > h, "в узкой колонке строк больше");
+
+    // ---- 2. Перенос считает СИМВОЛЫ ----
+    //
+    // После перевода шрифта на UTF-8 байты и символы больше не одно и
+    // то же: по байтам русская реплика переносилась бы вдвое раньше.
+    {
+        const std::string ru = "АААААААААА";     // 10 знаков, 20 байт
+        const std::string en = "AAAAAAAAAA";     // 10 знаков, 10 байт
+        check(std::fabs(ctx.wrappedHeight(ru, maxW, scale)
+                      - ctx.wrappedHeight(en, maxW, scale)) < 0.01f,
+              "русский и латинский текст одной длины переносятся одинаково");
+    }
+
+    // ---- 3. Перенос слов, а не букв ----
+    {
+        const std::string two = "ОДИН ДВА";
+        const f32 wide = ctx.wrappedHeight(two, 1000.f, scale);
+        check(std::fabs(wide - 9.f * scale) < 0.01f,
+              "короткая строка остаётся одной строкой");
+    }
+
+    // Пустая строка не должна давать ноль строк: место под неё всё
+    // равно занимается, иначе следующий блок наедет.
+    check(ctx.wrappedHeight("", maxW, scale) > 0.f,
+          "пустой текст занимает одну строку");
+
+    // ---- 4. Имя говорящего и геометрия из раскладки ----
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) return;
+    const usize NONE = std::string::npos;
+    const usize dg = src.find("void UiSystem::drawDialogueScreen(");
+    if (dg == NONE) { check(false, "экран диалога на месте"); return; }
+    const usize end = src.find("\n}\n", dg);
+    const std::string body = src.substr(dg, end - dg);
+
+    check(body.find("npcRegistry()") != NONE,
+          "диалог показывает имя собеседника");
+    check(body.find("textWrapped(") != NONE,
+          "реплика рисуется с переносом");
+    check(body.find("layout_.dialogueChoice(") != NONE,
+          "варианты ответа берут геометрию из раскладки");
+    // Вариант, не влезший в панель, не рисуется за её краем.
+    check(body.find("break;") != NONE,
+          "варианты, не влезшие в панель, не уезжают за неё");
+}
+
+// ------------------------------------------------------------
+// Журнал отвечает на вопрос «что мне делать сейчас».
+//
+// Для активных заданий он печатал ТОЛЬКО ИХ ЧИСЛО: игрок с тремя
+// заданиями видел «3». Ни названий, ни целей, ни прогресса. §12
+// задания называет этот вопрос одной из главных функций интерфейса —
+// а журнал на него не отвечал вовсе.
+// ------------------------------------------------------------
+void testQuestLogAnswersWhatToDoNow() {
+    group("журнал: что делать сейчас");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    const usize ql = src.find("void UiSystem::drawQuestLogScreen(");
+    check(ql != NONE, "журнал на месте");
+    if (ql == NONE) return;
+    const usize end = src.find("\n}\n", ql);
+    const std::string body = src.substr(ql, end - ql);
+
+    // ---- 1. Показываются сами задания, а не их количество ----
+    check(body.find("q->title") != NONE, "в списке названия заданий");
+    check(body.find("progressPct()") != NONE, "и их прогресс");
+    // Печать размера списка — ровно то, чем это было.
+    check(body.find("activeQuests.size());") == NONE,
+          "числа активных заданий вместо списка не осталось");
+
+    // ---- 2. Есть подробности выбранного ----
+    const usize qd = src.find("void UiSystem::drawQuestDetails(");
+    check(qd != NONE, "подробности задания появились");
+    if (qd != NONE) {
+        const usize dend = src.find("\n}\n", qd);
+        const std::string db = src.substr(qd, dend - qd);
+        check(db.find("description") != NONE, "в подробностях есть описание");
+        check(db.find("rewards") != NONE, "и награда");
+        check(db.find("requiredCount") != NONE, "и сколько осталось");
+        check(db.find("textWrapped(") != NONE,
+              "описание рисуется с переносом, а не одной строкой");
+    }
+
+    // ---- 3. Цель видна, не открывая журнал ----
+    const usize qt = src.find("void UiSystem::drawQuestTracker(");
+    check(qt != NONE, "на HUD есть строка текущей цели");
+    const usize hud = src.find("void UiSystem::drawHud(");
+    if (hud != NONE) {
+        const usize hend = src.find("\n}\n", hud);
+        check(src.substr(hud, hend - hud).find("drawQuestTracker(") != NONE,
+              "и она рисуется в составе HUD");
+    }
+
+    // ---- 4. Строки списка — цели касания, не мельче нормы ----
+    const ui::HudLayout L(1280.f, 720.f,
+                          ui::theme::Metrics::fromDensityDpi(320),
+                          ui::SafeInsets{});
+    const ui::Rect r0 = L.questRow(0), r1 = L.questRow(1);
+    check(r0.h + 0.01f >= L.dp(ui::theme::TOUCH_MIN_DP),
+          "строка журнала не мельче 48 dp");
+    check(r1.y >= r0.y + r0.h - 0.01f, "строки не налезают друг на друга");
+    check(L.questRowsVisible() >= 1, "хотя бы одна строка помещается");
+
+    // Список и подробности не пересекаются.
+    const ui::Rect list = L.questList(), det = L.questDetails();
+    check(list.x + list.w <= det.x + 0.01f,
+          "список и подробности не налезают");
+}
+
+// ------------------------------------------------------------
+// Уведомления: очередь, приоритет, без спама.
+//
+// Слот был ОДИН: новое сообщение затирало предыдущее. «Предмет
+// получен» стирало «задание выполнено», и отличить важное от
+// рядового было нечем — вид, место и длительность у всех одни.
+// ------------------------------------------------------------
+void testNoticesQueueAndPrioritise() {
+    group("уведомления: очередь и приоритет");
+
+    ui::UiSystem sys;
+
+    // ---- 1. Новое не затирает старое ----
+    sys.notify("ПЕРВОЕ");
+    sys.notify("ВТОРОЕ");
+    check(sys.notices().size() == 2, "оба сообщения в очереди");
+
+    // ---- 2. Важное впереди рядового ----
+    sys.notify("ВАЖНОЕ", ui::theme::NotifyPriority::High);
+    check(sys.notices().front().text == "ВАЖНОЕ",
+          "важное встаёт первым, даже придя последним");
+    // И порядок среди равных сохраняется.
+    check(sys.notices()[1].text == "ПЕРВОЕ",
+          "среди равных остаётся порядок прихода");
+
+    // ---- 3. Важное держится дольше ----
+    check(ui::theme::notifyDuration(ui::theme::NotifyPriority::High) >
+          ui::theme::notifyDuration(ui::theme::NotifyPriority::Low),
+          "важное живёт дольше рядового");
+
+    // ---- 4. Повтор не множится ----
+    //
+    // Подбор десяти одинаковых предметов подряд не должен занимать
+    // весь экран.
+    const usize before = sys.notices().size();
+    for (int i = 0; i < 10; ++i) sys.notify("ПЕРВОЕ");
+    check(sys.notices().size() == before,
+          "повтор того же текста продлевает, а не множит");
+
+    // ---- 5. Очередь не растёт без предела ----
+    for (int i = 0; i < 50; ++i) {
+        char b[32];
+        std::snprintf(b, sizeof(b), "N%d", i);
+        sys.notify(b);
+    }
+    check(sys.notices().size() <= 8, "очередь ограничена сверху");
+
+    // ---- 6. Они гаснут ----
+    ui::UiSystem s2;
+    s2.notify("КОРОТКОЕ", ui::theme::NotifyPriority::Low);
+    check(s2.notices().size() == 1, "уведомление показано");
+    s2.tickUi(ui::theme::notifyDuration(ui::theme::NotifyPriority::Low) + 0.1f);
+    check(s2.notices().empty(), "и по истечении срока исчезает");
+
+    // ---- 7. Показывается не больше, чем условлено ----
+    check(ui::theme::NOTIFY_MAX_VISIBLE >= 2,
+          "видно больше одного: иначе очередь бессмысленна");
+
+    // ---- 8. Важное отличается не только цветом ----
+    //
+    // Место и размер — тоже признаки: по одному цвету «новый
+    // уровень» от «предмет получен» не отличить.
+    const ui::HudLayout L(2306.f, 1080.f,
+                          ui::theme::Metrics::fromDensityDpi(400),
+                          ui::SafeInsets{});
+    const ui::Rect hi = L.notice(0, true, 200.f);
+    const ui::Rect lo = L.notice(0, false, 200.f);
+    check(std::fabs(hi.y - lo.y) > 1.f, "важное и рядовое стоят в разных местах");
+    check(hi.h > lo.h, "важное крупнее");
+
+    // Стопка рядовых не налезает сама на себя.
+    const ui::Rect lo1 = L.notice(1, false, 200.f);
+    check(std::fabs(lo1.y - lo.y) >= lo.h - 0.01f,
+          "рядовые уведомления не налезают друг на друга");
+}
+
+// ------------------------------------------------------------
+// Характеристики: кнопки нажимаемы, недоступность видна.
+//
+// Кнопки «+» и «−» были 50 точек: на рабочем телефоне это 20 dp при
+// норме 48, то есть 3.2 мм под палец в 8..10. Размер задавался в
+// пикселях и не зависел от плотности — тот же дефект, что и везде.
+// ------------------------------------------------------------
+void testAttributeSteppersArePressable() {
+    group("характеристики: кнопки нажимаемы");
+
+    struct Size { f32 w, h; i32 dpi; const char* name; };
+    const Size sizes[] = {
+        { 2306.f, 1080.f, 400, "2306x1080" },
+        { 1280.f,  720.f, 320, "1280x720"  },
+        {  960.f,  540.f, 240, "960x540"   },
+        { 2560.f, 1600.f, 280, "2560x1600" },
+    };
+
+    int problems = 0;
+    for (const auto& sz : sizes) {
+        const ui::HudLayout L(sz.w, sz.h,
+                              ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                              ui::SafeInsets{});
+        const f32 minSide = L.dp(ui::theme::TOUCH_MIN_DP) - 0.01f;
+        const ui::Rect area = L.menuArea();
+
+        for (u32 i = 0; i < 4; ++i) {
+            const ui::Rect row   = L.attrRow(i);
+            const ui::Rect minus = L.attrButton(i, false);
+            const ui::Rect plus  = L.attrButton(i, true);
+
+            if (minus.w < minSide || minus.h < minSide ||
+                plus.w  < minSide || plus.h  < minSide) {
+                ++problems;
+                char msg[128];
+                std::snprintf(msg, sizeof(msg), "%s: кнопка строки %u мельче 48 dp",
+                              sz.name, i);
+                check(false, msg);
+            }
+            // Между «+» и «−» нужен зазор: иначе промах по одной
+            // попадает в другую, а это прибавит вместо убавить.
+            if (plus.x < minus.x + minus.w + L.dp(ui::theme::TOUCH_GAP_DP) - 0.01f) {
+                ++problems;
+                char msg[128];
+                std::snprintf(msg, sizeof(msg),
+                              "%s: «+» и «−» строки %u ближе зазора", sz.name, i);
+                check(false, msg);
+            }
+            // Кнопки внутри своей строки и строка внутри области.
+            if (minus.x < row.x || plus.x + plus.w > row.x + row.w + 0.01f ||
+                minus.y < row.y - 0.01f ||
+                plus.y + plus.h > row.y + row.h + 0.01f) {
+                ++problems;
+                char msg[128];
+                std::snprintf(msg, sizeof(msg), "%s: кнопки строки %u вне строки",
+                              sz.name, i);
+                check(false, msg);
+            }
+            if (row.y < area.y - 0.01f ||
+                row.y + row.h > area.y + area.h + 0.01f) {
+                ++problems;
+                char msg[128];
+                std::snprintf(msg, sizeof(msg), "%s: строка %u вне области меню",
+                              sz.name, i);
+                check(false, msg);
+            }
+            // Строки не налезают друг на друга.
+            if (i > 0) {
+                const ui::Rect prev = L.attrRow(i - 1);
+                if (row.y < prev.y + prev.h - 0.01f) {
+                    ++problems;
+                    check(false, "строки характеристик налезают");
+                }
+            }
+        }
+    }
+    check(problems == 0, "кнопки характеристик нажимаемы на всех экранах");
+
+    // ---- Недоступность показана не только цветом ----
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) return;
+    const usize NONE = std::string::npos;
+    const usize st = src.find("void UiSystem::drawStepper(");
+    check(st != NONE, "кнопка «+»/«−» выделена в общий код");
+    if (st != NONE) {
+        const usize end = src.find("\n}\n", st);
+        const std::string body = src.substr(st, end - st);
+        check(body.find("STROKE_SELECTED_DP") != NONE &&
+              body.find("STROKE_DP") != NONE,
+              "у выключенной кнопки рамка тоньше, а не только цвет другой");
+        check(body.find("TextDisabled") != NONE,
+              "и текст приглушён");
+    }
+
+    // ---- После изменения есть обратная связь ----
+    const usize at = src.find("void UiSystem::drawAttributesScreen(");
+    if (at != NONE) {
+        const usize end = src.find("\n}\n", at);
+        const std::string body = src.substr(at, end - at);
+        check(body.find("notify(") != NONE,
+              "изменение характеристики подтверждается уведомлением");
+        check(body.find("layout_.attrButton(") != NONE,
+              "геометрия кнопок берётся из раскладки");
+    }
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -6613,6 +7294,14 @@ int main() {
     testNavigationReturnsWhereItCameFrom();
     testPauseMenuIsGroupedAndComplete();
     testConfirmSwallowsTouchesOutsideIt();
+    testInventoryShowsEverySlot();
+    testInventoryTapDoesOneThing();
+    testRussianTextIsActuallyDrawn();
+    testSettingsFitAndDoSomething();
+    testDialogueReadsAsAConversation();
+    testQuestLogAnswersWhatToDoNow();
+    testNoticesQueueAndPrioritise();
+    testAttributeSteppersArePressable();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

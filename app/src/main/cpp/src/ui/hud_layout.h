@@ -276,6 +276,168 @@ public:
                  a.y + (f32)row * (ch + gap), cw, ch };
     }
 
+    // ---- сетка ячеек фиксированного размера ----
+    //
+    // Ячейка не может быть мельче цели касания, поэтому под данное
+    // количество подбирается не размер, а число столбцов. Сумка из
+    // 27 ячеек в девять столбцов занимает 552 dp — на узком экране их
+    // просто меньше, а рядов больше.
+    struct CellGrid {
+        Rect area;
+        f32  cell = 0.f, gap = 0.f;
+        u32  cols = 1, rows = 1;
+
+        Rect at(u32 i) const {
+            const u32 c = cols ? (i % cols) : 0;
+            const u32 r = cols ? (i / cols) : 0;
+            return { area.x + (f32)c * (cell + gap),
+                     area.y + (f32)r * (cell + gap), cell, cell };
+        }
+        /// Сколько места сетка занимает на самом деле.
+        Rect bounds() const {
+            return { area.x, area.y,
+                     (f32)cols * (cell + gap) - gap,
+                     (f32)rows * (cell + gap) - gap };
+        }
+    };
+
+    CellGrid cellGrid(Rect area, u32 count) const {
+        CellGrid g;
+        g.area = area;
+        g.cell = dp(theme::TOUCH_REGULAR_DP);
+        g.gap  = dp(theme::SPACE_S_DP);
+        if (count == 0) { g.cols = g.rows = 0; return g; }
+        f32 fit = (area.w + g.gap) / (g.cell + g.gap);
+        g.cols = fit < 1.f ? 1u : (u32)fit;
+        if (g.cols > count) g.cols = count;
+        g.rows = (count + g.cols - 1) / g.cols;
+        return g;
+    }
+
+    // ---- журнал заданий: список слева, подробности справа ----
+    Rect questList() const {
+        const Rect a = menuArea();
+        return { a.x, a.y, a.w * (1.f - QUEST_DETAILS_FRAC)
+                            - dp(theme::SPACE_L_DP), a.h };
+    }
+    Rect questDetails() const {
+        const Rect a = menuArea();
+        const f32 wdt = a.w * QUEST_DETAILS_FRAC;
+        return { a.x + a.w - wdt, a.y, wdt, a.h };
+    }
+    /// Строка списка. Высота — обычная цель касания плюс место под
+    /// полосу прогресса.
+    Rect questRow(u32 i) const {
+        const Rect l = questList();
+        const f32 h = dp(theme::TOUCH_REGULAR_DP);
+        const f32 g = dp(theme::SPACE_S_DP);
+        return { l.x, l.y + (f32)i * (h + g), l.w, h };
+    }
+    u32 questRowsVisible() const {
+        const Rect l = questList();
+        const f32 h = dp(theme::TOUCH_REGULAR_DP) + dp(theme::SPACE_S_DP);
+        const f32 n = h > 0.f ? l.h / h : 0.f;
+        return n < 1.f ? 1u : (u32)n;
+    }
+
+    /// Строка текущей цели на HUD — под полосой опыта, слева.
+    ///
+    /// Её не было: чтобы узнать, что делать, приходилось открывать
+    /// журнал, а журнал показывал только ЧИСЛО активных заданий.
+    Rect questTracker() const {
+        const Rect last = resourceBar(2);
+        return { last.x, last.y + last.h + dp(theme::SPACE_XL_DP),
+                 dp(TRACKER_W_DP), dp(TRACKER_H_DP) };
+    }
+
+    static constexpr f32 QUEST_DETAILS_FRAC = 0.40f;
+    static constexpr f32 TRACKER_W_DP = 220.f;
+    static constexpr f32 TRACKER_H_DP =  40.f;
+
+    // ---- характеристики: строка и кнопки прибавить/убавить ----
+    //
+    // Кнопки были 50 точек — на рабочем телефоне это 20 dp при норме
+    // 48, то есть 3.2 мм. Ровно тот же дефект, что и везде: размер
+    // задавался в пикселях и не зависел от плотности.
+    Rect attrRow(u32 i) const {
+        const Rect a = menuArea();
+        const f32 g = dp(theme::SPACE_M_DP);
+
+        // Высота подстраивается под область, а не задаётся числом:
+        // четыре строки по 88 dp не помещались ни на один экран,
+        // кроме планшета. Ниже цели касания строка не опускается —
+        // в ней стоят кнопки.
+        f32 h = (a.h - g * (f32)(ATTR_COUNT - 1)) / (f32)ATTR_COUNT;
+        const f32 minH = dp(theme::TOUCH_REGULAR_DP);
+        const f32 maxH = dp(ATTR_ROW_H_DP);
+        if (h > maxH) h = maxH;
+        if (h < minH) h = minH;
+
+        const f32 wdt = a.w < dp(ATTR_ROW_MAX_W_DP) ? a.w : dp(ATTR_ROW_MAX_W_DP);
+        return { a.x + (a.w - wdt) * 0.5f, a.y + (f32)i * (h + g), wdt, h };
+    }
+
+    /// i — номер строки, plus — прибавить (иначе убавить).
+    Rect attrButton(u32 i, bool plus) const {
+        const Rect r = attrRow(i);
+        const f32 sz = dp(theme::TOUCH_REGULAR_DP);
+        const f32 pad = dp(theme::SPACE_M_DP);
+        const f32 gap = dp(theme::TOUCH_GAP_DP);
+        const f32 px = r.x + r.w - pad - sz;
+        return { plus ? px : px - sz - gap,
+                 r.y + (r.h - sz) * 0.5f, sz, sz };
+    }
+
+    static constexpr u32 ATTR_COUNT        =   4;
+    static constexpr f32 ATTR_ROW_H_DP     =  88.f;   ///< потолок
+    static constexpr f32 ATTR_ROW_MAX_W_DP = 520.f;
+
+    // ---- уведомления ----
+    //
+    // Важное по центру, рядовое снизу. Место — тоже признак: по
+    // одному цвету отличить «новый уровень» от «предмет получен»
+    // нельзя.
+    Rect notice(u32 i, bool high, f32 textWidth) const {
+        const f32 pad = dp(theme::SPACE_L_DP);
+        const f32 hgt = dp(high ? NOTICE_HIGH_H_DP : NOTICE_H_DP);
+        const f32 wdt = textWidth + pad * 2.f;
+        const f32 gap = dp(theme::SPACE_S_DP);
+
+        if (high)
+            return { (w_ - wdt) * 0.5f, h_ * NOTICE_HIGH_Y_FRAC, wdt, hgt };
+
+        // Рядовые стопкой снизу вверх, над подсказкой и поясом.
+        const f32 base = interactPrompt().y - dp(theme::SPACE_L_DP);
+        return { (w_ - wdt) * 0.5f,
+                 base - (f32)(i + 1) * (hgt + gap), wdt, hgt };
+    }
+
+    static constexpr f32 NOTICE_H_DP       = 44.f;
+    static constexpr f32 NOTICE_HIGH_H_DP  = 64.f;
+    static constexpr f32 NOTICE_HIGH_Y_FRAC = 0.28f;
+
+    // ---- диалог: панель у нижнего края ----
+    //
+    // Разговор идёт В мире, поэтому панель не занимает экран целиком:
+    // собеседника должно быть видно.
+    Rect dialoguePanel() const {
+        const f32 pad = dp(theme::SPACE_XL_DP);
+        const f32 hgt = (bottom() - top()) * DIALOGUE_H_FRAC;
+        return { left() + pad, bottom() - pad - hgt,
+                 (right() - left()) - pad * 2.f, hgt };
+    }
+
+    /// Вариант ответа. y — где кончился текст реплики.
+    Rect dialogueChoice(f32 y, u32 i) const {
+        const Rect p = dialoguePanel();
+        const f32 pad = dp(theme::PANEL_PAD_DP);
+        const f32 h = dp(theme::TOUCH_REGULAR_DP);
+        return { p.x + pad, y + (f32)i * (h + dp(theme::SPACE_S_DP)),
+                 p.w - pad * 2.f, h };
+    }
+
+    static constexpr f32 DIALOGUE_H_FRAC = 0.45f;
+
     /// Окно подтверждения: по центру, не шире семидесяти процентов.
     Rect confirmPanel() const {
         const f32 wdt = (right() - left()) * CONFIRM_W_FRAC;
@@ -293,6 +455,37 @@ public:
         return { p.x + pad + (f32)i * (bw + gap),
                  p.y + p.h - pad - bh, bw, bh };
     }
+
+    // ============================================================
+    // Инвентарь
+    // ============================================================
+    //
+    // Слева сумка и экипировка, справа — сведения о выбранном
+    // предмете. Игрок должен понимать, что это и можно ли с этим
+    // что-то сделать, не гадая по цвету рамки.
+    Rect invDetails() const {
+        const Rect a = menuArea();
+        const f32 wdt = a.w * INV_DETAILS_FRAC;
+        return { a.x + a.w - wdt, a.y, wdt, a.h };
+    }
+    Rect invLeft() const {
+        const Rect a = menuArea();
+        return { a.x, a.y, a.w * (1.f - INV_DETAILS_FRAC)
+                            - dp(theme::SPACE_L_DP), a.h };
+    }
+
+    /// Кнопка действия над предметом, внизу панели сведений.
+    Rect invAction(u32 i, u32 count) const {
+        const Rect d = invDetails();
+        const f32 pad = dp(theme::PANEL_PAD_DP);
+        const f32 gap = dp(theme::SPACE_S_DP);
+        const f32 bh = dp(theme::TOUCH_REGULAR_DP);
+        const f32 total = (f32)count * (bh + gap) - gap;
+        return { d.x + pad, d.y + d.h - pad - total + (f32)i * (bh + gap),
+                 d.w - pad * 2.f, bh };
+    }
+
+    static constexpr f32 INV_DETAILS_FRAC = 0.30f;
 
     // ---- свободный центр: сюда не залезает ничто ----
     Rect clearCenter() const {

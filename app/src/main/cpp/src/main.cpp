@@ -304,7 +304,8 @@ struct Engine {
             auto slot = saveMgr.slots().slot(p, s);
             slot.removeFiles();
             ui->refreshSlotMeta(saveMgr.slots());
-            ui->setStatus(cfg::T(cfg::StrKey::Notif_Deleted));
+            ui->notify(cfg::T(cfg::StrKey::Notif_Deleted),
+                       ui::theme::NotifyPriority::High);
         };
 
         ui->onCloseDialogue = [this]() {
@@ -344,9 +345,9 @@ struct Engine {
                 audio::events().uiClick();
                 ui->setStatus("Equipped");
             } else if (res == items::UseResult::NoEffect) {
-                ui->setStatus("No effect");
+                ui->notify("No effect", ui::theme::NotifyPriority::Low);
             } else if (res == items::UseResult::Consumed) {
-                ui->setStatus("Consumed");
+                ui->notify("Consumed", ui::theme::NotifyPriority::Low);
             }
         };
 
@@ -380,7 +381,8 @@ struct Engine {
             auto st = crafting::craft(ctx, r);
             if (st == crafting::CraftStatus::Ok) {
                 audio::events().craft();
-                ui->setStatus(cfg::T(cfg::StrKey::Notif_Crafted));
+                ui->notify(cfg::T(cfg::StrKey::Notif_Crafted),
+                               ui::theme::NotifyPriority::High);
             } else {
                 audio::events().uiError();
                 ui->setStatus(crafting::statusString(st));
@@ -598,7 +600,8 @@ struct Engine {
                 ui->refreshSlotMeta(saveMgr.slots());
             }
         } else {
-            if (ui) ui->setStatus(save::statusString(st));
+            if (ui) ui->notify(save::statusString(st),
+                               ui::theme::NotifyPriority::High);
         }
     }
 

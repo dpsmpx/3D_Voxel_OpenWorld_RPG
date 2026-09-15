@@ -22,6 +22,7 @@
 #include <functional>
 #include <array>
 #include <string>
+#include <vector>
 #include <utility>
 
 namespace ui {
@@ -74,6 +75,19 @@ public:
     /// Единственный источник геометрии: и отрисовка, и касание.
     const HudLayout& layout() const { return layout_; }
 
+    /// Цвет слоя HUD с учётом настройки прозрачности.
+    ///
+    /// Слайдер `uiOpacity` двигался и сохранялся, но не читался
+    /// нигде — ровно то, что §10 задания запрещает оставлять. Он
+    /// про HUD поверх мира: меню остаются непрозрачными, иначе
+    /// текст поверх движущейся сцены не прочесть.
+    UiColor hudTint(UiColor c) const {
+        const u32 a = c & 0xFFu;
+        const f32 k = config::settingsConst().uiOpacity;
+        const f32 v = (f32)a * (k < 0.f ? 0.f : (k > 1.f ? 1.f : k));
+        return withAlpha(c, (u8)(v + 0.5f));
+    }
+
     /// Поворот вывода — тот же, что у камеры.
     void setSurfaceRotation(u32 degrees) { renderer_.setSurfaceRotation(degrees); }
 
@@ -111,6 +125,16 @@ public:
     /// ---- Enchant ----
     EnchantContext enchantCtx{};
     u32 nearbyAltar = 0;
+
+    /// Выбранное задание в журнале, -1 — ничего.
+    i32 selectedQuest = -1;
+
+    /// Выбранная ячейка инвентаря, -1 — ничего.
+    ///
+    /// Раньше тап по предмету ОДНОВРЕМЕННО использовал его и начинал
+    /// перенос: зелье выпивалось и бралось в руку одним касанием.
+    /// Теперь тап только выбирает, а действия — кнопками справа.
+    i32 selectedInvSlot = -1;
 
     /// ---- Drag & drop ----
     DragDrop drag{};
@@ -156,8 +180,31 @@ public:
         confirm.onYes = std::move(onYes);
     }
 
+    // ============================================================
+    // Уведомления
+    // ============================================================
+    //
+    // Слот был ОДИН: новое сообщение затирало предыдущее. «Предмет
+    // получен» стирало «задание выполнено», и различить важное от
+    // рядового было нечем — вид у всех один.
+    struct Notice {
+        std::string          text;
+        theme::NotifyPriority priority = theme::NotifyPriority::Normal;
+        f32                  timeLeft = 0.f;
+        f32                  age      = 0.f;
+    };
+
+    /// Показать уведомление. Новое встаёт в очередь, а не затирает.
+    void notify(const std::string& text,
+                theme::NotifyPriority p = theme::NotifyPriority::Normal);
+
+    const std::vector<Notice>& notices() const { return notices_; }
+
     /// ---- Утилиты ----
-    void setStatus(const std::string& msg);
+    /// Прежнее имя: рядовое уведомление.
+    void setStatus(const std::string& msg) {
+        notify(msg, theme::NotifyPriority::Normal);
+    }
     void drawLoadingOverlay();
     /// Джойстик и экранные кнопки. Только поверх чистого HUD: под
     /// открытым меню управление не работает, рисовать его незачем.
@@ -291,11 +338,23 @@ private:
     void drawPauseMenu(player::Player& player);
     void drawInventory(player::Player& player);
     void drawHotbar(player::Player& player);
+    /// Одна сетка ячеек: сумка, экипировка и пояс рисуются ею же.
+    void drawSlotGrid(player::Player& player, const HudLayout::CellGrid& g,
+                      u32 firstSlot, u32 count);
+    /// Что за предмет и что с ним можно сделать.
+    void drawItemDetails(player::Player& player);
     void drawSkillTreeScreen(player::Player& player);
     void drawAttributesScreen(player::Player& player);
+    /// Кнопка «+»/«−» одного вида на всю игру.
+    void drawStepper(const Rect& r, const char* label,
+                     bool pressed, bool enabled);
 
     void drawDialogueScreen(player::Player& player);
     void drawQuestLogScreen(player::Player& player);
+    /// Текущая цель на HUD: что делать прямо сейчас.
+    void drawQuestTracker(player::Player& player);
+    /// Подробности выбранного задания: цель, прогресс, награда.
+    void drawQuestDetails(player::Player& player);
     void drawReputationScreen(player::Player& player);
 
     void drawSaveLoadScreen(player::Player& player);
@@ -327,8 +386,10 @@ private:
     Scroll questScroll;
     Scroll tradeScroll;
 
-    std::string statusMessage;
-    f32         statusTimer = 0.f;
+    /// Очередь уведомлений. Показывается не больше
+    /// theme::NOTIFY_MAX_VISIBLE сразу; важное вытесняет рядовое, а
+    /// не наоборот.
+    std::vector<Notice> notices_;
 
     /// Кэш для HUD (чтобы не дёргать ECS каждый кадр)
     f32 cachedHpPct = 1.f;
