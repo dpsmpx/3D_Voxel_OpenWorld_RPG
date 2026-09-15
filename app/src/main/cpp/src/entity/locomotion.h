@@ -4,6 +4,7 @@
  */
 #pragma once
 #include "rig.h"
+#include <algorithm>
 #include <cmath>
 
 namespace anim {
@@ -179,7 +180,71 @@ struct AnimState {
     f32 speedNorm = 0.f;   ///< скорость к максимальной, 0..1
     f32 attack    = 0.f;   ///< 0..1, замах
     f32 death     = 0.f;   ///< секунды с момента смерти, 0 — жив
+    f32 air       = 0.f;   ///< доля воздушной позы, 0..1
+    f32 land      = 0.f;   ///< доля посадочной позы, 0..1
+    f32 rise      = 0.f;   ///< -1 падает, +1 взлетает; форма воздушной позы
 };
+
+/// Ниже этой доли максимальной скорости существо идёт, выше — бежит.
+///
+/// Бег отличается не только частотой шага: корпус наклоняется вперёд.
+/// Без наклона шаг и бег выглядят одним движением, прокрученным с
+/// разной скоростью.
+constexpr f32 RUN_THRESHOLD = 0.6f;
+
+/// Сколько длится поза приземления.
+constexpr f32 LAND_TIME = 0.28f;
+
+/// За сколько нарастает и гаснет воздушная поза.
+constexpr f32 AIR_BLEND_TIME = 0.12f;
+
+/// Продвинуть состояние передвижения.
+///
+/// Состояние выбирается по ФАКТИЧЕСКОЙ скорости и признаку опоры.
+/// Переходы плавные: доли воздушной и посадочной поз нарастают и
+/// гаснут за своё время, а не переключаются кадром.
+template <class LocoT>
+inline void advanceLocomotion(LocoT& lo, f32 speedNorm, f32 verticalSpeed,
+                              bool grounded, f32 dt)
+{
+    using State = typename LocoT::State;
+
+    const State was = lo.state;
+    const bool wasAir = (was == State::Jump || was == State::Fall);
+
+    if (!grounded) {
+        lo.state = (verticalSpeed > 0.5f) ? State::Jump : State::Fall;
+    } else if (wasAir) {
+        // Коснулись земли — приседаем. Без этого падение с высоты
+        // кончается тем, что существо просто продолжает идти.
+        lo.state = State::Land;
+    } else if (was == State::Land && lo.stateTime < LAND_TIME) {
+        lo.state = State::Land;
+    } else if (speedNorm < 0.05f) {
+        lo.state = State::Idle;
+    } else {
+        lo.state = (speedNorm < RUN_THRESHOLD) ? State::Walk : State::Run;
+    }
+
+    lo.stateTime = (lo.state == was) ? lo.stateTime + dt : 0.f;
+    lo.grounded  = grounded;
+
+    const bool air = (lo.state == State::Jump || lo.state == State::Fall);
+    const f32 step = dt / AIR_BLEND_TIME;
+    lo.air  = air ? std::min(1.f, lo.air + step) : std::max(0.f, lo.air - step);
+
+    if (lo.state == State::Land) {
+        // Приседание глубже всего в момент касания и распрямляется.
+        const f32 t = lo.stateTime / LAND_TIME;
+        lo.land = (t >= 1.f) ? 0.f : (1.f - t) * (1.f - t);
+    } else {
+        lo.land = std::max(0.f, lo.land - dt / LAND_TIME);
+    }
+
+    lo.rise = grounded ? 0.f
+                       : (verticalSpeed > 0.5f ? 1.f
+                          : (verticalSpeed < -0.5f ? -1.f : 0.f));
+}
 
 /// Продвинуть фазу шага пройденным путём.
 ///
@@ -226,6 +291,56 @@ inline void poseFor(const entity::Rig& rig, entity::Pose& pose,
         // на первом же шаге встанет торчком.
         pose.euler[i] = rig.rest.euler[i]
                       + idle.euler[i] * (1.f - k) + walk.euler[i] * k;
+    }
+
+    // ---- Бег: корпус вперёд ----
+    //
+    // Иначе шаг и бег — одно движение с разной частотой. Наклон
+    // растёт только выше порога бега, чтобы ходьба его не получала.
+    if (st.speedNorm > RUN_THRESHOLD) {
+        const f32 runK = (st.speedNorm - RUN_THRESHOLD) / (1.f - RUN_THRESHOLD);
+        for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i)
+            if (rig.parts[i].role == entity::PartRole::Torso)
+                pose.euler[i].x += runK * 0.22f;
+    }
+
+    // ---- Воздух ----
+    //
+    // Поджатые ноги и разведённые руки. Раньше существо падало с
+    // обрыва, перебирая ногами по воздуху: воздушного положения не
+    // было вовсе.
+    if (st.air > 0.001f) {
+        // Взлетая, ноги поджимаются вперёд; падая — вытягиваются
+        // вниз-назад, навстречу земле.
+        const f32 tuck = (st.rise >= 0.f) ? 0.7f : -0.35f;
+        for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i) {
+            const entity::PartRole r = rig.parts[i].role;
+            if (isUpperLimb(r))
+                pose.euler[i].x = pose.euler[i].x * (1.f - st.air)
+                                + tuck * st.air;
+            else if (isLowerLimb(r))
+                pose.euler[i].x = pose.euler[i].x * (1.f - st.air)
+                                + kneeBendSign(r) * 0.8f * st.air;
+            else if (isArm(r))
+                pose.euler[i].x = pose.euler[i].x * (1.f - st.air)
+                                - 0.9f * st.air;
+        }
+    }
+
+    // ---- Приземление ----
+    //
+    // Присед в момент касания, распрямляющийся за LAND_TIME. Гасит
+    // падение: без него удар о землю ничем не отмечен.
+    if (st.land > 0.001f) {
+        for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i) {
+            const entity::PartRole r = rig.parts[i].role;
+            if (isUpperLimb(r))
+                pose.euler[i].x += 0.45f * st.land;
+            else if (isLowerLimb(r))
+                pose.euler[i].x += kneeBendSign(r) * 0.75f * st.land;
+            else if (r == entity::PartRole::Torso)
+                pose.euler[i].x += 0.25f * st.land;
+        }
     }
 
     if (st.attack > 0.01f) {

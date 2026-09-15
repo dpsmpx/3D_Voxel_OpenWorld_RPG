@@ -6369,6 +6369,144 @@ void testPlayerHasModel() {
 }
 
 // ------------------------------------------------------------
+// Переходы: покой, шаг, бег, прыжок, падение, приземление.
+//
+// Анимация знала ровно два положения — покой и шаг — и смешивала их
+// по скорости. Прыжка, падения и приземления не было вовсе, поэтому
+// существо падало с обрыва, перебирая ногами по воздуху.
+// ------------------------------------------------------------
+void testLocomotionStatesAndTransitions() {
+    group("переходы: шаг, бег, полёт, посадка");
+
+    using State = ecs::Locomotion::State;
+    const f32 dt = 1.f / 60.f;
+
+    // ---- Состояние выбирается скоростью и опорой ----
+    {
+        ecs::Locomotion lo{};
+        anim::advanceLocomotion(lo, 0.f, 0.f, true, dt);
+        check(lo.state == State::Idle, "стоит — покой");
+
+        anim::advanceLocomotion(lo, 0.3f, 0.f, true, dt);
+        check(lo.state == State::Walk, "медленно — шаг");
+
+        anim::advanceLocomotion(lo, 0.95f, 0.f, true, dt);
+        check(lo.state == State::Run, "быстро — бег");
+
+        anim::advanceLocomotion(lo, 0.5f, 4.f, false, dt);
+        check(lo.state == State::Jump, "оторвался вверх — прыжок");
+
+        anim::advanceLocomotion(lo, 0.5f, -6.f, false, dt);
+        check(lo.state == State::Fall, "летит вниз — падение");
+
+        anim::advanceLocomotion(lo, 0.5f, 0.f, true, dt);
+        check(lo.state == State::Land, "коснулся земли — приземление");
+    }
+
+    // ---- Опора не угадывается по вертикальной скорости ----
+    //
+    // В верхней точке прыжка она нулевая. Существо, которое в этот
+    // миг считает себя стоящим, на мгновение встаёт в позу покоя
+    // прямо в воздухе.
+    {
+        ecs::Locomotion lo{};
+        anim::advanceLocomotion(lo, 0.f, 0.f, false, dt);
+        check(lo.state == State::Fall || lo.state == State::Jump,
+              "в высшей точке прыжка существо всё ещё в воздухе");
+    }
+
+    // ---- Переход не мгновенный ----
+    {
+        ecs::Locomotion lo{};
+        anim::advanceLocomotion(lo, 0.f, -5.f, false, dt);
+        const f32 afterOne = lo.air;
+        check(afterOne > 0.f && afterOne < 1.f,
+              "воздушная поза нарастает, а не включается кадром");
+
+        for (int i = 0; i < 60; ++i)
+            anim::advanceLocomotion(lo, 0.f, -5.f, false, dt);
+        check(lo.air > 0.99f, "и за время перехода доходит до полной");
+
+        // Вернулись на землю — гаснет так же плавно.
+        anim::advanceLocomotion(lo, 0.f, 0.f, true, dt);
+        const f32 first = lo.air;
+        check(first < 1.f && first > 0.f, "и гаснет не мгновенно");
+    }
+
+    // ---- Приземление проходит само ----
+    {
+        ecs::Locomotion lo{};
+        for (int i = 0; i < 10; ++i)
+            anim::advanceLocomotion(lo, 0.f, -8.f, false, dt);
+        anim::advanceLocomotion(lo, 0.f, 0.f, true, dt);
+        check(lo.state == State::Land, "сел");
+        check(lo.land > 0.5f, "и присед глубок в момент касания");
+
+        f32 prev = lo.land;
+        bool monotone = true, easing = true;
+        for (int i = 0; i < 40; ++i) {
+            anim::advanceLocomotion(lo, 0.f, 0.f, true, dt);
+            if (lo.land > prev + 1e-5f) monotone = false;
+            // Мало «не растёт»: присед обязан РАСПРЯМЛЯТЬСЯ каждый
+            // кадр. Ступенька — тот же рывок, только отложенный: она
+            // проходит проверку на монотонность и всё равно щёлкает.
+            if (prev > 0.02f && lo.land > prev - 1e-6f) easing = false;
+            prev = lo.land;
+        }
+        check(monotone, "присед обратно не проваливается");
+        check(easing, "и распрямляется плавно, а не ступенькой");
+        check(lo.land < 0.01f, "и проходит сам");
+        check(lo.state == State::Idle, "после чего существо снова стоит");
+    }
+
+    // ---- Позы действительно разные ----
+    {
+        const entity::Rig& rig = player::rig();
+
+        auto poseOf = [&](const anim::AnimState& st) {
+            entity::Pose p;
+            anim::poseFor(rig, p, st);
+            return p;
+        };
+        auto differ = [&](const entity::Pose& a, const entity::Pose& b) {
+            f32 worst = 0.f;
+            for (u8 i = 0; i < rig.count; ++i)
+                for (int k = 0; k < 3; ++k)
+                    worst = std::max(worst, std::fabs(a.euler[i][k] - b.euler[i][k]));
+            return worst;
+        };
+
+        anim::AnimState walk;  walk.phase = 1.2f; walk.speedNorm = 0.35f;
+        anim::AnimState run;   run.phase  = 1.2f; run.speedNorm  = 1.0f;
+        anim::AnimState fall;  fall.phase = 1.2f; fall.speedNorm = 0.35f;
+        fall.air = 1.f; fall.rise = -1.f;
+        anim::AnimState jump = fall; jump.rise = 1.f;
+        anim::AnimState land;  land.phase = 1.2f; land.speedNorm = 0.f;
+        land.land = 1.f;
+
+        check(differ(poseOf(walk), poseOf(run)) > 0.05f,
+              "бег отличается от шага не только частотой");
+        check(differ(poseOf(walk), poseOf(fall)) > 0.2f,
+              "в падении поза своя, а не продолжение шага");
+        check(differ(poseOf(jump), poseOf(fall)) > 0.2f,
+              "взлетая ноги поджаты, падая — вытянуты");
+        check(differ(poseOf(land), poseOf(walk)) > 0.2f,
+              "приземление — отдельная поза");
+
+        // Наклон корпуса на бегу — это то, чем бег и отличается.
+        {
+            f32 torsoWalk = 0.f, torsoRun = 0.f;
+            const entity::Pose w = poseOf(walk), r = poseOf(run);
+            for (u8 i = 0; i < rig.count; ++i)
+                if (rig.parts[i].role == entity::PartRole::Torso) {
+                    torsoWalk = w.euler[i].x; torsoRun = r.euler[i].x;
+                }
+            check(torsoRun > torsoWalk + 0.05f, "на бегу корпус наклонён вперёд");
+        }
+    }
+}
+
+// ------------------------------------------------------------
 // Селяне отличаются друг от друга.
 //
 // Раньше все жители деревни были побайтово одинаковы: оснастка
@@ -8646,6 +8784,7 @@ int main() {
     testHumanoidRigIsWholeBody();
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
+    testLocomotionStatesAndTransitions();
     testGaitPhaseFollowsDistance();
     testPlayerHasModel();
     testBufferMapContract();

@@ -39,6 +39,7 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
     // и вырастают расхождения.
     reg.add(entity_, ecs::Facing{ 0.f, 0.f, 12.f });
     reg.add(entity_, ecs::Gait{ 0.f, rig().strideLength });
+    reg.add(entity_, ecs::Locomotion{});
     reg.add(entity_, ecs::Health{100.f, 100.f, 1.f, 0.f});
     reg.add(entity_, ecs::Mana{80.f, 80.f, 3.f});
     reg.add(entity_, ecs::Stamina{100.f, 100.f, 10.f});
@@ -297,6 +298,11 @@ void Player::updateImpl(world::ChunkManager& world,
     // ---- Синхронизация ECS ----
     if (auto* tf = reg_->get<ecs::Transform>(entity_)) {
         tf->position = controller.state().position;
+    }
+    if (auto* lo = reg_->get<ecs::Locomotion>(entity_)) {
+        // Опору знает контроллер. Угадывать её по вертикальной
+        // скорости нельзя: в верхней точке прыжка она нулевая.
+        lo->grounded = controller.state().onGround;
     }
     if (auto* v = reg_->get<ecs::Velocity>(entity_)) {
         v->linear = controller.state().velocity;

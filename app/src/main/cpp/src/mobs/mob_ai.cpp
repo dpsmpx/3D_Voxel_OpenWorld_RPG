@@ -217,6 +217,9 @@ void updateMobs(world::ChunkManager& world,
         u16 inside = world.getVoxel(fx, feetY, fz);
         ai->inWater = (inside == world::WATER) || (below == world::WATER);
         ai->onGround = (below != world::AIR) && (below != world::WATER);
+        // Признак опоры знает тот, кто двигает существо. Поза его
+        // только читает — иначе её пришлось бы угадывать по скорости.
+        if (auto* lo = reg.get<ecs::Locomotion>(e)) lo->grounded = ai->onGround;
 
         if (agent->state == AIAgent::Dead) {
             ai->deathTimer += dt;

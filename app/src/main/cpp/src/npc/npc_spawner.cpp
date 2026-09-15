@@ -199,6 +199,7 @@ void NpcSpawner::update(world::ChunkManager& world,
                     // нарисует рендер: у низкого селянина шаг короче,
                     // и ноги не должны при этом скользить.
                     reg.add(e, ecs::Gait{ 0.f, rigFor(s.typeId, look).strideLength });
+                    reg.add(e, ecs::Locomotion{});
                     reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
 
                     ecs::Collider col;

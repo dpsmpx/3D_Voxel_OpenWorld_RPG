@@ -138,6 +138,14 @@ void MobRenderer::rebuild(ecs::Registry& reg, f32 timeSec) {
         const auto* gt = reg.get<ecs::Gait>(e);
         st.phase     = gt ? gt->phase : 0.f;
         st.time      = timeSec;
+
+        // Прыжок, падение и приземление — состояние сущности, не
+        // догадка рендера по вертикальной скорости.
+        if (const auto* lo = reg.get<ecs::Locomotion>(e)) {
+            st.air  = lo->air;
+            st.land = lo->land;
+            st.rise = lo->rise;
+        }
         st.speedNorm = speedNorm;
         st.attack    = attacking ? ai->attackAnim : 0.f;
         st.death     = dying ? ai->deathTimer : 0.f;

@@ -121,6 +121,14 @@ void NpcRenderer::rebuild(ecs::Registry& reg, f32 timeSec, bool showPlayer) {
         const auto* gt = reg.get<ecs::Gait>(e);
         st.phase     = gt ? gt->phase : 0.f;
         st.time      = timeSec;
+
+        // Прыжок, падение и приземление — состояние сущности, не
+        // догадка рендера по вертикальной скорости.
+        if (const auto* lo = reg.get<ecs::Locomotion>(e)) {
+            st.air  = lo->air;
+            st.land = lo->land;
+            st.rise = lo->rise;
+        }
         st.speedNorm = speedNorm;
         st.death     = (ai->state == npc::NpcAI::Dead) ? ai->deathTimer : 0.f;
 
@@ -214,8 +222,21 @@ void NpcRenderer::appendPlayer(ecs::Registry& reg, f32 timeSec) {
         anim::AnimState st;
         st.phase     = gt ? gt->phase : 0.f;
         st.time      = timeSec;
+
+        // Прыжок, падение и приземление — состояние сущности, не
+        // догадка рендера по вертикальной скорости.
+        if (const auto* lo = reg.get<ecs::Locomotion>(e)) {
+            st.air  = lo->air;
+            st.land = lo->land;
+            st.rise = lo->rise;
+        }
         st.speedNorm = speedNorm;
         st.attack    = ws ? glm::clamp(ws->swingAnim, 0.f, 1.f) : 0.f;
+        if (const auto* lo = reg.get<ecs::Locomotion>(e)) {
+            st.air  = lo->air;
+            st.land = lo->land;
+            st.rise = lo->rise;
+        }
 
         entity::Pose pose;
         anim::poseFor(rg, pose, st);

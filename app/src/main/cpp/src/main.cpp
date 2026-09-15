@@ -971,6 +971,23 @@ struct Engine {
                 // связаны ничем, и ноги скользили.
                 if (auto* g = registry.get<ecs::Gait>(fe))
                     anim::advanceGait(*g, fv->linear, dt);
+
+                // Состояние передвижения — оттуда же. Выбирается по
+                // фактической скорости и признаку опоры, а не по
+                // состоянию ИИ: преследовать можно и в падении.
+                if (auto* lo = registry.get<ecs::Locomotion>(fe)) {
+                    const f32 sp = std::sqrt(fv->linear.x * fv->linear.x +
+                                             fv->linear.z * fv->linear.z);
+                    f32 maxSp = 6.f;
+                    if (auto* mt = registry.get<mobs::MobTag>(fe))
+                        maxSp = std::max(0.5f,
+                                mobs::mobRegistry().get(mt->id).chaseSpeed);
+                    else if (auto* nt = registry.get<npc::NpcTag>(fe))
+                        maxSp = std::max(0.5f,
+                                npc::npcRegistry().get(nt->id).moveSpeed);
+                    anim::advanceLocomotion(*lo, std::min(1.f, sp / maxSp),
+                                            fv->linear.y, lo->grounded, dt);
+                }
             }
         }
 
