@@ -132,6 +132,10 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     camera_.setDebugShading(passSweep_.active()
                             ? (i32)passSweep_.shading()
                             : config::settingsConst().debugShading);
+    // Порядок непрозрачных чанков задаёт только развёртка, и только
+    // ради замера: в игре он всегда от ближнего к дальнему, чтобы
+    // работал ранний тест глубины.
+    chunkRenderer_.setFarFirst(passSweep_.farFirst());
     world.setLodBands(chunkRenderer_.lodBand(0), chunkRenderer_.lodBand(1),
                       chunkRenderer_.lodBand(2));
     // Уровень детализации мир и рендер считают от ОДНОЙ величины —

@@ -87,10 +87,24 @@ void PassSweep::report() const {
     // Проход в одиночку, поверх пустого кадра. Ни от чьей разности не
     // зависит: закрывать ему нечем и некому.
     LOGI("  -- в одиночку, поверх пустого кадра (без разности соседей) --");
-    for (u32 i = SOLO_FIRST; i < STEP_COUNT; ++i)
+    for (u32 i = SOLO_FIRST; i < ORDER_FIRST && i < STEP_COUNT; ++i)
         LOGI("  %-18s %6.2f мс   -> сам по себе %.2f мс (кадров %u)",
              STEPS[i].name, (double)avg(i),
              (double)(avg(i) - empty), frames_[i]);
+
+    // Тот же ландшафт, нарисованный от дальнего к ближнему. Картинка
+    // та же, ранний тест глубины при этом не работает: ближнее
+    // рисуется последним и закрытое уже нарисовано. Разница — то,
+    // сколько ранний тест экономит сейчас.
+    LOGI("  -- тот же ландшафт, но дальние первыми (ранний тест не работает) --");
+    for (u32 i = ORDER_FIRST; i < STEP_COUNT; ++i) {
+        const u32 pair = CUMUL_FIRST + (i - ORDER_FIRST);
+        if (pair > CUMUL_LAST) break;
+        const f32 cur = avg(i), ref = avg(pair);
+        LOGI("  %-34s %6.2f мс   против %6.2f -> ранний тест экономит %.2f мс (кадров %u)",
+             STEPS[i].name, (double)cur, (double)ref,
+             (double)(cur - ref), frames_[i]);
+    }
 }
 
 } // namespace render

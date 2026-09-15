@@ -3183,6 +3183,96 @@ void testFrameGpuBreakdown() {
             }
         }
 
+        // ---- Ярус «дальние первыми»: сколько экономит ранний тест ----
+        //
+        // Перекрытие ландшафта — главный оставшийся вопрос аудита, и
+        // счётчика перекрытых фрагментов у нас не будет. Зато есть
+        // способ увидеть ту же величину косвенно: нарисовать тот же
+        // ландшафт от ДАЛЬНЕГО к ближнему. Картинка не изменится
+        // (геометрия непрозрачная, тест глубины включён), а ранний
+        // тест перестанет отбрасывать закрытые фрагменты — ближнее
+        // рисуется последним. Разница и есть то, что он экономит.
+        check(sw.find("ORDER_FIRST") != NONE, "ярус «дальние первыми» размечен");
+        check(sw.find("u8          farFirst;") != NONE,
+              "у ступени есть порядок непрозрачных чанков");
+        check(sw.find("{ 0x01, 1, 1,") != NONE && sw.find("{ 0x01, 0, 1,") != NONE,
+              "обе ступени ландшафта меряются и в обратном порядке");
+
+        // Пара обязана отличаться ТОЛЬКО порядком.
+        //
+        // Иначе разность мерит не ранний тест, а что-то ещё: другую
+        // маску, другой отладочный вид. Сверяем поля впрямую.
+        {
+            struct St { u32 mask; u32 shading; u32 farFirst; };
+            std::vector<St> steps;
+            const usize st0 = sw.find("STEPS[] = {");
+            const usize stEnd = sw.find("\n    };", st0);
+            for (usize at = sw.find("{ 0x", st0); at != NONE && at < stEnd;
+                 at = sw.find("{ 0x", at + 1)) {
+                St v{};
+                if (std::sscanf(sw.c_str() + at, "{ 0x%x, %u, %u,",
+                                &v.mask, &v.shading, &v.farFirst) == 3)
+                    steps.push_back(v);
+            }
+            int orderFirst = -1, cumulFirst = -1;
+            const usize of = sw.find("ORDER_FIRST = ");
+            const usize cf = sw.find("CUMUL_FIRST = ");
+            if (of != NONE) std::sscanf(sw.c_str() + of + 14, "%d", &orderFirst);
+            if (cf != NONE) std::sscanf(sw.c_str() + cf + 14, "%d", &cumulFirst);
+            check(orderFirst > 0 && cumulFirst > 0 &&
+                  (usize)orderFirst < steps.size(),
+                  "ORDER_FIRST указывает на существующую ступень");
+
+            bool paired = true;
+            for (usize i = (usize)orderFirst; i < steps.size(); ++i) {
+                const usize ref = (usize)cumulFirst + (i - (usize)orderFirst);
+                if (ref >= steps.size()) break;
+                const St& a = steps[i];
+                const St& b = steps[ref];
+                if (a.mask != b.mask || a.shading != b.shading ||
+                    a.farFirst != 1 || b.farFirst != 0) {
+                    std::printf("       ступень %zu и её пара %zu отличаются "
+                                "не только порядком\n", i, ref);
+                    paired = false;
+                }
+            }
+            check(paired, "каждая ступень яруса отличается от своей пары только порядком");
+
+            // И в игре порядок всегда от ближнего: обратный — только
+            // на время развёртки.
+            for (usize i = 0; i < (usize)orderFirst && i < steps.size(); ++i)
+                if (steps[i].farFirst != 0) {
+                    std::printf("       ступень %zu вне яруса рисует дальние первыми\n", i);
+                    check(false, "обратный порядок только в своём ярусе");
+                    return;
+                }
+            check(true, "обратный порядок только в своём ярусе");
+        }
+        if (!swc.empty()) {
+            const usize orderLoop = swc.find("i = ORDER_FIRST");
+            check(orderLoop != NONE, "у яруса свой цикл печати");
+            if (orderLoop != NONE) {
+                const std::string w = swc.substr(orderLoop, 400);
+                check(w.find("CUMUL_FIRST + (i - ORDER_FIRST)") != NONE,
+                      "печатается против своей пары, а не против опорного");
+            }
+            // Одиночный ярус не должен захватывать ступени порядка.
+            check(swc.find("i = SOLO_FIRST; i < ORDER_FIRST") != NONE,
+                  "ярус «в одиночку» останавливается на ORDER_FIRST");
+        }
+        {
+            const std::string rs2 =
+                readSource("app/src/main/cpp/src/render/render_system.cpp");
+            const std::string cr =
+                readSource("app/src/main/cpp/src/render/chunk_renderer.h");
+            if (!rs2.empty())
+                check(rs2.find("setFarFirst(passSweep_.farFirst())") != NONE,
+                      "порядок задаёт только развёртка");
+            if (!cr.empty())
+                check(cr.find("bool farFirst_ = false;") != NONE,
+                      "по умолчанию — от ближнего к дальнему");
+        }
+
         // ---- Пустой кадр: нижний предел ----
         //
         // Первый замер на устройстве дал сумму всех проходов 1.5 мс
