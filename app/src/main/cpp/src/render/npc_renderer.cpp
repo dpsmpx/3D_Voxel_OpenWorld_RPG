@@ -9,6 +9,8 @@
 #include "../core/orientation.h"
 #include "../entity/rig.h"
 #include "../npc/npc_rig.h"
+#include "../player/player_rig.h"
+#include "../combat/components.h"
 #include "../entity/locomotion.h"
 #include "../core/log.h"
 #include <cstring>
@@ -73,7 +75,7 @@ bool NpcRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayo
     return true;
 }
 
-void NpcRenderer::rebuild(ecs::Registry& reg, f32 timeSec) {
+void NpcRenderer::rebuild(ecs::Registry& reg, f32 timeSec, bool showPlayer) {
     cpu_.clear();
 
     auto& pool = reg.pool<npc::NpcAI>();
@@ -173,7 +175,61 @@ void NpcRenderer::rebuild(ecs::Registry& reg, f32 timeSec) {
         }
     }
 
+    if (showPlayer) appendPlayer(reg, timeSec);
+
     instanceCount_ = (u32)cpu_.size();
+}
+
+// Игрок рисуется ЗДЕСЬ, а не отдельным рендером.
+//
+// Он такой же двуногий, как селянин, и формат инстанса у него тот же,
+// поэтому свой конвейер, свой буфер и свой вызов отрисовки ему не
+// нужны — это была бы лишняя цена за отсутствующее отличие. Раньше
+// игрока не рисовали вовсе: камера стоит в пяти с половиной метрах
+// позади, а показывать там было нечего.
+void NpcRenderer::appendPlayer(ecs::Registry& reg, f32 timeSec) {
+    auto& pool = reg.pool<ecs::PlayerTag>();
+    for (usize i = 0; i < pool.size(); ++i) {
+        const ecs::Entity e = pool.entityAt((u32)i);
+        const auto* tf = reg.get<ecs::Transform>(e);
+        const auto* vel = reg.get<ecs::Velocity>(e);
+        if (!tf || !vel) continue;
+
+        const auto* fc = reg.get<ecs::Facing>(e);
+        const auto* gt = reg.get<ecs::Gait>(e);
+        const auto* ws = reg.get<combat::WeaponState>(e);
+
+        const glm::vec2 velXZ { vel->linear.x, vel->linear.z };
+        const f32 yaw = fc ? fc->yaw : orient::yawFromDirection(velXZ.x, velXZ.y);
+
+        // Нормируем по скорости бега: на спринте шаг обязан быть
+        // шире, чем на шаге, — иначе обе скорости выглядят одинаково.
+        const f32 speedNorm = glm::min(1.f, glm::length(velXZ) / 7.5f);
+
+        const entity::Rig& rg = player::rig();
+
+        anim::AnimState st;
+        st.phase     = gt ? gt->phase : 0.f;
+        st.time      = timeSec;
+        st.speedNorm = speedNorm;
+        st.attack    = ws ? glm::clamp(ws->swingAnim, 0.f, 1.f) : 0.f;
+
+        entity::Pose pose;
+        anim::poseFor(rg, pose, st);
+
+        entity::ResolvedPart parts[entity::MAX_PARTS];
+        const u8 n = entity::resolve(rg, pose, tf->position, yaw,
+                                     parts, entity::MAX_PARTS);
+        for (u8 k = 0; k < n; ++k) {
+            MobInstance inst{};
+            inst.pos   = parts[k].center;
+            inst.size  = parts[k].size;
+            inst.color = parts[k].color;
+            inst.rot   = glm::vec4(parts[k].rot.x, parts[k].rot.y,
+                                   parts[k].rot.z, parts[k].rot.w);
+            cpu_.push_back(inst);
+        }
+    }
 }
 
 void NpcRenderer::upload(vk::Context& ctx) {

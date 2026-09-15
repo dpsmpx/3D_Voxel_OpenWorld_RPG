@@ -65,6 +65,8 @@
 #include "entity/locomotion.h"
 #include "entity/mob_rigs.h"
 #include "entity/humanoid_rig.h"
+#include "player/player_rig.h"
+#include "player/player.h"
 #include "entity/rig.h"
 #include "ui/ui_theme.h"
 #include "ui/ui_atlas.h"
@@ -6318,6 +6320,80 @@ void testRigResolveRotatesParts() {
 }
 
 // ------------------------------------------------------------
+// У игрока есть модель.
+//
+// Её не было вовсе. Камера по умолчанию стоит в пяти с половиной
+// метрах позади и на метр выше — то есть игра третьего лица, — а
+// показывать там было нечего: ни одного рендера, который рисовал бы
+// игрока, в проекте не существовало.
+// ------------------------------------------------------------
+void testPlayerHasModel() {
+    group("игрок: модель есть и живёт по общим правилам");
+
+    const entity::Rig& rig = player::rig();
+    check(rig.count > 0, "оснастка игрока построена");
+    if (rig.count == 0) return;
+
+    // ---- Рост модели совпадает с ростом коллайдера ----
+    //
+    // Иначе игрок протискивается там, где визуально не пролезает, и
+    // наоборот — застревает в проёме, который выглядит свободным.
+    {
+        entity::Pose rest;
+        entity::ResolvedPart p[entity::MAX_PARTS];
+        const u8 n = entity::resolve(rig, rest, glm::vec3(0.f), 0.f,
+                                     p, entity::MAX_PARTS);
+        f32 top = 0.f;
+        for (u8 i = 0; i < n; ++i)
+            top = std::max(top, p[i].center.y + p[i].size.y * 0.5f);
+
+        // Коллайдер задан полувысотой 0.90 — значит рост 1.80.
+        check(std::fabs(top - 1.80f) < 1e-3f,
+              "рост модели совпадает с высотой коллайдера");
+        check(std::fabs(entity::lowestPoint(rig, rest, 0.f)) < 1e-3f,
+              "и подошва стоит на опоре");
+    }
+
+    // ---- Игрок не особый случай ----
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(10.f, 64.f, 10.f));
+        const ecs::Entity e = pl.entity();
+
+        auto* fc = reg.get<ecs::Facing>(e);
+        auto* gt = reg.get<ecs::Gait>(e);
+        check(fc != nullptr,
+              "поворот игрока — тот же компонент, что у мобов и NPC");
+        check(gt != nullptr,
+              "и фаза шага тоже: своего способа ходить у игрока нет");
+        if (gt) {
+            check(std::fabs(gt->stride - rig.strideLength) < 1e-4f,
+                  "длина шага взята из его собственной оснастки");
+        }
+
+        // Тот же общий проход, что и для всех остальных, обязан
+        // двигать игрока: если он его не видит, игрок останется
+        // смотреть на север и не шагнёт ни разу.
+        if (fc && gt) {
+            auto* v = reg.get<ecs::Velocity>(e);
+            check(v != nullptr, "и скорость, по которой всё это считается");
+            if (v) {
+                v->linear = glm::vec3(3.f, 0.f, 0.f);   // строго на восток
+                for (int i = 0; i < 120; ++i) {
+                    orient::advanceFacing(*fc, v->linear, 1.f / 60.f);
+                    anim::advanceGait(*gt, v->linear, 1.f / 60.f);
+                }
+                const f32 east = orient::yawFromDirection(1.f, 0.f);
+                check(std::fabs(orient::angleDelta(fc->yaw, east)) < 1e-3f,
+                      "идёт на восток — и смотрит на восток");
+                check(gt->phase > 0.f, "и переставляет ноги, пока идёт");
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------
 // Фаза шага идёт путём, а не временем.
 //
 // Раньше её двигали строчки `walkPhase += dt * 9.f`, разные на каждое
@@ -8305,6 +8381,7 @@ int main() {
     testGaitMatchesAnatomy();
     testHumanoidRigIsWholeBody();
     testGaitPhaseFollowsDistance();
+    testPlayerHasModel();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

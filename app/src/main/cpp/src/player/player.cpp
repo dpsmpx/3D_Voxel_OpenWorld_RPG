@@ -3,6 +3,7 @@
  * @brief Игрок: ввод, движение, взаимодействие с миром и NPC.
  */
 #include "player.h"
+#include "player_rig.h"
 #include "../combat/projectile.h"
 #include "../ecs/components.h"
 #include "../combat/status_effects.h"
@@ -31,6 +32,13 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
     reg.add(entity_, tf);
 
     reg.add(entity_, ecs::Velocity{});
+
+    // Ориентация и фаза шага — теми же компонентами, что у мобов и
+    // NPC, и обновляются тем же проходом. У игрока не должно быть
+    // своего способа поворачиваться: именно из таких «своих способов»
+    // и вырастают расхождения.
+    reg.add(entity_, ecs::Facing{ 0.f, 0.f, 12.f });
+    reg.add(entity_, ecs::Gait{ 0.f, rig().strideLength });
     reg.add(entity_, ecs::Health{100.f, 100.f, 1.f, 0.f});
     reg.add(entity_, ecs::Mana{80.f, 80.f, 3.f});
     reg.add(entity_, ecs::Stamina{100.f, 100.f, 10.f});

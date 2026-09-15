@@ -24,7 +24,9 @@ public:
 
     /// timeSec — монотонное время кадра: на нём идёт дыхание
 /// в покое. Фаза шага берётся из ecs::Gait, она идёт путём.
-    void rebuild(ecs::Registry& reg, f32 timeSec);
+    /// showPlayer — рисовать ли игрока. От первого лица его модель
+    /// закрывала бы обзор собственной грудью.
+    void rebuild(ecs::Registry& reg, f32 timeSec, bool showPlayer);
     void upload(vk::Context& ctx);
     /// set передаётся явно и привязывается своим layout'ом. Раньше
     /// дескрипторы брались те, что оставил после себя рендер чанков:
@@ -36,6 +38,9 @@ public:
     u32 instanceCount() const { return instanceCount_; }
 
 private:
+    /// Игрок — такой же двуногий; своего конвейера ему не нужно.
+    void appendPlayer(ecs::Registry& reg, f32 timeSec);
+
     VkDevice             dev_ = VK_NULL_HANDLE;
     vk::ShaderCache      shaders_;
     vk::GraphicsPipeline pipeline_;

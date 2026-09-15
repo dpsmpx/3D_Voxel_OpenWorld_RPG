@@ -128,6 +128,7 @@ add_library(native-lib SHARED
 
     # Игрок
     src/player/player.cpp
+    src/player/player_rig.cpp
 
     # Интерфейс
     src/ui/drag_drop.cpp
