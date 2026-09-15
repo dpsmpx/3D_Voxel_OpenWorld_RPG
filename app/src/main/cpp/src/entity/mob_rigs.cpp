@@ -1,8 +1,10 @@
 /**
  * @file mob_rigs.cpp
- * @brief Оснастка мобов: иерархия частей по видам.
+ * @brief Оснастка мобов: описание модели по видам.
  */
 #include "mob_rigs.h"
+#include "beast_rig.h"
+#include "humanoid_rig.h"
 #include "../mobs/mob_def.h"
 #include <array>
 
@@ -10,151 +12,207 @@ namespace mobs {
 
 namespace {
 
+using entity::BeastSpec;
+using entity::HumanoidSpec;
 using entity::Part;
 using entity::PartRole;
 using entity::Rig;
 
-/// Роль части по её слоту в старом плоском определении.
-PartRole roleOfSlot(u8 slot) {
-    switch (slot) {
-        case Part_Body:  return PartRole::Torso;
-        case Part_Head:  return PartRole::Head;
-        case Part_LegFR: return PartRole::UpperLegFR;
-        case Part_LegFL: return PartRole::UpperLegFL;
-        case Part_LegBR: return PartRole::UpperLegBR;
-        case Part_LegBL: return PartRole::UpperLegBL;
-        case Part_Tail:  return PartRole::Tail;
-        case Part_ArmR:  return PartRole::UpperArmR;
-        case Part_ArmL:  return PartRole::UpperArmL;
-        default:         return PartRole::Prop;
-    }
+constexpr u32 rgba(u8 r, u8 g, u8 b) {
+    return ((u32)r << 24) | ((u32)g << 16) | ((u32)b << 8) | 0xFFu;
 }
 
-bool isLegSlot(u8 slot) {
-    return slot == Part_LegFR || slot == Part_LegFL ||
-           slot == Part_LegBR || slot == Part_LegBL;
+// ============================================================
+// Описания моделей
+// ============================================================
+//
+// Раньше вид описывался плоским списком из девяти коробок со
+// смещениями от начала сущности. Слоты были зашиты — тело, голова,
+// четыре ноги, хвост, две руки, — и ничего сверх этого выразить было
+// нельзя: ни уха, ни морды, ни рога. Звери отличались друг от друга
+// цветом и размерами параллелепипеда, и только.
+//
+// Здесь вид описывается тем, что он ЕСТЬ: зверь, двуногий или комок.
+// Приметы — уши, морда, рога, хвост — часть описания, а не
+// недостающий слот.
+//
+// Рост во всех описаниях равен `bodyHeight` из MobDef, то есть
+// высоте коллайдера. Это не совпадение и не аккуратность: сборщик
+// ставит голову так, чтобы макушка пришлась ровно на заданный рост.
+// Раньше они расходились — у Каменного стража модель была 4.35 при
+// коллайдере 3.40, почти на метр выше, чем то, во что попадают.
+
+Rig sheepRig(const MobDef& def) {
+    BeastSpec s;
+    s.height     = def.bodyHeight;
+    s.bodyLength = 1.05f;
+    s.bodyWidth  = 0.72f;
+    s.bodyDepth  = 0.62f;
+    s.legLength  = 0.42f;
+    s.legThick   = 0.17f;
+    s.headSize   = 0.42f;
+    s.headWidth  = 0.36f;
+    // Висячие уши и короткая морда — овца читается по ним даже
+    // издали, когда шерсть неотличима от любой другой белой коробки.
+    s.earSize    = 0.20f;
+    s.earLean    = -1.15f;
+    s.snoutLen   = 0.16f;
+    s.tailLength = 0.16f;
+    s.tailThick  = 0.13f;
+    s.bodyColor   = rgba(226, 226, 220);
+    s.headColor   = rgba(202, 202, 196);
+    s.legColor    = rgba(120, 120, 115);
+    s.accentColor = rgba(60, 58, 56);
+    return entity::beastRig(s);
 }
 
-PartRole lowerOf(PartRole upper) {
-    switch (upper) {
-        case PartRole::UpperLegFR: return PartRole::LowerLegFR;
-        case PartRole::UpperLegFL: return PartRole::LowerLegFL;
-        case PartRole::UpperLegBR: return PartRole::LowerLegBR;
-        case PartRole::UpperLegBL: return PartRole::LowerLegBL;
-        default:                   return PartRole::Prop;
-    }
+Rig cowRig(const MobDef& def) {
+    BeastSpec s;
+    s.height     = def.bodyHeight;
+    s.bodyLength = 1.30f;
+    s.bodyWidth  = 0.80f;
+    s.bodyDepth  = 0.72f;
+    s.legLength  = 0.52f;
+    s.legThick   = 0.20f;
+    s.headSize   = 0.46f;
+    s.headWidth  = 0.42f;
+    s.earSize    = 0.16f;
+    s.earLean    = -0.5f;        // уши в стороны, не висят
+    s.snoutLen   = 0.22f;
+    s.hornLen    = 0.20f;        // ради рогов всё и затевалось
+    s.tailLength = 0.55f;
+    s.tailThick  = 0.09f;
+    s.tailLift   = -0.35f;       // хвост свисает
+    s.bodyColor   = rgba(84, 62, 42);
+    s.headColor   = rgba(230, 230, 220);
+    s.legColor    = rgba(60, 45, 30);
+    s.accentColor = rgba(232, 226, 200);
+    return entity::beastRig(s);
 }
 
-/// Построить оснастку из плоского определения вида.
-///
-/// Правила сборки:
-///   * корень — невидимый сустав в точке опоры; вокруг него
-///     поворачивается сущность целиком;
-///   * торс — ребёнок корня;
-///   * голова, хвост, руки и БЁДРА — дети торса;
-///   * каждая нога делится надвое: бедро вращается у торса, голень —
-///     у колена. Раньше нога была одной коробкой и гнуться не могла.
-Rig buildRig(const MobDef& def) {
+Rig chickenRig(const MobDef& def) {
+    BeastSpec s;
+    s.height     = def.bodyHeight;
+    s.bodyLength = 0.46f;
+    s.bodyWidth  = 0.32f;
+    s.bodyDepth  = 0.34f;
+    s.legLength  = 0.22f;
+    s.legThick   = 0.055f;
+    s.legPairs   = 1;            // птица
+    s.headSize   = 0.22f;
+    s.headWidth  = 0.20f;
+    s.snoutLen   = 0.11f;        // клюв
+    s.tailLength = 0.16f;
+    s.tailThick  = 0.16f;
+    s.tailLift   = 0.55f;        // хвост торчком
+    s.bodyColor   = rgba(242, 242, 242);
+    s.headColor   = rgba(248, 248, 248);
+    s.legColor    = rgba(222, 142, 24);
+    s.accentColor = rgba(230, 150, 30);
+    return entity::beastRig(s);
+}
+
+Rig wolfRig(const MobDef& def) {
+    BeastSpec s;
+    s.height     = def.bodyHeight;
+    s.bodyLength = 1.15f;
+    s.bodyWidth  = 0.52f;
+    s.bodyDepth  = 0.48f;
+    s.legLength  = 0.44f;
+    s.legThick   = 0.14f;
+    s.headSize   = 0.36f;
+    s.headWidth  = 0.32f;
+    // Уши торчком и длинная морда — ровно то, чем волк отличается от
+    // овцы, когда обе коробка на четырёх ногах.
+    s.earSize    = 0.17f;
+    s.earLean    = 0.25f;
+    s.snoutLen   = 0.26f;
+    s.tailLength = 0.42f;
+    s.tailThick  = 0.15f;
+    s.tailLift   = -0.25f;
+    s.bodyColor   = rgba(82, 82, 92);
+    s.headColor   = rgba(72, 72, 82);
+    s.legColor    = rgba(52, 52, 62);
+    s.accentColor = rgba(40, 40, 46);
+    return entity::beastRig(s);
+}
+
+Rig humanoidMob(const MobDef& def, u32 body, u32 head, u32 limb,
+                f32 shoulder, f32 legFrac)
+{
+    HumanoidSpec s;
+    s.height       = def.bodyHeight;
+    s.bodyColor    = body;
+    s.headColor    = head;
+    s.accentColor  = limb;
+    s.shoulderFrac = shoulder;
+    s.legFrac      = legFrac;
+    s.torsoFrac    = 1.f - legFrac - s.headFrac;
+    return entity::humanoidRig(s);
+}
+
+/// Комок: ни ног, ни головы. Единственный вид, которому оснастка не
+/// нужна, — и это тоже описание, а не исключение в коде.
+Rig blobRig(const MobDef& def) {
     Rig rig;
 
-    // Корень: сустав в точке опоры, без коробки.
     Part root;
     root.parent  = -1;
     root.role    = PartRole::Root;
     root.visible = false;
     const u8 iRoot = rig.add(root);
 
-    // Торс. Ищем его среди частей; если вида без тела не бывает,
-    // но проверка дешевле падения.
-    i8 iTorso = (i8)iRoot;
-    for (u8 p = 0; p < def.partCount; ++p) {
-        if (roleOfSlot(p) != PartRole::Torso) continue;
-        const MobPart& src = def.parts[p];
-        Part t;
-        t.parent    = (i8)iRoot;
-        t.role      = PartRole::Torso;
-        t.pivot     = src.offset;      // сустав там, где был центр
-        t.boxOffset = glm::vec3(0.f);
-        t.size      = src.size;
-        t.color     = src.color;
-        iTorso = (i8)rig.add(t);
-        break;
-    }
+    const f32 h = def.bodyHeight;
 
-    for (u8 p = 0; p < def.partCount; ++p) {
-        const MobPart& src = def.parts[p];
-        const PartRole role = roleOfSlot(p);
-        if (role == PartRole::Torso) continue;
-        if (src.size.x <= 0.f || src.size.y <= 0.f || src.size.z <= 0.f) continue;
+    Part body;
+    body.parent    = (i8)iRoot;
+    body.role      = PartRole::Torso;
+    body.pivot     = glm::vec3(0.f);
+    body.boxOffset = glm::vec3(0.f, h * 0.5f, 0.f);
+    body.size      = glm::vec3(h, h, h);
+    body.color     = rgba(80, 200, 80);
+    const i8 iBody = (i8)rig.add(body);
 
-        // Смещение части задавалось от начала сущности, а торс сам
-        // смещён — переводим в систему торса.
-        const glm::vec3 fromTorso = src.offset - rig.parts[(u8)iTorso].pivot;
+    // Ядро внутри — комок просвечивает, и его видно.
+    Part core;
+    core.parent    = iBody;
+    core.role      = PartRole::Prop;
+    core.pivot     = glm::vec3(0.f, h * 0.5f, 0.f);
+    core.boxOffset = glm::vec3(0.f);
+    core.size      = glm::vec3(h * 0.5f);
+    core.color     = rgba(120, 240, 120);
+    rig.add(core);
 
-        if (!isLegSlot(p)) {
-            Part q;
-            q.parent    = iTorso;
-            q.role      = role;
-            q.pivot     = fromTorso;
-            q.boxOffset = glm::vec3(0.f);
-            q.size      = src.size;
-            q.color     = src.color;
-            rig.add(q);
-            continue;
-        }
-
-        // ---- Нога: бедро + голень ----
-        //
-        // Половинки обязаны в сумме давать исходную длину ноги. Было
-        // по 0.55 на каждую — нога выходила на десятую часть длиннее
-        // задуманной, и существо ровно на столько же проваливалось
-        // под землю.
-        const f32 full = src.size.y;
-        const f32 upH  = full * 0.5f;
-        const f32 loH  = full * 0.5f;
-
-        // Бедро вращается у ВЕРХА ноги, а не у её центра: иначе
-        // качание уводит ступню из-под тела.
-        Part up;
-        up.parent    = iTorso;
-        up.role      = role;
-        up.pivot     = fromTorso + glm::vec3(0.f, full * 0.5f, 0.f);
-        up.boxOffset = glm::vec3(0.f, -upH * 0.5f, 0.f);
-        up.size      = glm::vec3(src.size.x, upH, src.size.z);
-        up.color     = src.color;
-        const u8 iUp = rig.add(up);
-
-        Part lo;
-        lo.parent    = (i8)iUp;
-        lo.role      = lowerOf(role);
-        lo.pivot     = glm::vec3(0.f, -upH, 0.f);       // колено
-        lo.boxOffset = glm::vec3(0.f, -loH * 0.5f, 0.f);
-        lo.size      = glm::vec3(src.size.x * 0.92f, loH, src.size.z * 0.92f);
-        lo.color     = src.color;
-        rig.add(lo);
-    }
-
-    // ---- Опора ----
-    //
-    // Начало сущности — точка опоры: контроллер ставит position.y
-    // ровно на пол. Значит низ модели в покое обязан быть у нуля.
-    //
-    // В плоских определениях это выдержано не везде: у Каменного
-    // стража ноги заданы как {0, 0.4} размером 1.6 — низ на -0.4, то
-    // есть страж по щиколотку в полу. Правило здесь ОДНО и общее для
-    // всех видов: оснастка приподнимается так, чтобы её нижняя точка
-    // села на опору. Никаких «этому виду плюс 0.4»; величина
-    // выводится из самой геометрии и хранится в метаданных модели.
-    //
-    // Летающие и плавающие переопределяют groundOffset после сборки —
-    // это и есть та самая явная поправка, ради которой поле заведено.
-    {
-        entity::Pose rest;                          // нулевая поза
-        rig.groundOffset = -entity::lowestPoint(rig, rest, 0.f);
-        rig.strideLength = entity::strideFromLegs(rig);
-    }
-
+    rig.groundOffset = -entity::lowestPoint(rig, rig.rest, 0.f);
+    rig.strideLength = h * 1.2f;   // ног нет, но прыжки соразмерны росту
     return rig;
+}
+
+Rig buildRig(u16 id, const MobDef& def) {
+    switch (id) {
+        case MOB_SHEEP:   return sheepRig(def);
+        case MOB_COW:     return cowRig(def);
+        case MOB_CHICKEN: return chickenRig(def);
+        case MOB_WOLF:    return wolfRig(def);
+        case MOB_SLIME:   return blobRig(def);
+
+        case MOB_SKELETON:
+            return humanoidMob(def, rgba(226, 226, 214), rgba(238, 238, 228),
+                               rgba(206, 206, 194), 0.28f, 0.48f);
+        case MOB_GOBLIN:
+            return humanoidMob(def, rgba(92, 132, 70), rgba(116, 156, 88),
+                               rgba(74, 106, 56), 0.34f, 0.40f);
+        case MOB_BOSS_WARDEN:
+            // Приземистый и широкий: угроза читается пропорциями, а
+            // не одним лишь размером.
+            return humanoidMob(def, rgba(96, 102, 112), rgba(120, 126, 138),
+                               rgba(84, 90, 100), 0.46f, 0.42f);
+        case MOB_BOSS_HOLLOW:
+            return humanoidMob(def, rgba(48, 44, 66), rgba(214, 208, 190),
+                               rgba(40, 36, 56), 0.32f, 0.46f);
+
+        default: return Rig{};
+    }
 }
 
 } // namespace
@@ -165,7 +223,7 @@ const entity::Rig& rigFor(u16 mobId) {
 
     const u16 id = (mobId < MOB_COUNT) ? mobId : (u16)MOB_NONE;
     if (!built[id]) {
-        cache[id] = buildRig(mobRegistry().get(id));
+        cache[id] = buildRig(id, mobRegistry().get(id));
         built[id] = true;
     }
     return cache[id];

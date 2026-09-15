@@ -13,32 +13,17 @@ enum class MobCategory : u8 {
     Hostile,
 };
 
-enum MobPartSlot : u8 {
-    Part_Body = 0,
-    Part_Head,
-    Part_LegFR, Part_LegFL, Part_LegBR, Part_LegBL,
-    Part_Tail,
-    Part_ArmR, Part_ArmL,
-    Part_MAX
-};
-
-enum class PartAnim : u8 {
-    None,
-    Leg,
-    LegOpp,
-    Head,
-    Tail,
-    Arm,
-    ArmOpp,
-};
-
-struct MobPart {
-    glm::vec3 offset{0};
-    glm::vec3 size{0};
-    u32       color = 0xFFFFFFFF;
-    PartAnim  anim  = PartAnim::None;
-    u8        _pad[3] = {0,0,0};
-};
+// Здесь лежало плоское описание модели: MobPart, PartAnim и
+// массив из девяти коробок со смещениями от начала сущности. Слоты
+// были зашиты — тело, голова, четыре ноги, хвост, две руки, — и
+// ничего сверх этого выразить было нельзя: ни уха, ни морды, ни рога.
+// Поле PartAnim к тому же давно ничего не решало: анимация выбирает
+// движение по роли части в оснастке, а не по значению из таблицы.
+//
+// Вид теперь описывается тем, что он ЕСТЬ — зверем, двуногим или
+// комком, — в entity/mob_rigs.cpp. Определение здесь оставляет за
+// собой только то, что нужно игровой логике: скорости, урон, размеры
+// тела для физики.
 
 struct MobDef {
     const char* name;
@@ -57,9 +42,6 @@ struct MobDef {
     bool canSwim;
     bool canFly;
     bool hostile;
-
-    u8       partCount = 0;
-    MobPart  parts[Part_MAX];
 
     u16      dropBlock  = 0;
     u8       dropMin    = 0;

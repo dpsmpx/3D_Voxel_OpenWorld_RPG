@@ -6170,48 +6170,24 @@ void testRigHierarchyIsSound() {
             check(false, m);
         }
 
-        // ---- 3б. Оснастка не меняет размер модели ----
+        // ---- 3б. Модель того же размера, что и коллайдер ----
         //
-        // Оснастка — то же существо, пересобранное с суставами, а не
-        // другое. Если звенья ноги в сумме длиннее исходной коробки,
-        // существо молча вырастает: опора этого уже не покажет —
-        // подошва всё равно садится на ноль, просто макушка уезжает
-        // вверх. Ровно так и было: половинки ноги брали по 0.55 длины
-        // вместо 0.5, и каждый зверь оказывался выше задуманного.
+        // Иначе визуал и физика расходятся: по существу промахиваются
+        // там, где оно выглядит задетым, и наоборот. Раньше расходились
+        // сильно — у Каменного стража модель была 4.35 при коллайдере
+        // 3.40, почти на метр выше того, во что попадают.
+        //
+        // Сверяем по МАКУШКЕ, то есть с ушами и рогами: силуэт — это
+        // то, что видно, а не то, что осталось после вычитания примет.
         {
-            f32 flatLo = 0.f, flatHi = 0.f;
-            bool any = false;
-            for (u8 q = 0; q < d.partCount; ++q) {
-                const mobs::MobPart& sp = d.parts[q];
-                if (sp.size.x <= 0.f || sp.size.y <= 0.f || sp.size.z <= 0.f)
-                    continue;
-                const f32 b = sp.offset.y - sp.size.y * 0.5f;
-                const f32 t = sp.offset.y + sp.size.y * 0.5f;
-                if (!any) { flatLo = b; flatHi = t; any = true; }
-                else { flatLo = std::min(flatLo, b); flatHi = std::max(flatHi, t); }
-            }
-            if (any) {
-                entity::Pose rest;
-                entity::ResolvedPart rp[entity::MAX_PARTS];
-                const u8 rn = entity::resolve(rig, rest, glm::vec3(0.f), 0.f,
-                                              rp, entity::MAX_PARTS);
-                f32 rigLo = 0.f, rigHi = 0.f;
-                for (u8 q = 0; q < rn; ++q) {
-                    const f32 b = rp[q].center.y - rp[q].size.y * 0.5f;
-                    const f32 t = rp[q].center.y + rp[q].size.y * 0.5f;
-                    if (q == 0) { rigLo = b; rigHi = t; }
-                    else { rigLo = std::min(rigLo, b); rigHi = std::max(rigHi, t); }
-                }
-                const f32 flatH = flatHi - flatLo;
-                const f32 rigH  = rigHi - rigLo;
-                if (rn > 0 && std::fabs(rigH - flatH) > 0.02f * flatH + 0.01f) {
-                    ++problems;
-                    char m[176];
-                    std::snprintf(m, sizeof(m),
-                                  "%s: оснастка ростом %.2f вместо %.2f",
-                                  name ? name : "?", rigH, flatH);
-                    check(false, m);
-                }
+            const f32 top = entity::highestPoint(rig, rig.rest, 0.f);
+            if (std::fabs(top - d.bodyHeight) > 0.02f * d.bodyHeight + 0.01f) {
+                ++problems;
+                char m[176];
+                std::snprintf(m, sizeof(m),
+                              "%s: модель ростом %.2f при коллайдере %.2f",
+                              name ? name : "?", top, d.bodyHeight);
+                check(false, m);
             }
         }
 
@@ -6219,9 +6195,7 @@ void testRigHierarchyIsSound() {
         //
         // Ни парящих, ни утопленных. Начало сущности — точка опоры,
         // значит низ модели в покое должен быть у нуля.
-        entity::Pose idle;
-        anim::idlePose(rig, idle, 0.f);
-        const f32 lo = entity::lowestPoint(rig, idle, 0.f);
+        const f32 lo = entity::lowestPoint(rig, rig.rest, 0.f);
         if (std::fabs(lo) > 0.35f) {
             ++problems;
             char m[176];
@@ -6390,6 +6364,188 @@ void testPlayerHasModel() {
                 check(gt->phase > 0.f, "и переставляет ноги, пока идёт");
             }
         }
+    }
+}
+
+// ------------------------------------------------------------
+// Звери отличаются друг от друга, а не только цветом коробки.
+//
+// Плоское описание вида давало девять зашитых слотов: тело, голова,
+// четыре ноги, хвост, две руки. Ни уха, ни морды, ни рога выразить в
+// нём было нельзя — поэтому овца и волк были двумя коробками на
+// четырёх ногах, отличавшимися оттенком серого.
+// ------------------------------------------------------------
+void testBeastsHaveCharacter() {
+    group("звери: приметы вида, а не оттенок серого");
+
+    auto hasRole = [](const entity::Rig& r, entity::PartRole role) {
+        for (u8 i = 0; i < r.count; ++i)
+            if (r.parts[i].role == role) return true;
+        return false;
+    };
+    auto countRole = [](const entity::Rig& r, entity::PartRole role) {
+        int n = 0;
+        for (u8 i = 0; i < r.count; ++i)
+            if (r.parts[i].role == role) ++n;
+        return n;
+    };
+
+    const entity::Rig& sheep   = mobs::rigFor(mobs::MOB_SHEEP);
+    const entity::Rig& cow     = mobs::rigFor(mobs::MOB_COW);
+    const entity::Rig& wolf    = mobs::rigFor(mobs::MOB_WOLF);
+    const entity::Rig& chicken = mobs::rigFor(mobs::MOB_CHICKEN);
+
+    // ---- Приметы на месте ----
+    check(countRole(sheep, entity::PartRole::Ear) == 2, "у овцы два уха");
+    check(countRole(wolf,  entity::PartRole::Ear) == 2, "у волка два уха");
+    check(countRole(cow,   entity::PartRole::Horn) == 2, "у коровы два рога");
+    check(hasRole(sheep, entity::PartRole::Snout), "у овцы есть морда");
+    check(hasRole(wolf,  entity::PartRole::Snout), "у волка есть морда");
+    check(hasRole(chicken, entity::PartRole::Snout), "у курицы есть клюв");
+    check(hasRole(wolf, entity::PartRole::Tail), "у волка есть хвост");
+
+    check(!hasRole(sheep, entity::PartRole::Horn), "а у овцы рогов нет");
+    check(!hasRole(chicken, entity::PartRole::Ear), "и у курицы ушей нет");
+
+    // ---- Уши висят или торчат — и это разные звери ----
+    //
+    // Направление уха задано позой ПОКОЯ, а не отдельной коробкой:
+    // иначе оно не качалось бы вместе с головой на бегу.
+    {
+        f32 sheepEar = 0.f, wolfEar = 0.f;
+        for (u8 i = 0; i < sheep.count; ++i)
+            if (sheep.parts[i].role == entity::PartRole::Ear)
+                sheepEar = sheep.rest.euler[i].x;
+        for (u8 i = 0; i < wolf.count; ++i)
+            if (wolf.parts[i].role == entity::PartRole::Ear)
+                wolfEar = wolf.rest.euler[i].x;
+        check(sheepEar < -0.3f, "у овцы уши висят");
+        check(wolfEar > 0.1f, "а у волка торчат");
+    }
+
+    // ---- Курица — птица: одна пара ног ----
+    {
+        int legs = countRole(chicken, entity::PartRole::UpperLegFR)
+                 + countRole(chicken, entity::PartRole::UpperLegFL)
+                 + countRole(chicken, entity::PartRole::UpperLegBR)
+                 + countRole(chicken, entity::PartRole::UpperLegBL);
+        check(legs == 2, "у курицы две ноги");
+        int wolfLegs = countRole(wolf, entity::PartRole::UpperLegFR)
+                     + countRole(wolf, entity::PartRole::UpperLegFL)
+                     + countRole(wolf, entity::PartRole::UpperLegBR)
+                     + countRole(wolf, entity::PartRole::UpperLegBL);
+        check(wolfLegs == 4, "а у волка четыре");
+    }
+
+    // ---- Силуэты разные ----
+    //
+    // Волк длинный и низкий, овца короткая и плотная. Если отношение
+    // длины к высоте у них совпадёт, порода перестанет читаться.
+    {
+        auto extent = [](const entity::Rig& r, int axis) {
+            entity::ResolvedPart p[entity::MAX_PARTS];
+            const u8 n = entity::resolve(r, r.rest, glm::vec3(0.f), 0.f,
+                                         p, entity::MAX_PARTS);
+            f32 lo = 0.f, hi = 0.f;
+            for (u8 i = 0; i < n; ++i) {
+                const f32 c = p[i].center[axis], h = p[i].size[axis] * 0.5f;
+                if (i == 0) { lo = c - h; hi = c + h; }
+                else { lo = std::min(lo, c - h); hi = std::max(hi, c + h); }
+            }
+            return hi - lo;
+        };
+        const f32 wolfRatio  = extent(wolf, 2)  / std::max(0.01f, extent(wolf, 1));
+        const f32 sheepRatio = extent(sheep, 2) / std::max(0.01f, extent(sheep, 1));
+        check(wolfRatio > sheepRatio * 1.15f,
+              "волк длиннее относительно роста, чем овца");
+    }
+
+    // ---- Примета качается СВОИМ суставом ----
+    //
+    // Ухо — ребёнок головы, и на бегу оно поедет вместе с ней, даже
+    // если собственного движения у него нет вовсе. Поэтому сравнивать
+    // надо не с покоем, а с той же позой, где обнулён угол самого
+    // уха: разница и есть вклад его сустава.
+    {
+        anim::AnimState run;
+        run.phase = 1.1f; run.speedNorm = 1.f;
+        entity::Pose moving;
+        anim::poseFor(wolf, moving, run);
+
+        int earOwn = 0, tailOwn = 0;
+        for (u8 i = 0; i < wolf.count; ++i) {
+            const entity::PartRole r = wolf.parts[i].role;
+            const bool ear  = (r == entity::PartRole::Ear);
+            const bool tail = (r == entity::PartRole::Tail);
+            if (!ear && !tail) continue;
+
+            entity::Pose frozen = moving;
+            frozen.euler[i] = wolf.rest.euler[i];   // сустав не двигается
+
+            entity::ResolvedPart a[entity::MAX_PARTS], b[entity::MAX_PARTS];
+            const u8 n = entity::resolve(wolf, moving, glm::vec3(0.f), 0.f,
+                                         a, entity::MAX_PARTS);
+            entity::resolve(wolf, frozen, glm::vec3(0.f), 0.f,
+                            b, entity::MAX_PARTS);
+            u8 w = 0;
+            for (u8 j = 0; j < i; ++j) if (wolf.parts[j].visible) ++w;
+            if (w >= n) continue;
+
+            if (glm::length(a[w].center - b[w].center) > 1e-3f) {
+                if (ear) ++earOwn; else ++tailOwn;
+            }
+        }
+        check(earOwn > 0, "на бегу ухо мотает собственным суставом");
+        check(tailOwn > 0, "и хвост качается своим");
+    }
+
+    // ---- Поза покоя переживает анимацию ----
+    //
+    // Висячее ухо задано наклоном сустава в позе покоя. Если анимация
+    // кладётся ВМЕСТО неё, а не поверх, овца на первом же шаге
+    // вскидывает уши торчком — и перестаёт быть овцой.
+    //
+    // Смотрим, куда ухо показывает: местное +Y, повёрнутое суставом.
+    // Его составляющая по Z отрицательна у висячего уха и
+    // положительна у торчащего.
+    {
+        auto earTilt = [](const entity::Rig& r, const entity::Pose& pose) {
+            entity::ResolvedPart p[entity::MAX_PARTS];
+            const u8 n = entity::resolve(r, pose, glm::vec3(0.f), 0.f,
+                                         p, entity::MAX_PARTS);
+            u8 w = 0;
+            for (u8 i = 0; i < r.count && w < n; ++i) {
+                if (!r.parts[i].visible) continue;
+                if (r.parts[i].role == entity::PartRole::Ear)
+                    return (p[w].rot * glm::vec3(0.f, 1.f, 0.f)).z;
+                ++w;
+            }
+            return 0.f;
+        };
+
+        check(earTilt(sheep, sheep.rest) < -0.5f, "стоя у овцы ухо свисает назад");
+        check(earTilt(wolf,  wolf.rest)  >  0.1f, "а у волка смотрит вперёд");
+
+        int sheepUp = 0;
+        for (int k = 0; k < 16; ++k) {
+            anim::AnimState st;
+            st.phase = (f32)k * 0.4f; st.speedNorm = 1.f;
+            entity::Pose pose;
+            anim::poseFor(sheep, pose, st);
+            if (earTilt(sheep, pose) > -0.3f) ++sheepUp;
+        }
+        check(sheepUp == 0, "и на бегу овца ушей торчком не вскидывает");
+    }
+
+    // ---- Стоя зверь хвостом в такт шагу не машет ----
+    {
+        entity::Pose standing;
+        anim::walkPose(wolf, standing, 2.2f, 0.f);
+        f32 worst = 0.f;
+        for (u8 i = 0; i < wolf.count; ++i)
+            for (int k = 0; k < 3; ++k)
+                worst = std::max(worst, std::fabs(standing.euler[i][k]));
+        check(worst < 1e-4f, "на нулевой скорости ходьба не даёт ничего");
     }
 }
 
@@ -8380,6 +8536,7 @@ int main() {
     testRigResolveRotatesParts();
     testGaitMatchesAnatomy();
     testHumanoidRigIsWholeBody();
+    testBeastsHaveCharacter();
     testGaitPhaseFollowsDistance();
     testPlayerHasModel();
     testBufferMapContract();

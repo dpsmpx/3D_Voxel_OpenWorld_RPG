@@ -103,8 +103,7 @@ Rig humanoidRig(const HumanoidSpec& spec) {
 
     // Опора выводится из геометрии — тем же правилом, что у мобов.
     {
-        Pose rest;
-        rig.groundOffset = -lowestPoint(rig, rest, 0.f);
+        rig.groundOffset = -lowestPoint(rig, rig.rest, 0.f);
         rig.strideLength = strideFromLegs(rig);
     }
     return rig;

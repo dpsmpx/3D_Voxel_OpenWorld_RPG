@@ -142,6 +142,7 @@ add_library(native-lib SHARED
 
     # Мобы
     src/mobs/mob_ai.cpp
+    src/entity/beast_rig.cpp
     src/entity/humanoid_rig.cpp
     src/entity/mob_rigs.cpp
     src/mobs/mob_def.cpp

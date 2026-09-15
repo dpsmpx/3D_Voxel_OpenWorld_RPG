@@ -18,6 +18,7 @@ struct Swing {
     f32 lowerLeg = 0.40f;
     f32 arm      = 0.45f;
     f32 tail     = 0.22f;
+    f32 ear      = 0.30f;
     f32 head     = 0.05f;
 };
 
@@ -126,7 +127,17 @@ inline void walkPose(const entity::Rig& rig, entity::Pose& pose,
         } else if (isArm(r)) {
             pose.euler[i].x = s * sw.arm * speedNorm * sign;
         } else if (r == entity::PartRole::Tail) {
-            pose.euler[i].y = std::sin(phase * 0.5f) * sw.tail;
+            // Все слагаемые ходьбы обязаны гаснуть вместе со
+            // скоростью: иначе у стоящего зверя хвост продолжает
+            // мотаться в такт шагу, которого нет. Покачивание в покое
+            // — дело idlePose, и оно идёт временем, а не фазой.
+            pose.euler[i].y = std::sin(phase * 0.5f) * sw.tail * speedNorm;
+            pose.euler[i].x = std::sin(phase) * sw.tail * 0.4f * speedNorm;
+        } else if (r == entity::PartRole::Ear) {
+            // Ухо отстаёт от головы: оно мягкое, его мотает шагом.
+            // Без этого зверь на бегу выглядит чучелом.
+            pose.euler[i].x = std::sin(phase * 2.f - 0.7f) * sw.ear * speedNorm;
+            pose.euler[i].z = std::sin(phase) * sw.ear * 0.5f * speedNorm;
         } else if (r == entity::PartRole::Head) {
             pose.euler[i].x = std::sin(phase * 2.f) * sw.head * speedNorm;
         } else if (r == entity::PartRole::Torso) {
@@ -150,6 +161,8 @@ inline void idlePose(const entity::Rig& rig, entity::Pose& pose, f32 t) {
             pose.euler[i].x = breathe * 0.02f;
         else if (r == entity::PartRole::Tail)
             pose.euler[i].y = std::sin(t * 0.9f) * 0.10f;
+        else if (r == entity::PartRole::Ear)
+            pose.euler[i].x = std::sin(t * 1.1f) * 0.05f;
     }
 }
 
@@ -207,8 +220,13 @@ inline void poseFor(const entity::Rig& rig, entity::Pose& pose,
     idlePose(rig, idle, st.time);
 
     const f32 k = st.speedNorm < 0.f ? 0.f : (st.speedNorm > 1.f ? 1.f : st.speedNorm);
-    for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i)
-        pose.euler[i] = idle.euler[i] * (1.f - k) + walk.euler[i] * k;
+    for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i) {
+        // Поза покоя — постоянный наклон модели (висячее ухо, поднятый
+        // хвост). Анимация кладётся ПОВЕРХ неё, а не вместо: иначе ухо
+        // на первом же шаге встанет торчком.
+        pose.euler[i] = rig.rest.euler[i]
+                      + idle.euler[i] * (1.f - k) + walk.euler[i] * k;
+    }
 
     if (st.attack > 0.01f) {
         for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i)

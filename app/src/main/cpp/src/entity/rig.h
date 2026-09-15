@@ -65,6 +65,19 @@ struct Part {
     bool visible = true;
 };
 
+/// Поза — поворот каждого сустава в системе родителя.
+///
+/// Углы, а не кватернионы: анимация задаёт качание в одной плоскости,
+/// и три угла читаются человеком, а четыре компоненты кватерниона —
+/// нет.
+struct Pose {
+    glm::vec3 euler[MAX_PARTS]{};   ///< pitch (X), yaw (Y), roll (Z)
+
+    void clear() {
+        for (u8 i = 0; i < MAX_PARTS; ++i) euler[i] = glm::vec3(0.f);
+    }
+};
+
 /// Оснастка — описание, общее для всех особей вида.
 struct Rig {
     Part parts[MAX_PARTS]{};
@@ -91,6 +104,16 @@ struct Rig {
     /// а не подбирать множитель к времени.
     f32 strideLength = 1.6f;
 
+    /// Поза покоя — постоянный наклон суставов модели.
+    ///
+    /// Висячее ухо, поднятый хвост, склонённая шея — это НАКЛОН
+    /// СУСТАВА, а не другая коробка. Разница видна в движении: поза
+    /// покоя качается вместе со всем остальным, а вторая коробка
+    /// стояла бы неподвижно.
+    ///
+    /// Анимация кладётся ПОВЕРХ этой позы, а не вместо неё.
+    Pose rest{};
+
     /// Поправка ориентации модели, если её «вперёд» не совпадает с +Z.
     ///
     /// Единственное законное место для такой поправки. Прятать её в
@@ -102,19 +125,6 @@ struct Rig {
         if (count >= MAX_PARTS) return (u8)(count - 1);
         parts[count] = p;
         return count++;
-    }
-};
-
-/// Поза — поворот каждого сустава в системе родителя.
-///
-/// Углы, а не кватернионы: анимация задаёт качание в одной плоскости,
-/// и три угла читаются человеком, а четыре компоненты кватерниона —
-/// нет.
-struct Pose {
-    glm::vec3 euler[MAX_PARTS]{};   ///< pitch (X), yaw (Y), roll (Z)
-
-    void clear() {
-        for (u8 i = 0; i < MAX_PARTS; ++i) euler[i] = glm::vec3(0.f);
     }
 };
 
@@ -174,6 +184,30 @@ inline u8 resolve(const Rig& rig, const Pose& pose,
         ++written;
     }
     return written;
+}
+
+/// Верхняя точка оснастки в позе — для сверки с ростом коллайдера.
+///
+/// Считает по МАКУШКЕ, то есть с ушами и рогами: силуэт — это то, что
+/// видно, а не то, что осталось после вычитания примет.
+inline f32 highestPoint(const Rig& rig, const Pose& pose, f32 rootYaw) {
+    ResolvedPart tmp[MAX_PARTS];
+    const u8 n = resolve(rig, pose, glm::vec3(0.f), rootYaw, tmp, MAX_PARTS);
+    f32 hi = 0.f;
+    for (u8 i = 0; i < n; ++i) {
+        const glm::vec3 h = tmp[i].size * 0.5f;
+        f32 ext = 0.f;
+        for (int sx = -1; sx <= 1; sx += 2)
+        for (int sy = -1; sy <= 1; sy += 2)
+        for (int sz = -1; sz <= 1; sz += 2) {
+            const glm::vec3 c = tmp[i].rot *
+                glm::vec3(h.x * (f32)sx, h.y * (f32)sy, h.z * (f32)sz);
+            if (c.y > ext) ext = c.y;
+        }
+        const f32 top = tmp[i].center.y + ext;
+        if (i == 0 || top > hi) hi = top;
+    }
+    return hi;
 }
 
 /// Нижняя точка оснастки в позе — для проверки опоры.
