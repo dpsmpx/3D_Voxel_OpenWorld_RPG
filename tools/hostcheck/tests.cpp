@@ -39,6 +39,7 @@
 #include "config/settings.h"
 #include "render/camera.h"
 #include "render/instanced_renderer.h"
+#include "render/mob_renderer.h"
 #include "vk/vk_buffer.h"
 #include "vk/vk_texture.h"
 #include "world/noise.h"
@@ -65,6 +66,7 @@
 #include "entity/locomotion.h"
 #include "entity/mob_rigs.h"
 #include "entity/humanoid_rig.h"
+#include "entity/showcase.h"
 #include "npc/npc_rig.h"
 #include "npc/npc_spawner.h"
 #include "player/player_rig.h"
@@ -6370,6 +6372,226 @@ void testPlayerHasModel() {
 }
 
 // ------------------------------------------------------------
+// Витрина: все модели проекта разом.
+//
+// Модели живут в разных местах — мобы в своём реестре, NPC в своём,
+// игрок отдельно. Посмотреть на них ВМЕСТЕ было негде, а ошибка вида
+// «у этого ноги короче туловища» видна только рядом с остальными:
+// поодиночке она выглядит замыслом.
+// ------------------------------------------------------------
+void testShowcaseHoldsEveryModel() {
+    group("витрина: все модели проекта разом");
+
+    entity::ShowcaseSlot slots[entity::SHOWCASE_MAX];
+    const u8 n = entity::buildShowcase(slots, entity::SHOWCASE_MAX, 1.2f, 0.7f);
+
+    char m[200];
+    std::snprintf(m, sizeof(m), "на витрине моделей: %u", (unsigned)n);
+    check(n >= 1u + (npc::NPC_COUNT - 1) + (mobs::MOB_COUNT - 1), m);
+
+    // ---- Витрина детерминированна ----
+    //
+    // Ни времени, ни случайности, ни зерна мира. Иначе два прогона
+    // дают разное, и сравнивать нечего.
+    {
+        entity::ShowcaseSlot a[entity::SHOWCASE_MAX], b[entity::SHOWCASE_MAX];
+        const u8 na = entity::buildShowcase(a, entity::SHOWCASE_MAX, 1.2f, 0.7f);
+        const u8 nb = entity::buildShowcase(b, entity::SHOWCASE_MAX, 1.2f, 0.7f);
+        bool same = (na == nb);
+        for (u8 i = 0; i < na && same; ++i)
+            same = (a[i].rig == b[i].rig) && (a[i].pos == b[i].pos);
+        check(same, "два прогона дают одну и ту же витрину");
+    }
+
+    // ---- Ни одна модель не сломана ----
+    int notGrounded = 0, tooTall = 0, noParts = 0, overlapRow = 0, nan = 0;
+    for (u8 i = 0; i < n; ++i) {
+        const entity::Rig& rig = *slots[i].rig;
+        entity::Pose pose;
+        anim::poseFor(rig, pose, slots[i].state);
+
+        entity::ResolvedPart parts[entity::MAX_PARTS];
+        const u8 cnt = entity::resolve(rig, pose, slots[i].pos, slots[i].yaw,
+                                       parts, entity::MAX_PARTS);
+        if (cnt == 0) { ++noParts; continue; }
+
+        f32 lo = parts[0].center.y, hi = lo, wide = 0.f;
+        for (u8 k = 0; k < cnt; ++k) {
+            const auto& p = parts[k];
+            if (!std::isfinite(p.center.x) || !std::isfinite(p.center.y) ||
+                !std::isfinite(p.center.z) || !std::isfinite(p.size.y)) ++nan;
+            lo = std::min(lo, p.center.y - p.size.y * 0.5f);
+            hi = std::max(hi, p.center.y + p.size.y * 0.5f);
+            wide = std::max(wide,
+                std::fabs(p.center.x - slots[i].pos.x) + p.size.x * 0.5f);
+        }
+
+        // В движении подошва отрывается от земли — это шаг, а не
+        // парение. Но полметра под землёй или над ней — уже беда.
+        if (lo < -0.35f || lo > 0.35f) {
+            ++notGrounded;
+            std::snprintf(m, sizeof(m), "%s: подошва на %.2f", slots[i].name, lo);
+            check(false, m);
+        }
+        // Витрина не должна превращаться в кучу: соседи стоят через
+        // четыре метра.
+        if (wide > 2.f) {
+            ++overlapRow;
+            std::snprintf(m, sizeof(m), "%s: шире соседского места (%.2f)",
+                          slots[i].name, wide);
+            check(false, m);
+        }
+        if (hi - lo > 6.f) ++tooTall;
+    }
+    check(noParts == 0, "у каждой модели есть хоть одна коробка");
+    check(nan == 0, "в позах нет не-чисел");
+    check(notGrounded == 0, "все модели стоят на земле");
+    check(overlapRow == 0, "и не налезают на соседей");
+    check(tooTall == 0, "и ни одна не выше шести метров");
+
+    // ---- Походка ложится на все скелеты ----
+    //
+    // Одна и та же локомоция обслуживает двуногих и четвероногих. Если
+    // на каком-то скелете она не даёт движения — значит роли частей
+    // этого скелета она не знает, и существо идёт, не шевелясь.
+    {
+        int frozen = 0;
+        for (u8 i = 0; i < n; ++i) {
+            const entity::Rig& rig = *slots[i].rig;
+            anim::AnimState still; still.phase = 1.2f; still.speedNorm = 0.f;
+            anim::AnimState moving; moving.phase = 1.2f; moving.speedNorm = 1.f;
+
+            entity::Pose a, b;
+            anim::poseFor(rig, a, still);
+            anim::poseFor(rig, b, moving);
+
+            // Смотрим на БЁДРА, а не на что попало. Корпус
+            // покачивается на ходу и сам по себе, и первая версия
+            // этой проверки принимала его качание за походку: мутация
+            // «бёдра не качаются» её пережила.
+            f32 worst = 0.f;
+            bool hasLegs = false;
+            for (u8 k = 0; k < rig.count; ++k) {
+                if (!anim::isUpperLimb(rig.parts[k].role)) continue;
+                hasLegs = true;
+                for (int c = 0; c < 3; ++c)
+                    worst = std::max(worst, std::fabs(a.euler[k][c] - b.euler[k][c]));
+            }
+            if (hasLegs && worst < 0.05f) {
+                ++frozen;
+                std::snprintf(m, sizeof(m), "%s: на ходу не шевелится", slots[i].name);
+                check(false, m);
+            }
+        }
+        check(frozen == 0, "походка оживляет каждый скелет с ногами");
+    }
+}
+
+// ------------------------------------------------------------
+// Цена моделей в коробках.
+//
+// Оснастка сделала существо дороже: вместо плоского списка из шести
+// коробок у него теперь иерархия из полутора десятков, и каждая
+// коробка — инстанс. Это прямая цена кадра, и она обязана быть
+// НАЗВАНА, а не обнаружена на устройстве.
+// ------------------------------------------------------------
+void testEntityInstanceBudget() {
+    group("цена: сколько коробок стоит сущность");
+
+    char m[220];
+
+    // ---- Ни одна модель не переполняет оснастку ----
+    {
+        int over = 0;
+        u8 worst = 0;
+        const char* worstName = "?";
+        for (u16 id = 1; id < mobs::MOB_COUNT; ++id) {
+            const entity::Rig& r = mobs::rigFor(id);
+            if (r.count > entity::MAX_PARTS) ++over;
+            if (r.count > worst) { worst = r.count; worstName = mobs::mobRegistry().get(id).name; }
+        }
+        for (u16 id = 1; id < npc::NPC_COUNT; ++id) {
+            const entity::Rig& r = npc::rigFor(id, 0u);
+            if (r.count > entity::MAX_PARTS) ++over;
+            if (r.count > worst) { worst = r.count; worstName = npc::npcRegistry().get(id).name; }
+        }
+        std::snprintf(m, sizeof(m), "самая сложная модель — %s, частей %u из %u",
+                      worstName, (unsigned)worst, (unsigned)entity::MAX_PARTS);
+        check(over == 0, m);
+        // Запас нужен: без него следующая примета упрётся в предел и
+        // будет молча отброшена rig.add().
+        check(worst <= entity::MAX_PARTS - 2, "и до предела остаётся запас");
+    }
+
+    // ---- Цена сцены ----
+    //
+    // Полсотни существ в поле зрения — обычная нагрузка боя у деревни.
+    {
+        const u32 showcase = entity::showcaseBoxCount(1.2f, 1.f);
+        entity::ShowcaseSlot slots[entity::SHOWCASE_MAX];
+        const u8 n = entity::buildShowcase(slots, entity::SHOWCASE_MAX, 1.2f, 1.f);
+        const f32 perEntity = n ? (f32)showcase / (f32)n : 0.f;
+
+        const u32 fifty = (u32)(perEntity * 50.f);
+        std::snprintf(m, sizeof(m),
+                      "витрина: %u коробок на %u моделей — %.1f на сущность, "
+                      "%u на полсотни",
+                      showcase, (unsigned)n, (double)perEntity, fifty);
+        check(true, m);
+
+        // Один инстансный вызов рисует их все, и коробка стоит 48
+        // байт. Полсотни существ — это единицы килобайт на кадр;
+        // бюджет назван, чтобы следующее усложнение моделей упёрлось
+        // в проверку, а не в кадр на устройстве.
+        check(perEntity <= 20.f, "на сущность уходит не больше двадцати коробок");
+        check(fifty * sizeof(render::MobInstance) <= 64u * 1024u,
+              "полсотни существ укладываются в 64 КБ инстанс-буфера");
+    }
+
+    // ---- Опора выводится, а не задаётся руками ----
+    //
+    // Сейчас все сборщики кладут ступни ровно в ноль, и groundOffset у
+    // всех видов нулевой. Это не повод считать его украшением: он и
+    // есть то, что делает «подошва на опоре» верным ПО ПОСТРОЕНИЮ, а
+    // не по внимательности автора очередной модели. Проверяем на
+    // оснастке, собранной нарочно неправильно — с коробкой ниже нуля.
+    {
+        entity::Rig sunk;
+        entity::Part root;
+        root.parent = -1; root.role = entity::PartRole::Root; root.visible = false;
+        const u8 iRoot = sunk.add(root);
+
+        entity::Part body;
+        body.parent    = (i8)iRoot;
+        body.role      = entity::PartRole::Torso;
+        body.pivot     = glm::vec3(0.f, -0.6f, 0.f);   // закопан
+        body.boxOffset = glm::vec3(0.f);
+        body.size      = glm::vec3(1.f);
+        sunk.add(body);
+
+        check(entity::lowestPoint(sunk, sunk.rest, 0.f) < -1.f,
+              "нарочно закопанная оснастка и правда под землёй");
+
+        sunk.groundOffset = -entity::lowestPoint(sunk, sunk.rest, 0.f);
+        check(std::fabs(entity::lowestPoint(sunk, sunk.rest, 0.f)) < 1e-4f,
+              "а после вывода groundOffset садится на опору");
+    }
+
+    // ---- Поза не аллоцирует ----
+    //
+    // Сборка позы идёт каждый кадр на каждое существо. Куча здесь —
+    // это кадровые заикания, которые на устройстве ищут неделями.
+    {
+        const entity::Rig& rig = mobs::rigFor(mobs::MOB_WOLF);
+        check(sizeof(entity::Pose) <= 16u * entity::MAX_PARTS,
+              "поза — простой массив углов, без косвенности");
+        check(sizeof(entity::ResolvedPart) <= 64u,
+              "разрешённая часть влезает в кэш-линию");
+        check(rig.count > 0, "оснастка волка построена");
+    }
+}
+
+// ------------------------------------------------------------
 // Деревня: дом — это дом, а не коробка с кустом на крыше.
 //
 // Прежний дом был коробкой из WOOD с плоской нашлёпкой из LEAVES
@@ -9247,6 +9469,8 @@ int main() {
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
     testVillageHousesAreBuildings();
+    testShowcaseHoldsEveryModel();
+    testEntityInstanceBudget();
     testGaitPhaseFollowsDistance();
     testPlayerHasModel();
     testBufferMapContract();

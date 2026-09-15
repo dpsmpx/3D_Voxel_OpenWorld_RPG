@@ -145,6 +145,7 @@ add_library(native-lib SHARED
     src/entity/beast_rig.cpp
     src/entity/humanoid_rig.cpp
     src/entity/mob_rigs.cpp
+    src/entity/showcase.cpp
     src/mobs/mob_def.cpp
     src/mobs/spawner.cpp
 
