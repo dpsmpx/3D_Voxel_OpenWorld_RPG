@@ -16,7 +16,10 @@ enum ButtonSlot : u8 {
     Btn_Attack = 0,
     Btn_Finisher,
     Btn_Jump,
-    Btn_Sprint,
+    // Кнопки бега больше нет: бег включается двойным нажатием по
+    // джойстику и живёт на том же пальце, что и направление. Слот
+    // убран, а не оставлен пустым, — иначе в раскладке осталась бы
+    // дырка, которую нечем занять.
     Btn_Break,
     Btn_Place,
     Btn_Interact,
@@ -24,7 +27,7 @@ enum ButtonSlot : u8 {
     Btn_Camera,
     Btn_SlotCount,
 };
-static_assert((u32)Btn_SlotCount == 9, "BUTTON_SLOTS должен совпадать с Btn_SlotCount");
+static_assert((u32)Btn_SlotCount == 8, "BUTTON_SLOTS должен совпадать с Btn_SlotCount");
 
 enum class Language : u8 {
     English = 0,
@@ -69,7 +72,7 @@ struct Settings {
 
     /// Пользовательские сдвиги кнопок в NDC. Индекс — ButtonSlot,
     /// см. ниже; позволяет свободно раскладывать кнопки по экрану.
-    static constexpr u32 BUTTON_SLOTS = 9;
+    static constexpr u32 BUTTON_SLOTS = 8;
     f32  buttonOffsetX[BUTTON_SLOTS] = {};
     f32  buttonOffsetY[BUTTON_SLOTS] = {};
 

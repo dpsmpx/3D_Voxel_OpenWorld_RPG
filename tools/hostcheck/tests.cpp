@@ -40,6 +40,9 @@
 #include "render/camera.h"
 #include "render/instanced_renderer.h"
 #include "render/mob_renderer.h"
+#include "physics/character_controller.h"
+#include "input/touch.h"
+#include <android/input.h>
 #include "vk/vk_buffer.h"
 #include "vk/vk_texture.h"
 #include "world/noise.h"
@@ -6372,6 +6375,365 @@ void testPlayerHasModel() {
 }
 
 // ------------------------------------------------------------
+// У каждой экранной кнопки есть обработчик.
+//
+// Кнопка прыжка была зарегистрирована с `nullptr` вместо действия:
+// `evJump_` не выставлялся НИКОГДА — ни с экрана, ни с геймпада, —
+// и прыжок по кнопке не происходил вовсе. Компилятор такое не видит:
+// nullptr — законное значение std::function. Кнопка при этом
+// рисуется, нажимается и подсвечивается, просто ничего не делает.
+// ------------------------------------------------------------
+void testEveryButtonHasAnAction() {
+    group("ввод: у каждой кнопки есть действие");
+
+    const std::string src = readSource("app/src/main/cpp/src/main.cpp");
+    if (src.empty()) { check(false, "main.cpp не прочитался"); return; }
+
+    // Строки вида `btnXxx_ = add(cfg::Btn_Xxx, ...)`.
+    int total = 0, dead = 0;
+    std::string deadNames;
+    for (const std::string& line : splitLines(src)) {
+        const std::string t = trimmed(line);
+        if (t.rfind("//", 0) == 0) continue;
+        const usize a = t.find("= add(cfg::Btn_");
+        if (a == std::string::npos) continue;
+        ++total;
+        if (t.find("nullptr") != std::string::npos) {
+            ++dead;
+            const usize b = t.find("cfg::Btn_");
+            deadNames += " " + t.substr(b, t.find(',', b) - b);
+        }
+    }
+
+    char m[200];
+    std::snprintf(m, sizeof(m), "кнопок с действием: %d", total);
+    check(total >= 6, m);
+    std::snprintf(m, sizeof(m), "без действия зарегистрированы:%s",
+                  dead ? deadNames.c_str() : " нет");
+    check(dead == 0, m);
+}
+
+// ------------------------------------------------------------
+// Бег: двойное нажатие по джойстику вместо кнопки.
+//
+// Кнопка бега занимала 64 dp на левой половине экрана — там же, где
+// джойстик, — и требовала второй руки. Теперь бег живёт на том же
+// пальце, что и направление: короткий тап, затем второе нажатие,
+// которое игрок удерживает и ведёт.
+// ------------------------------------------------------------
+void testSprintByDoubleTap() {
+    group("бег: двойное нажатие по джойстику");
+
+    // Джойстик слева, экран 1920x1080 — палец кладём в левую половину.
+    auto makeInput = [] {
+        auto t = std::make_unique<input::TouchInput>();
+        t->setViewport(1920, 1080);
+        t->setJoystickLeftHanded(true);
+        return t;
+    };
+    constexpr f32 JX = 400.f, JY = 800.f;
+
+    auto down = [](input::TouchInput& t, f32 x, f32 y, f32 at) {
+        t.onTouch(AMOTION_EVENT_ACTION_DOWN, 0, 1, x, y, at);
+    };
+    auto up = [](input::TouchInput& t, f32 x, f32 y, f32 at) {
+        t.onTouch(AMOTION_EVENT_ACTION_UP, 0, 1, x, y, at);
+    };
+    auto move = [](input::TouchInput& t, f32 x, f32 y, f32 at) {
+        t.onTouch(AMOTION_EVENT_ACTION_MOVE, 0, 1, x, y, at);
+    };
+
+    // ---- 1. Одиночное нажатие бег не включает ----
+    {
+        auto t = makeInput();
+        down(*t, JX, JY, 0.0f);
+        move(*t, JX, JY - 90.f, 0.05f);
+        check(!t->sprintActive(), "одно нажатие — это шаг, а не бег");
+        check(glm::length(t->moveAxis()) > 0.1f, "и направление при этом есть");
+    }
+
+    // ---- 2. Двойное нажатие включает бег ----
+    {
+        auto t = makeInput();
+        down(*t, JX, JY, 0.00f);
+        up  (*t, JX, JY, 0.08f);          // короткий тап
+        down(*t, JX, JY, 0.14f);          // второе нажатие — сразу
+        check(t->sprintActive(), "после двойного нажатия игрок бежит");
+
+        move(*t, JX, JY - 100.f, 0.20f);  // ведём — бег не теряется
+        check(t->sprintActive(), "и продолжает бежать, пока ведёт");
+        check(t->moveAxis().y > 0.1f, "направление при этом рабочее");
+
+        up(*t, JX, JY - 100.f, 0.60f);
+        check(!t->sprintActive(), "отпустил — перестал бежать");
+    }
+
+    // ---- 3. Медленное повторное нажатие бег не включает ----
+    //
+    // Иначе любой повторный заход пальца на джойстик оказывался бы
+    // бегом, и ходить шагом стало бы нельзя.
+    {
+        auto t = makeInput();
+        down(*t, JX, JY, 0.00f);
+        up  (*t, JX, JY, 0.08f);
+        down(*t, JX, JY, 0.90f);          // спустя почти секунду
+        check(!t->sprintActive(), "нажатие через паузу — обычный шаг");
+    }
+
+    // ---- 4. Первое нажатие должно быть ТАПОМ ----
+    //
+    // Если игрок вёл джойстик и отпустил, это не половина двойного
+    // нажатия: иначе, отпустив после ходьбы и взявшись снова, он
+    // каждый раз срывался бы на бег.
+    {
+        auto t = makeInput();
+        down(*t, JX, JY, 0.00f);
+        move(*t, JX, JY - 120.f, 0.10f);  // вёл
+        up  (*t, JX, JY - 120.f, 0.30f);
+        down(*t, JX, JY - 120.f, 0.36f);
+        check(!t->sprintActive(), "после ведения повторное нажатие — шаг");
+    }
+
+    // ---- 5. Второе нажатие должно быть РЯДОМ ----
+    {
+        auto t = makeInput();
+        down(*t, JX, JY, 0.00f);
+        up  (*t, JX, JY, 0.08f);
+        down(*t, JX + 500.f, JY, 0.14f);  // другой угол экрана
+        check(!t->sprintActive(), "нажатие в стороне — не двойное");
+    }
+
+    // ---- 6. Геймпад бежит своей кнопкой ----
+    //
+    // Экранной кнопки, через которую бег раньше пропускали, больше
+    // нет, и геймпаду нужен свой вход.
+    {
+        auto t = makeInput();
+        check(!t->sprintActive(), "по умолчанию не бежит");
+        t->injectGamepadSprint(true);
+        check(t->sprintActive(), "кнопка геймпада включает бег");
+        t->injectGamepadSprint(false);
+        check(!t->sprintActive(), "и отпускается");
+    }
+}
+
+// ------------------------------------------------------------
+// Управление игроком: прыжок, подъём на ступень, бег.
+//
+// У контроллера персонажа не было НИ ОДНОЙ проверки — поэтому в нём
+// и дожило до экрана то, что кнопка прыжка зарегистрирована с
+// обработчиком nullptr: `evJump_` не выставлялся никогда, ни с
+// экрана, ни с геймпада, и прыжок по кнопке не происходил вовсе.
+// ------------------------------------------------------------
+namespace {
+
+/// Полигон: ровный каменный пол на высоте FLOOR и, по желанию,
+/// ступень высотой stepH поперёк пути.
+///
+/// Мир строится НАСТОЯЩИМ ChunkManager: контроллер читает воксели
+/// через VoxelReader, и подменять их нечем. Поэтому ждём генерацию,
+/// а потом переписываем нужные чанки под себя.
+struct Arena {
+    static constexpr i32 FLOOR = 40;   // верх пола: стоять на y = 41
+
+    std::unique_ptr<world::ChunkManager> mgr;
+
+    bool build(i32 stepH, i32 stepAtX) {
+        world::blocks();
+        if (!jobs::gJobs.running()) jobs::gJobs.start(2);
+        mgr = std::make_unique<world::ChunkManager>(777, 2);
+
+        std::vector<std::shared_ptr<world::Chunk>> got;
+        for (i32 cx = -1; cx <= 1; ++cx)
+            for (i32 cz = -1; cz <= 1; ++cz)
+                got.push_back(mgr->getChunk(cx, cz));
+
+        // Ждём генерацию: писать в чанк до неё бессмысленно — задача
+        // перезапишет всё своим рельефом.
+        for (int spin = 0; spin < 20000; ++spin) {
+            bool all = true;
+            for (auto& c : got)
+                if (!c->generated.load(std::memory_order_acquire)) all = false;
+            if (all) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        for (auto& c : got)
+            if (!c->generated.load(std::memory_order_acquire)) return false;
+
+        for (auto& c : got) {
+            for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                for (i32 z = 0; z < world::CHUNK_SIZE; ++z) {
+                    const i32 wx = c->coord.x * world::CHUNK_SIZE + x;
+                    for (i32 y = 0; y < world::CHUNK_SIZE_Y; ++y) {
+                        u16 b = world::AIR;
+                        if (y <= FLOOR) b = world::STONE;
+                        // Ступень — стена высотой stepH, начиная с
+                        // мировой координаты stepAtX и дальше.
+                        if (stepH > 0 && wx >= stepAtX &&
+                            y > FLOOR && y <= FLOOR + stepH) b = world::STONE;
+                        c->setUnlocked(x, y, z, b);
+                    }
+                }
+            c->version.fetch_add(1, std::memory_order_release);
+        }
+        return true;
+    }
+};
+
+} // namespace
+
+void testPlayerControls() {
+    group("управление: прыжок, ступень, бег");
+
+    Arena arena;
+    if (!arena.build(0, 9999)) {
+        check(false, "полигон не построился — генерация чанков не дождалась");
+        return;
+    }
+
+    const f32 dt = 1.f / 60.f;
+    const f32 standY = (f32)(Arena::FLOOR + 1);
+
+    // ---- 1. Прыжок по нажатию ----
+    {
+        physics::CharacterController cc;
+        cc.setPosition({ 4.5f, standY, 4.5f });
+
+        // Дать встать на землю.
+        physics::MoveInput idle{};
+        for (int i = 0; i < 10; ++i) cc.update(*arena.mgr, idle, dt);
+        check(cc.state().onGround, "игрок стоит на земле");
+        const f32 y0 = cc.state().position.y;
+
+        physics::MoveInput jump{};
+        jump.jumpPressed = true;
+        cc.update(*arena.mgr, jump, dt);
+        check(cc.state().velocity.y > 1.f,
+              "нажатие прыжка даёт скорость вверх");
+
+        f32 peak = cc.state().position.y;
+        physics::MoveInput hold{};
+        for (int i = 0; i < 40; ++i) {
+            cc.update(*arena.mgr, hold, dt);
+            peak = std::max(peak, cc.state().position.y);
+        }
+        char m[140];
+        std::snprintf(m, sizeof(m), "игрок поднялся на %.2f блока", peak - y0);
+        check(peak > y0 + 1.f, m);
+
+        for (int i = 0; i < 120; ++i) cc.update(*arena.mgr, hold, dt);
+        check(cc.state().onGround, "и приземлился обратно");
+    }
+
+    // ---- 2. Без нажатия прыжка нет ----
+    {
+        physics::CharacterController cc;
+        cc.setPosition({ 4.5f, standY, 4.5f });
+        physics::MoveInput idle{};
+        f32 peak = 0.f;
+        for (int i = 0; i < 60; ++i) {
+            cc.update(*arena.mgr, idle, dt);
+            peak = std::max(peak, cc.state().position.y);
+        }
+        check(peak < standY + 0.2f, "без нажатия игрок стоит на месте");
+    }
+
+    // ---- 3. Подъём на ступень: плавно, а не телепортом ----
+    //
+    // Раньше контроллер убеждался, что наверху свободно, и ОДНОЙ
+    // СТРОКОЙ переставлял игрока туда: `position.y += h`. Физически
+    // верно, на глаз — скачок камеры на полметра.
+    {
+        Arena stepArena;
+        if (!stepArena.build(1, 8)) {
+            check(false, "полигон со ступенью не построился");
+        } else {
+            physics::CharacterController cc;
+            cc.setPosition({ 4.5f, standY, 4.5f });
+
+            physics::MoveInput mi{};
+            mi.wishDir = { 1.f, 0.f };          // идём в +X, на ступень
+
+            f32 prevY = cc.state().position.y;
+            f32 biggestJump = 0.f;
+            f32 topY = prevY;
+            int framesRising = 0;
+            for (int i = 0; i < 180; ++i) {
+                cc.update(*stepArena.mgr, mi, dt);
+                const f32 y = cc.state().position.y;
+                const f32 d = y - prevY;
+                if (d > 1e-4f) ++framesRising;
+                biggestJump = std::max(biggestJump, std::fabs(d));
+                topY = std::max(topY, y);
+                prevY = y;
+            }
+
+            char m[180];
+            std::snprintf(m, sizeof(m), "поднялся на %.2f (ступень 1.0)",
+                          topY - standY);
+            check(topY > standY + 0.9f, m);
+
+            // Вот это и есть «плавно». За кадр при скорости подъёма
+            // 4.5 блока в секунду выходит 0.075 блока; телепорт давал
+            // бы всю высоту разом.
+            std::snprintf(m, sizeof(m),
+                          "самый большой шаг вверх за кадр — %.3f блока",
+                          (double)biggestJump);
+            check(biggestJump < 0.2f, m);
+
+            std::snprintf(m, sizeof(m), "подъём занял кадров: %d", framesRising);
+            check(framesRising >= 5, m);
+        }
+    }
+
+    // ---- 3б. Стена в два блока остаётся стеной ----
+    //
+    // Подъём на ступень обязан брать один блок и ровно один: иначе
+    // игрок въезжает на отвесные стены, и мир перестаёт держать.
+    {
+        Arena wall;
+        if (!wall.build(2, 8)) {
+            check(false, "полигон со стеной не построился");
+        } else {
+            physics::CharacterController cc;
+            cc.setPosition({ 4.5f, standY, 4.5f });
+            physics::MoveInput mi{};
+            mi.wishDir = { 1.f, 0.f };
+            f32 topY = standY;
+            for (int i = 0; i < 240; ++i) {
+                cc.update(*wall.mgr, mi, dt);
+                topY = std::max(topY, cc.state().position.y);
+            }
+            char m[140];
+            std::snprintf(m, sizeof(m), "у стены в два блока игрок поднялся на %.2f",
+                          topY - standY);
+            check(topY < standY + 1.2f, m);
+            check(cc.state().position.x < 8.f, "и не прошёл сквозь неё");
+        }
+    }
+
+    // ---- 4. Бег быстрее шага ----
+    {
+        auto travel = [&](bool sprint) {
+            physics::CharacterController cc;
+            cc.setPosition({ 4.5f, standY, 4.5f });
+            physics::MoveInput mi{};
+            mi.wishDir = { 0.f, 1.f };
+            mi.sprint = sprint;
+            for (int i = 0; i < 120; ++i) cc.update(*arena.mgr, mi, dt);
+            return cc.state().position.z - 4.5f;
+        };
+        const f32 walked = travel(false);
+        const f32 ran    = travel(true);
+        char m[140];
+        std::snprintf(m, sizeof(m), "за две секунды шагом %.1f, бегом %.1f",
+                      (double)walked, (double)ran);
+        check(walked > 1.f, m);
+        check(ran > walked * 1.3f, "бег заметно быстрее шага");
+    }
+}
+
+// ------------------------------------------------------------
 // Витрина: все модели проекта разом.
 //
 // Модели живут в разных местах — мобы в своём реестре, NPC в своём,
@@ -9469,6 +9831,9 @@ int main() {
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
     testVillageHousesAreBuildings();
+    testEveryButtonHasAnAction();
+    testSprintByDoubleTap();
+    testPlayerControls();
     testShowcaseHoldsEveryModel();
     testEntityInstanceBudget();
     testGaitPhaseFollowsDistance();
