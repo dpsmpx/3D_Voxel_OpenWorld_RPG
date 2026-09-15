@@ -47,19 +47,59 @@ INT_FORMATS = {'VK_FORMAT_R32_UINT', 'VK_FORMAT_R32G32_UINT',
                'VK_FORMAT_R32_SINT'}
 INT_GLSL = {'uint', 'uvec2', 'uvec3', 'uvec4', 'int', 'ivec2', 'ivec3', 'ivec4'}
 
+# Смещение вправе быть выражением: offsetof надёжнее числа,
+# набранного руками, — именно ручные числа и разъезжались.
 ATTR_RE = re.compile(
-    r'\{\s*(\d+)\s*,\s*(\d+)\s*,\s*(VK_FORMAT_\w+)\s*,\s*(\d+)\s*\}')
+    r'\{\s*(\d+)\s*,\s*(\d+)\s*,\s*(VK_FORMAT_\w+)\s*,\s*([^,}]+?)\s*\}')
 IN_RE = re.compile(r'layout\s*\(\s*location\s*=\s*(\d+)\s*\)\s*in\s+(\w+)\s+(\w+)')
 
 
-def cpp_attrs(path):
-    """Локации и форматы из таблицы kAttrs/kVoxelAttrs."""
-    text = open(os.path.join(CPP, path), encoding='utf-8').read()
-    m = re.search(r'static const vk::VertexAttr k\w*Attrs\[\d+\]\s*=\s*\{(.*?)\n\};',
-                  text, re.S)
+TABLE_RE = re.compile(
+    r'static const vk::VertexAttr \w+\[\d+\]\s*=\s*\{(.*?)\n\};', re.S)
+INCLUDE_RE = re.compile(r'#include\s+"([^"]+)"')
+
+
+def _table(text):
+    m = TABLE_RE.search(text)
     if not m:
         return None
     return {int(loc): fmt for loc, _b, fmt, _o in ATTR_RE.findall(m.group(1))}
+
+
+def cpp_attrs(path):
+    """Локации и форматы из таблицы VertexAttr.
+
+    Таблица вправе лежать не в самом .cpp, а в его заголовке: четыре
+    рендера MobInstance делят один формат, и дословные копии в каждом
+    как раз и были ошибкой — правку получал один файл из четырёх.
+    Поэтому если в .cpp таблицы нет, ищем её в заголовках, которые он
+    включает (на один уровень — глубже прятать формат незачем).
+    """
+    full = os.path.join(CPP, path)
+    text = open(full, encoding='utf-8').read()
+    attrs = _table(text)
+    if attrs is not None:
+        return attrs
+
+    # Заголовок с форматом вправе прийти не напрямую: npc_renderer.cpp
+    # включает npc_renderer.h, а тот уже mob_renderer.h. Идём по цепочке
+    # включений вширь, каждый файл разбирая один раз.
+    seen = {os.path.normpath(full)}
+    queue = [(full, text)]
+    while queue:
+        cur, src = queue.pop(0)
+        base = os.path.dirname(cur)
+        for inc in INCLUDE_RE.findall(src):
+            hdr = os.path.normpath(os.path.join(base, inc))
+            if hdr in seen or not hdr.startswith(CPP) or not os.path.exists(hdr):
+                continue
+            seen.add(hdr)
+            htext = open(hdr, encoding='utf-8').read()
+            attrs = _table(htext)
+            if attrs is not None:
+                return attrs
+            queue.append((hdr, htext))
+    return None
 
 
 def shader_inputs(name):

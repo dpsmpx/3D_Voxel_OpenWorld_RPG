@@ -5,7 +5,7 @@ layout(location = 0) in vec3 inPos;        // единичный куб в [-0.5
 layout(location = 1) in vec3 iPos;
 layout(location = 2) in vec3 iSize;
 layout(location = 3) in vec4 iColor;       // packed u8x4 UNORM
-layout(location = 4) in float iYaw;
+layout(location = 4) in vec4 iRot;      // кватернион (x, y, z, w)
 
 layout(set = 0, binding = 0) uniform CameraUbo {
     mat4 viewProj;
@@ -37,17 +37,22 @@ const vec3 CUBE_N[6] = vec3[6](
     vec3(-1.0,  0.0,  0.0), vec3( 1.0,  0.0,  0.0),
     vec3( 0.0, -1.0,  0.0), vec3( 0.0,  1.0,  0.0));
 
+// Поворот вектора кватернионом. Дешевле, чем строить матрицу:
+// две векторных произведения на вершину.
+vec3 qrot(vec4 q, vec3 v) {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
 void main() {
+    // Раньше здесь был поворот вокруг Y на один угол: повёрнутую
+    // конечность он выразить не мог, и анимация сдвигала ногу
+    // параллельно себе вместо качания в суставе.
     vec3 local = inPos * iSize;
-
-    float c = cos(iYaw), s = sin(iYaw);
-    vec3 rotated = vec3(local.x * c + local.z * s, local.y, -local.x * s + local.z * c);
-
-    vec3 world = iPos + rotated;
+    vec3 world = iPos + qrot(iRot, local);
     gl_Position = cam.viewProj * vec4(world, 1.0);
 
     vec3 n = CUBE_N[clamp(gl_VertexIndex >> 2, 0, 5)];
-    vNormal = vec3(n.x * c + n.z * s, n.y, -n.x * s + n.z * c);
+    vNormal = qrot(iRot, n);
 
     vColor = iColor;
     vWorldPos = world;

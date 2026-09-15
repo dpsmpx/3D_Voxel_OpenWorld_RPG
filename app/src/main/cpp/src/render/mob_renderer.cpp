@@ -7,6 +7,9 @@
 #include "../mobs/mob_ai.h"
 #include "../ecs/components.h"
 #include "../core/orientation.h"
+#include "../entity/rig.h"
+#include "../entity/mob_rigs.h"
+#include "../entity/locomotion.h"
 #include "../core/log.h"
 #include <cstring>
 #include <cmath>
@@ -14,26 +17,11 @@
 
 namespace render {
 
-// Вершинный формат: единичный куб (vec3) + инстанс
-// pos/size/color/yaw, ровно как в MobInstance.
-static const vk::VertexBinding kBindings[2] = {
-    { 12,                      false },   // CubeVertex: glm::vec3
-    { sizeof(MobInstance),     true  },
-};
-static const vk::VertexAttr kAttrs[5] = {
-    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // inPos
-    { 1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // iPos
-    { 2, 1, VK_FORMAT_R32G32B32_SFLOAT, 12 },   // iSize
-    { 3, 1, VK_FORMAT_R8G8B8A8_UNORM,   24 },   // iColor
-    { 4, 1, VK_FORMAT_R32_SFLOAT,       28 },   // iYaw
-};
-
-namespace {
-
-// Единичный куб: 24 вершины (pos + цвет задаётся инстансом)
-struct CubeVertex { glm::vec3 pos; };
-static_assert(sizeof(CubeVertex) == 12, "kBindings рассчитан на 12 байт");
-constexpr CubeVertex CUBE_V[24] = {
+// Единичный куб: 24 вершины, по четыре на грань, в порядке
+// -Z, +Z, -X, +X, -Y, +Y. Этот порядок знает mob.vert — он берёт из
+// него нормаль как gl_VertexIndex / 4. Раньше таблица лежала в
+// анонимном пространстве имён каждого из четырёх рендеров.
+const CubeVertex MOB_CUBE_V[24] = {
     // -Z
     {{-0.5f,-0.5f,-0.5f}},{{ 0.5f,-0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{-0.5f, 0.5f,-0.5f}},
     // +Z
@@ -47,10 +35,10 @@ constexpr CubeVertex CUBE_V[24] = {
     // +Y
     {{-0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f, 0.5f}},{{-0.5f, 0.5f, 0.5f}},
 };
-constexpr u32 CUBE_I[36] = {
-    // Все грани обходятся против часовой стрелки при взгляде СНАРУЖИ.
-    // Раньше -Z, -X и +Y были намотаны наоборот, и при отсечении
-    // задних граней половина каждого куба просвечивала насквозь.
+// Все грани обходятся против часовой стрелки при взгляде СНАРУЖИ.
+// Раньше -Z, -X и +Y были намотаны наоборот, и при отсечении
+// задних граней половина каждого куба просвечивала насквозь.
+const u32 MOB_CUBE_I[36] = {
      0, 2, 1,   0, 3, 2,     // -Z
      4, 5, 6,   4, 6, 7,     // +Z
      8,10, 9,   8,11,10,     // -X
@@ -59,58 +47,17 @@ constexpr u32 CUBE_I[36] = {
     20,22,21,  20,23,22,     // +Y
 };
 
-// Применить анимацию к offset части
-glm::vec3 animOffset(const mobs::MobPart& part, const mobs::MobAI& ai,
-                     f32 speedNorm, bool attacking, bool dying)
-{
-    glm::vec3 off = part.offset;
-    const f32 phase = ai.walkPhase;
-
-    switch (part.anim) {
-        case mobs::PartAnim::Leg:
-        case mobs::PartAnim::LegOpp: {
-            f32 mult = (part.anim == mobs::PartAnim::Leg) ? 1.f : -1.f;
-            f32 swing = std::sin(phase) * 0.15f * speedNorm * mult;
-            off.z += swing;
-            break;
-        }
-        case mobs::PartAnim::Arm:
-        case mobs::PartAnim::ArmOpp: {
-            f32 mult = (part.anim == mobs::PartAnim::Arm) ? 1.f : -1.f;
-            f32 swing = std::sin(phase) * 0.12f * speedNorm * mult;
-            off.z += swing;
-            // При атаке — рука вперёд
-            if (attacking) off.z += ai.attackAnim * 0.35f;
-            break;
-        }
-        case mobs::PartAnim::Head:
-            off.y += std::sin(phase * 2.f) * 0.02f * speedNorm;
-            break;
-        case mobs::PartAnim::Tail:
-            off.x += std::sin(phase * 1.5f) * 0.06f;
-            break;
-        default: break;
-    }
-
-    // Смерть: слегка утапливается
-    if (dying) off.y -= 0.25f * (ai.deathTimer / 1.6f);
-
-    return off;
-}
-
-} // namespace
-
 bool MobRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout) {
     dev_ = ctx.device();
     instances_.init(dev_, ctx.physicalDevice());
     shaders_.init(dev_, mgr);
 
     // VBO
-    u64 vbBytes = sizeof(CUBE_V);
+    u64 vbBytes = sizeof(MOB_CUBE_V);
     if (!vbo_.create(dev_, ctx.physicalDevice(), vbBytes, vk::BufferUsage::Vertex, false)) return false;
     auto* svb = new vk::Buffer();
     svb->create(dev_, ctx.physicalDevice(), vbBytes, vk::BufferUsage::Staging, true);
-    svb->write(CUBE_V, vbBytes);
+    svb->write(MOB_CUBE_V, vbBytes);
     ctx.submitOneShot([&](VkCommandBuffer cmd){
         VkBufferCopy c{0,0,vbBytes};
         vkCmdCopyBuffer(cmd, svb->handle(), vbo_.handle(), 1, &c);
@@ -118,11 +65,11 @@ bool MobRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayo
     svb->destroy(); delete svb;
 
     // IBO
-    u64 ibBytes = sizeof(CUBE_I);
+    u64 ibBytes = sizeof(MOB_CUBE_I);
     if (!ibo_.create(dev_, ctx.physicalDevice(), ibBytes, vk::BufferUsage::Index, false)) return false;
     auto* sib = new vk::Buffer();
     sib->create(dev_, ctx.physicalDevice(), ibBytes, vk::BufferUsage::Staging, true);
-    sib->write(CUBE_I, ibBytes);
+    sib->write(MOB_CUBE_I, ibBytes);
     ctx.submitOneShot([&](VkCommandBuffer cmd){
         VkBufferCopy c{0,0,ibBytes};
         vkCmdCopyBuffer(cmd, sib->handle(), ibo_.handle(), 1, &c);
@@ -139,10 +86,10 @@ bool MobRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayo
     d.depthTest   = true;
     d.depthWrite  = true;
     d.blend       = false;
-    d.bindings     = kBindings;
-    d.bindingCount = 2;
-    d.attrs        = kAttrs;
-    d.attrCount    = 5;
+    d.bindings     = MOB_BINDINGS;
+    d.bindingCount = MOB_BINDING_COUNT;
+    d.attrs        = MOB_ATTRS;
+    d.attrCount    = MOB_ATTR_COUNT;
     if (!pipeline_.create(dev_, shaders_, d)) return false;
 
     LOGI("MobRenderer готов");
@@ -178,24 +125,33 @@ void MobRenderer::rebuild(ecs::Registry& reg) {
         const bool attacking = (ai->attackAnim > 0.01f);
         const bool dying = (ai->deathTimer > 0.f);
 
-        for (u8 p = 0; p < def.partCount; ++p) {
-            const mobs::MobPart& part = def.parts[p];
-            if (part.size.x <= 0.f || part.size.y <= 0.f || part.size.z <= 0.f) continue;
+        // Оснастка вместо плоского списка коробок.
+        //
+        // Определение вида даёт иерархию, анимация — позу, а сборка
+        // в мировые коробки живёт в entity::resolve. Рендер больше не
+        // знает, что такое «нога»: он ставит то, что ему дали.
+        const entity::Rig& rig = mobs::rigFor(tag->id);
 
-            glm::vec3 off = animOffset(part, *ai, speedNorm, attacking, dying);
+        anim::AnimState st;
+        st.phase     = ai->walkPhase;
+        st.speedNorm = speedNorm;
+        st.attack    = attacking ? ai->attackAnim : 0.f;
+        st.death     = dying ? ai->deathTimer : 0.f;
 
+        entity::Pose pose;
+        anim::poseFor(rig, pose, st);
+
+        entity::ResolvedPart parts[entity::MAX_PARTS];
+        const u8 n = entity::resolve(rig, pose, tf->position, yaw,
+                                     parts, entity::MAX_PARTS);
+
+        for (u8 p = 0; p < n; ++p) {
             MobInstance inst{};
-            inst.pos   = tf->position + glm::vec3(0, off.y, 0);
-            // offset x/z — с учётом yaw
-            // Тот же поворот, что и в шейдере. Раньше здесь стоял
-            // поворот противоположной ручности, и тело собиралось
-            // наизнанку при любом движении с составляющей по X.
-            const glm::vec3 wr = orient::rotateY(glm::vec3(off.x, 0.f, off.z), yaw);
-            inst.pos.x += wr.x;
-            inst.pos.z += wr.z;
-            inst.size  = part.size;
-            inst.color = part.color;
-            inst.yaw   = yaw;
+            inst.pos   = parts[p].center;
+            inst.size  = parts[p].size;
+            inst.color = parts[p].color;
+            inst.rot   = glm::vec4(parts[p].rot.x, parts[p].rot.y,
+                                   parts[p].rot.z, parts[p].rot.w);
 
             // Красная вспышка при получении урона
             if (ai->damageFlash > 0.f) {
