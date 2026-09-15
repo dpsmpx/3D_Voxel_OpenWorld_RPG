@@ -6391,11 +6391,52 @@ void testVillageHousesAreBuildings() {
         for (i32 a = -r; a <= r && !site.exists; ++a)
             for (i32 b = -r; b <= r && !site.exists; ++b) {
                 if (std::max(std::abs(a), std::abs(b)) != r) continue;
-                const auto s2 = world::villageAt(a, b, SEED);
+                const auto s2 = world::villageAt(a, b, SEED, &mgr.generator());
                 if (s2.exists) { site = s2; sx = a; sz = b; }
             }
     if (!site.exists) { check(false, "деревня не нашлась ни в одном супер-чанке"); return; }
     check(true, "деревня найдена по общей раскладке");
+    // И ВСЕ деревни на суше, а не только найденная.
+    //
+    // Размещение структур смотрит только на хэш и про рельеф не знает
+    // ничего, поэтому деревни исправно вырастали в океане: дома по
+    // колено в воде, дорожки на дне, жители посреди моря. Проверять
+    // одну найденную мало — она-то как раз сухая.
+    {
+        int villages = 0, drowned = 0;
+        // Диапазон широкий намеренно: деревня на пятачке суши
+        // посреди залива — случай редкий, и на двух десятках
+        // супер-чанков он просто не встречается.
+        for (i32 a = -25; a <= 25; ++a)
+            for (i32 b = -25; b <= 25; ++b) {
+                const auto v = world::villageAt(a, b, SEED, &mgr.generator());
+                if (!v.exists) continue;
+                ++villages;
+                const i32 minLand = world::TerrainGenerator::SEA_LEVEL + 2;
+                if (mgr.generator().surfaceHeight(v.center.x, v.center.z) < minLand) {
+                    ++drowned;
+                    continue;
+                }
+                // Мало сухого колодца: дома стоят на кольце радиусом
+                // до 36, и деревня на пятачке суши посреди залива —
+                // это всё та же деревня в море.
+                int wet = 0;
+                const i32 probe[8][2] = {
+                    { 36, 0 }, { -36, 0 }, { 0, 36 }, { 0, -36 },
+                    { 26, 26 }, { 26, -26 }, { -26, 26 }, { -26, -26 },
+                };
+                for (const auto& q : probe)
+                    if (mgr.generator().surfaceHeight(v.center.x + q[0],
+                                                      v.center.z + q[1]) < minLand)
+                        ++wet;
+                if (wet > 2) ++drowned;
+            }
+        char vm[140];
+        std::snprintf(vm, sizeof(vm), "деревень в округе %d, из них в воде %d",
+                      villages, drowned);
+        check(villages > 5, vm);
+        check(drowned == 0, "ни одна деревня не стоит в море");
+    }
     (void)sx; (void)sz;
 
     // Радиус осмотра. Дома стоят на кольце радиусом до 35, плюс
@@ -6445,7 +6486,17 @@ void testVillageHousesAreBuildings() {
                 else if (b == world::PLANK)   ++plank;
                 else if (b == world::GLASS)   ++glass;
                 else if (b == world::LANTERN) ++lantern;
-                else if (b == world::LAVA)    ++lavaInVillage;
+                else if (b == world::LAVA) {
+                    // Природная лава рядом с деревней — дело мира.
+                    // Лава В ДОМЕ — та, у которой рядом стена из
+                    // доски: именно она и лежала вместо очага.
+                    bool indoors = false;
+                    for (i32 ox = -3; ox <= 3 && !indoors; ++ox)
+                        for (i32 oz = -3; oz <= 3 && !indoors; ++oz)
+                            if (blockAt(wx + ox, y, wz + oz) == world::PLANK)
+                                indoors = true;
+                    if (indoors) ++lavaInVillage;
+                }
             }
 
     {
@@ -6459,7 +6510,7 @@ void testVillageHousesAreBuildings() {
     check(thatch  > 0, "кровля соломенная");
     check(glass   > 0, "в домах есть окна");
     check(lantern > 0, "и фонарь вместо лужи лавы");
-    check(lavaInVillage == 0, "лавы в деревне нет");
+    check(lavaInVillage == 0, "лавы в домах нет");
 
     // ---- 2. Кровля двускатная, а не плоская ----
     //
@@ -6525,6 +6576,10 @@ void testVillageHousesAreBuildings() {
               "у каждой крыши есть конёк и свес — это скат, а не плита");
     }
 
+    // Двери, найденные при разборе стен, — их же потом проходят
+    // дорожками.
+    std::vector<glm::ivec3> doorCells;
+
     // ---- 3. В дом можно войти ----
     //
     // Ищем проёмы: воздух в стене из доски на уровне земли. Дверь
@@ -6545,7 +6600,14 @@ void testVillageHousesAreBuildings() {
                     };
                     const bool jambX = wall(wx-1, y, wz) && wall(wx+1, y, wz);
                     const bool jambZ = wall(wx, y, wz-1) && wall(wx, y, wz+1);
-                    if (jambX || jambZ) ++doors;
+                    if (!jambX && !jambZ) continue;
+                    // Дверь принадлежит ДОМУ, а над домом кровля.
+                    // Просвет между столбами изгороди на каменной
+                    // дорожке выглядел ровно так же.
+                    bool roofed = false;
+                    for (i32 yy = y + 1; yy < world::CHUNK_SIZE_Y; ++yy)
+                        if (blockAt(wx, yy, wz) == world::THATCH) { roofed = true; break; }
+                    if (roofed) ++doors;
                 }
         char dm2[120];
         std::snprintf(dm2, sizeof(dm2), "дверных проёмов в два блока: %d", doors);
@@ -6557,20 +6619,27 @@ void testVillageHousesAreBuildings() {
         // Где у проёма «внутрь», подсказывает фонарь: он висит под
         // коньком, то есть в середине дома. Фундамент для этого не
         // годится — он выходит на блок за стену со ВСЕХ сторон.
-        std::vector<glm::ivec3> lanterns;
-        for (i32 wx = site.center.x - VR; wx <= site.center.x + VR; ++wx)
-            for (i32 wz = site.center.z - VR; wz <= site.center.z + VR; ++wz)
-                for (i32 y = 1; y < world::CHUNK_SIZE_Y - 1; ++y)
-                    if (blockAt(wx, y, wz) == world::LANTERN)
-                        lanterns.push_back({ wx, y, wz });
+        // Наружу — туда, где кончается дом.
+        //
+        // Раньше внутреннюю сторону подсказывал ближайший фонарь, и
+        // уличный фонарь у дорожки сбивал определение. Дом кончается
+        // там, где кончается кровля: в двух шагах от проёма наружу
+        // её уже нет, а внутрь — есть.
+        auto underRoof = [&](i32 bx, i32 by, i32 bz) {
+            for (i32 y = by + 1; y < world::CHUNK_SIZE_Y; ++y)
+                if (blockAt(bx, y, bz) == world::THATCH) return true;
+            return false;
+        };
 
         int facingWell = 0, facingAway = 0, dropped = 0, zeroDot = 0;
+        doorCells.clear();
         for (i32 wx = site.center.x - VR; wx <= site.center.x + VR; ++wx)
             for (i32 wz = site.center.z - VR; wz <= site.center.z + VR; ++wz)
                 for (i32 y = 1; y < world::CHUNK_SIZE_Y - 3; ++y) {
                     if (blockAt(wx, y, wz) != world::AIR) continue;
                     if (blockAt(wx, y + 1, wz) != world::AIR) continue;
                     if (blockAt(wx, y - 1, wz) != world::STONE) continue;
+
                     auto wall2 = [&](i32 bx, i32 by, i32 bz) {
                         const u16 b = blockAt(bx, by, bz);
                         return b == world::PLANK || b == world::WOOD;
@@ -6578,30 +6647,31 @@ void testVillageHousesAreBuildings() {
                     const bool jambX = wall2(wx-1, y, wz) && wall2(wx+1, y, wz);
                     const bool jambZ = wall2(wx, y, wz-1) && wall2(wx, y, wz+1);
                     if (!jambX && !jambZ) continue;
+                    if (!underRoof(wx, y, wz)) continue;   // не изгородь
 
-                    // Ближайший фонарь — середина этого дома.
-                    i32 best = -1; f32 bestD = 1e9f;
-                    for (usize li = 0; li < lanterns.size(); ++li) {
-                        const f32 dx = (f32)(lanterns[li].x - wx);
-                        const f32 dz = (f32)(lanterns[li].z - wz);
-                        const f32 dd = dx * dx + dz * dz;
-                        if (dd < bestD) { bestD = dd; best = (i32)li; }
-                    }
-                    if (best < 0 || bestD > 100.f) { ++dropped; continue; }
-
-                    // Наружу — от фонаря, поперёк стены.
+                    // Ось поперёк стены и та её сторона, где дома нет.
                     i32 nx = 0, nz = 0;
-                    if (jambX) nz = (lanterns[(usize)best].z > wz) ? -1 : 1;
-                    else       nx = (lanterns[(usize)best].x > wx) ? -1 : 1;
+                    if (jambX) {
+                        const bool outPos = !underRoof(wx, y, wz + 2);
+                        const bool outNeg = !underRoof(wx, y, wz - 2);
+                        if (outPos == outNeg) { ++dropped; continue; }
+                        nz = outPos ? 1 : -1;
+                    } else {
+                        const bool outPos = !underRoof(wx + 2, y, wz);
+                        const bool outNeg = !underRoof(wx - 2, y, wz);
+                        if (outPos == outNeg) { ++dropped; continue; }
+                        nx = outPos ? 1 : -1;
+                    }
 
                     const i32 dot = nx * (site.center.x - wx)
                                   + nz * (site.center.z - wz);
+                    doorCells.push_back({ wx, y, wz });
                     if (dot > 0) ++facingWell; else if (dot < 0) ++facingAway;
                     else ++zeroDot;
                 }
         char dm[160];
         std::snprintf(dm, sizeof(dm),
-                      "двери к колодцу %d, от него %d, без фонаря %d, поперёк %d",
+                      "двери к колодцу %d, от него %d, неясных %d, поперёк %d",
                       facingWell, facingAway, dropped, zeroDot);
         check(facingWell > 0, dm);
         std::snprintf(dm, sizeof(dm),
@@ -6621,6 +6691,12 @@ void testVillageHousesAreBuildings() {
             for (i32 wz = site.center.z - VR; wz <= site.center.z + VR; ++wz)
                 for (i32 y = 1; y < world::CHUNK_SIZE_Y - 1; ++y) {
                     if (blockAt(wx, y, wz) != world::LANTERN) continue;
+                    // Уличный фонарь стоит на столбе, и под ним дерево —
+                    // это не завал. Домовой отличается кровлей над ним.
+                    bool roofed = false;
+                    for (i32 yy = y + 1; yy < world::CHUNK_SIZE_Y; ++yy)
+                        if (blockAt(wx, yy, wz) == world::THATCH) { roofed = true; break; }
+                    if (!roofed) continue;
                     ++checked;
                     // Под фонарём — внутренность дома, она обязана быть
                     // проходимой.
@@ -6628,6 +6704,100 @@ void testVillageHousesAreBuildings() {
                 }
         check(checked > 0, "фонари нашлись");
         check(buried == 0, "под фонарём — жилое пространство, а не завал");
+    }
+
+    // ---- 4б. Кровля не дырявая ----
+    //
+    // Скаты обязаны сойтись. Пока каждый уровень просто сдвигался
+    // внутрь на блок, при ширине в пять они останавливались, не
+    // встретившись, и вдоль всего конька оставалась щель: дом стоял с
+    // открытым верхом. Проверка это и нашла.
+    //
+    // Смотрим сверху: над каждым фонарём в доме обязана быть кровля.
+    // Фонарь висит под коньком, то есть ровно там, где щель и была.
+    {
+        int roofed = 0, open_ = 0;
+        for (i32 wx = site.center.x - VR; wx <= site.center.x + VR; ++wx)
+            for (i32 wz = site.center.z - VR; wz <= site.center.z + VR; ++wz)
+                for (i32 y = 1; y < world::CHUNK_SIZE_Y - 1; ++y) {
+                    if (blockAt(wx, y, wz) != world::LANTERN) continue;
+                    // Уличный фонарь стоит на столбе из дерева.
+                    if (blockAt(wx, y - 1, wz) == world::WOOD) continue;
+                    bool cover = false;
+                    for (i32 yy = y + 1; yy < world::CHUNK_SIZE_Y; ++yy)
+                        if (blockAt(wx, yy, wz) == world::THATCH) { cover = true; break; }
+                    if (cover) ++roofed; else ++open_;
+                }
+        check(roofed > 0, "дома под кровлей");
+        check(open_ == 0, "и ни одного с щелью по коньку");
+    }
+
+    // ---- 4в. Деревня обжита ----
+    //
+    // Шесть домов и колодец на пустой траве — это не деревня, а
+    // макет. Обжитой её делают вещи, которые ставят вокруг себя
+    // живущие люди: дорожка, поленница, стог, грядка, изгородь,
+    // фонарь у дороги.
+    {
+        int streetLamps = 0, hay = 0, garden = 0;
+        for (i32 wx = site.center.x - VR; wx <= site.center.x + VR; ++wx)
+            for (i32 wz = site.center.z - VR; wz <= site.center.z + VR; ++wz)
+                for (i32 y = 1; y < world::CHUNK_SIZE_Y - 1; ++y) {
+                    const u16 b = blockAt(wx, y, wz);
+                    if (b == world::LANTERN && blockAt(wx, y - 1, wz) == world::WOOD)
+                        ++streetLamps;
+                    // Стог — солома под открытым небом, а не кровля.
+                    if (b == world::THATCH) {
+                        bool sky = true;
+                        for (i32 yy = y + 1; yy < world::CHUNK_SIZE_Y; ++yy)
+                            if (blockAt(wx, yy, wz) != world::AIR) { sky = false; break; }
+                        if (sky && blockAt(wx, y - 1, wz) == world::THATCH) ++hay;
+                    }
+                    // Всходы на вскопанной земле.
+                    if (b == world::LEAVES && blockAt(wx, y - 1, wz) == world::DIRT)
+                        ++garden;
+                }
+        // Дорожка проверяется СВЯЗНОСТЬЮ, а не количеством камня на
+        // поверхности: камень выходит наружу и сам по себе — на
+        // склонах и осыпях, — и первая версия проверки пережила
+        // мутацию «дорожек нет», насчитав восемьдесят пять природных
+        // блоков.
+        //
+        // Идём от каждой двери по прямой к колодцу и смотрим, мощёная
+        // ли под ногами земля.
+        auto topSolid = [&](i32 bx, i32 bz) -> u16 {
+            for (i32 y = world::CHUNK_SIZE_Y - 1; y >= 1; --y) {
+                const u16 b = blockAt(bx, y, bz);
+                if (b != world::AIR && b != world::UNKNOWN && b != world::WATER)
+                    return b;
+            }
+            return world::AIR;
+        };
+
+        int paved = 0, walked = 0;
+        for (const auto& dpos : doorCells) {
+            const i32 dx = site.center.x - dpos.x, dz = site.center.z - dpos.z;
+            const i32 steps = std::max(std::abs(dx), std::abs(dz));
+            if (steps < 6) continue;
+            // Первые и последние пару шагов пропускаем: у порога
+            // лежит фундамент, у колодца — его оголовок.
+            for (i32 t = 3; t <= steps - 3; ++t) {
+                const i32 x = dpos.x + dx * t / steps;
+                const i32 z = dpos.z + dz * t / steps;
+                ++walked;
+                if (topSolid(x, z) == world::STONE) ++paved;
+            }
+        }
+        char pm[180];
+        std::snprintf(pm, sizeof(pm),
+                      "дорожки: мощёных шагов %d из %d, фонарей %d, стогов %d, всходов %d",
+                      paved, walked, streetLamps, hay, garden);
+        check(true, pm);
+        check(walked > 0, "от дверей до колодца есть что мерить");
+        check(paved * 10 >= walked * 7,
+              "и путь под ногами мощёный, а не трава");
+        check(streetLamps > 0, "у дороги стоят фонари");
+        check(hay + garden > 0, "во дворах есть утварь: стога и грядки");
     }
 
     // ---- 5. Жители появляются В деревне ----

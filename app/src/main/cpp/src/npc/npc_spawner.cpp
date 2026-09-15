@@ -57,7 +57,8 @@ bool generateVillageNpcs(world::ChunkManager& world,
     // Две копии одного правила расходятся молча: достаточно сдвинуть
     // порог в одном месте, и жители останутся стоять в чистом поле,
     // где деревни больше нет.
-    const world::VillageSite site = world::villageAt(sx, sz, worldSeed);
+    const world::VillageSite site =
+        world::villageAt(sx, sz, worldSeed, &world.generator());
     if (!site.exists) return false;
 
     const u32 h  = site.seed;

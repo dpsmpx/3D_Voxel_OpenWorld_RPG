@@ -105,7 +105,15 @@ struct VillageSite {
     u32        seed = 0;
 };
 
-VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed);
+/// `terrain` — если передан, деревня ещё и проверяется на сушу.
+///
+/// Размещение структур смотрит ТОЛЬКО на хэш и про рельеф не знает
+/// ничего, поэтому деревни исправно вырастали в океане: дома по
+/// колено в воде, дорожки на дне, жители посреди моря. Проверка одна
+/// и живёт здесь — иначе спавнер NPC и генератор разойдутся во
+/// мнении, где деревня есть.
+VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
+                      const TerrainGenerator* terrain = nullptr);
 
 /// Размер супер-чанка в блоках — шаг сетки структур.
 constexpr i32 SUPER_CHUNK_BLOCKS = 8 * CHUNK_SIZE;
@@ -130,6 +138,18 @@ inline void putWorld(Chunk& c, i32 wx, i32 wy, i32 wz, u16 block, bool overwrite
     i32 lx = wx - c.coord.x * CHUNK_SIZE;
     i32 lz = wz - c.coord.z * CHUNK_SIZE;
     put(c, lx, wy, lz, block, overwrite);
+}
+
+/// Прочитать блок в мировых координатах. Вне своего чанка — AIR:
+/// соседей фича не видит, и решать по ним не вправе.
+///
+/// Нужно тому, кто кладёт НА поверхность, не трогая уже построенное:
+/// дорожка обязана обойти стену, а стог — не встать в комнате.
+inline u16 getWorld(const Chunk& c, i32 wx, i32 wy, i32 wz) {
+    const i32 lx = wx - c.coord.x * CHUNK_SIZE;
+    const i32 lz = wz - c.coord.z * CHUNK_SIZE;
+    if (!c.inBounds(lx, wy, lz)) return AIR;
+    return c.at(lx, wy, lz);
 }
 
 /// Детерминированный хэш (x, z, seed)

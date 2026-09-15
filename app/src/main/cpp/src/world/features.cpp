@@ -510,78 +510,269 @@ void stampHouse(Chunk& c, const FeatureContext& ctx,
     //
     // Плоская нашлёпка сверху читалась кустом, а не крышей: именно
     // скат и делает дом домом.
+    //
+    // Скаты обязаны СОЙТИСЬ. Пока каждый уровень просто сдвигался
+    // внутрь на блок, при нечётной ширине они останавливались, не
+    // встретившись, и вдоль всего конька оставалась щель: дом стоял с
+    // открытым верхом. Поэтому уровень, на котором стороны сошлись,
+    // закрывается целиком.
     const bool alongZ = (w <= d);
     const i32 span = alongZ ? w : d;
-    const i32 steps = span / 2 + 1;
 
-    for (i32 lvl = 0; lvl < steps; ++lvl) {
+    for (i32 lvl = 0; ; ++lvl) {
         const i32 y = surf + wallH + lvl;
         const i32 inset = lvl - 1;               // -1 даёт свес
+        const i32 lo = inset, hi = span - 1 - inset;
+        const bool closing = (lo >= hi - 1);     // стороны сошлись
+
         if (alongZ) {
-            const i32 x0 = wx + inset, x1 = wx + w - 1 - inset;
-            if (x0 > x1) break;
             for (i32 gz = wz - 1; gz <= wz + d; ++gz) {
-                putWorld(c, x0, y, gz, THATCH, true);
-                putWorld(c, x1, y, gz, THATCH, true);
-                // Под скатом — воздух, иначе чердак зальётся соломой.
-                for (i32 gx = x0 + 1; gx < x1; ++gx)
-                    putWorld(c, gx, y, gz, AIR, true);
+                if (closing) {
+                    for (i32 t = lo; t <= hi; ++t)
+                        putWorld(c, wx + t, y, gz, THATCH, true);
+                } else {
+                    putWorld(c, wx + lo, y, gz, THATCH, true);
+                    putWorld(c, wx + hi, y, gz, THATCH, true);
+                    // Под скатом — воздух, иначе чердак зальётся соломой.
+                    for (i32 t = lo + 1; t < hi; ++t)
+                        putWorld(c, wx + t, y, gz, AIR, true);
+                }
             }
-            if (x0 == x1)
-                for (i32 gz = wz - 1; gz <= wz + d; ++gz)
-                    putWorld(c, x0, y, gz, THATCH, true);
         } else {
-            const i32 z0 = wz + inset, z1 = wz + d - 1 - inset;
-            if (z0 > z1) break;
             for (i32 gx = wx - 1; gx <= wx + w; ++gx) {
-                putWorld(c, gx, y, z0, THATCH, true);
-                putWorld(c, gx, y, z1, THATCH, true);
-                for (i32 gz = z0 + 1; gz < z1; ++gz)
-                    putWorld(c, gx, y, gz, AIR, true);
+                if (closing) {
+                    for (i32 t = lo; t <= hi; ++t)
+                        putWorld(c, gx, y, wz + t, THATCH, true);
+                } else {
+                    putWorld(c, gx, y, wz + lo, THATCH, true);
+                    putWorld(c, gx, y, wz + hi, THATCH, true);
+                    for (i32 t = lo + 1; t < hi; ++t)
+                        putWorld(c, gx, y, wz + t, AIR, true);
+                }
             }
-            if (z0 == z1)
-                for (i32 gx = wx - 1; gx <= wx + w; ++gx)
-                    putWorld(c, gx, y, z0, THATCH, true);
         }
+        if (closing) break;
     }
 
     // Фонарь под потолком. Раньше здесь лежала лужа ЛАВЫ.
     putWorld(c, centerX, surf + wallH - 1, centerZ, LANTERN, true);
 }
 
+
+// ============================================================
+// Утварь деревни
+// ============================================================
+//
+// Без неё деревня — шесть домов и колодец на пустой траве. Вещи,
+// которые ставят вокруг себя живущие люди, и делают место обжитым:
+// поленница у стены, стог, грядка, забор, фонарь у дороги.
+
+/// Положить блок на поверхность, не тронув уже построенное.
+///
+/// Дорожки и утварь кладутся ДО домов, но рельеф под деревней ровняют
+/// сами дома. Поэтому пишем только туда, где сейчас земля или трава:
+/// иначе дорожка прорежет стену, а стог встанет в комнате.
+void putOnGround(Chunk& c, const FeatureContext& ctx, i32 wx, i32 wz, u16 block) {
+    // surfaceHeight — первый ВОЗДУШНЫЙ блок над землёй: на нём стоят,
+    // а сама земля лежит на блок ниже. Дорожка, положенная на
+    // surfaceHeight, висела бы над травой.
+    const i32 y = ctx.terrain->surfaceHeight(wx, wz) - 1;
+    if (y < 1) return;
+    const u16 cur = getWorld(c, wx, y, wz);
+    if (cur != GRASS && cur != DIRT && cur != SAND) return;
+    putWorld(c, wx, y, wz, block, true);
+}
+
+/// Дорожка от точки до точки — прямая, шириной в блок.
+void stampPath(Chunk& c, const FeatureContext& ctx,
+               i32 x0, i32 z0, i32 x1, i32 z1)
+{
+    const i32 dx = x1 - x0, dz = z1 - z0;
+    const i32 steps = std::max(std::abs(dx), std::abs(dz));
+    if (steps <= 0) return;
+    for (i32 i = 0; i <= steps; ++i) {
+        const i32 x = x0 + dx * i / steps;
+        const i32 z = z0 + dz * i / steps;
+        putOnGround(c, ctx, x, z, STONE);
+    }
+}
+
+/// Поленница: дрова вдоль стены.
+void stampWoodpile(Chunk& c, const FeatureContext& ctx, i32 wx, i32 wz, bool alongX) {
+    const i32 base = ctx.terrain->surfaceHeight(wx, wz);
+    for (i32 i = 0; i < 3; ++i) {
+        const i32 x = wx + (alongX ? i : 0);
+        const i32 z = wz + (alongX ? 0 : i);
+        for (i32 y = 0; y < 2; ++y)
+            putWorld(c, x, base + y, z, WOOD, true);
+    }
+}
+
+/// Стог соломы.
+void stampHaystack(Chunk& c, const FeatureContext& ctx, i32 wx, i32 wz) {
+    const i32 base = ctx.terrain->surfaceHeight(wx, wz);
+    for (i32 dx = 0; dx < 2; ++dx)
+        for (i32 dz = 0; dz < 2; ++dz)
+            for (i32 y = 0; y < 2; ++y)
+                putWorld(c, wx + dx, base + y, wz + dz, THATCH, true);
+    putWorld(c, wx, base + 2, wz, THATCH, true);
+}
+
+/// Грядка: вскопанная земля с всходами.
+void stampGarden(Chunk& c, const FeatureContext& ctx, i32 wx, i32 wz, u32 rng) {
+    for (i32 dx = 0; dx < 3; ++dx)
+        for (i32 dz = 0; dz < 3; ++dz) {
+            const i32 x = wx + dx, z = wz + dz;
+            const i32 ground = ctx.terrain->surfaceHeight(x, z) - 1;
+            if (ground < 1) continue;
+            const u16 cur = getWorld(c, x, ground, z);
+            if (cur != GRASS && cur != DIRT && cur != SAND) continue;
+            putWorld(c, x, ground, z, DIRT, true);
+            // Всходы через клетку — сплошная зелень читается кустом.
+            if (((u32)(dx + dz * 3) ^ rng) & 1) continue;
+            putWorld(c, x, ground + 1, z, LEAVES, true);
+        }
+}
+
+/// Фонарный столб.
+void stampLampPost(Chunk& c, const FeatureContext& ctx, i32 wx, i32 wz) {
+    const i32 base = ctx.terrain->surfaceHeight(wx, wz);
+    for (i32 y = 0; y < 3; ++y)
+        putWorld(c, wx, base + y, wz, WOOD, true);
+    putWorld(c, wx, base + 3, wz, LANTERN, true);
+}
+
+/// Изгородь: столбы через клетку, а не сплошная стена.
+void stampFence(Chunk& c, const FeatureContext& ctx,
+                i32 x0, i32 z0, i32 x1, i32 z1)
+{
+    const i32 dx = x1 - x0, dz = z1 - z0;
+    const i32 steps = std::max(std::abs(dx), std::abs(dz));
+    if (steps <= 0) return;
+    for (i32 i = 0; i <= steps; ++i) {
+        const i32 x = x0 + dx * i / steps;
+        const i32 z = z0 + dz * i / steps;
+        const i32 base = ctx.terrain->surfaceHeight(x, z);
+        const u16 ground = getWorld(c, x, base - 1, z);
+        if (ground != GRASS && ground != DIRT && ground != SAND) continue;
+        // Столб стоит НА земле, а не висит над ней.
+        putWorld(c, x, base, z, WOOD, true);
+        if (i % 2 == 0) putWorld(c, x, base + 1, z, WOOD, true);
+    }
+}
+
 void stampVillage(Chunk& c, const FeatureContext& ctx, const structs::Layout& L) {
-    i32 cx = (L.minBlock.x + L.maxBlock.x) / 2;
-    i32 cz = (L.minBlock.z + L.maxBlock.z) / 2;
-    i32 wy = ctx.terrain->surfaceHeight(cx, cz);
+    const i32 cx = (L.minBlock.x + L.maxBlock.x) / 2;
+    const i32 cz = (L.minBlock.z + L.maxBlock.z) / 2;
+    const i32 wy = ctx.terrain->surfaceHeight(cx, cz);
 
-    // Колодец в центре
-    stampWell(c, cx, cz, wy);
+    const u32 h = L.seed;
+    const i32 count = 6 + (i32)(h % 5);
 
-    // 6..10 домов по кольцу, фасадами к колодцу.
-    u32 h = L.seed;
-    i32 count = 6 + (h % 5);
-    for (i32 i = 0; i < count; ++i) {
-        const f32 angle = (f32)i / (f32)count * 6.28318f;
-        const f32 ca = std::cos(angle), sa = std::sin(angle);
-        // Радиус кольца 20..36
-        const f32 r = 20.f + (f32)((h >> (i % 16)) & 0xF);
-        // Размер 5..8
-        const i32 w = 5 + (i32)((h >> i) & 3);
-        const i32 d = 5 + (i32)((h >> (i + 3)) & 3);
-        const i32 bx = cx + (i32)(ca * r) - w / 2;
-        const i32 bz = cz + (i32)(sa * r) - d / 2;
-
-        // Дом стоит к деревне лицом. Дверь — в той стене, что ближе к
-        // колодцу: смотрим, какая составляющая направления «от центра»
-        // больше. Раньше дверь всегда была в стене -Z, и у половины
-        // домов вход выходил в поле.
+    // Раскладка домов считается ОДИН раз и переиспользуется: дорожки,
+    // утварь и сами дома обязаны знать одни и те же места. Раньше
+    // раскладки не было вовсе — дома ставились прямо в цикле, и
+    // поставить рядом с домом поленницу было негде.
+    struct Plot {
+        i32 x, z, w, d;
         Facing face;
-        if (std::fabs(ca) > std::fabs(sa))
-            face = (ca > 0.f) ? Facing::NegX : Facing::PosX;
-        else
-            face = (sa > 0.f) ? Facing::NegZ : Facing::PosZ;
+        i32 doorX, doorZ;     // блок ПЕРЕД дверью, снаружи
+    };
+    Plot plots[16];
+    const i32 plotCount = (count < 16) ? count : 16;
 
-        stampHouse(c, ctx, bx, bz, w, d, h + (u32)i * 31u, face);
+    for (i32 i = 0; i < plotCount; ++i) {
+        const f32 angle = (f32)i / (f32)plotCount * 6.28318f;
+        const f32 ca = std::cos(angle), sa = std::sin(angle);
+        const f32 r = 20.f + (f32)((h >> (i % 16)) & 0xF);
+
+        Plot& p = plots[i];
+        p.w = 5 + (i32)((h >> i) & 3);
+        p.d = 5 + (i32)((h >> (i + 3)) & 3);
+        p.x = cx + (i32)(ca * r) - p.w / 2;
+        p.z = cz + (i32)(sa * r) - p.d / 2;
+
+        // Дом стоит к деревне лицом: дверь в той стене, что ближе к
+        // колодцу. Раньше дверь всегда была в стене -Z, и у половины
+        // домов вход выходил в поле.
+        if (std::fabs(ca) > std::fabs(sa))
+            p.face = (ca > 0.f) ? Facing::NegX : Facing::PosX;
+        else
+            p.face = (sa > 0.f) ? Facing::NegZ : Facing::PosZ;
+
+        const u32 rng = h + (u32)i * 31u;
+        const i32 dX = p.x + 1 + (i32)(rng % (u32)(p.w > 2 ? p.w - 2 : 1));
+        const i32 dZ = p.z + 1 + (i32)((rng >> 8) % (u32)(p.d > 2 ? p.d - 2 : 1));
+        switch (p.face) {
+            case Facing::NegZ: p.doorX = dX;           p.doorZ = p.z - 1;       break;
+            case Facing::PosZ: p.doorX = dX;           p.doorZ = p.z + p.d;     break;
+            case Facing::NegX: p.doorX = p.x - 1;      p.doorZ = dZ;            break;
+            default:           p.doorX = p.x + p.w;    p.doorZ = dZ;            break;
+        }
+    }
+
+    // ---- Дорожки ----
+    //
+    // Кладутся ПЕРВЫМИ: дома и колодец ставятся поверх и всегда
+    // выигрывают. Иначе дорожка прорезала бы порог.
+    for (i32 i = 0; i < plotCount; ++i)
+        stampPath(c, ctx, plots[i].doorX, plots[i].doorZ, cx, cz);
+
+    // Кольцевая дорожка по деревне: от двери к двери соседа.
+    for (i32 i = 0; i < plotCount; ++i) {
+        const Plot& a = plots[i];
+        const Plot& b = plots[(i + 1) % plotCount];
+        stampPath(c, ctx, a.doorX, a.doorZ, b.doorX, b.doorZ);
+    }
+
+    // ---- Утварь ----
+    //
+    // У каждого двора своя: иначе шесть домов обставлены одинаково, и
+    // вариация сводится к размеру коробки.
+    for (i32 i = 0; i < plotCount; ++i) {
+        const Plot& p = plots[i];
+        const u32 rng = hashXZ(p.x, p.z, L.seed ^ 0x9D7u);
+
+        // Сторона двора, противоположная двери, — задняя: там и
+        // держат дрова, стог и грядку.
+        const i32 backX = (p.face == Facing::NegX) ? p.x + p.w + 1
+                        : (p.face == Facing::PosX) ? p.x - 3 : p.x;
+        const i32 backZ = (p.face == Facing::NegZ) ? p.z + p.d + 1
+                        : (p.face == Facing::PosZ) ? p.z - 3 : p.z;
+
+        switch (rng % 4u) {
+            case 0: stampWoodpile(c, ctx, backX, backZ, (rng >> 3) & 1u); break;
+            case 1: stampHaystack(c, ctx, backX, backZ); break;
+            case 2: stampGarden(c, ctx, backX, backZ, rng >> 5); break;
+            default:
+                // Двор за изгородью.
+                stampFence(c, ctx, backX, backZ, backX + 4, backZ);
+                stampFence(c, ctx, backX, backZ, backX, backZ + 4);
+                break;
+        }
+
+        // Фонарь — НА ДОРОЖКЕ, в трёх шагах от двери к колодцу, а не
+        // вплотную к стене: под свесом кровли он и стоял бы в тени
+        // собственного дома, ради которой его туда и не ставят.
+        //
+        // Через один двор, чтобы деревня не превратилась в
+        // иллюминацию.
+        if ((rng >> 7) & 1u) {
+            const f32 dx = (f32)(cx - p.doorX), dz = (f32)(cz - p.doorZ);
+            const f32 len = std::sqrt(dx * dx + dz * dz);
+            if (len > 4.f) {
+                const i32 lx = p.doorX + (i32)std::lround(dx / len * 3.f);
+                const i32 lz = p.doorZ + (i32)std::lround(dz / len * 3.f);
+                stampLampPost(c, ctx, lx, lz);
+            }
+        }
+    }
+
+    // ---- Колодец и дома ----
+    stampWell(c, cx, cz, wy);
+    for (i32 i = 0; i < plotCount; ++i) {
+        const Plot& p = plots[i];
+        stampHouse(c, ctx, p.x, p.z, p.w, p.d, h + (u32)i * 31u, p.face);
     }
 }
 
@@ -682,20 +873,41 @@ DungeonSite dungeonAt(i32 superX, i32 superZ, u64 worldSeed) {
     return site;
 }
 
-VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed) {
+VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
+                      const TerrainGenerator* terrain) {
     VillageSite site;
     const structs::Layout L = structs::layoutFor(superX, superZ, worldSeed);
     if (L.kind != structs::Village) return site;
+
+    const i32 cx = (L.minBlock.x + L.maxBlock.x) / 2;
+    const i32 cz = (L.minBlock.z + L.maxBlock.z) / 2;
+
+    // Деревня строится на суше.
+    //
+    // Раскладка структур смотрит только на хэш, поэтому деревни
+    // исправно вырастали в океане: дома по колено в воде, дорожки на
+    // дне, жители посреди моря. Проверяем не только центр — кольцо
+    // домов радиусом до 36 не должно уходить под воду.
+    if (terrain) {
+        const i32 minLand = TerrainGenerator::SEA_LEVEL + 2;
+        if (terrain->surfaceHeight(cx, cz) < minLand) return site;
+        const i32 probe[8][2] = {
+            { 36, 0 }, { -36, 0 }, { 0, 36 }, { 0, -36 },
+            { 26, 26 }, { 26, -26 }, { -26, 26 }, { -26, -26 },
+        };
+        int wet = 0;
+        for (const auto& q : probe)
+            if (terrain->surfaceHeight(cx + q[0], cz + q[1]) < minLand) ++wet;
+        // Один мокрый край — берег, и это даже хорошо. Половина —
+        // деревня в море.
+        if (wet > 2) return site;
+    }
 
     site.exists = true;
     site.seed   = L.seed;
     // Колодец ставится ровно в середину раскладки — там же, где его
     // рисует stampVillage.
-    site.center = {
-        (L.minBlock.x + L.maxBlock.x) / 2,
-        0,
-        (L.minBlock.z + L.maxBlock.z) / 2,
-    };
+    site.center = { cx, 0, cz };
     return site;
 }
 
@@ -721,7 +933,12 @@ void applyStructures(Chunk& chunk, const FeatureContext& ctx) {
             if (L.maxBlock.z < cmin.z || L.minBlock.z > cmax.z) continue;
 
             switch (L.kind) {
-                case structs::Village: stampVillage(chunk, ctx, L); break;
+                case structs::Village:
+                    // Тем же правилом, что и villageAt: деревня,
+                    // признанная утонувшей, не строится вовсе.
+                    if (villageAt(sx, sz, ctx.seed, ctx.terrain).exists)
+                        stampVillage(chunk, ctx, L);
+                    break;
                 case structs::Dungeon: stampDungeon(chunk, ctx, L); break;
                 case structs::Ruin:    stampRuin(chunk, ctx, L);    break;
                 case structs::Altar:   stampAltar(chunk, ctx, L);   break;
