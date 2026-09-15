@@ -354,6 +354,53 @@ public:
     static constexpr f32 TRACKER_W_DP = 220.f;
     static constexpr f32 TRACKER_H_DP =  40.f;
 
+    // ---- общее для полноэкранных экранов ----
+    //
+    // Кнопка закрытия была написана пятью одинаковыми копиями
+    // `Rect close{ screenW - 90, 74, 80, 50 }` — 20 dp по высоте при
+    // норме 48. Один компонент — одно место, где он задан.
+    Rect closeButton() const {
+        const Rect t = menuTitle();
+        const f32 sz = dp(theme::TOUCH_REGULAR_DP);
+        return { t.x + t.w - sz, t.y + (t.h - sz) * 0.5f, sz, sz };
+    }
+
+    /// Две панели: список слева, подробности справа.
+    Rect paneLeft() const {
+        const Rect a = menuArea();
+        return { a.x, a.y, a.w * (1.f - PANE_RIGHT_FRAC)
+                            - dp(theme::SPACE_L_DP), a.h };
+    }
+    Rect paneRight() const {
+        const Rect a = menuArea();
+        const f32 wdt = a.w * PANE_RIGHT_FRAC;
+        return { a.x + a.w - wdt, a.y, wdt, a.h };
+    }
+
+    /// Строка списка в левой панели.
+    Rect paneRow(u32 i) const {
+        const Rect l = paneLeft();
+        const f32 h = dp(theme::TOUCH_REGULAR_DP);
+        const f32 g = dp(theme::SPACE_S_DP);
+        return { l.x, l.y + (f32)i * (h + g), l.w, h };
+    }
+    u32 paneRowsVisible() const {
+        const Rect l = paneLeft();
+        const f32 h = dp(theme::TOUCH_REGULAR_DP) + dp(theme::SPACE_S_DP);
+        const f32 n = h > 0.f ? l.h / h : 0.f;
+        return n < 1.f ? 1u : (u32)n;
+    }
+
+    /// Главное действие экрана — внизу правой панели.
+    Rect primaryAction() const {
+        const Rect r = paneRight();
+        const f32 pad = dp(theme::PANEL_PAD_DP);
+        const f32 h = dp(theme::TOUCH_PRIMARY_DP);
+        return { r.x + pad, r.y + r.h - pad - h, r.w - pad * 2.f, h };
+    }
+
+    static constexpr f32 PANE_RIGHT_FRAC = 0.38f;
+
     // ---- характеристики: строка и кнопки прибавить/убавить ----
     //
     // Кнопки были 50 точек — на рабочем телефоне это 20 dp при норме
@@ -361,15 +408,21 @@ public:
     // задавался в пикселях и не зависел от плотности.
     Rect attrRow(u32 i) const {
         const Rect a = menuArea();
-        const f32 g = dp(theme::SPACE_M_DP);
+        const f32 minH = dp(theme::TOUCH_REGULAR_DP);
+        const f32 maxH = dp(ATTR_ROW_H_DP);
 
         // Высота подстраивается под область, а не задаётся числом:
         // четыре строки по 88 dp не помещались ни на один экран,
         // кроме планшета. Ниже цели касания строка не опускается —
-        // в ней стоят кнопки.
+        // в ней стоят кнопки. Если при обычном зазоре ряды всё же не
+        // влезают, ужимается ЗАЗОР, а не строка: расстояние между
+        // рядами можно потерять, нажимаемость — нет.
+        f32 g = dp(theme::SPACE_M_DP);
         f32 h = (a.h - g * (f32)(ATTR_COUNT - 1)) / (f32)ATTR_COUNT;
-        const f32 minH = dp(theme::TOUCH_REGULAR_DP);
-        const f32 maxH = dp(ATTR_ROW_H_DP);
+        if (h < minH) {
+            g = dp(theme::SPACE_XS_DP);
+            h = (a.h - g * (f32)(ATTR_COUNT - 1)) / (f32)ATTR_COUNT;
+        }
         if (h > maxH) h = maxH;
         if (h < minH) h = minH;
 
@@ -528,7 +581,9 @@ public:
     static constexpr f32 MINIMAP_DP   = 100.f;
     static constexpr f32 HOTBAR_GAP_DP =  6.f;
     static constexpr f32 PROMPT_W_DP  = 260.f;
-    static constexpr f32 MENU_TITLE_DP   = 40.f;
+    /// Полоса заголовка вмещает цель касания: в ней стоит кнопка
+    /// закрытия, и при 40 dp она вылезала за полосу.
+    static constexpr f32 MENU_TITLE_DP   = theme::TOUCH_REGULAR_DP;
     static constexpr f32 CONFIRM_W_FRAC  = 0.70f;
     static constexpr f32 CONFIRM_H_DP    = 220.f;
     static constexpr u32 HOTBAR_SLOTS =   9;   ///< в данных, всегда

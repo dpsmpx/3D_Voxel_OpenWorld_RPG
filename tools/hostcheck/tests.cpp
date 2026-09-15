@@ -5703,6 +5703,113 @@ void testAttributeSteppersArePressable() {
 }
 
 // ------------------------------------------------------------
+// Ремесло, торговля и зачарование: общий вид и общие правила.
+//
+// Эти три экрана были недостижимы из игры (диалог не проходился,
+// openEnchant не вызывался ниоткуда), поэтому их вид никто не видел.
+// Внутри: кнопка закрытия написана СЕМЬЮ одинаковыми копиями по
+// 20 dp, строки списков по 28 dp, а зачарование — необратимое
+// действие — выполнялось без вопроса.
+// ------------------------------------------------------------
+void testCraftTradeEnchantShareOneLook() {
+    group("ремесло, торговля, зачарование: общий вид");
+
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
+    const usize NONE = std::string::npos;
+
+    // ---- 1. Кнопка закрытия одна на всех ----
+    check(src.find("Rect close{ (float)screenW_ - 90.f") == NONE,
+          "копий кнопки закрытия не осталось");
+    check(src.find("void UiSystem::drawCloseButton(") != NONE,
+          "она выделена в общий код");
+    // И ею действительно пользуются все экраны.
+    usize uses = 0, at = 0;
+    while ((at = src.find("drawCloseButton(", at)) != NONE) { ++uses; at += 8; }
+    check(uses >= 7, "все экраны закрываются ею");
+
+    // ---- 2. Зашитых размеров строк не осталось ----
+    check(src.find("const f32 rowH  = 70.f;") == NONE &&
+          src.find("const f32 rowH  = 80.f;") == NONE,
+          "строки списков больше не заданы пикселями");
+
+    // ---- 3. Необратимое спрашивает ----
+    const usize en = src.find("void UiSystem::drawEnchantScreen(");
+    check(en != NONE, "экран зачарования на месте");
+    if (en != NONE) {
+        const usize end = src.find("\n}\n", en);
+        const std::string body = src.substr(en, end - en);
+        check(body.find("askConfirm(") != NONE,
+              "зачарование требует подтверждения: оно тратит предмет и меняет оружие");
+        // И не выполняется помимо вопроса.
+        const usize ask = body.find("askConfirm(");
+        const usize act = body.find("onEnchant(");
+        check(ask != NONE && act != NONE && ask < act,
+              "вопрос задаётся раньше действия");
+        check(body.find("layout_.primaryAction()") != NONE,
+              "главное действие берёт геометрию из раскладки");
+    }
+
+    // ---- 4. Геометрия общих панелей состоятельна ----
+    struct Size { f32 w, h; i32 dpi; const char* name; };
+    const Size sizes[] = {
+        { 2306.f, 1080.f, 400, "2306x1080" },
+        { 1280.f,  720.f, 320, "1280x720"  },
+        {  960.f,  540.f, 240, "960x540"   },
+    };
+    int problems = 0;
+    for (const auto& sz : sizes) {
+        const ui::HudLayout L(sz.w, sz.h,
+                              ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                              ui::SafeInsets{});
+        const f32 minSide = L.dp(ui::theme::TOUCH_MIN_DP) - 0.01f;
+        const ui::Rect close = L.closeButton();
+        const ui::Rect left  = L.paneLeft();
+        const ui::Rect right = L.paneRight();
+        const ui::Rect prim  = L.primaryAction();
+        const ui::Rect row   = L.paneRow(0);
+
+        if (close.w < minSide || close.h < minSide) {
+            ++problems;
+            char m[128]; std::snprintf(m, sizeof(m), "%s: закрытие мельче 48 dp", sz.name);
+            check(false, m);
+        }
+        if (row.h < minSide) {
+            ++problems;
+            char m[128]; std::snprintf(m, sizeof(m), "%s: строка списка мельче 48 dp", sz.name);
+            check(false, m);
+        }
+        if (prim.h + 0.01f < L.dp(ui::theme::TOUCH_PRIMARY_DP)) {
+            ++problems;
+            char m[128]; std::snprintf(m, sizeof(m), "%s: главное действие мельче нормы", sz.name);
+            check(false, m);
+        }
+        if (left.x + left.w > right.x + 0.01f) {
+            ++problems;
+            char m[128]; std::snprintf(m, sizeof(m), "%s: панели налезают", sz.name);
+            check(false, m);
+        }
+        // Главное действие внутри своей панели.
+        if (prim.x < right.x - 0.01f ||
+            prim.x + prim.w > right.x + right.w + 0.01f ||
+            prim.y + prim.h > right.y + right.h + 0.01f) {
+            ++problems;
+            char m[128]; std::snprintf(m, sizeof(m), "%s: действие вне панели", sz.name);
+            check(false, m);
+        }
+        // Заголовок не перекрывается кнопкой закрытия по вертикали
+        // случайно: она стоит внутри полосы заголовка.
+        const ui::Rect t = L.menuTitle();
+        if (close.y < t.y - 0.01f || close.y + close.h > t.y + t.h + 0.01f) {
+            ++problems;
+            char m[128]; std::snprintf(m, sizeof(m), "%s: закрытие вне полосы заголовка", sz.name);
+            check(false, m);
+        }
+    }
+    check(problems == 0, "общая геометрия экранов состоятельна");
+}
+
+// ------------------------------------------------------------
 // Огрублённые уровни детализации не дырявят землю.
 //
 // Именно за это их и подозревают в первую очередь, когда в мире
@@ -7302,6 +7409,7 @@ int main() {
     testQuestLogAnswersWhatToDoNow();
     testNoticesQueueAndPrioritise();
     testAttributeSteppersArePressable();
+    testCraftTradeEnchantShareOneLook();
     testBufferMapContract();
     testUiGeometry();
     testMeshFitsPacking();

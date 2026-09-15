@@ -364,6 +364,8 @@ private:
     void drawSettingsScreen(player::Player& player);
 
     void drawStatusToast();
+    /// Кнопка закрытия одного вида на всю игру.
+    void drawCloseButton(std::function<void()> onClose);
     /// Модальное подтверждение поверх всего.
     void drawConfirm();
 
