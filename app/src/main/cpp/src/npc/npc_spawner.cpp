@@ -181,6 +181,9 @@ void NpcSpawner::update(world::ChunkManager& world,
                     reg.add(e, tf);
 
                     reg.add(e, ecs::Velocity{});
+                    // Поворот — состояние сущности, а не вычисление
+                    // в рендере. NPC доворачивается спокойнее мобов.
+                    reg.add(e, ecs::Facing{ 0.f, 0.f, 5.f });
                     reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
 
                     ecs::Collider col;

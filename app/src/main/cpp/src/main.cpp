@@ -22,6 +22,7 @@
 #include "core/log.h"
 #include "core/job_system.h"
 #include "core/math.h"
+#include "core/orientation.h"
 
 #include "config/settings.h"
 #include "config/localization.h"
@@ -946,6 +947,24 @@ struct Engine {
 
         // Phase 15: обновляем spatial hash раз в кадр (лениво).
         spatialHash.tick();
+
+        // Ориентация сущностей.
+        //
+        // Один проход на кадр: направление движения берётся из
+        // скорости, а модельный yaw догоняет его с ограниченной
+        // угловой скоростью по кратчайшей дуге. Рендер это состояние
+        // только ЧИТАЕТ — раньше он вычислял угол сам, каждый кадр
+        // заново, и обнулял при остановке.
+        {
+            auto& facings = registry.pool<ecs::Facing>();
+            for (usize i = 0; i < facings.size(); ++i) {
+                ecs::Entity fe = facings.entityAt((u32)i);
+                auto* fc = facings.get(fe);
+                auto* fv = registry.get<ecs::Velocity>(fe);
+                if (!fc || !fv) continue;
+                orient::advanceFacing(*fc, fv->linear, dt);
+            }
+        }
 
         if (!uiBlockingInput) {
             // Обзор. Знаки здесь были плюсовые, и получалось «тяну

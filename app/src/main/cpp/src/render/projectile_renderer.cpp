@@ -5,63 +5,27 @@
 #include "projectile_renderer.h"
 #include "../combat/projectile.h"
 #include "../ecs/components.h"
+#include "../core/orientation.h"
 #include "../core/log.h"
 #include <cstring>
 #include <algorithm>
 
 namespace render {
 
-// Вершинный формат: единичный куб (vec3) + инстанс
-// pos/size/color/yaw, ровно как в MobInstance.
-static const vk::VertexBinding kBindings[2] = {
-    { 12,                      false },   // CubeVertex: glm::vec3
-    { sizeof(MobInstance),     true  },
-};
-static const vk::VertexAttr kAttrs[5] = {
-    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // inPos
-    { 1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // iPos
-    { 2, 1, VK_FORMAT_R32G32B32_SFLOAT, 12 },   // iSize
-    { 3, 1, VK_FORMAT_R8G8B8A8_UNORM,   24 },   // iColor
-    { 4, 1, VK_FORMAT_R32_SFLOAT,       28 },   // iYaw
-};
-
-namespace {
-
-struct CubeVertex { glm::vec3 pos; };
-static_assert(sizeof(CubeVertex) == 12, "kBindings рассчитан на 12 байт");
-constexpr CubeVertex CUBE_V[24] = {
-    {{-0.5f,-0.5f,-0.5f}},{{ 0.5f,-0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{-0.5f, 0.5f,-0.5f}},
-    {{-0.5f,-0.5f, 0.5f}},{{ 0.5f,-0.5f, 0.5f}},{{ 0.5f, 0.5f, 0.5f}},{{-0.5f, 0.5f, 0.5f}},
-    {{-0.5f,-0.5f,-0.5f}},{{-0.5f, 0.5f,-0.5f}},{{-0.5f, 0.5f, 0.5f}},{{-0.5f,-0.5f, 0.5f}},
-    {{ 0.5f,-0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f, 0.5f}},{{ 0.5f,-0.5f, 0.5f}},
-    {{-0.5f,-0.5f,-0.5f}},{{ 0.5f,-0.5f,-0.5f}},{{ 0.5f,-0.5f, 0.5f}},{{-0.5f,-0.5f, 0.5f}},
-    {{-0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f, 0.5f}},{{-0.5f, 0.5f, 0.5f}},
-};
-constexpr u32 CUBE_I[36] = {
-    // Все грани обходятся против часовой стрелки при взгляде СНАРУЖИ.
-    // Раньше -Z, -X и +Y были намотаны наоборот, и при отсечении
-    // задних граней половина каждого куба просвечивала насквозь.
-     0, 2, 1,   0, 3, 2,     // -Z
-     4, 5, 6,   4, 6, 7,     // +Z
-     8,10, 9,   8,11,10,     // -X
-    12,13,14,  12,14,15,     // +X
-    16,17,18,  16,18,19,     // -Y
-    20,22,21,  20,23,22,     // +Y
-};
-
-} // namespace
+// Вершинный формат и геометрия куба — общие для всех рендеров
+// MobInstance, см. MOB_ATTRS в mob_renderer.h.
 
 bool ProjectileRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout) {
     dev_ = ctx.device();
     instances_.init(dev_, ctx.physicalDevice());
     shaders_.init(dev_, mgr);
 
-    u64 vbBytes = sizeof(CUBE_V);
+    u64 vbBytes = sizeof(MOB_CUBE_V);
     if (!vbo_.create(dev_, ctx.physicalDevice(), vbBytes, vk::BufferUsage::Vertex, false)) return false;
     {
         auto* s = new vk::Buffer();
         s->create(dev_, ctx.physicalDevice(), vbBytes, vk::BufferUsage::Staging, true);
-        s->write(CUBE_V, vbBytes);
+        s->write(MOB_CUBE_V, vbBytes);
         ctx.submitOneShot([&](VkCommandBuffer cmd){
             VkBufferCopy c{0,0,vbBytes};
             vkCmdCopyBuffer(cmd, s->handle(), vbo_.handle(), 1, &c);
@@ -69,12 +33,12 @@ bool ProjectileRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptor
         s->destroy(); delete s;
     }
 
-    u64 ibBytes = sizeof(CUBE_I);
+    u64 ibBytes = sizeof(MOB_CUBE_I);
     if (!ibo_.create(dev_, ctx.physicalDevice(), ibBytes, vk::BufferUsage::Index, false)) return false;
     {
         auto* s = new vk::Buffer();
         s->create(dev_, ctx.physicalDevice(), ibBytes, vk::BufferUsage::Staging, true);
-        s->write(CUBE_I, ibBytes);
+        s->write(MOB_CUBE_I, ibBytes);
         ctx.submitOneShot([&](VkCommandBuffer cmd){
             VkBufferCopy c{0,0,ibBytes};
             vkCmdCopyBuffer(cmd, s->handle(), ibo_.handle(), 1, &c);
@@ -92,10 +56,10 @@ bool ProjectileRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptor
     d.depthTest   = true;
     d.depthWrite  = false;
     d.blend       = true;
-    d.bindings     = kBindings;
-    d.bindingCount = 2;
-    d.attrs        = kAttrs;
-    d.attrCount    = 5;
+    d.bindings     = MOB_BINDINGS;
+    d.bindingCount = MOB_BINDING_COUNT;
+    d.attrs        = MOB_ATTRS;
+    d.attrCount    = MOB_ATTR_COUNT;
     if (!pipeline_.create(dev_, shaders_, d)) return false;
 
     cpu_.reserve(256);
@@ -117,9 +81,19 @@ void ProjectileRenderer::rebuild(ecs::Registry& reg) {
 
             MobInstance inst{};
             inst.pos   = tf->position;
-            inst.size  = glm::vec3(p->scale * 2.f);
             inst.color = p->colorRGBA;
-            inst.yaw   = 0.f;
+
+            // Снаряд летит вдоль своей скорости — и выглядеть обязан
+            // так же. Заклинание это сгусток, ему направление не
+            // нужно; стрела — древко, и раньше она летела кубом,
+            // потому что формат инстанса поворота не нёс вовсе.
+            if (p->isSpell) {
+                inst.size = glm::vec3(p->scale * 2.f);
+                inst.rot  = orient::yawQuat(0.f);
+            } else {
+                inst.size = glm::vec3(p->scale, p->scale, p->scale * 6.f);
+                inst.rot  = orient::dirQuat(p->velocity);
+            }
             cpu_.push_back(inst);
         }
     }
@@ -149,7 +123,7 @@ void ProjectileRenderer::rebuild(ecs::Registry& reg) {
             inst.pos   = tf->position;
             inst.size  = glm::vec3(s);
             inst.color = faded;
-            inst.yaw   = 0.f;
+            inst.rot = orient::yawQuat(0.f);
             cpu_.push_back(inst);
         }
     }

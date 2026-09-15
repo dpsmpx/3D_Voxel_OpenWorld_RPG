@@ -125,6 +125,8 @@ ecs::Entity Spawner::spawnMob(world::ChunkManager& /*world*/,
     reg.add(e, tf);
 
     reg.add(e, ecs::Velocity{});
+    // Поворот — состояние сущности, а не вычисление в рендере.
+    reg.add(e, ecs::Facing{});
     reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
     reg.add(e, ecs::Collider{
         glm::vec3(def.bodyRadius, def.bodyHeight * 0.5f, def.bodyRadius),

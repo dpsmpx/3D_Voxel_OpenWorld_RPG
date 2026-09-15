@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Обход треугольников у статичной геометрии кубов.
 
-Кубы мобов, NPC, предметов и снарядов заданы таблицами CUBE_V/CUBE_I
-прямо в исходниках. Ошибка в такой таблице не ловится ни компилятором,
-ни тестами: половина граней просто просвечивает насквозь, и заметно это
-только на устройстве. Здесь разбираем таблицы и требуем, чтобы нормаль,
-посчитанная по обходу, смотрела наружу от центра куба.
+Куб мобов, NPC, предметов и снарядов задан таблицами MOB_CUBE_V и
+MOB_CUBE_I в mob_renderer.cpp. Ошибка в такой таблице не ловится ни
+компилятором, ни тестами: половина граней просто просвечивает насквозь,
+и заметно это только на устройстве. Здесь разбираем таблицы и требуем,
+чтобы нормаль, посчитанная по обходу, смотрела наружу от центра куба.
+
+Таблица одна на все четыре рендера. Раньше их было четыре дословных
+копии, и проверка обходила каждую — но копии расходятся молча, а эта
+проверка увидела бы только неверный обход, не расхождение. Поэтому
+ниже ещё и требование: своих таблиц у остальных рендеров быть не
+должно.
 
 Соглашение всего проекта: против часовой стрелки при взгляде снаружи.
 Оно же доезжает до координат кадра: p[1][1] *= -1 меняет знак NDC по Y,
@@ -20,8 +26,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RENDER = ROOT / "app/src/main/cpp/src/render"
-FILES = ["item_renderer.cpp", "mob_renderer.cpp",
-         "npc_renderer.cpp", "projectile_renderer.cpp"]
+# Где лежит единственная таблица куба.
+CUBE_OWNER = "mob_renderer.cpp"
+# Кто ею пользуется и потому обязан НЕ иметь своей.
+CUBE_USERS = ["item_renderer.cpp", "npc_renderer.cpp",
+              "projectile_renderer.cpp"]
 
 NUM = re.compile(r"-?\d+\.?\d*")
 
@@ -71,18 +80,18 @@ def cross(a, b):
 
 def check(path: Path):
     text = strip_comments(path.read_text(encoding="utf-8"))
-    vb = block(text, "CUBE_V")
-    ib = block(text, "CUBE_I")
+    vb = block(text, "MOB_CUBE_V")
+    ib = block(text, "MOB_CUBE_I")
     if vb is None or ib is None:
-        return [f"{path.name}: не нашёл таблиц CUBE_V/CUBE_I"]
+        return [f"{path.name}: не нашёл таблиц MOB_CUBE_V/MOB_CUBE_I"]
 
     verts = parse_verts(vb)
     idx = parse_idx(ib)
     errs = []
     if not verts:
-        return [f"{path.name}: CUBE_V не разобрался"]
+        return [f"{path.name}: MOB_CUBE_V не разобрался"]
     if len(idx) % 3:
-        return [f"{path.name}: в CUBE_I {len(idx)} индексов, не кратно трём"]
+        return [f"{path.name}: в MOB_CUBE_I {len(idx)} индексов, не кратно трём"]
 
     cx = sum(v[0] for v in verts) / len(verts)
     cy = sum(v[1] for v in verts) / len(verts)
@@ -162,16 +171,41 @@ def check_terrain():
     return errs
 
 
+def check_no_copies():
+    """Никто, кроме владельца, не заводит своей таблицы куба.
+
+    Это не стилистика. Четыре копии одной таблицы — ровно тот случай,
+    когда правку получает одна из них: так и вышло с форматом
+    инстанса, где три рендера остались с прежними смещениями и стали
+    читать чужие байты.
+    """
+    errs = []
+    for name in CUBE_USERS:
+        p = RENDER / name
+        if not p.exists():
+            errs.append(f"{name}: файла нет")
+            continue
+        text = strip_comments(p.read_text(encoding="utf-8"))
+        for decl in ("CUBE_V[24]", "CUBE_I[36]"):
+            if decl in text:
+                errs.append(f"{name}: завёл свою таблицу {decl} — "
+                            f"куб один, он в {CUBE_OWNER}")
+    return errs
+
+
 def main() -> int:
     all_errs = []
     checked = 0
-    for name in FILES:
-        p = RENDER / name
-        if not p.exists():
-            all_errs.append(f"{name}: файла нет")
-            continue
+
+    p = RENDER / CUBE_OWNER
+    if not p.exists():
+        all_errs.append(f"{CUBE_OWNER}: файла нет")
+    else:
         checked += 1
         all_errs += check(p)
+
+    all_errs += check_no_copies()
+    checked += 1
 
     all_errs += check_terrain()
     checked += 1

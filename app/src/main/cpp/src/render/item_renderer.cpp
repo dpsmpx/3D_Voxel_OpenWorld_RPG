@@ -6,49 +6,18 @@
 #include "../items/item_pickup.h"
 #include "../items/item_def.h"
 #include "../ecs/components.h"
+#include "../core/orientation.h"
 #include "../core/log.h"
 #include <cstring>
 #include <cmath>
 
 namespace render {
 
-// Вершинный формат: единичный куб (vec3) + инстанс
-// pos/size/color/yaw, ровно как в MobInstance.
-static const vk::VertexBinding kBindings[2] = {
-    { 12,                      false },   // CubeVertex: glm::vec3
-    { sizeof(MobInstance),     true  },
-};
-static const vk::VertexAttr kAttrs[5] = {
-    { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // inPos
-    { 1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0  },   // iPos
-    { 2, 1, VK_FORMAT_R32G32B32_SFLOAT, 12 },   // iSize
-    { 3, 1, VK_FORMAT_R8G8B8A8_UNORM,   24 },   // iColor
-    { 4, 1, VK_FORMAT_R32_SFLOAT,       28 },   // iYaw
-};
+// Вершинный формат и геометрия куба — общие для всех рендеров
+// MobInstance, см. MOB_ATTRS в mob_renderer.h.
 
 namespace {
 
-struct CubeVertex { glm::vec3 pos; };
-static_assert(sizeof(CubeVertex) == 12, "kBindings рассчитан на 12 байт");
-constexpr CubeVertex CUBE_V[24] = {
-    {{-0.5f,-0.5f,-0.5f}},{{ 0.5f,-0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{-0.5f, 0.5f,-0.5f}},
-    {{-0.5f,-0.5f, 0.5f}},{{ 0.5f,-0.5f, 0.5f}},{{ 0.5f, 0.5f, 0.5f}},{{-0.5f, 0.5f, 0.5f}},
-    {{-0.5f,-0.5f,-0.5f}},{{-0.5f, 0.5f,-0.5f}},{{-0.5f, 0.5f, 0.5f}},{{-0.5f,-0.5f, 0.5f}},
-    {{ 0.5f,-0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f, 0.5f}},{{ 0.5f,-0.5f, 0.5f}},
-    {{-0.5f,-0.5f,-0.5f}},{{ 0.5f,-0.5f,-0.5f}},{{ 0.5f,-0.5f, 0.5f}},{{-0.5f,-0.5f, 0.5f}},
-    {{-0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f,-0.5f}},{{ 0.5f, 0.5f, 0.5f}},{{-0.5f, 0.5f, 0.5f}},
-};
-constexpr u32 CUBE_I[36] = {
-    // Все грани обходятся против часовой стрелки при взгляде СНАРУЖИ.
-    // Раньше -Z, -X и +Y были намотаны наоборот, и при отсечении
-    // задних граней половина каждого куба просвечивала насквозь.
-     0, 2, 1,   0, 3, 2,     // -Z
-     4, 5, 6,   4, 6, 7,     // +Z
-     8,10, 9,   8,11,10,     // -X
-    12,13,14,  12,14,15,     // +X
-    16,17,18,  16,18,19,     // -Y
-    20,22,21,  20,23,22,     // +Y
-};
 
 // Цвет по редкости предмета
 u32 colorForItem(u16 itemId) {
@@ -70,12 +39,12 @@ bool ItemRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLay
     instances_.init(dev_, ctx.physicalDevice());
     shaders_.init(dev_, mgr);
 
-    u64 vbBytes = sizeof(CUBE_V);
+    u64 vbBytes = sizeof(MOB_CUBE_V);
     if (!vbo_.create(dev_, ctx.physicalDevice(), vbBytes, vk::BufferUsage::Vertex, false)) return false;
     {
         auto* s = new vk::Buffer();
         s->create(dev_, ctx.physicalDevice(), vbBytes, vk::BufferUsage::Staging, true);
-        s->write(CUBE_V, vbBytes);
+        s->write(MOB_CUBE_V, vbBytes);
         ctx.submitOneShot([&](VkCommandBuffer cmd){
             VkBufferCopy c{0,0,vbBytes};
             vkCmdCopyBuffer(cmd, s->handle(), vbo_.handle(), 1, &c);
@@ -83,12 +52,12 @@ bool ItemRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLay
         s->destroy(); delete s;
     }
 
-    u64 ibBytes = sizeof(CUBE_I);
+    u64 ibBytes = sizeof(MOB_CUBE_I);
     if (!ibo_.create(dev_, ctx.physicalDevice(), ibBytes, vk::BufferUsage::Index, false)) return false;
     {
         auto* s = new vk::Buffer();
         s->create(dev_, ctx.physicalDevice(), ibBytes, vk::BufferUsage::Staging, true);
-        s->write(CUBE_I, ibBytes);
+        s->write(MOB_CUBE_I, ibBytes);
         ctx.submitOneShot([&](VkCommandBuffer cmd){
             VkBufferCopy c{0,0,ibBytes};
             vkCmdCopyBuffer(cmd, s->handle(), ibo_.handle(), 1, &c);
@@ -108,10 +77,10 @@ bool ItemRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLay
     d.depthTest   = true;
     d.depthWrite  = true;
     d.blend       = false;
-    d.bindings     = kBindings;
-    d.bindingCount = 2;
-    d.attrs        = kAttrs;
-    d.attrCount    = 5;
+    d.bindings     = MOB_BINDINGS;
+    d.bindingCount = MOB_BINDING_COUNT;
+    d.attrs        = MOB_ATTRS;
+    d.attrCount    = MOB_ATTR_COUNT;
     if (!pipeline_.create(dev_, shaders_, d)) return false;
 
     cpu_.reserve(256);
@@ -151,7 +120,7 @@ void ItemRenderer::rebuild(ecs::Registry& reg) {
         inst.pos   = tf->position + glm::vec3(0, 0.25f + bob, 0);
         inst.size  = glm::vec3(0.35f);
         inst.color = c;
-        inst.yaw   = tf->position.x * 0.3f + tf->position.z * 0.4f;
+        inst.rot = orient::yawQuat(tf->position.x * 0.3f + tf->position.z * 0.4f);
 
         cpu_.push_back(inst);
     }
