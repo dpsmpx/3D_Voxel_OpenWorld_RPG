@@ -1049,11 +1049,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
 
     ui_.text(T(StrKey::Settings_Title), 40.f, 24.f, 3.f, COL_WHITE);
 
-    Rect close{ (float)screenW_ - 90.f, 24.f, 80.f, 50.f };
-    int closeIdx = ui_.pushInteractiveRect(close, [this]() { screen = Screen::PauseMenu; });
-    if (ui_.button("X", close, closeIdx, rgba(120,60,60,255), COL_WHITE)) {
-        screen = Screen::PauseMenu;
-    }
+    drawCloseButton([this]() { screen = Screen::PauseMenu; });
 
     // Табы
     const char* tabNames[(u32)SettingsTab::Count] = {
@@ -1381,11 +1377,7 @@ void UiSystem::drawSkillTreeScreen(player::Player& player) {
     ui_.text(ptsBuf, (float)screenW_ - 340.f, 24.f, 2.f,
              tree->unspentPoints > 0 ? rgba(255, 220, 100, 255) : COL_WHITE);
 
-    Rect close{ (float)screenW_ - 90.f, 74.f, 80.f, 50.f };
-    int closeIdx = ui_.pushInteractiveRect(close, [this]() { screen = Screen::Hud; });
-    if (ui_.button("X", close, closeIdx, rgba(120,60,60,255), COL_WHITE)) {
-        screen = Screen::Hud; return;
-    }
+    drawCloseButton([this]() { screen = Screen::Hud; });
 
     const f32 colW = (f32)screenW_ * 0.30f;
     const f32 gap  = (f32)screenW_ * 0.02f;
@@ -1854,16 +1846,12 @@ void UiSystem::drawReputationScreen(player::Player& player) {
 
     ui_.text(T(StrKey::Rep_Title), (float)screenW_ * 0.40f, 24.f, 3.f, COL_WHITE);
 
-    Rect close{ (float)screenW_ - 90.f, 74.f, 80.f, 50.f };
-    int closeIdx = ui_.pushInteractiveRect(close, [this]() { screen = Screen::Hud; });
-    if (ui_.button("X", close, closeIdx, rgba(120,60,60,255), COL_WHITE)) {
-        screen = Screen::Hud; return;
-    }
+    drawCloseButton([this]() { screen = Screen::Hud; });
 
     const f32 panelX = 80.f;
     const f32 panelY = 150.f;
     const f32 panelW = (f32)screenW_ - 160.f;
-    const f32 rowH  = 80.f;
+    const f32 rowH  = layout_.dp(theme::TOUCH_REGULAR_DP);
     const f32 gap   = 14.f;
 
     using factions::FactionId;
@@ -1929,11 +1917,7 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
         ? "SAVE GAME" : "LOAD GAME";
     ui_.text(title, (float)screenW_ * 0.38f, 24.f, 3.f, COL_WHITE);
 
-    Rect close{ (float)screenW_ - 90.f, 74.f, 80.f, 50.f };
-    int closeIdx = ui_.pushInteractiveRect(close, [this]() { screen = Screen::Hud; });
-    if (ui_.button("X", close, closeIdx, rgba(120,60,60,255), COL_WHITE)) {
-        screen = Screen::Hud; return;
-    }
+    drawCloseButton([this]() { screen = Screen::Hud; });
 
     {
         Rect r{ 40.f, 74.f, 200.f, 50.f };
@@ -2042,11 +2026,7 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
                   T(StrKey::Craft_Title), stName);
     ui_.text(title, (float)screenW_ * 0.28f, 24.f, 3.f, COL_WHITE);
 
-    Rect close{ (float)screenW_ - 90.f, 74.f, 80.f, 50.f };
-    int closeIdx = ui_.pushInteractiveRect(close, [this]() { screen = Screen::Hud; });
-    if (ui_.button("X", close, closeIdx, rgba(120,60,60,255), COL_WHITE)) {
-        screen = Screen::Hud; return;
-    }
+    drawCloseButton([this]() { screen = Screen::Hud; });
 
     auto* inv = player.inventory();
     auto* tree = player.skillTree();
@@ -2065,7 +2045,7 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
     const f32 listX = 40.f;
     const f32 listY = 130.f;
     const f32 listW = (f32)screenW_ * 0.55f;
-    const f32 rowH  = 70.f;
+    const f32 rowH  = layout_.dp(theme::TOUCH_REGULAR_DP);
     const f32 rowGap = 8.f;
 
     i32 visible = (i32)(((f32)screenH_ - listY - 40.f) / (rowH + rowGap));
@@ -2234,11 +2214,7 @@ void UiSystem::drawTradeScreen(player::Player& player) {
 
     ui_.text(T(StrKey::Trade_Title), (float)screenW_ * 0.42f, 24.f, 3.f, COL_WHITE);
 
-    Rect close{ (float)screenW_ - 90.f, 74.f, 80.f, 50.f };
-    int closeIdx = ui_.pushInteractiveRect(close, [this]() { screen = Screen::Hud; });
-    if (ui_.button("X", close, closeIdx, rgba(120,60,60,255), COL_WHITE)) {
-        screen = Screen::Hud; return;
-    }
+    drawCloseButton([this]() { screen = Screen::Hud; });
 
     // Табы
     {
@@ -2397,11 +2373,7 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
 
     ui_.text("ENCHANT ALTAR", (float)screenW_ * 0.36f, 24.f, 3.f, COL_WHITE);
 
-    Rect close{ (float)screenW_ - 90.f, 74.f, 80.f, 50.f };
-    int closeIdx = ui_.pushInteractiveRect(close, [this]() { screen = Screen::Hud; });
-    if (ui_.button("X", close, closeIdx, rgba(120,60,60,255), COL_WHITE)) {
-        screen = Screen::Hud; return;
-    }
+    drawCloseButton([this]() { screen = Screen::Hud; });
 
     auto* inv = player.inventory();
     auto* wal = player.wallet();
@@ -2434,7 +2406,7 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
     const f32 listX = 40.f;
     const f32 listY = 200.f;
     const f32 listW = (f32)screenW_ * 0.55f;
-    const f32 rowH  = 70.f;
+    const f32 rowH  = layout_.dp(theme::TOUCH_REGULAR_DP);
     const f32 rowGap = 8.f;
     i32 total = (i32)recipes.size();
 
@@ -2491,17 +2463,28 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
             const auto& r = recipes[(usize)enchantCtx.selectedIdx];
             ui_.text(r.name ? r.name : "?", pX + 16.f, pY + 12.f, 2.2f, COL_WHITE);
 
-            Rect cr{ pX + 16.f, pY + pH - 80.f, pW - 32.f, 60.f };
-            int ci = ui_.pushInteractiveRect(cr, [this, i = enchantCtx.selectedIdx]() {
-                if (onEnchant) onEnchant((u32)i);
-            });
-            bool cpress = ui_.isInteractivePressed(ci);
-            UiColor c = cpress ? rgba(160, 80, 200, 255) : rgba(90, 40, 140, 255);
-            ui_.rect(cr.x, cr.y, cr.w, cr.h, c);
-            ui_.rectOutline(cr.x, cr.y, cr.w, cr.h, 2.f, COL_BLACK);
-            float tw = ui_.textWidth("ENCHANT", 2.4f);
-            ui_.text("ENCHANT", cr.x + (cr.w - tw) * 0.5f, cr.y + 16.f,
-                     2.4f, COL_WHITE);
+            // Зачарование необратимо: оно тратит предмет и золото и
+            // насовсем меняет оружие. Такое спрашивает.
+            const Rect cr = layout_.primaryAction();
+            const char* label = r.name ? r.name : "ENCHANT";
+            const int ci = ui_.pushInteractiveRect(cr,
+                [this, i = enchantCtx.selectedIdx, label]() {
+                    askConfirm(label, label, [this, i]() {
+                        if (onEnchant) onEnchant((u32)i);
+                    });
+                });
+            const bool cpress = ui_.isInteractivePressed(ci);
+
+            ui_.rect(cr.x, cr.y, cr.w, cr.h,
+                     cpress ? theme::Accent : theme::PanelRaised);
+            ui_.rectOutline(cr.x, cr.y, cr.w, cr.h,
+                            layout_.dp(theme::STROKE_SELECTED_DP),
+                            cpress ? theme::AccentPressed : theme::Accent);
+            const f32 tw = ui_.textWidth("ENCHANT", theme::TEXT_BODY);
+            ui_.text("ENCHANT", cr.x + (cr.w - tw) * 0.5f,
+                     cr.y + (cr.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                     theme::TEXT_BODY,
+                     cpress ? theme::Ink : theme::TextPrimary);
         } else {
             ui_.text("Select a recipe", pX + 16.f, pY + 40.f, 2.f,
                      rgba(180, 180, 180, 255));
@@ -2512,6 +2495,28 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
 // ============================================================
 // Toast
 // ============================================================
+// Кнопка закрытия одного вида на всю игру.
+//
+// Была написана семью одинаковыми копиями
+// `Rect close{ screenW - 90, 74, 80, 50 }` — 20 dp по высоте при
+// норме 48. Совпадение, а не правило: любая из семи могла разъехаться
+// с остальными, и заметить это было бы негде.
+void UiSystem::drawCloseButton(std::function<void()> onClose) {
+    const Rect r = layout_.closeButton();
+    const int idx = ui_.pushInteractiveRect(r, std::move(onClose));
+    const bool pressed = ui_.isInteractivePressed(idx);
+
+    ui_.rect(r.x, r.y, r.w, r.h, pressed ? theme::Danger : theme::PanelRaised);
+    ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
+                    pressed ? theme::Danger : theme::Stroke);
+
+    const f32 tw = ui_.textWidth("X", theme::TEXT_BODY);
+    ui_.text("X", r.x + (r.w - tw) * 0.5f,
+             r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+             theme::TEXT_BODY,
+             pressed ? theme::TextPrimary : theme::TextSecondary);
+}
+
 // ============================================================
 // Модальное подтверждение
 // ============================================================
