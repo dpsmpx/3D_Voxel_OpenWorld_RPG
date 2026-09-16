@@ -151,7 +151,6 @@ struct Engine {
     u32 btnBreak_   = 0;
     u32 btnPlace_   = 0;
     u32 btnCamera_  = 0;
-    u32 btnSprint_  = 0;
     u32 btnAttack_  = 0;
     u32 btnFinisher_= 0;
     u32 btnInteract_= 0;
@@ -670,8 +669,12 @@ struct Engine {
 
         btnAttack_   = add(cfg::Btn_Attack,   [this](u32) { evAttack_   = true; });
         btnFinisher_ = add(cfg::Btn_Finisher, [this](u32) { evFinish_   = true; });
-        btnJump_     = add(cfg::Btn_Jump,     nullptr);
-        btnSprint_   = add(cfg::Btn_Sprint,   nullptr);
+        // Обработчик обязателен: без него нажатие никуда не идёт.
+        // Кнопка прыжка стояла с nullptr, и evJump_ не выставлялся
+        // НИКОГДА — ни с экрана, ни с геймпада. Прыжок по кнопке не
+        // происходил вовсе; работало только удержание в воде, где
+        // читается jumpHeld, а не jumpPressed.
+        btnJump_     = add(cfg::Btn_Jump,     [this](u32) { evJump_ = true; });
         btnBreak_    = add(cfg::Btn_Break,    [this](u32) { evBreak_    = true; });
         btnPlace_    = add(cfg::Btn_Place,    [this](u32) { evPlace_    = true; });
         btnInteract_ = add(cfg::Btn_Interact, [this](u32) { evInteract_ = true; });
@@ -687,7 +690,6 @@ struct Engine {
         buttonIds_[cfg::Btn_Attack]   = btnAttack_;
         buttonIds_[cfg::Btn_Finisher] = btnFinisher_;
         buttonIds_[cfg::Btn_Jump]     = btnJump_;
-        buttonIds_[cfg::Btn_Sprint]   = btnSprint_;
         buttonIds_[cfg::Btn_Break]    = btnBreak_;
         buttonIds_[cfg::Btn_Place]    = btnPlace_;
         buttonIds_[cfg::Btn_Interact] = btnInteract_;
@@ -1007,7 +1009,8 @@ struct Engine {
             pin.moveAxis      = touch.moveAxis();
             pin.jumpPressed   = evJump_;
             pin.jumpHeld      = touch.isButtonHeld(btnJump_);
-            pin.sprint        = touch.isButtonHeld(btnSprint_);
+            // Бег — двойное нажатие по джойстику, а не кнопка.
+            pin.sprint        = touch.sprintActive();
             pin.attackPressed = evAttack_;
             pin.attackHeld    = touch.isButtonHeld(btnAttack_);
             pin.finisherInput = evFinish_;
@@ -1413,7 +1416,7 @@ static int32_t handleInput(android_app* app, AInputEvent* e) {
                 eng->touch.injectGamepadButton(eng->btnPlace_, down);
                 return 1;
             case AKEYCODE_BUTTON_THUMBL:
-                eng->touch.injectGamepadButton(eng->btnSprint_, down);
+                eng->touch.injectGamepadSprint(down);
                 return 1;
             case AKEYCODE_BUTTON_START:
                 if (down && eng->ui) eng->ui->togglePause();
@@ -1703,7 +1706,7 @@ extern "C" void android_main(android_app* app) {
                 const f32 n = msFrames ? (f32)msFrames : 1.f;
                 LOGI("кадры: показано %llu (%.1f/с), показ=%d, цепочка %llu | камера %.1f %.1f %.1f "
                      "| чанки: загружено %zu, нарисовано %u, индексов %u, "
-                     "дыр %u (ждут меша %u), LOD %u/%u/%u/%u "
+                     "дыр %u (ждут меша %u) "
                      "| трава %u, мобы %u, NPC %u, предметы %u, снаряды %u "
                      "| интерфейс: вершин %u, нарисовано %u, экран %d "
                      "| мс: логика %.1f, подготовка %.1f, рисование %.1f "
@@ -1718,10 +1721,6 @@ extern "C" void android_main(android_app* app) {
                      eng.render ? eng.render->drawnIndices() : 0u,
                      eng.render ? eng.render->emptyChunks() : 0u,
                      eng.render ? eng.render->waitingChunks() : 0u,
-                     eng.render ? eng.render->lodCount(0) : 0u,
-                     eng.render ? eng.render->lodCount(1) : 0u,
-                     eng.render ? eng.render->lodCount(2) : 0u,
-                     eng.render ? eng.render->lodCount(3) : 0u,
                      eng.render ? eng.render->grassCount() : 0u,
                      eng.render ? eng.render->mobInstances() : 0u,
                      eng.render ? eng.render->npcInstances() : 0u,

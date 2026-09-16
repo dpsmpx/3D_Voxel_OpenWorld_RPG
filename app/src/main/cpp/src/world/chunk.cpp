@@ -68,162 +68,20 @@ constexpr FaceAxes FACES[6] = {
 };
 
 // ============================================================
-// Объём для меширования.
-//
-// Уровень детализации — это НЕ «брать каждый N-й воксель». Так было
-// раньше, и так получался мусор: грань решалась по соседу в одном
-// вокселе, а покрывала N, поверхность между точками выборки исчезала
-// целиком, и в воздухе оставались висеть отдельные плиты.
-//
-// Правильно — огрубить сам объём: куб N x N x N вокселей сводится к
-// одной клетке, и дальше всё работает как обычно, с шагом в одну
-// клетку. Затенение углов и открытость неба тоже считаются по
-// огрублённым клеткам, поэтому они остаются осмысленными, а слияние
-// граней не дробится на полоски.
+// Объём для меширования: чанк вместе с соседями, читаемый по одному
+// вокселю. Размеры лежат полями, а не константами, потому что по ним
+// ходят все три оси обхода разом.
 // ============================================================
 struct MeshVolume {
     const Chunk*          chunk = nullptr;
     const ChunkNeighbors* nb    = nullptr;
-    i32 step  = 1;          ///< сколько вокселей в клетке по ребру
     i32 dimX = CHUNK_SIZE, dimY = CHUNK_SIZE_Y, dimZ = CHUNK_SIZE;
 
-    /// Огрублённый объём с рамкой в одну клетку. Пуст при step == 1.
-    const std::vector<u16>* coarse = nullptr;
-    i32 cw = 0, ch = 0, cd = 0;
-
     u16 at(i32 x, i32 y, i32 z) const {
-        if (step == 1) return sampleVoxel(*chunk, *nb, x, y, z);
-        const i32 ix = x + 1, iy = y + 1, iz = z + 1;
-        if ((u32)ix >= (u32)cw || (u32)iy >= (u32)ch || (u32)iz >= (u32)cd) return AIR;
-        return (*coarse)[((usize)iy * (usize)cd + (usize)iz) * (usize)cw + (usize)ix];
+        return sampleVoxel(*chunk, *nb, x, y, z);
     }
 };
 
-/// Сводит куб step^3 вокселей к одной клетке.
-///
-/// Клетка непуста, если в ней есть хоть один непустой воксель, а
-/// материал берётся от САМОГО ВЕРХНЕГО из них — того, который видно
-/// снаружи. Порог «хотя бы четверть куба» казался разумным, но
-/// поверхность мира — это один слой травы поверх толщи: при шаге
-/// восемь она даёт восьмую часть клетки и пропадала целиком, а там,
-/// где рельеф чуть ниже порога, в земле открывались дыры насквозь.
-/// Выбирать самый частый блок нельзя по той же причине: в клетке, где
-/// трава лежит на камне, камня больше — и дальний луг становился серым.
-///
-/// Отдельное правило для того, сквозь что ВИДНО, — воды и льда.
-///
-/// Клетка рисуется целым кубом со стороной step, поэтому округление
-/// высоты вверх касается и её. Для непрозрачного это незаметно:
-/// силуэт дальнего склона чуть полнее настоящего, и только. А
-/// прозрачная клетка на том же месте — это плита воды, стоящая выше
-/// земли и просвечивающая небом, и её видно сразу.
-///
-/// Отсюда два правила.
-///
-/// Первое: решают КОЛОНКИ, а не один воксель. У каждой колонки клетки
-/// берётся её верхний непустой блок. Правило «выигрывает самый верхний
-/// воксель клетки» отдавало весь куб одному вокселю: стоило воде
-/// оказаться выше кромки берега хоть в одной колонке — и полоса суши
-/// шириной в полклетки становилась прозрачной; а если верхней
-/// оказывалась суша, озеро внутри клетки исчезало целиком. Вода то
-/// разливалась, то пропадала ровно на переходе 4³ → 8³.
-///
-/// Второе: прозрачное берёт клетку, только если ЗАНИМАЕТ её —
-/// большинство непустых колонок И три четверти всех колонок клетки.
-/// Без второго условия кромка озера у обрыва, где занята пара колонок
-/// из шестидесяти четырёх, а остальные пусты, превращалась в целый куб
-/// воды, висящий в воздухе. По настоящему рельефу таких колонок на
-/// восьмом шаге набиралось четыре процента: вода подменяла собой сушу
-/// и вставала над ней на семь блоков.
-///
-/// Непрозрачное по-прежнему округляется вверх: лишний воксель на
-/// дальнем склоне не виден, а дыра насквозь видна сразу. Порог «хотя
-/// бы четверть куба» для него уже пробовали — поверхность мира это
-/// один слой травы поверх толщи, при шаге восемь она даёт восьмую
-/// часть клетки и пропадала целиком.
-u16 collapseCell(const BlockRegistry& reg, const Chunk& c,
-                 const ChunkNeighbors& nb,
-                 i32 cx, i32 cy, i32 cz, i32 step)
-{
-    const i32 bx = cx * step, by = cy * step, bz = cz * step;
-
-    i32 opaqueCols = 0,  clearCols = 0;
-    u16 topOpaque  = AIR; i32 topOpaqueY = -1;
-    u16 topClear   = AIR; i32 topClearY  = -1;
-    bool anyUnknown = false;
-
-    for (i32 z = 0; z < step; ++z) {
-        for (i32 x = 0; x < step; ++x) {
-            for (i32 y = step - 1; y >= 0; --y) {
-                const u16 v = sampleVoxel(c, nb, bx + x, by + y, bz + z);
-                // Неизвестное не блок и не воздух: запоминаем и идём
-                // дальше. Если во всей клетке не нашлось ни одного
-                // настоящего блока, клетка остаётся неизвестной —
-                // мешер по ней грань не построит.
-                if (v == UNKNOWN) { anyUnknown = true; continue; }
-                if (v == AIR) continue;
-                if (isSeeThrough(reg.get(v))) {
-                    ++clearCols;
-                    if (y > topClearY) { topClearY = y; topClear = v; }
-                } else {
-                    ++opaqueCols;
-                    if (y > topOpaqueY) { topOpaqueY = y; topOpaque = v; }
-                }
-                break;   // ниже верхнего блока колонки смотреть незачем
-            }
-        }
-    }
-
-    if (opaqueCols == 0 && clearCols == 0)
-        return anyUnknown ? UNKNOWN : AIR;
-
-    // Ничья достаётся непрозрачному: лишний воксель берега на
-    // горизонте не виден, а дыра в берегу видна сразу.
-    const i32 total = step * step;
-    if (clearCols > opaqueCols && clearCols * 4 >= total * 3) {
-        // Гладь воды не поднимаем.
-        //
-        // Клетка рисуется целым кубом, значит её верх — это верх
-        // КЛЕТКИ, а не настоящей поверхности. Море в этом мире стоит
-        // на y = 32, то есть в самом низу клетки 32..39: при шаге
-        // восемь его гладь уезжала на семь блоков вверх и вставала
-        // над берегом отдельными плитами.
-        //
-        // Если вода занимает верхний слой клетки, поднимать нечего —
-        // берём как есть. Иначе смотрим на слой под клеткой: когда
-        // вода есть и там, гладь удержит нижняя клетка, и эту можно
-        // отдать пустоте — поверхность окажется ниже настоящей на
-        // блок, а не выше на семь. А вот если внизу дно, то отдавать
-        // нельзя: мелкий пруд пропал бы целиком.
-        if (topClearY == step - 1) return topClear;
-        i32 belowClear = 0;
-        for (i32 z = 0; z < step; ++z)
-            for (i32 x = 0; x < step; ++x) {
-                const u16 v = sampleVoxel(c, nb, bx + x, by - 1, bz + z);
-                if (v == UNKNOWN || v == AIR) continue;
-                if (isSeeThrough(reg.get(v))) ++belowClear;
-            }
-        if (belowClear * 4 < total * 3) return topClear;
-        return topOpaque;
-    }
-    // Прозрачного не хватило на клетку — и подменять им сушу нельзя,
-    // и выдумывать его над пустотой тоже.
-    return topOpaque;
-}
-
-void buildCoarse(const BlockRegistry& reg, const Chunk& c,
-                 const ChunkNeighbors& nb, i32 step,
-                 std::vector<u16>& out, i32& cw, i32& ch, i32& cd)
-{
-    const i32 dx = CHUNK_SIZE / step, dy = CHUNK_SIZE_Y / step, dz = CHUNK_SIZE / step;
-    cw = dx + 2; ch = dy + 2; cd = dz + 2;
-    out.assign((usize)cw * ch * cd, (u16)AIR);
-    for (i32 cy = -1; cy <= dy; ++cy)
-        for (i32 cz = -1; cz <= dz; ++cz)
-            for (i32 cx = -1; cx <= dx; ++cx)
-                out[((usize)(cy + 1) * cd + (cz + 1)) * cw + (cx + 1)] =
-                    collapseCell(reg, c, nb, cx, cy, cz, step);
-}
 
 // Высота верхней непрозрачной клетки в колонке, -1 если колонка
 // пуста. Считается один раз на чанк, с рамкой в одну клетку, чтобы
@@ -329,28 +187,19 @@ u8 faceAo(const MeshVolume& vol, const BlockRegistry& reg,
 
 // ============================================================
 // Greedy Meshing по 3 осям x 6 граней x слоям.
-// Всё внутри — в координатах КЛЕТОК выбранного уровня детализации;
-// в блоки они переводятся один раз, при записи квада.
 // ============================================================
 template<typename QuadContainer>
 u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
-                        QuadContainer& outQuads, Lod lod)
+                        QuadContainer& outQuads)
 {
     outQuads.clear();
-    const i32 step = 1 << (u8)lod;   // вокселей в клетке: 1, 2, 4, 8
 
-    static thread_local std::vector<u16> coarse;
     MeshVolume vol;
     vol.chunk = &chunk;
     vol.nb    = &nb;
-    vol.step  = step;
-    vol.dimX  = CHUNK_SIZE   / step;
-    vol.dimY  = CHUNK_SIZE_Y / step;
-    vol.dimZ  = CHUNK_SIZE   / step;
-    if (step > 1) {
-        buildCoarse(blocks(), chunk, nb, step, coarse, vol.cw, vol.ch, vol.cd);
-        vol.coarse = &coarse;
-    }
+    vol.dimX  = CHUNK_SIZE;
+    vol.dimY  = CHUNK_SIZE_Y;
+    vol.dimZ  = CHUNK_SIZE;
 
     // Маска плоскости слоя. Раньше она была фиксированной 256x256 и
     // обнулялась целиком на каждый слой: 384 слоя x 192 КБ давали
@@ -373,22 +222,6 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
     static thread_local SkyMap skyMap;
     auto& reg = blocks();
     buildTopSolid(vol, reg, skyMap);
-
-    // Заполнена ли клетка НАСТОЯЩИМИ вокселями целиком. Нужно только
-    // для стыков: см. юбку ниже. Выход по первому же пустому вокселю,
-    // поэтому у поверхности проверка обрывается сразу.
-    auto cellFullySolid = [&](const i32 c[3]) {
-        const i32 bx = c[0] * step, by = c[1] * step, bz = c[2] * step;
-        for (i32 y = 0; y < step; ++y)
-            for (i32 z = 0; z < step; ++z)
-                for (i32 x = 0; x < step; ++x) {
-                    const u16 v = sampleVoxel(chunk, nb, bx + x, by + y, bz + z);
-                    if (v == UNKNOWN) return true;   // не знаем — не трогаем стык
-                    if (v == AIR) return false;
-                    if (reg.get(v).isTransparent) return false;
-                }
-        return true;
-    };
 
     for (u8 face = 0; face < 6; ++face) {
         const FaceAxes ax = FACES[face];
@@ -448,44 +281,6 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                         else if (face != 2 && face != 3 && neighbor == AIR) shouldEmit = true;
                     }
 
-                    // ---- Юбка на стыке уровней детализации ----
-                    //
-                    // Соседний чанк может быть смеширован МЕЛЬЧЕ. Свои
-                    // граничные грани этот чанк решает, огрубляя соседа
-                    // СВОИМ шагом: клетка соседа считается занятой, если
-                    // в ней есть хоть один воксель, и стена строится
-                    // только ВЫШЕ этой клетки. А сосед, огрубляя себя
-                    // своим — более мелким — шагом, ставит поверхность
-                    // НИЖЕ, внутри той же клетки. Между ними остаётся
-                    // щель во всю длину стыка, и сквозь неё видно небо.
-                    //
-                    // Замер по настоящему рельефу: при одинаковых
-                    // уровнях щелей нет вовсе, при разных открыто от 80
-                    // до 92 процентов стыка, до тринадцати блоков
-                    // высотой. Меняется уровень — меняется рисунок
-                    // щелей, и это то самое мигание рельефа вдали.
-                    //
-                    // Юбка — одна лишняя грань на колонку стыка, ровно
-                    // в той клетке, на которой обрывается сосед. Щель по
-                    // построению лежит внутри неё: сосед занимает эту
-                    // клетку хотя бы одним вокселем, значит его
-                    // собственная поверхность выше её низа и не выше её
-                    // верха. При совпадающих уровнях сосед заполняет
-                    // клетку целиком и юбка оказывается внутри него —
-                    // невидимой.
-                    if (!shouldEmit && step > 1 && ax.w != 1 &&
-                        cd.isSolid && !cd.isTransparent) {
-                        const bool outerSlice = (ax.sign > 0) ? (slice == dimW - 1)
-                                                              : (slice == 0);
-                        // Клетка соседа считается занятой, если в ней
-                        // есть хоть один воксель, — но НЕ заполненной
-                        // целиком. Сосед помельче поставит внутри неё
-                        // свою поверхность где угодно, и всё, что ниже,
-                        // окажется дырой. Заполнена целиком — дыре
-                        // взяться неоткуда ни при каком уровне.
-                        if (outerSlice && !cellFullySolid(n)) shouldEmit = true;
-                    }
-
                     if (shouldEmit) {
                         const usize k = (usize)iu * strideU + iv;
                         mask[k]    = cur;
@@ -530,13 +325,13 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
 
                     // Из клеток в блоки — ровно здесь и один раз.
                     glm::vec3 org(0.f);
-                    org[ax.u] = (f32)(iu * step);
-                    org[ax.v] = (f32)(iv * step);
-                    org[ax.w] = (f32)((slice + (ax.sign > 0 ? 1 : 0)) * step);
+                    org[ax.u] = (f32)iu;
+                    org[ax.v] = (f32)iv;
+                    org[ax.w] = (f32)(slice + (ax.sign > 0 ? 1 : 0));
                     q.v0.pos = org;
 
-                    q.du = glm::vec3(0.f); q.du[ax.u] = (f32)(wU * step);
-                    q.dv = glm::vec3(0.f); q.dv[ax.v] = (f32)(wV * step);
+                    q.du = glm::vec3(0.f); q.du[ax.u] = (f32)wU;
+                    q.dv = glm::vec3(0.f); q.dv[ax.v] = (f32)wV;
 
                     q.ao[0] = (u8)( ao       & 3);
                     q.ao[1] = (u8)((ao >> 2) & 3);
@@ -567,13 +362,13 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
 // Явные инстанциации: обычный vector для тестов и инструментов,
 // pmr-вариант для задачи меширования поверх арены воркера.
 u32 buildGreedyMesh(const Chunk& chunk, const ChunkNeighbors& nb,
-                    std::vector<Quad>& outQuads, Lod lod) {
-    return buildGreedyMeshInto(chunk, nb, outQuads, lod);
+                    std::vector<Quad>& outQuads) {
+    return buildGreedyMeshInto(chunk, nb, outQuads);
 }
 
 u32 buildGreedyMesh(const Chunk& chunk, const ChunkNeighbors& nb,
-                    std::pmr::vector<Quad>& outQuads, Lod lod) {
-    return buildGreedyMeshInto(chunk, nb, outQuads, lod);
+                    std::pmr::vector<Quad>& outQuads) {
+    return buildGreedyMeshInto(chunk, nb, outQuads);
 }
 
 } // namespace world

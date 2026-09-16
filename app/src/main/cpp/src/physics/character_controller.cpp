@@ -53,11 +53,21 @@ bool CharacterController::tryStepUp(world::ChunkManager& world,
     auto& reg = world::blocks();
     world::VoxelReader rd(world);
 
-    // Проверяем несколько высот от 0.2 до stepHeight.
-    constexpr int STEPS = 6;
-    for (int s = 1; s <= STEPS; ++s) {
-        f32 h = (f32)s / (f32)STEPS * stepHeight;
+    // Цель подъёма — ВЕРХ СЛЕДУЮЩЕГО БЛОКА, а не доля от stepHeight.
+    //
+    // Мир воксельный: любая ступень ровно в один блок высотой. Прежний
+    // перебор шести дробных высот до 0.60 не мог дать ровно 1.0 ни на
+    // одной итерации, поэтому подъём не срабатывал НИКОГДА — а то, что
+    // выглядело как автоподъём, было ошибкой разрешения коллизий,
+    // закидывавшей игрока на ступень целиком (см. collision.cpp).
+    //
+    // Вдобавок проверка опоры смотрит на блок под ступнями как
+    // floor(y - 0.05): она верна только тогда, когда ступни встают
+    // ровно на границу блока. Дробная высота её и ломала.
+    {
+        const f32 h = std::floor(state_.position.y) + 1.f - state_.position.y;
         glm::vec3 testPos = state_.position + glm::vec3(0, h, 0);
+        if (h <= 0.01f || h > stepHeight) return false;
 
         // Тело на новой высоте должно помещаться.
         glm::vec3 bmin = box.min(testPos);
@@ -82,7 +92,7 @@ bool CharacterController::tryStepUp(world::ChunkManager& world,
                 }
             }
         }
-        if (blocked) continue;
+        if (blocked) return false;
 
         // Проверяем, что под игроком есть опора (верх блока).
         i32 fy = (i32)std::floor(testPos.y - 0.05f);
@@ -101,7 +111,7 @@ bool CharacterController::tryStepUp(world::ChunkManager& world,
                 }
             }
         }
-        if (!groundBelow) continue;
+        if (!groundBelow) return false;
 
         // Проверяем, что по направлению движения есть куда двигаться
         // (свободное место не меньше размеров AABB).
@@ -127,12 +137,17 @@ bool CharacterController::tryStepUp(world::ChunkManager& world,
                 }
             }
         }
-        if (aheadBlocked) continue;
+        if (aheadBlocked) return false;
 
-        // Успех: поднимаем игрока.
-        state_.position.y += h;
-        state_.onGround = true;
-        state_.velocity.y = 0.f;
+        // Успех: НАЗНАЧАЕМ подъём, а не совершаем его.
+        //
+        // Здесь стояло `state_.position.y += h` — мгновенная
+        // перестановка на полметра вверх. Физически верно, на глаз —
+        // телепортация. Теперь запоминаем цель, а поднимает игрока
+        // обычное движение, кадр за кадром, с ограниченной скоростью.
+        state_.stepping   = true;
+        state_.stepTargetY = state_.position.y + h;
+        state_.stepTimer   = 0.f;
         return true;
     }
 
@@ -241,8 +256,28 @@ void CharacterController::update(world::ChunkManager& world,
         state_.onGround = false;
     }
 
+    // --- Подъём на ступень ---
+    //
+    // Пока он идёт, гравитации нет и игрок считается стоящим: он не
+    // прыгнул и не падает, он взбирается. Иначе на эти три кадра поза
+    // переключалась бы в прыжок.
+    if (state_.stepping) {
+        state_.stepTimer += dt;
+        const bool reached = state_.position.y >= state_.stepTargetY - 1e-3f;
+        if (reached || state_.stepTimer > stepMaxTime || state_.inWater) {
+            state_.stepping = false;
+            if (reached) state_.velocity.y = 0.f;
+        } else {
+            state_.velocity.y = stepClimbSpeed;
+            state_.onGround = true;
+        }
+    }
+
+    // Прыжок отменяет подъём: игрок решил иначе.
+    if (state_.velocity.y > stepClimbSpeed + 1e-3f) state_.stepping = false;
+
     // --- Гравитация ---
-    if (!state_.inWater) {
+    if (!state_.inWater && !state_.stepping) {
         state_.velocity.y += gravity * dt;
         if (state_.velocity.y < maxFallSpeed) state_.velocity.y = maxFallSpeed;
     }
@@ -263,7 +298,14 @@ void CharacterController::update(world::ChunkManager& world,
     // Если игрок упёрся по X или Z и был на земле — попробуем
     // подняться на низкое препятствие.
     // ============================================================
-    if (enableStepUp && wasOnGround && (flags.hitX || flags.hitZ) && !flags.onGround) {
+    // Условие `!flags.onGround` отсюда убрано.
+    //
+    // При ходьбе по земле оно истинно НИКОГДА: гравитация каждый кадр
+    // тянет вниз, разрешение по Y ставит игрока на пол и выставляет
+    // onGround. То есть подъём на ступень не пробовали вовсе — вместе
+    // с недостижимой высотой 0.60 это и делало механизм мёртвым.
+    if (enableStepUp && wasOnGround && (flags.hitX || flags.hitZ) &&
+        !state_.stepping) {
         // Сначала откатим позицию назад на смещение по X/Z.
         // Простейший способ: запомним позицию до движения и попробуем
         // step-up из неё.
@@ -279,17 +321,11 @@ void CharacterController::update(world::ChunkManager& world,
 
         // Пробуем step-up только если есть намерение движения по X/Z.
         if (glm::length(moveIntent) > 1e-4f) {
-            if (tryStepUp(world, moveIntent)) {
-                // Очищаем блокирующие скорости.
-                if (flags.hitX) state_.velocity.x = 0;
-                if (flags.hitZ) state_.velocity.z = 0;
-                // После подъёма — двигаем по XZ ещё раз без коллизий по стенам.
-                glm::vec3 step = glm::vec3(state_.velocity.x, 0.f, state_.velocity.z) * dt;
-                if (glm::length(step) > 1e-4f) {
-                    glm::vec3 tmpDelta = step;
-                    resolveMovement(world, state_.position, tmpDelta, box);
-                }
-            }
+            // Подъём только НАЗНАЧАЕТСЯ: игрок поднимется за
+            // несколько кадров. Досылать его вперёд прямо сейчас
+            // нечем — он ещё стоит перед ступенью, и лишний рывок
+            // вогнал бы его в неё.
+            tryStepUp(world, moveIntent);
         }
     }
 
@@ -298,6 +334,11 @@ void CharacterController::update(world::ChunkManager& world,
 
     if (flags.hitX) state_.velocity.x = 0;
     if (flags.hitY) state_.velocity.y = 0;
+    // Подъём отменяет УДАР ГОЛОВОЙ, а не любое касание по вертикали:
+    // hitY истинно при каждой посадке на землю, то есть каждый кадр
+    // ходьбы, — и подъём сбрасывался в том же кадре, в котором его
+    // назначили.
+    if (flags.onCeiling) state_.stepping = false;
     if (flags.hitZ) state_.velocity.z = 0;
 
     // ============================================================

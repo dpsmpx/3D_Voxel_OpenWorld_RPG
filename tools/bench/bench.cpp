@@ -174,16 +174,9 @@ int main(int argc, char** argv) {
     // ---- Меширование ----
     std::printf("\nмеширование и вершины\n");
     std::vector<world::Quad> quads;
-    const world::Lod lods[4] = { world::Lod::Full, world::Lod::Half,
-                                 world::Lod::Quarter, world::Lod::Eighth };
-    const char* lodNames[4] = { "жадный меш, уровень 0 (полный)",
-                                "жадный меш, уровень 1",
-                                "жадный меш, уровень 2",
-                                "жадный меш, уровень 3 (грубый)" };
-    for (int l = 0; l < 4; ++l)
-        bench(lodNames[l], [&] { world::buildGreedyMesh(*center, nb, quads, lods[l]); });
+    bench("жадный меш чанка", [&] { world::buildGreedyMesh(*center, nb, quads); });
 
-    world::buildGreedyMesh(*center, nb, quads, world::Lod::Full);
+    world::buildGreedyMesh(*center, nb, quads);
     std::vector<render::VoxelVertex> verts;
     std::vector<u32> idx;
     u32 opaque = 0;

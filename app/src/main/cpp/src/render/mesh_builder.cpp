@@ -1,6 +1,6 @@
 /**
  * @file mesh_builder.cpp
- * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ * @brief Рендер: меширование чанков, отсечение, инстансинг, камера.
  */
 #include "mesh_builder.h"
 #include "../world/block.h"
@@ -82,12 +82,12 @@ void buildChunkVertices(const world::Chunk& chunk,
                         std::vector<VoxelVertex>& outVerts,
                         std::vector<u32>& outIndices,
                         u32& outOpaqueIndices,
-                        glm::vec3* outBlendCenter,
-                        u8 lod)
+                        glm::vec3* outBlendCenter)
 {
     (void)chunk;   // позиции локальные: смещение чанка добавляет шейдер
-    // Прозрачность живёт на двух ближних уровнях. См. заголовок.
-    const bool blendAllowed = (lod < 2);
+    // Прозрачное смешивается всегда: уровней детализации, на дальних
+    // из которых вода рисовалась непрозрачной, больше нет.
+    constexpr bool blendAllowed = true;
     if (outBlendCenter) *outBlendCenter = glm::vec3(0.f);
     outVerts.clear();
     outIndices.clear();

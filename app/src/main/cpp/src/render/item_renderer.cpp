@@ -1,6 +1,6 @@
 /**
  * @file item_renderer.cpp
- * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ * @brief Рендер: меширование чанков, отсечение, инстансинг, камера.
  */
 #include "item_renderer.h"
 #include "../items/item_pickup.h"

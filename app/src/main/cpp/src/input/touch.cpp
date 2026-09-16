@@ -258,6 +258,18 @@ void TouchInput::beginTouch(i32 id, f32 x, f32 y, f32 t) {
         joystick_.touchId = id;
         joystick_.center  = {x, y};
         joystick_.current = {x, y};
+
+        // Второе нажатие двойного включает бег — и держит его, пока
+        // палец на экране. Засчитывается, только если оно пришло
+        // быстро и рядом с тем местом, где кончился короткий тап:
+        // иначе бег включался бы при любом повторном заходе пальца.
+        const bool soon = (t - lastTapTime_) < VirtualJoystick::DOUBLE_TAP_TIME;
+        const bool near_ =
+            glm::length(glm::vec2(x, y) - lastTapPos_) < joystick_.radius;
+        joystick_.sprint = soon && near_;
+
+        joyPressTime_ = t;
+        joyPressPos_  = {x, y};
     }
 }
 
@@ -339,8 +351,23 @@ void TouchInput::endTouch(i32 id, f32 x, f32 y, f32 t) {
         if (uiRouter_) uiRouter_(id, x, y, 1);
     } else {
         if (joystick_.active && joystick_.touchId == id) {
+            // Коротким тапом считается только быстрое касание почти
+            // без ведения. Ведение — это ходьба, и засчитывать его за
+            // первую половину двойного нажатия нельзя: иначе игрок,
+            // отпустив джойстик и снова взявшись, каждый раз убегал бы.
+            const f32 held  = t - joyPressTime_;
+            const f32 moved = glm::length(glm::vec2(x, y) - joyPressPos_);
+            if (held < VirtualJoystick::TAP_MAX_TIME &&
+                moved < joystick_.radius * 0.5f) {
+                lastTapTime_ = t;
+                lastTapPos_  = {x, y};
+            } else {
+                lastTapTime_ = -100.f;
+            }
+
             joystick_.active  = false;
             joystick_.touchId = -1;
+            joystick_.sprint  = false;
         }
         for (auto& b : buttons_) {
             if (b.pressed && b.touchId == id) {

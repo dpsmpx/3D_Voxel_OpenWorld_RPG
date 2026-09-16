@@ -43,7 +43,9 @@ inline constexpr PadDef PAD_BUTTONS[] = {
     { PadAnchor::BottomRight, 150.f, 150.f, 84.f, "ATK" },
     { PadAnchor::BottomRight, 140.f, 236.f, 52.f, "FIN" },
     { PadAnchor::BottomRight, 238.f, 104.f, 60.f, "JMP" },
-    { PadAnchor::BottomLeft,   62.f, 150.f, 64.f, "RUN" },
+    // Здесь была RUN, 64 dp на левой половине. Бег переехал на
+    // двойное нажатие джойстика, и место освободилось — левая
+    // половина экрана и так тесная.
     { PadAnchor::BottomRight, 252.f, 192.f, 52.f, "DIG" },
     { PadAnchor::BottomLeft,   56.f, 226.f, 52.f, "PUT" },
     { PadAnchor::BottomLeft,  150.f, 196.f, 52.f, "USE" },

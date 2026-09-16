@@ -1,6 +1,6 @@
 /**
  * @file npc_renderer.cpp
- * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ * @brief Рендер: меширование чанков, отсечение, инстансинг, камера.
  */
 #include "npc_renderer.h"
 #include "../npc/npc_def.h"

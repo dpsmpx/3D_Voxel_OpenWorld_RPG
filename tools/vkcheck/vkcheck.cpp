@@ -26,7 +26,6 @@
 #include "world/debug_scene.h"
 #include "render/instanced_renderer.h"
 #include "world/chunk.h"
-#include "world/lod.h"
 #include "world/block.h"
 #include "world/terrain.h"
 #include "world/features.h"
@@ -121,7 +120,6 @@ int main(int argc, char** argv) {
     int   W = 900, H = 560;
     u64   seed = 12648430;
     float px = 33.6f, pz = -2.7f, height = 5.f, yaw = 1.2f, pitch = -0.10f;
-    int   lod = 0;
     int   viewDist = 7;          // чанков, как в настройках игры
     int   debugMode = -1;
     const char* cull = "";
@@ -159,10 +157,6 @@ int main(int argc, char** argv) {
         else if (a == "--height") { height = (float)atof(next()); camGiven = true; }
         else if (a == "--yaw")    { yaw = (float)atof(next()); camGiven = true; }
         else if (a == "--pitch")  { pitch = (float)atof(next()); camGiven = true; }
-        else if (a == "--lod") {
-            const std::string v = next();
-            lod = (v == "auto") ? -1 : atoi(v.c_str());   // auto — по расстоянию
-        }
         else if (a == "--viewdist") viewDist = atoi(next());
         else if (a == "--out")    out = next();
         else if (a == "--assets") g_assetRoot = std::string(next()) + "/";
@@ -355,23 +349,8 @@ int main(int argc, char** argv) {
     // ---- мир: тот же генератор и тот же мешер ----
     world::blocks();
     world::TerrainGenerator gen(seed);
-    // Радиус в чанках — как дальность прорисовки в игре. Раньше стояло
-    // жёсткое 4: до огрублённых уровней (LOD 2 начинается со 140
-    // блоков, LOD 3 — с 202) проверка попросту не доставала, а игра
-    // рисует их десятками.
+    // Радиус в чанках — как дальность прорисовки в игре.
     const int R = viewDist;
-    // Границы LOD — те же, что ставит ChunkRenderer::setViewDistanceBlocks
-    // при дальности прорисовки viewDist чанков. Раньше инструмент
-    // строил ВСЕ чанки на одном уровне, а игра мешает уровни в одном
-    // кадре — и ровно на стыках уровней её картинка отличалась от
-    // проверочной.
-    // Формула не повторяется здесь заново: копия уже однажды разошлась
-    // с игрой (0.62 против 0.60, 0.90 против 0.98) и молча меняла
-    // картинку проверки. Берём ту же world::LodBands, что и рендер.
-    const f32 vdBlocks = (f32)viewDist * (f32)world::CHUNK_SIZE;
-    world::LodBands bands;
-    bands.fromViewDistance(vdBlocks);
-    const f32 lodB0 = bands.lod0, lodB1 = bands.lod1, lodB2 = bands.lod2;
     struct Mesh { vk::Buffer vb, ib; u32 opaque = 0, total = 0; glm::vec3 origin{0}; };
     std::vector<Mesh> meshes;
     std::vector<std::shared_ptr<world::Chunk>> chunks;
@@ -402,7 +381,6 @@ int main(int argc, char** argv) {
     usize totalQuads = 0;
     // Статистика по ВСЕМ чанкам: то, что реально уходит на GPU.
     usize aoHist[4] = {}, skyHist[8] = {}, faceHist[8] = {}, vertTotal = 0;
-    usize lodUsed[4] = {};
     usize bySky[6][8] = {};
     std::map<u32, usize> colorHist;
     for (auto& c : chunks) {
@@ -411,20 +389,9 @@ int main(int argc, char** argv) {
         nb.px = findChunk(c->coord.x + 1, c->coord.z);
         nb.nz = findChunk(c->coord.x, c->coord.z - 1);
         nb.pz = findChunk(c->coord.x, c->coord.z + 1);
-        // Уровень детализации этого чанка. При lod < 0 он выбирается
-        // по расстоянию — ровно как в ChunkRenderer::render, включая
-        // то, что центр чанка берётся по всей его высоте.
-        i32 useLod = lod;
-        if (lod < 0) {
-            const f32 ey = (f32)gen.surfaceHeight((i32)px, (i32)pz) + height;
-            useLod = (i32)world::lodForChunk(c->coord.x, c->coord.z,
-                                             glm::vec3(px, ey, pz), bands);
-        }
-        lodUsed[useLod & 3]++;
-        world::buildGreedyMesh(*c, nb, quads, (world::Lod)useLod);
+        world::buildGreedyMesh(*c, nb, quads);
         u32 opaque = 0;
-        render::buildChunkVertices(*c, quads, verts, idx, opaque,
-                                   nullptr, (u8)(useLod & 3));
+        render::buildChunkVertices(*c, quads, verts, idx, opaque);
         totalQuads += quads.size();
         for (const auto& v : verts) {
             ++aoHist[(v.packed >> 23) & 3u];
@@ -449,11 +416,8 @@ int main(int argc, char** argv) {
         m.ib.write(idx.data(), idx.size() * sizeof(u32));
         meshes.push_back(std::move(m));
     }
-    std::printf("vkcheck: чанков %zu, квадов %zu, мешей %zu, уровень %d\n",
-                chunks.size(), totalQuads, meshes.size(), lod);
-    std::printf("  чанков по уровням: 0:%zu 1:%zu 2:%zu 3:%zu (границы %.0f/%.0f/%.0f)\n",
-                lodUsed[0], lodUsed[1], lodUsed[2], lodUsed[3],
-                (double)lodB0, (double)lodB1, (double)lodB2);
+    std::printf("vkcheck: чанков %zu, квадов %zu, мешей %zu\n",
+                chunks.size(), totalQuads, meshes.size());
     {
         std::printf("  вершин всего %zu\n", vertTotal);
         std::printf("  AO   :"); for (int i = 0; i < 4; ++i) std::printf(" %zu", aoHist[i]);
@@ -654,7 +618,7 @@ int main(int argc, char** argv) {
             nb.px = findChunk(c->coord.x + 1, c->coord.z);
             nb.nz = findChunk(c->coord.x, c->coord.z - 1);
             nb.pz = findChunk(c->coord.x, c->coord.z + 1);
-            world::buildGreedyMesh(*c, nb, q2, (world::Lod)lod);
+            world::buildGreedyMesh(*c, nb, q2);
             render::buildChunkVertices(*c, q2, v2, i2, op2);
             const glm::vec3 org{ (float)c->coord.x * world::CHUNK_SIZE, 0.f,
                                  (float)c->coord.z * world::CHUNK_SIZE };
@@ -693,7 +657,7 @@ int main(int argc, char** argv) {
                 nb0.px = findChunk(c->coord.x + 1, c->coord.z);
                 nb0.nz = findChunk(c->coord.x, c->coord.z - 1);
                 nb0.pz = findChunk(c->coord.x, c->coord.z + 1);
-                world::buildGreedyMesh(*c, nb0, q2, (world::Lod)lod);
+                world::buildGreedyMesh(*c, nb0, q2);
                 render::buildChunkVertices(*c, q2, v2, i2, op2);
                 if (i2.empty()) continue;
                 const glm::vec3 org{ (float)c->coord.x * world::CHUNK_SIZE, 0.f,

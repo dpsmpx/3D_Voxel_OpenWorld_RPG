@@ -1,6 +1,6 @@
 /**
  * @file block_outline.cpp
- * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ * @brief Рендер: меширование чанков, отсечение, инстансинг, камера.
  */
 #include "block_outline.h"
 #include "../core/log.h"

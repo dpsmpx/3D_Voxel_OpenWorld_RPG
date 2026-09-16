@@ -5,7 +5,7 @@
 # Vulkan (lavapipe) в память, слой проверки включён.
 #
 #   ./tools/vkcheck/run.sh
-#   ./tools/vkcheck/run.sh --lod 2 --pos 52.8 1.1 --out /tmp/a.ppm
+#   ./tools/vkcheck/run.sh --pos 52.8 1.1 --out /tmp/a.ppm
 # ============================================================
 set -eu
 
