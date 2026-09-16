@@ -438,6 +438,39 @@ std::vector<ChunkCoord> ChunkManager::collectUnloadCandidates(const glm::vec3& p
     return out;
 }
 
+std::vector<ChunkCoord> ChunkManager::collectOverBudget(
+    const glm::vec3& playerPos) const
+{
+    std::vector<ChunkCoord> out;
+    const usize cap = chunkCapacity();
+
+    // Кандидаты собираем вместе с расстоянием: выгонять надо самых
+    // дальних, а не первых попавшихся в хэш-таблице.
+    struct Far { ChunkCoord coord; i64 d2; };
+    std::vector<Far> far;
+    {
+        std::shared_lock lk(chunksMtx_);
+        if (chunks_.size() <= cap) return out;
+        const i32 pcx = (i32)std::floor(playerPos.x / (f32)CHUNK_SIZE);
+        const i32 pcz = (i32)std::floor(playerPos.z / (f32)CHUNK_SIZE);
+        far.reserve(chunks_.size());
+        for (const auto& [coord, chunk] : chunks_) {
+            const i64 dx = coord.x - pcx;
+            const i64 dz = coord.z - pcz;
+            far.push_back({ coord, dx * dx + dz * dz });
+        }
+    }
+
+    const usize excess = far.size() - cap;
+    // Нужны только `excess` самых дальних — полная сортировка всей
+    // карты ради них не нужна.
+    std::nth_element(far.begin(), far.begin() + (long)excess, far.end(),
+                     [](const Far& a, const Far& b) { return a.d2 > b.d2; });
+    out.reserve(excess);
+    for (usize i = 0; i < excess; ++i) out.push_back(far[i].coord);
+    return out;
+}
+
 void ChunkManager::removeChunks(const std::vector<ChunkCoord>& coords) {
     std::vector<std::shared_ptr<Chunk>> doomed;
     doomed.reserve(coords.size());

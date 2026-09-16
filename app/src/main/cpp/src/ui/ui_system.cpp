@@ -271,34 +271,44 @@ void UiSystem::drawDragOverlay() {
 // HUD
 // ============================================================
 // ============================================================
-// Экран загрузки: затемнение и полоса прогресса поверх HUD.
-// Показывается, пока мир вокруг игрока не догенерировался.
+// Подгрузка мира: плашка, а не занавес.
+//
+// Здесь стояла заливка во весь экран поверх сцены. Мир к этому моменту
+// уже нарисован и уже играбелен: чанки грузятся вокруг игрока, ближние
+// готовы первыми, и дальше круг просто растёт. Гасить ради полосы
+// прогресса всю картинку — значит прятать от игрока ровно то, ради
+// чего он ждёт, да ещё и создавать впечатление, что игра не началась.
+//
+// Осталась плашка сверху по центру: подпись, полоса, проценты.
 // ============================================================
 void UiSystem::drawLoadingOverlay() {
-    const float w = (float)screenW_;
-    const float h = (float)screenH_;
+    const Rect r = layout_.loadingPanel();
+    const f32 pad = layout_.dp(theme::SPACE_S_DP);
 
-    // Затемняем сцену, чтобы недостроенный мир не отвлекал.
-    ui_.rect(0.f, 0.f, w, h, rgba(8, 12, 18, 190));
-
-    const float barW = w * 0.44f;
-    const float barH = 14.f;
-    const float bx = (w - barW) * 0.5f;
-    const float by = h * 0.62f;
+    ui_.rect(r.x, r.y, r.w, r.h, hudTint(theme::Panel));
+    ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
+                    hudTint(theme::Stroke));
 
     const char* label = loadLabel ? loadLabel : T(StrKey::Notif_Loading);
-    ui_.text(label, bx, by - 30.f, 1.2f, COL_WHITE);
+    ui_.text(label, r.x + pad, r.y + pad, theme::TEXT_LABEL,
+             theme::TextPrimary);
 
-    ui_.rect(bx - 2.f, by - 2.f, barW + 4.f, barH + 4.f, rgba(40, 48, 58, 255));
-    ui_.rect(bx, by, barW, barH, rgba(20, 24, 30, 255));
-
-    const float p = loadProgress < 0.f ? 0.f : (loadProgress > 1.f ? 1.f : loadProgress);
-    if (p > 0.f)
-        ui_.rect(bx, by, barW * p, barH, rgba(110, 190, 130, 255));
+    const f32 p = loadProgress < 0.f ? 0.f
+                : (loadProgress > 1.f ? 1.f : loadProgress);
 
     char pct[8];
     std::snprintf(pct, sizeof(pct), "%d%%", (int)(p * 100.f + 0.5f));
-    ui_.text(pct, bx + barW + 14.f, by - 2.f, 1.0f, rgba(200, 210, 220, 255));
+    const f32 pw = ui_.textWidth(pct, theme::TEXT_LABEL);
+    ui_.text(pct, r.x + r.w - pad - pw, r.y + pad, theme::TEXT_LABEL,
+             theme::TextSecondary);
+
+    // Полоса под подписью, во всю ширину плашки за вычетом полей.
+    const f32 barH = layout_.dp(theme::SPACE_S_DP);
+    const f32 barY = r.y + r.h - pad - barH;
+    const f32 barW = r.w - pad * 2.f;
+    ui_.rect(r.x + pad, barY, barW, barH, hudTint(theme::Ink));
+    if (p > 0.f)
+        ui_.rect(r.x + pad, barY, barW * p, barH, hudTint(theme::Success));
 }
 
 void UiSystem::drawHud(vk::Context& /*ctx*/,

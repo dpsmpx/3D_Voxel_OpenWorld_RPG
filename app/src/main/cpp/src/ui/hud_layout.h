@@ -117,6 +117,26 @@ public:
                       right() - left(), dp(XP_BAR_H_DP) });
     }
 
+    // ---- плашка подгрузки: сверху по центру ----
+    //
+    // Раньше на время генерации мира весь экран затемнялся плотной
+    // заливкой. Мир при этом уже нарисован и уже играбелен: чанки
+    // подгружаются вокруг игрока, ближние готовы первыми. Гасить всё
+    // ради полосы прогресса — значит прятать от игрока ровно то, ради
+    // чего он ждёт.
+    //
+    // Верх по центру свободен: слева полосы ресурсов, справа столбец
+    // навигации, а между ними ничего нет.
+    Rect loadingPanel() const {
+        const f32 wdt = dp(LOADING_W_DP);
+        const f32 hgt = dp(LOADING_H_DP);
+        const Rect xb = xpBar();
+        // По центру рабочей области; зеркалить не нужно — центр
+        // симметричен, и flip оставил бы плашку на месте.
+        return { left() + (right() - left() - wdt) * 0.5f,
+                 xb.y + xb.h + dp(theme::SPACE_M_DP), wdt, hgt };
+    }
+
     // ---- полосы ресурсов: слева под опытом ----
     Rect resourceBar(u32 i) const {
         const f32 h = dp(RES_BAR_H_DP), gap = dp(theme::SPACE_XS_DP);
@@ -578,6 +598,9 @@ public:
 
     // ---- размеры в dp ----
     static constexpr f32 XP_BAR_H_DP  =   8.f;
+    /// Плашка подгрузки: полоса прогресса с подписью, сверху по центру.
+    static constexpr f32 LOADING_W_DP = 220.f;
+    static constexpr f32 LOADING_H_DP =  44.f;
     static constexpr f32 RES_BAR_H_DP =  14.f;
     static constexpr f32 RES_BAR_W_DP = 160.f;
     static constexpr f32 MINIMAP_DP   = 100.f;
