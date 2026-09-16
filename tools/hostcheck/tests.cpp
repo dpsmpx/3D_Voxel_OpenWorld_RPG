@@ -2663,6 +2663,105 @@ void testFailedUploadGoesBackToTheQueue() {
 //
 // Проверяется механизм, на который опирается обработчик: выгрузка
 // умеет работать по заданному радиусу, а не только по обычному кругу.
+
+// ------------------------------------------------------------
+// Мир не выходит за потолок памяти
+//
+// Сколько мегабайт занимает загруженный мир, раньше не спрашивал
+// никто: объём определялся ТОЛЬКО дальностью прорисовки. При
+// дальности 12 круг держит около 450 чанков — 115 МБ одних вокселей;
+// на планшете дальность больше, и предела не было вовсе. Система
+// узнаёт об этом раньше игры и сообщает единственным доступным ей
+// способом — APP_CMD_LOW_MEMORY, а следом снятием процесса.
+//
+// Теперь потолок есть, и мир держится под ним сам.
+// ------------------------------------------------------------
+void testWorldStaysWithinMemoryBudget() {
+    group("мир: потолок памяти соблюдается");
+
+    world::blocks();
+    if (!jobs::gJobs.running()) jobs::gJobs.start(2);
+
+    // Размер чанка считается от типа, а не записан числом.
+    const usize per = world::ChunkManager::CHUNK_BYTES;
+    char m[220];
+    std::snprintf(m, sizeof(m), "резидентный размер чанка: %zu КБ", per >> 10);
+    check(per > 200u * 1024u && per < 400u * 1024u, m);
+
+    std::snprintf(m, sizeof(m), "потолок по умолчанию: %zu МБ",
+                  world::ChunkManager::DEFAULT_MEMORY_BUDGET >> 20);
+    check(world::ChunkManager::DEFAULT_MEMORY_BUDGET == 512ull * 1024 * 1024, m);
+
+    {
+        world::ChunkManager mgr(0xB0DEULL, 8);
+        check(mgr.memoryBudget() == world::ChunkManager::DEFAULT_MEMORY_BUDGET,
+              "менеджер берёт потолок по умолчанию");
+        std::snprintf(m, sizeof(m), "в 512 МБ помещается чанков: %zu",
+                      mgr.chunkCapacity());
+        check(mgr.chunkCapacity() > 1500, m);
+    }
+
+    // Тесный потолок: круг заведомо больше того, что в него влезает.
+    {
+        const i32 VD = 6;
+        world::ChunkManager mgr(0xB0DEULL, VD);
+        const usize cap = 40;
+        mgr.setMemoryBudget(cap * per);
+        check(mgr.chunkCapacity() == cap, "потолок пересчитан в число чанков");
+
+        const glm::vec3 pos{ 0.f, 70.f, 0.f };
+        usize peak = 0;
+        for (int i = 0; i < 400; ++i) {
+            mgr.update(pos);
+            auto over = mgr.collectOverBudget(pos);
+            if (!over.empty()) mgr.removeChunks(over);
+            peak = std::max(peak, mgr.loadedChunks());
+        }
+
+        std::snprintf(m, sizeof(m),
+                      "круг без потолка держал бы больше: загружено %zu при вместимости %zu",
+                      mgr.loadedChunks(), cap);
+        check(mgr.loadedChunks() <= cap, m);
+        std::snprintf(m, sizeof(m), "за весь прогон не превысили потолок (пик %zu)", peak);
+        check(peak <= cap, m);
+        std::snprintf(m, sizeof(m), "занято %zu КБ при потолке %zu КБ",
+                      mgr.residentBytes() >> 10, mgr.memoryBudget() >> 10);
+        check(mgr.residentBytes() <= mgr.memoryBudget(), m);
+
+        // Выгоняются ДАЛЬНИЕ, а не случайные: под игроком мир обязан
+        // остаться, иначе он провалится сквозь него.
+        auto under = mgr.findChunk(0, 0);
+        check(under != nullptr, "чанк под игроком не выгружен");
+
+        // И то, что осталось, ближе того, что выгнали.
+        i32 worstKept = 0;
+        {
+            for (i32 dz = -VD - 2; dz <= VD + 2; ++dz)
+                for (i32 dx = -VD - 2; dx <= VD + 2; ++dx)
+                    if (mgr.findChunk(dx, dz))
+                        worstKept = std::max(worstKept, dx * dx + dz * dz);
+        }
+        // Всё оставшееся лежит в круге радиуса, который вмещает `cap`
+        // клеток: площадь круга радиуса r — pi*r^2.
+        const i32 limit = (i32)((f32)cap / 3.14159f) + 3;
+        std::snprintf(m, sizeof(m),
+                      "оставлены ближние: дальний из оставшихся на %d (предел %d)",
+                      worstKept, limit);
+        check(worstKept <= limit, m);
+    }
+
+    // Потолок выше круга ничего не выгоняет: он потолок, а не квота.
+    {
+        world::ChunkManager mgr(0xB0DEULL, 4);
+        for (int i = 0; i < 400; ++i) mgr.update({ 0.f, 70.f, 0.f });
+        const usize before = mgr.loadedChunks();
+        check(before > 20, "круг наполнен");
+        check(mgr.collectOverBudget({ 0.f, 70.f, 0.f }).empty(),
+              "при просторном потолке выгонять нечего");
+        check(mgr.loadedChunks() == before, "и ничего не выгнано");
+    }
+}
+
 // ------------------------------------------------------------
 void testUnloadAcceptsTighterRadius() {
     group("мир: выгрузку можно попросить о радиусе потеснее");
@@ -3903,6 +4002,74 @@ void testUiTapSurvivesRedraw() {
 //
 // Обе раскладки теперь лежат в заголовках (ui/hud_layout.h,
 // input/touch_layout.h), и их можно сверить, не собирая приложение.
+
+// ------------------------------------------------------------
+// Подгрузка мира не гасит экран
+//
+// На время генерации мира поверх всего лежала заливка
+// rgba(8,12,18,190) во весь экран — три четверти непрозрачности на
+// каждом пикселе. А мир к этому моменту уже нарисован и уже играбелен:
+// чанки грузятся вокруг игрока, ближние готовы первыми. Занавес прятал
+// ровно то, ради чего игрок ждёт, и создавал впечатление, что игра
+// ещё не началась.
+//
+// Проверяется и размер плашки, и то, что во весь экран больше ничего
+// не заливается.
+// ------------------------------------------------------------
+void testLoadingIsAPanelNotACurtain() {
+    group("подгрузка: плашка, а не занавес");
+
+    struct Size { f32 w, h; i32 dpi; const char* name; };
+    const Size sizes[] = {
+        { 2306.f, 1080.f, 400, "2306x1080 @400" },
+        { 1280.f,  720.f, 320, "1280x720 @320"  },
+        { 2560.f, 1600.f, 280, "2560x1600 @280" },
+        {  960.f,  540.f, 240, "960x540 @240"   },
+    };
+
+    for (const auto& sz : sizes) {
+        const ui::HudLayout L(sz.w, sz.h,
+                              ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                              ui::SafeInsets{}, false);
+        const ui::Rect r = L.loadingPanel();
+        const f32 share = (r.w * r.h) / (sz.w * sz.h);
+
+        char m[190];
+        std::snprintf(m, sizeof(m), "%s: плашка занимает %.1f%% экрана",
+                      sz.name, (double)(share * 100.f));
+        // Занавес занимал 100 %. Плашка обязана быть именно плашкой.
+        check(share < 0.10f, m);
+
+        std::snprintf(m, sizeof(m), "%s: плашка целиком на экране", sz.name);
+        check(r.x >= -0.5f && r.y >= -0.5f &&
+              r.x + r.w <= sz.w + 0.5f && r.y + r.h <= sz.h + 0.5f, m);
+
+        std::snprintf(m, sizeof(m), "%s: плашка не прилипла к краю", sz.name);
+        check(r.x > 1.f && r.y > 1.f, m);
+    }
+
+    // И в самом коде отрисовки нет заливки во весь экран.
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    if (src.empty()) {
+        check(true, "исходник не найден, проверка пропущена");
+        return;
+    }
+    const usize b = src.find("void UiSystem::drawLoadingOverlay()");
+    check(b != std::string::npos, "drawLoadingOverlay на месте");
+    if (b == std::string::npos) return;
+    const usize e = src.find("\n}\n", b);
+    check(e != std::string::npos, "конец drawLoadingOverlay найден");
+    if (e == std::string::npos) return;
+    const std::string body = src.substr(b, e - b);
+
+    // Заливка от нуля до полной ширины и высоты — это и есть занавес.
+    check(body.find("0.f, 0.f, w, h") == std::string::npos &&
+          body.find("0.f, 0.f, (float)screenW_") == std::string::npos,
+          "заливки во весь экран в отрисовке нет");
+    check(body.find("loadingPanel()") != std::string::npos,
+          "плашка берёт свой прямоугольник из раскладки");
+}
+
 // ------------------------------------------------------------
 void testHudAndButtonsDoNotOverlap() {
     group("раскладка: HUD и экранные кнопки не налезают");
@@ -3959,6 +4126,9 @@ void testHudAndButtonsDoNotOverlap() {
         for (u32 i = 0; i < ui::HudLayout::NAV_COUNT; ++i)
             rects.push_back({ "кнопка навигации", L.navButton(i) });
         rects.push_back({ "миникарта", L.minimap() });
+        // Плашка подгрузки живёт поверх обычного HUD, а не вместо
+        // него: пока мир достраивается, играть уже можно.
+        rects.push_back({ "плашка подгрузки", L.loadingPanel() });
         for (u32 i = 0; i < L.hotbarVisibleSlots(); ++i)
             rects.push_back({ "ячейка пояса", L.hotbarSlot(i) });
 
@@ -9765,6 +9935,7 @@ int main() {
     testChunkStreamingIsBudgeted();
     testSurfaceHeightCacheMatchesGenerator();
     testUnloadAcceptsTighterRadius();
+    testWorldStaysWithinMemoryBudget();
     testMeshQueueLosesNothing();
     testFailedUploadGoesBackToTheQueue();
     testFramePassOrder();
@@ -9775,6 +9946,7 @@ int main() {
     testWaterSortedByWaterCenter();
     testUiTapSurvivesRedraw();
     testHudAndButtonsDoNotOverlap();
+    testLoadingIsAPanelNotACurtain();
     testUiThemeObeysItsOwnRules();
     testUiThemeMatchesItsDocument();
     testInteractPromptUnlocksScreens();

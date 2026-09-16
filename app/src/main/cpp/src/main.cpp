@@ -1148,8 +1148,36 @@ struct Engine {
             unloadTimer += dt;
             if (unloadTimer >= 2.0f) {
                 unloadTimer = 0.f;
-                auto toUnload = world->collectUnloadCandidates(
-                    player->controller.state().position);
+                const glm::vec3 pp = player->controller.state().position;
+                auto toUnload = world->collectUnloadCandidates(pp);
+
+                // Сверх круга — ещё и потолок памяти. Круг считает
+                // чанки, потолок считает мегабайты, и второе система
+                // спрашивает строже: при дальности 12 круг держит под
+                // 450 чанков, это 115 МБ одних вокселей, а на планшете
+                // дальность больше и предела не было вовсе.
+                //
+                // Тем же путём, что и обычная выгрузка: меши этих
+                // чанков лежат в видеопамяти, и забыть их обязан ещё
+                // и рендер.
+                auto overBudget = world->collectOverBudget(pp);
+                if (!overBudget.empty()) {
+                    LOGI("память мира: %zu МБ при потолке %zu МБ — "
+                         "выгружаем %zu дальних чанков",
+                         world->residentBytes() >> 20,
+                         world->memoryBudget()  >> 20,
+                         overBudget.size());
+                    toUnload.insert(toUnload.end(),
+                                    overBudget.begin(), overBudget.end());
+                    std::sort(toUnload.begin(), toUnload.end(),
+                              [](const world::ChunkCoord& a,
+                                 const world::ChunkCoord& b) {
+                                  return a.x != b.x ? a.x < b.x : a.z < b.z;
+                              });
+                    toUnload.erase(std::unique(toUnload.begin(), toUnload.end()),
+                                   toUnload.end());
+                }
+
                 if (!toUnload.empty()) {
                     for (const auto& c : toUnload) render->forgetChunk(c);
                     world->removeChunks(toUnload);

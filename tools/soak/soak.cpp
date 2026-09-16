@@ -258,6 +258,17 @@ int main(int argc, char** argv) {
                 unloadTimer = 0.f;
                 p0 = Clock::now();
                 auto doomed = world.collectUnloadCandidates(pos);
+                // Потолок памяти — тем же путём, что и круг: ровно
+                // как в игровом цикле (см. main.cpp).
+                auto over = world.collectOverBudget(pos);
+                doomed.insert(doomed.end(), over.begin(), over.end());
+                std::sort(doomed.begin(), doomed.end(),
+                          [](const world::ChunkCoord& a,
+                             const world::ChunkCoord& b) {
+                              return a.x != b.x ? a.x < b.x : a.z < b.z;
+                          });
+                doomed.erase(std::unique(doomed.begin(), doomed.end()),
+                             doomed.end());
                 chunksUnloaded += doomed.size();
                 world.removeChunks(doomed);
                 phUnload.add(phase(p0));
@@ -426,6 +437,14 @@ int main(int argc, char** argv) {
                     rss.first / 1024.0, plateauMb, endMb, growMb);
         verdict(growMb < 16.0, "после выхода на полку резидентная память не растёт");
         verdict(pendingAfterDrain == 0, "очередь задач разбирается досуха");
+        {
+            const usize resident = world.residentBytes();
+            const usize budget   = world.memoryBudget();
+            std::printf("    (мир в памяти: %zu МБ при потолке %zu МБ, чанков %zu из %zu)\n",
+                        resident >> 20, budget >> 20,
+                        world.loadedChunks(), world.chunkCapacity());
+            verdict(resident <= budget, "мир уложился в потолок памяти");
+        }
         verdict(saveFail == 0 && loadFail == 0, "сейвы пишутся и читаются");
         verdict(meshesTaken > 0, "меши доезжают до потребителя");
     }
