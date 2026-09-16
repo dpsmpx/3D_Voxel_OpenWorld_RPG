@@ -1,6 +1,6 @@
 /**
  * @file render_system.cpp
- * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ * @brief Рендер: меширование чанков, отсечение, инстансинг, камера.
  */
 #include "render_system.h"
 #include "../world/debug_scene.h"
@@ -80,7 +80,7 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     lastHit_       = targetHit;
 
     const auto ready = world.pollMeshesReady(render::ChunkRenderer::MAX_MESH_UPLOADS_PER_FRAME);
-    chunkRenderer_.uploadChunks(ctx, world, ready, camera_.position());
+    chunkRenderer_.uploadChunks(ctx, world, ready);
 
     mobRenderer_.rebuild(registry, timeSec_);
     mobRenderer_.upload(ctx);
@@ -128,7 +128,6 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     // загруженных чанков виден обрывом на фоне чистого неба.
     const f32 vdBlocks = (f32)vd * (f32)world::CHUNK_SIZE;
     camera_.setFog(vdBlocks * 0.55f, vdBlocks * 0.94f);
-    chunkRenderer_.setViewDistanceBlocks(vdBlocks);
     // Отладочный вид террейна из settings.cfg: debug_shading = 1..6.
     // Пока идёт развёртка, вид задаёт она: одна из её ступеней меряет
     // ландшафт с ранним выходом из фрагментного шейдера, и разность с
@@ -140,13 +139,10 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     // ради замера: в игре он всегда от ближнего к дальнему, чтобы
     // работал ранний тест глубины.
     chunkRenderer_.setFarFirst(passSweep_.farFirst());
-    world.setLodBands(chunkRenderer_.lodBand(0), chunkRenderer_.lodBand(1),
-                      chunkRenderer_.lodBand(2));
-    // Уровень детализации мир и рендер считают от ОДНОЙ величины —
-    // от положения камеры. Раньше мир мерил от чанка, в котором стоит
-    // игрок, а рендер — от камеры до центра чанка: на границе уровня
-    // они расходились на половину чанка и спорили каждый кадр, отчего
-    // дальний рельеф перестраивался без остановки.
+    // Расстояния мир и рендер меряют от ОДНОЙ величины — от
+    // положения камеры. Раньше мир мерил от чанка, в котором стоит
+    // игрок, а рендер — от камеры до центра чанка, и порядок
+    // загрузки расходился с порядком отрисовки на половину чанка.
     world.setCameraPosition(camPos);
 
     // Камера в буфер здесь НЕ пишется — см. render(). Эта функция

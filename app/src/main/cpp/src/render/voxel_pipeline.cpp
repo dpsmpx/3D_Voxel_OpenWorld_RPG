@@ -1,6 +1,6 @@
 /**
  * @file voxel_pipeline.cpp
- * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ * @brief Рендер: меширование чанков, отсечение, инстансинг, камера.
  */
 #include "voxel_pipeline.h"
 #include "mesh_builder.h"

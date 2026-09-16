@@ -1,6 +1,6 @@
 /**
  * @file projectile_renderer.h
- * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ * @brief Рендер: меширование чанков, отсечение, инстансинг, камера.
  */
 #pragma once
 #include "../core/types.h"

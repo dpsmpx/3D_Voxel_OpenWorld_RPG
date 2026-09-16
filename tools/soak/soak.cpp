@@ -177,7 +177,6 @@ int main(int argc, char** argv) {
     int rc = 0;
     {
         world::ChunkManager world(0x5EEDULL, 8);
-        world.setLodBands(64.f, 160.f, 320.f);
 
         save::SaveManager saves;
         saves.init("build/soak");
@@ -249,8 +248,8 @@ int main(int argc, char** argv) {
                 if (!m.chunk) continue;
                 ++meshesTaken;
                 std::lock_guard lk(m.chunk->meshMutex);
-                m.chunk->meshes[m.lod & 3].built = false;
-                std::vector<world::Quad>().swap(m.chunk->meshes[m.lod & 3].quads);
+                m.chunk->mesh.built = false;
+                std::vector<world::Quad>().swap(m.chunk->mesh.quads);
             }
             phPoll.add(phase(p0));
 

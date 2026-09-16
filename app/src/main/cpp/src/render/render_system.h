@@ -1,6 +1,6 @@
 /**
  * @file render_system.h
- * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ * @brief Рендер: меширование чанков, отсечение, инстансинг, камера.
  */
 #pragma once
 #include "../core/types.h"
@@ -79,7 +79,6 @@ public:
     u32 culledChunks()  const { return chunkRenderer_.lastCulledChunks(); }
     u32 drawnVertices() const { return chunkRenderer_.lastDrawnVertices(); }
     u32 drawnIndices()  const { return chunkRenderer_.lastDrawnIndices(); }
-    u32 lodCount(u32 l) const { return chunkRenderer_.lastLodCounts((int)l); }
     /// Чанки в кадре, которым нечем рисоваться, — это и есть дыры.
     u32 emptyChunks()   const { return chunkRenderer_.lastEmptyChunks(); }
     u32 waitingChunks() const { return chunkRenderer_.lastWaitingChunks(); }

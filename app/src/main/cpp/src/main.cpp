@@ -1706,7 +1706,7 @@ extern "C" void android_main(android_app* app) {
                 const f32 n = msFrames ? (f32)msFrames : 1.f;
                 LOGI("кадры: показано %llu (%.1f/с), показ=%d, цепочка %llu | камера %.1f %.1f %.1f "
                      "| чанки: загружено %zu, нарисовано %u, индексов %u, "
-                     "дыр %u (ждут меша %u), LOD %u/%u/%u/%u "
+                     "дыр %u (ждут меша %u) "
                      "| трава %u, мобы %u, NPC %u, предметы %u, снаряды %u "
                      "| интерфейс: вершин %u, нарисовано %u, экран %d "
                      "| мс: логика %.1f, подготовка %.1f, рисование %.1f "
@@ -1721,10 +1721,6 @@ extern "C" void android_main(android_app* app) {
                      eng.render ? eng.render->drawnIndices() : 0u,
                      eng.render ? eng.render->emptyChunks() : 0u,
                      eng.render ? eng.render->waitingChunks() : 0u,
-                     eng.render ? eng.render->lodCount(0) : 0u,
-                     eng.render ? eng.render->lodCount(1) : 0u,
-                     eng.render ? eng.render->lodCount(2) : 0u,
-                     eng.render ? eng.render->lodCount(3) : 0u,
                      eng.render ? eng.render->grassCount() : 0u,
                      eng.render ? eng.render->mobInstances() : 0u,
                      eng.render ? eng.render->npcInstances() : 0u,

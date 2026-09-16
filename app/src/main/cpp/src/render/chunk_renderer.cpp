@@ -1,6 +1,6 @@
 /**
  * @file chunk_renderer.cpp
- * @brief Рендер: меширование чанков, LOD, отсечение, инстансинг, камера.
+ * @brief Рендер: меширование чанков, отсечение, инстансинг, камера.
  */
 #include "chunk_renderer.h"
 #include "../core/log.h"
@@ -23,11 +23,12 @@ bool ChunkRenderer::init(VkDevice dev, VkPhysicalDevice phys) {
 }
 
 void ChunkRenderer::shutdown() {
-    for (auto& [_, m] : meshes_)
-        for (auto& g : m.lod)
-            if (g.valid) { g.vb.destroy(); g.ib.destroy(); }
+    for (auto& [_, m] : meshes_) {
+        auto& g = m.mesh;
+        if (g.valid) { g.vb.destroy(); g.ib.destroy(); }
+    }
     meshes_.clear();
-    lodRequests_.clear();
+
     // Здесь уже всё дождались: устройство простаивает.
     for (auto& r : retired_) {
         vkDestroyBuffer(r.h.dev, r.h.buf, nullptr);
@@ -62,23 +63,22 @@ void ChunkRenderer::forgetChunk(world::ChunkCoord c) {
     if (it == meshes_.end()) return;
     // Чанк выгружается посреди кадра, а его буферы могут быть заняты
     // в ещё не показанных кадрах: уничтожение откладываем.
-    for (auto& g : it->second.lod)
+    {
+        auto& g = it->second.mesh;
         if (g.valid) { retire(g.vb); retire(g.ib); }
+    }
     meshes_.erase(it);
-
-    lodRequests_.erase(
-        std::remove_if(lodRequests_.begin(), lodRequests_.end(),
-                       [&](const LodRequest& r) { return r.coord == c; }),
-        lodRequests_.end());
 }
 
 // ============================================================
-// Загрузка одного уровня детализации в открытый пакет передачи.
+// Загрузка меша чанка в открытый пакет передачи.
 // ============================================================
-bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
-                              ChunkGpu& gpu, world::Chunk& chunk, u8 lod)
+ChunkRenderer::Upload ChunkRenderer::uploadMesh(vk::Context& ctx,
+                                                VkCommandBuffer cmd,
+                                                ChunkGpu& gpu,
+                                                world::Chunk& chunk)
 {
-    auto& gm = gpu.lod[lod];
+    auto& gm = gpu.mesh;
 
     // Вершины строим прямо из хранимых квадов, под замком меша.
     // Копия всего списка, которая была здесь раньше, ничего не давала:
@@ -86,15 +86,15 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
     // туда-обратно каждый кадр загрузки.
     {
         std::lock_guard lk(chunk.meshMutex);
-        if (!chunk.meshes[lod].built) return false;
-        buildChunkVertices(chunk, chunk.meshes[lod].quads,
+        if (!chunk.mesh.built) return Upload::Nothing;
+        buildChunkVertices(chunk, chunk.mesh.quads,
                            scratchVerts_, scratchIndices_, gm.opaqueIndices,
-                           &gm.blendCenter, lod);
+                           &gm.blendCenter);
         // По каким вокселям построено то, что сейчас поедет в
-        // видеопамять. Отсюда потом видно, какие ДРУГИЕ уровни
-        // устарели, а какие построены по тем же вокселям и годятся.
-        gm.revision = chunk.meshes[lod].revision;
-        chunk.meshes[lod].ready.store(false, std::memory_order_release);
+        // видеопамять: по этому номеру видно, что лежащий меш устарел
+        // после правки блоков.
+        gm.revision = chunk.mesh.revision;
+        chunk.mesh.ready.store(false, std::memory_order_release);
     }
 
     // Разбор первых нескольких мешей в журнал. По картинке нельзя
@@ -117,7 +117,7 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
             usize skyHist[8] = {}, aoHist[4] = {};
             usize topSky[8] = {}, topCount = 0;
             std::lock_guard lk(chunk.meshMutex);
-            for (const auto& q : chunk.meshes[lod].quads) {
+            for (const auto& q : chunk.mesh.quads) {
                 const bool up = (q.v0.face == 2);   // +Y, см. world::FACES
                 for (u8 v : q.sky) {
                     ++skyHist[v & 7];
@@ -125,10 +125,10 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
                 }
                 for (u8 v : q.ao) ++aoHist[v & 3];
             }
-            LOGI("меш чанка %d,%d ур.%u: квадов %zu, вершин %zu, индексов %zu "
+            LOGI("меш чанка %d,%d: квадов %zu, вершин %zu, индексов %zu "
                  "(непрозрачных %u, полупрозрачных %zu)",
-                 chunk.coord.x, chunk.coord.z, (unsigned)lod,
-                 chunk.meshes[lod].quads.size(), scratchVerts_.size(),
+                 chunk.coord.x, chunk.coord.z,
+                 chunk.mesh.quads.size(), scratchVerts_.size(),
                  scratchIndices_.size(), gm.opaqueIndices,
                  scratchIndices_.size() - gm.opaqueIndices);
             LOGI("  небо 0..7: %zu %zu %zu %zu %zu %zu %zu %zu; AO 0..3: %zu %zu %zu %zu",
@@ -148,7 +148,7 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
         gm.totalIndices = 0;
         gm.opaqueIndices = 0;
         gm.uploaded = true;
-        return true;
+        return Upload::Done;
     }
 
     // Индекс в 16 бит, пока вершин меньше 65536. Для чанка 32x128x32
@@ -171,27 +171,28 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
     if (gm.valid && (gm.vb.size() < vbBytes || gm.ib.size() < ibBytes)) {
         retire(gm.vb); retire(gm.ib);
         gm.valid = false;
-        // Буферов больше нет: если пересоздать их не удастся, уровень
-        // должен считаться незагруженным, иначе его никто не закажет
-        // заново и чанк останется дырой.
+        // Буферов больше нет: если пересоздать их не удастся, меш
+        // должен считаться незагруженным — иначе чанк останется
+        // дырой, про которую все думают, что она нарисована.
         gm.uploaded = false;
     }
     if (!gm.valid) {
         // С запасом 25%, чтобы мелкие правки блоков не пересоздавали буфер.
         const u64 vbCap = vbBytes + vbBytes / 4;
         const u64 ibCap = ibBytes + ibBytes / 4;
-        if (!gm.vb.create(dev_, phys_, vbCap, vk::BufferUsage::Vertex, false)) return false;
+        if (!gm.vb.create(dev_, phys_, vbCap, vk::BufferUsage::Vertex, false))
+            return Upload::Failed;
         if (!gm.ib.create(dev_, phys_, ibCap, vk::BufferUsage::Index, false)) {
             gm.vb.destroy();
-            return false;
+            return Upload::Failed;
         }
         gm.valid = true;
     }
 
     auto* sVb = staging_.acquire(vbBytes);
-    if (!sVb) return false;
+    if (!sVb) return Upload::Failed;
     auto* sIb = staging_.acquire(ibBytes);
-    if (!sIb) { staging_.retire(sVb); return false; }
+    if (!sIb) { staging_.retire(sVb); return Upload::Failed; }
 
     std::memcpy(sVb->mapped, scratchVerts_.data(), vbBytes);
     std::memcpy(sIb->mapped, ibSrc, ibBytes);
@@ -209,14 +210,14 @@ bool ChunkRenderer::uploadLod(vk::Context& ctx, VkCommandBuffer cmd,
 
     gm.totalIndices = (u32)scratchIndices_.size();
     gm.uploaded = true;
-    return true;
+    return Upload::Done;
 }
 
-/// Освобождает список квадов уровня: он уже в видеопамяти.
-static void releaseQuads(world::Chunk& chunk, u8 lod) {
+/// Освобождает список квадов чанка: они уже в видеопамяти.
+static void releaseQuads(world::Chunk& chunk) {
     std::lock_guard lk(chunk.meshMutex);
-    chunk.meshes[lod].built = false;
-    std::vector<world::Quad>().swap(chunk.meshes[lod].quads);
+    chunk.mesh.built = false;
+    std::vector<world::Quad>().swap(chunk.mesh.quads);
 }
 
 // ============================================================
@@ -225,132 +226,37 @@ static void releaseQuads(world::Chunk& chunk, u8 lod) {
 // чанк. Теперь все копии кадра идут одним пакетом.
 // ============================================================
 void ChunkRenderer::uploadChunks(vk::Context& ctx, world::ChunkManager& world,
-                                 const std::vector<world::MeshReady>& ready,
-                                 const glm::vec3& cameraPos)
+                                 const std::vector<world::MeshReady>& ready)
 {
     frameNo_ = ctx.framesPresented();
     collectRetired();
-
-    // Пакет передачи заканчивается ожиданием на заборе — это полная
-    // остановка GPU. Открывать его «на всякий случай» нельзя: рендер
-    // заказывает смену уровня детализации каждый кадр, пока меш не
-    // приехал, и очередь запросов почти никогда не пуста. Из-за этого
-    // остановка случалась ежекадрово и съедала пятнадцать миллисекунд
-    // из шестнадцати.
-    //
-    // Поэтому сначала выясняем, есть ли что грузить на самом деле:
-    // готовый меш нужного уровня. Если нет — только просим мир его
-    // построить и уходим, ничего не открывая.
-    servable_.clear();
-    for (const auto& req : lodRequests_) {
-        auto it = meshes_.find(req.coord);
-        if (it == meshes_.end() || !it->second.chunk) continue;
-        world::Chunk& c = *it->second.chunk;
-        if (c.removed.load(std::memory_order_acquire)) continue;
-
-        bool have = false;
-        {
-            std::lock_guard lk(c.meshMutex);
-            have = c.meshes[req.lod].built;
-        }
-        if (have) {
-            if (servable_.size() < MAX_LOD_UPLOADS_PER_FRAME) servable_.push_back(req);
-        } else {
-            // Заказ повторяем, если прежний так и не приехал.
-            //
-            // Отметка «этот уровень уже заказан» раньше не имела срока
-            // годности, и любая потерянная задача превращалась в
-            // вечную дыру: рендер каждый кадр просил уровень, а здесь
-            // видел, что он «уже заказан», и не делал ничего. Задача
-            // теряется законно — например, если воксели изменились
-            // между постановкой и запуском, и она вышла как
-            // устаревшая, а новую поставить было некому.
-            const bool fresh = it->second.requestedLod == req.lod &&
-                               frameNo_ < it->second.requestedFrame + LOD_REQUEST_RETRY;
-            if (!fresh) {
-                world.requestLod(req.coord, req.lod);
-                it->second.requestedLod   = req.lod;
-                it->second.requestedFrame = frameNo_;
-            }
-        }
-    }
-    lodRequests_.clear();
-
-    if (ready.empty() && servable_.empty()) return;
+    if (ready.empty()) return;
 
     VkCommandBuffer cmd = ctx.beginTransferBatch();
-    if (cmd == VK_NULL_HANDLE) return;
+    if (cmd == VK_NULL_HANDLE) {
+        // Пакет не открылся — не выгружен НИ ОДИН из забранных мешей.
+        // Очередь их уже отдала, и второй раз сама не отдаст.
+        for (const auto& rm : ready) world.requeueMesh(rm.chunk);
+        return;
+    }
     // Новый пакет: staging-буферы, из которых GPU уже дочитал, снова
     // свободны. Срок — во столько же пакетов, во сколько кольцо
     // командных буферов передачи.
     staging_.collect(vk::Context::TRANSFER_SLOTS);
 
-    constexpr f32 CH = (f32)world::CHUNK_SIZE;
-    constexpr f32 CY = (f32)world::CHUNK_SIZE_Y;
-
-    // 1. Свежепостроенные меши. Завершение адресовано КОНКРЕТНОМУ
-    //    уровню — он приехал вместе с чанком, и грузится ровно он.
-    //
-    //    Здесь стоял перебор «первый built из 0..3», если нужного
-    //    уровня не оказалось. Набор построенных уровней меняется во
-    //    времени сам по себе, поэтому такой перебор назначал
-    //    резидентным то LOD0, то LOD3 при неподвижной камере, и
-    //    дальний рельеф перещёлкивал между разрешениями. Угадывать
-    //    больше нечего: мир говорит, что построил.
     for (const auto& rm : ready) {
         if (!rm.chunk) continue;
         world::Chunk& c = *rm.chunk;
         if (c.removed.load(std::memory_order_acquire)) continue;
-        const u8 arrived = rm.lod & 3;
         const world::ChunkCoord key{ c.coord.x, c.coord.z };
 
         auto& gpu = meshes_[key];
-        gpu.chunk = rm.chunk;   // держим данные: пригодятся для смены LOD
+        gpu.chunk = rm.chunk;
 
-        const glm::vec3 center{ (f32)key.x * CH + CH * 0.5f,
-                                CY * 0.5f,
-                                (f32)key.z * CH + CH * 0.5f };
-        const glm::vec3 d = center - cameraPos;
-        gpu.targetLod = lodForDistanceSq(glm::dot(d, d), gpu.residentLod);
-
-        if (uploadLod(ctx, cmd, gpu, c, arrived)) {
-            // Устарели не «все прочие», а только построенные по более
-            // старым вокселям. Одновременно строящихся уровней у
-            // чанка может быть несколько, и все — по одним и тем же
-            // вокселям; выбрасывать их из-за чужого завершения значит
-            // оставлять чанк без запасного представления ровно в тот
-            // миг, когда оно нужнее всего.
-            const u64 rev = gpu.lod[arrived].revision;
-            for (u8 l = 0; l < 4; ++l) {
-                if (l == arrived) continue;
-                if (gpu.lod[l].revision >= rev) continue;
-                gpu.lod[l].totalIndices  = 0;
-                gpu.lod[l].opaqueIndices = 0;
-                gpu.lod[l].uploaded      = false;
-            }
-            gpu.residentLod  = residentAfterUpload(gpu.residentLod,
-                                                   gpu.targetLod, arrived);
-            gpu.requestedLod = LOD_NONE;
-            releaseQuads(c, arrived);
-        }
-        if (gpu.residentLod != gpu.targetLod && lodRequests_.size() < 256)
-            lodRequests_.push_back({ key, gpu.targetLod });
-    }
-
-    // 2. Уровни, меш которых уже построен.
-    for (const auto& req : servable_) {
-        auto it = meshes_.find(req.coord);
-        if (it == meshes_.end() || !it->second.chunk) continue;
-        ChunkGpu& gpu = it->second;
-        world::Chunk& c = *gpu.chunk;
-        if (uploadLod(ctx, cmd, gpu, c, req.lod)) {
-            // Резидентным приехавший уровень становится по тому же
-            // единственному правилу: только если он и есть целевой,
-            // либо рисовать было нечем вовсе.
-            gpu.residentLod  = residentAfterUpload(gpu.residentLod,
-                                                   gpu.targetLod, req.lod);
-            gpu.requestedLod = LOD_NONE;
-            releaseQuads(c, req.lod);
+        switch (uploadMesh(ctx, cmd, gpu, c)) {
+            case Upload::Done:    releaseQuads(c);        break;
+            case Upload::Nothing:                         break;
+            case Upload::Failed:  world.requeueMesh(rm.chunk); break;
         }
     }
 
@@ -411,7 +317,6 @@ void ChunkRenderer::cull(const math::Frustum& frustum, const glm::vec3& cameraPo
     lastConsideredChunks_ = 0;
     lastCulledChunks_     = 0;
     lastDrawnVertices_    = 0;
-    for (auto& l : lodCounts_) l = 0;
 
     constexpr f32 CH = (f32)world::CHUNK_SIZE;
     constexpr f32 CY = (f32)world::CHUNK_SIZE_Y;
@@ -430,51 +335,15 @@ void ChunkRenderer::cull(const math::Frustum& frustum, const glm::vec3& cameraPo
         const glm::vec3 center = (cmin + cmax) * 0.5f;
         const glm::vec3 d = center - cameraPos;
         const f32 distSq = glm::dot(d, d);
-        const u8 want = lodForDistanceSq(distSq, cm.residentLod);
-        // Целевой уровень решает рендер и только он. uploadChunks
-        // сверяется с этим полем, решая, имеет ли приехавший уровень
-        // право стать резидентным.
-        cm.targetLod = want;
-
-        // Нужного уровня нет в видеопамяти — рисуем тем, что есть,
-        // и заказываем догрузку на следующий кадр.
         GpuMesh* chosen = nullptr;
-        u8 usedLod = want;
-        if (cm.lod[want].valid && cm.lod[want].totalIndices > 0) {
-            chosen = &cm.lod[want];
-        } else {
-            // Заказываем по признаку «этого уровня в видеопамяти нет»,
-            // а не по residentLod: после неудачной загрузки резидентный
-            // уровень мог совпасть с нужным, запрос не уходил, и чанк
-            // оставался невидимым до следующей перестройки меша.
-            // Пустой чанк при этом помечен выгруженным и не заказывается.
-            if (!cm.lod[want].uploaded && lodRequests_.size() < 256)
-                lodRequests_.push_back({ coord, want });
+        if (cm.mesh.valid && cm.mesh.totalIndices > 0) chosen = &cm.mesh;
 
-            // Пока нужный уровень не приехал — рисуем РЕЗИДЕНТНЫЙ, и
-            // только его.
-            //
-            // Здесь стоял перебор i = 0..3 с выбором первого годного.
-            // Набор годных уровней меняется во времени сам по себе, и
-            // выбор «первого попавшегося» дёргал чанк между
-            // представлениями: нужен третий, резидентен второй, а
-            // рисовался нулевой, если тот случайно ещё лежал в памяти.
-            // Резидентный — единственный уровень, про который известно,
-            // что он загружен целиком и соответствует текущим вокселям.
-            if (cm.residentLod < 4) {
-                GpuMesh& res = cm.lod[cm.residentLod];
-                if (res.valid && res.totalIndices > 0) {
-                    chosen  = &res;
-                    usedLod = cm.residentLod;
-                }
-            }
-        }
         if (!chosen) {
-            // Чанк в кадре, но рисовать нечем ни на одном уровне —
-            // это и есть дыра в ландшафте. По картинке она неотличима
-            // от «за этим чанком просто нет мира», по числу — вполне.
+            // Чанк в кадре, но рисовать нечем — это и есть дыра в
+            // ландшафте. По картинке она неотличима от «за этим чанком
+            // просто нет мира», по числу — вполне.
             ++lastEmptyChunks_;
-            if (cm.requestedLod != LOD_NONE) ++lastWaitingChunks_;
+            if (!cm.mesh.uploaded) ++lastWaitingChunks_;
             continue;
         }
 
@@ -492,7 +361,6 @@ void ChunkRenderer::cull(const math::Frustum& frustum, const glm::vec3& cameraPo
         ++lastDrawnChunks_;
         lastDrawnIndices_ += chosen->totalIndices;
         lastDrawnVertices_ += chosen->totalIndices / 6 * 4;   // квад = 6 индексов на 4 вершины
-        ++lodCounts_[usedLod];
     }
     // blended_ — подмножество visible_: пусто одно, пусто и другое.
     if (visible_.empty()) return;
