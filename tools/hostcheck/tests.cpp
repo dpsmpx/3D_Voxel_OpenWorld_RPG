@@ -6285,15 +6285,27 @@ void testPlayerControls() {
             physics::MoveInput mi{};
             mi.wishDir = { 1.f, 0.f };
             f32 topY = standY;
+            int inside = 0;
             for (int i = 0; i < 240; ++i) {
                 cc.update(*wall.mgr, mi, dt);
                 topY = std::max(topY, cc.state().position.y);
+                // Упереться в стену — законно. ВЪЕХАТЬ в неё — нет:
+                // изнутри геометрии игрока выталкивает наверх, и так
+                // он и оказывался на крыше.
+                if (physics::overlapsSolid(*wall.mgr,
+                                           cc.box.min(cc.state().position),
+                                           cc.box.max(cc.state().position)))
+                    ++inside;
             }
-            char m[140];
+            char m[160];
             std::snprintf(m, sizeof(m), "у стены в два блока игрок поднялся на %.2f",
                           topY - standY);
             check(topY < standY + 1.2f, m);
             check(cc.state().position.x < 8.f, "и не прошёл сквозь неё");
+            std::snprintf(m, sizeof(m),
+                          "и ни одного кадра не был внутри стены (было %d из 240)",
+                          inside);
+            check(inside == 0, m);
         }
     }
 
@@ -6325,6 +6337,387 @@ void testPlayerControls() {
 // игрок отдельно. Посмотреть на них ВМЕСТЕ было негде, а ошибка вида
 // «у этого ноги короче туловища» видна только рядом с остальными:
 // поодиночке она выглядит замыслом.
+
+// ------------------------------------------------------------
+// Ходьба никуда не телепортирует
+//
+// Самая заметная беда в игре: игрока дёргало вбок почти на целый блок
+// за кадр, а иногда забрасывало на крышу дома. Все прежние проверки
+// управления при этом проходили — они смотрели ТОЛЬКО на высоту
+// подъёма на ступень, на ровном полигоне, на 60 кадрах в секунду.
+// Ни одна не мерила смещение по горизонтали и ни одна не выходила на
+// настоящий рельеф.
+//
+// Причин было две, и они складывались в цепочку.
+//
+// 1. `moveAxis` выбирал препятствием КРАЙНИЙ твёрдый блок из всех,
+//    что задевает коробка, не проверяя, впереди ли он по ходу. Плюс
+//    рамка перебора была расширена на EPS по ВСЕМ осям, поэтому в
+//    горизонтальное движение попадал слой пола под ногами — а пол
+//    твёрдый в каждом столбце. Игрока приставляло к дальней грани
+//    собственного пола, то есть отбрасывало назад на блок.
+// 2. Отброшенный назад игрок оказывался внутри геометрии;
+//    спасательный подъём выталкивал его вверх, а `snapDown` —
+//    функция «притянуть к земле» — ставила его на ВЕРХ того блока, в
+//    котором он застрял. Почти целый блок вверх за кадр. Кадр за
+//    кадром это и есть подъём по стене дома до конька.
+//
+// Замер на настоящем рельефе, сорок секунд ходьбы: было 11–12 рывков
+// вбок за прогон, худший −1.098 блока за кадр; стало ноль на всех
+// частотах кадров.
+//
+// Проверяется ИНВАРИАНТ, а не отдельный случай: разрешение
+// столкновений вправе укоротить шаг, но не развернуть его.
+// ------------------------------------------------------------
+namespace {
+
+/// Мир из настоящего рельефа, с подгрузкой на ходу.
+struct LiveWorld {
+    std::unique_ptr<world::ChunkManager> mgr;
+
+    bool build(u64 seed) {
+        world::blocks();
+        if (!jobs::gJobs.running()) jobs::gJobs.start(2);
+        mgr = std::make_unique<world::ChunkManager>(seed, 3);
+        for (int i = 0; i < 3000; ++i) {
+            mgr->update({ 0.f, 70.f, 0.f });
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            auto c = mgr->findChunk(0, 0);
+            if (c && c->generated.load(std::memory_order_acquire)) return true;
+        }
+        return false;
+    }
+
+    f32 surfaceY(f32 x, f32 z) {
+        world::VoxelReader rd(*mgr);
+        auto& reg = world::blocks();
+        for (i32 y = world::CHUNK_SIZE_Y - 2; y >= 0; --y)
+            if (reg.isSolid(rd.at((i32)std::floor(x), y, (i32)std::floor(z))))
+                return (f32)(y + 1);
+        return 64.f;
+    }
+};
+
+} // namespace
+
+void testWalkingNeverTeleports() {
+    group("управление: ходьба никуда не телепортирует");
+
+    world::blocks();
+
+    // ---- 1. Ровное поле, ступни ровно на границе блока ----
+    //
+    // Простейший случай из всех возможных, и именно его прежний код
+    // не проходил: вокруг ни одного блока выше пола, а шаг вперёд
+    // отбрасывал игрока назад — препятствием выбирался пол под ногами.
+    {
+        Arena flat;
+        if (!flat.build(0, 9999)) {
+            check(false, "полигон не построился");
+        } else {
+            physics::PlayerBox box;
+            const f32 standY = (f32)(Arena::FLOOR + 1);   // ровно на границе
+            glm::vec3 pos{ 5.70f, standY, 8.5f };
+            glm::vec3 delta{ 0.1f, 0.f, 0.f };
+
+            check(!physics::overlapsSolid(*flat.mgr, box.min(pos), box.max(pos)),
+                  "на ровном поле игрок не внутри геометрии");
+
+            const f32 before = pos.x;
+            physics::resolveMovement(*flat.mgr, pos, delta, box);
+
+            char m[160];
+            std::snprintf(m, sizeof(m),
+                          "шаг вперёд на ровном поле сдвинул на %+.4f (ждали +0.1)",
+                          (double)(pos.x - before));
+            check(pos.x > before + 0.09f, m);
+        }
+    }
+
+    // ---- 2а. Блок ПОЗАДИ не смеет останавливать движение ----
+    //
+    // Самый чистый вид ошибки. Игрок стоит вплотную к стене, гранью в
+    // грань, и идёт ОТ неё. Прежний перебор находил эту стену (она
+    // задевается рамкой) и приставлял игрока к её ДАЛЬНЕЙ грани —
+    // то есть швырял вперёд через полтора блока, хотя тот всего лишь
+    // отходил.
+    {
+        Arena wall;
+        if (!wall.build(3, 8)) {
+            check(false, "полигон со стеной не построился");
+        } else {
+            physics::PlayerBox box;
+            const f32 standY = (f32)(Arena::FLOOR + 1) + 1e-3f;
+            // Ровно вплотную к грани стены: 8.0 - halfWidth.
+            glm::vec3 pos{ 8.f - box.halfWidth, standY, 8.5f };
+
+            check(!physics::overlapsSolid(*wall.mgr, box.min(pos), box.max(pos)),
+                  "вплотную к стене — но не внутри неё");
+
+            const f32 before = pos.x;
+            glm::vec3 delta{ -0.2f, 0.f, 0.f };     // отходим ОТ стены
+            physics::resolveMovement(*wall.mgr, pos, delta, box);
+
+            char m[180];
+            std::snprintf(m, sizeof(m),
+                          "отход от стены сдвинул на %+.4f (ждали -0.2)",
+                          (double)(pos.x - before));
+            check(pos.x < before - 0.19f && pos.x > before - 0.21f, m);
+
+            // И то же самое КРОШЕЧНЫМ шагом.
+            //
+            // Перебор вокселей идёт по коробке в НОВОМ положении.
+            // Уйдя от стены на заметное расстояние, игрок её уже не
+            // задевает, и ошибка не всплывает. А вот когда скорость
+            // почти погашена — игрок прижат к стене и еле движется —
+            // стена остаётся в рамке перебора, и без отсечения по
+            // ходу движения её выбирает препятствием: игрока
+            // приставляет к ДАЛЬНЕЙ грани, то есть швыряет сквозь
+            // стену вперёд на полтора блока.
+            glm::vec3 pos2{ 8.f - box.halfWidth, standY, 8.5f };
+            const f32 before2 = pos2.x;
+            glm::vec3 tiny{ -5e-5f, 0.f, 0.f };
+            physics::resolveMovement(*wall.mgr, pos2, tiny, box);
+            std::snprintf(m, sizeof(m),
+                          "и крошечный отход тоже: %.4f -> %.4f",
+                          (double)before2, (double)pos2.x);
+            check(pos2.x <= before2 + 1e-3f && pos2.x > before2 - 0.05f, m);
+        }
+    }
+
+    // ---- 2б. Инвариант: упор укорачивает шаг, но не разворачивает ----
+    //
+    // Перебором по сетке положений и направлений вокруг стены. Шаг
+    // сетки выбран так, чтобы среди положений БЫЛИ приставленные к
+    // грани блока вплотную: ошибка живёт именно там, а сетка покрупнее
+    // проходит мимо неё и ничего не замечает.
+    {
+        Arena wall;
+        if (!wall.build(3, 8)) {
+            check(false, "полигон со стеной не построился");
+        } else {
+            physics::PlayerBox box;
+            const f32 standY = (f32)(Arena::FLOOR + 1) + 1e-3f;
+            int reversed = 0, overshot = 0, total = 0, flush = 0;
+            f32 worst = 0.f;
+
+            for (int ix = 0; ix <= 80; ++ix) {
+                for (int iz = 0; iz < 6; ++iz) {
+                    const f32 px = 5.0f + (f32)ix * 0.05f;   // 5.00 .. 9.00
+                    const f32 pz = 8.0f + (f32)iz * 0.05f;
+                    // Положения вплотную к грани: 7.70 (левая грань
+                    // стены) и 8.30 (правая). Их и считаем отдельно —
+                    // если их в сетке нет, проверка ни о чём.
+                    if (std::fabs(px - (8.f - box.halfWidth)) < 1e-3f ||
+                        std::fabs(px - (8.f + box.halfWidth)) < 1e-3f) ++flush;
+
+                    for (int d = 0; d < 4; ++d) {
+                      // Два размера шага: обычный и почти нулевой.
+                      // Прижатый к стене игрок, у которого погашена
+                      // скорость, двигается вторым — и ошибка видна
+                      // только на нём.
+                      for (int sz2 = 0; sz2 < 2; ++sz2) {
+                        for (int dy = 0; dy < 3; ++dy) {
+                            glm::vec3 pos{ px, standY + (f32)dy * 0.5f, pz };
+                            if (physics::overlapsSolid(*wall.mgr, box.min(pos),
+                                                       box.max(pos)))
+                                continue;
+                            const glm::vec3 start = pos;
+                            glm::vec3 delta{ 0.f, 0.f, 0.f };
+                            const f32 step = sz2 ? 5e-5f : 0.2f;
+                            if (d == 0) delta.x =  step;
+                            if (d == 1) delta.x = -step;
+                            if (d == 2) delta.z =  step;
+                            if (d == 3) delta.z = -step;
+                            const glm::vec3 want = delta;
+
+                            physics::resolveMovement(*wall.mgr, pos, delta, box);
+                            ++total;
+
+                            for (int ax = 0; ax < 3; ax += 2) {
+                                const f32 moved = pos[ax] - start[ax];
+                                const f32 asked = want[ax];
+                                if (asked == 0.f) {
+                                    if (std::fabs(moved) > 1e-3f) {
+                                        ++reversed;
+                                        worst = std::max(worst, std::fabs(moved));
+                                    }
+                                    continue;
+                                }
+                                if (moved * asked < -1e-3f) {
+                                    ++reversed;
+                                    worst = std::max(worst, std::fabs(moved));
+                                }
+                                if (std::fabs(moved) > std::fabs(asked) + 1e-3f) {
+                                    ++overshot;
+                                    worst = std::max(worst, std::fabs(moved));
+                                }
+                            }
+                        }
+                      }
+                    }
+                }
+            }
+            char m[220];
+            std::snprintf(m, sizeof(m), "проверено положений: %d", total);
+            check(total > 1000, m);
+            std::snprintf(m, sizeof(m),
+                          "среди них есть приставленные вплотную к грани: %d", flush);
+            check(flush > 0, m);
+            std::snprintf(m, sizeof(m),
+                          "упор ни разу не отбросил назад (случаев %d, худший %.3f блока)",
+                          reversed, (double)worst);
+            check(reversed == 0, m);
+            std::snprintf(m, sizeof(m),
+                          "упор ни разу не протащил дальше просимого (случаев %d)",
+                          overshot);
+            check(overshot == 0, m);
+        }
+    }
+
+    // ---- 3. Настоящий рельеф, разные частоты кадров, бег ----
+    //
+    // Тот самый случай, на котором это и видно в игре. Ровный полигон
+    // его не ловит: там нет ни склонов, ни уступов, ни дробных высот.
+    {
+        LiveWorld w;
+        if (!w.build(20260916ULL)) {
+            check(false, "мир не построился");
+        } else {
+            const f32 dts[3]  = { 1.f / 60.f, 1.f / 30.f, 1.f / 20.f };
+            const char* nm[3] = { "60", "30", "20" };
+
+            for (int k = 0; k < 3; ++k) {
+                const f32 dt = dts[k];
+                physics::CharacterController cc;
+                const f32 sx = 0.5f, sz = 0.5f;
+                cc.setPosition({ sx, w.surfaceY(sx, sz) + 0.1f, sz });
+
+                physics::MoveInput idle{};
+                for (int i = 0; i < 30; ++i) cc.update(*w.mgr, idle, dt);
+
+                physics::MoveInput go{};
+                go.wishDir = { 0.707f, 0.707f };
+                go.sprint  = true;
+
+                // Чего движок вправе двигать за кадр: бег плюс запас
+                // на разгон и на подъём на ступень.
+                const f32 horizLimit = cc.sprintSpeed * dt * 1.6f + 0.02f;
+                const f32 vertLimit  = cc.stepClimbSpeed * dt * 1.6f + 0.02f;
+
+                int jumpH = 0, jumpV = 0, inside = 0;
+                f32 worstH = 0.f, worstV = 0.f;
+                glm::vec3 prev = cc.state().position;
+                const int frames = (int)(12.f / dt);
+                for (int i = 0; i < frames; ++i) {
+                    w.mgr->update(cc.state().position);
+                    cc.update(*w.mgr, go, dt);
+                    const glm::vec3 p = cc.state().position;
+                    const glm::vec3 d = p - prev;
+                    const f32 h = std::sqrt(d.x * d.x + d.z * d.z);
+                    if (h > horizLimit) { ++jumpH; worstH = std::max(worstH, h); }
+                    // Вниз игрок падает свободно — это не телепорт.
+                    if (d.y > vertLimit) { ++jumpV; worstV = std::max(worstV, d.y); }
+                    // И ни в одном кадре он не внутри геометрии.
+                    // Это и есть то состояние, из которого его потом
+                    // выталкивало наверх: пока оно не возникает,
+                    // выталкивать нечего.
+                    if (physics::overlapsSolid(*w.mgr, cc.box.min(p), cc.box.max(p)))
+                        ++inside;
+                    prev = p;
+                }
+                char m[200];
+                std::snprintf(m, sizeof(m),
+                              "%s к/с: рывков вбок нет (было %d, худший %.3f при пределе %.3f)",
+                              nm[k], jumpH, (double)worstH, (double)horizLimit);
+                check(jumpH == 0, m);
+                std::snprintf(m, sizeof(m),
+                              "%s к/с: рывков вверх нет (было %d, худший %.3f при пределе %.3f)",
+                              nm[k], jumpV, (double)worstV, (double)vertLimit);
+                check(jumpV == 0, m);
+                std::snprintf(m, sizeof(m),
+                              "%s к/с: ни одного кадра внутри геометрии (было %d из %d)",
+                              nm[k], inside, frames);
+                check(inside == 0, m);
+            }
+        }
+    }
+
+    // ---- 3б. Быстрое падение не проваливается сквозь пол ----
+    //
+    // За кадр падающий игрок проходит больше блока: на 20 кадрах в
+    // секунду и скорости падения 30 блоков в секунду это полтора
+    // блока, а перед самой землёй и больше. В перебор при этом
+    // попадает НЕСКОЛЬКО перекрытий сразу, и выбрать нужно САМОЕ
+    // ВЕРХНЕЕ из тех, что игрок пересёк. Возьмёшь нижнее — игрок
+    // провалится сквозь пол в подвал, и это опять «телепортация».
+    {
+        Arena flat;
+        if (!flat.build(0, 9999)) {
+            check(false, "полигон не построился");
+        } else {
+            // Пол сплошной до FLOOR включительно: перекрытий под ним
+            // сколько угодно, все твёрдые.
+            physics::PlayerBox box;
+            const f32 topY = (f32)(Arena::FLOOR + 1);
+
+            int fellThrough = 0, landed = 0;
+            f32 lowest = topY;
+            for (int k = 0; k < 40; ++k) {
+                // Падаем с разной высоты и с разным шагом кадра, чтобы
+                // перекрытие оказывалось в разных местах шага.
+                const f32 h  = 3.f + (f32)k * 0.37f;
+                glm::vec3 pos{ 4.5f + (f32)(k % 7) * 0.1f, topY + h, 4.5f };
+                glm::vec3 delta{ 0.f, -(h + 2.f), 0.f };   // проскок за один кадр
+                physics::CollisionFlags f =
+                    physics::resolveMovement(*flat.mgr, pos, delta, box);
+                if (f.onGround) ++landed;
+                if (pos.y < topY - 1e-3f) { ++fellThrough; }
+                lowest = std::min(lowest, pos.y);
+            }
+            char m[200];
+            std::snprintf(m, sizeof(m), "приземлений из 40 падений: %d", landed);
+            check(landed == 40, m);
+            std::snprintf(m, sizeof(m),
+                          "сквозь пол не провалился ни разу (случаев %d, ниже всего %.3f при полу %.1f)",
+                          fellThrough, (double)lowest, (double)topY);
+            check(fellThrough == 0, m);
+        }
+    }
+
+    // ---- 4. «Притянуть к земле» не подбрасывает ----
+    //
+    // snapDown ставит игрока на верх найденного под ним блока. Если
+    // ступни уже внутри блока, этот верх ВЫШЕ игрока, и функция с
+    // именем «вниз» кидала его вверх почти на блок. Замер на рельефе:
+    // 29.08 -> 30.00 за один кадр.
+    {
+        Arena flat;
+        if (!flat.build(0, 9999)) {
+            check(false, "полигон не построился");
+        } else {
+            const f32 standY = (f32)(Arena::FLOOR + 1);
+            physics::CharacterController cc;
+            // Ступни ВНУТРИ верхнего блока пола: ровно то положение,
+            // в которое игрока загонял спасательный подъём.
+            cc.setPosition({ 4.5f, standY - 0.9f, 4.5f });
+            const f32 y0 = cc.state().position.y;
+
+            physics::MoveInput idle{};
+            cc.update(*flat.mgr, idle, 1.f / 30.f);
+            const f32 y1 = cc.state().position.y;
+
+            char m[180];
+            std::snprintf(m, sizeof(m),
+                          "из блока игрока не подбрасывает: %.3f -> %.3f за кадр",
+                          (double)y0, (double)y1);
+            // Спасательный подъём вправе вытолкнуть его на 2.5 блока в
+            // секунду — это 0.083 за кадр, но никак не целый блок.
+            check(y1 - y0 < 0.2f, m);
+        }
+    }
+}
+
 // ------------------------------------------------------------
 void testShowcaseHoldsEveryModel() {
     group("витрина: все модели проекта разом");
@@ -9411,6 +9804,7 @@ int main() {
     testEveryButtonHasAnAction();
     testSprintByDoubleTap();
     testPlayerControls();
+    testWalkingNeverTeleports();
     testShowcaseHoldsEveryModel();
     testEntityInstanceBudget();
     testGaitPhaseFollowsDistance();
