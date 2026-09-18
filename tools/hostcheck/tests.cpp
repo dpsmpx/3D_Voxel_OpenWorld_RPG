@@ -7674,6 +7674,122 @@ void testEveryAudioEventIsFired() {
 // линейке. Поэтому чанк доращивает и деревья соседей, и проверяется
 // это прямо: крона дерева с той стороны границы обязана быть здесь.
 // ------------------------------------------------------------
+// Колодец запоминается, смерть возвращает к нему.
+//
+// Смерти в игре не было вовсе: здоровье уходило в ноль, звучал звук,
+// и на этом всё — игрок оставался стоять с нулём и играть дальше.
+// ------------------------------------------------------------
+void testWellIsRespawnPoint() {
+    group("колодец: точка возвращения");
+
+    world::blocks();
+    items::items();
+
+    constexpr u64 SEED = 4242;
+    jobs::gJobs.start(2);
+    world::ChunkManager world(SEED, 2);
+
+    // Та же деревня, что и в остальных проверках, и найденная тем же
+    // способом — через общую раскладку.
+    world::VillageSite site;
+    for (i32 r = 0; r < 12 && !site.exists; ++r)
+        for (i32 a = -r; a <= r && !site.exists; ++a)
+            for (i32 b = -r; b <= r && !site.exists; ++b) {
+                if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                site = world::villageAt(a, b, SEED, &world.generator());
+            }
+    check(site.exists, "деревня с колодцем нашлась");
+    if (!site.exists) { jobs::gJobs.stop(); return; }
+    check(site.center.y > 0, "и высота колодца известна, а не нуль");
+
+    const glm::vec3 well{ (f32)site.center.x + 0.5f,
+                          (f32)site.center.y,
+                          (f32)site.center.z + 0.5f };
+
+    bool ready = false;
+    for (int i = 0; i < 900 && !ready; ++i) {
+        world.update(well);
+        ready = world.isReadyAt(site.center.x, site.center.z) &&
+                world.pendingJobs() == 0;
+        if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    check(ready, "чанк с колодцем построен");
+    if (!ready) { jobs::gJobs.stop(); return; }
+
+    ecs::Registry reg;
+    player::Player pl;
+    const glm::vec3 far = well + glm::vec3(300.f, 0.f, 300.f);
+    pl.init(reg, far);
+
+    auto* rp = reg.get<ecs::Respawn>(pl.entity());
+    check(rp != nullptr, "точка возвращения у игрока есть");
+    if (!rp) { jobs::gJobs.stop(); return; }
+    check(rp->set, "и она задана с самого начала");
+    check(glm::length(rp->point - far) < 0.01f,
+          "сперва это место появления на свет");
+
+    // ---- Подходим к колодцу ----
+    pl.controller.setPosition(well + glm::vec3(1.f, 1.f, 0.f));
+    bool bound = false;
+    for (int i = 0; i < 60 && !bound; ++i) {
+        pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+        if (pl.newRespawnPoint) bound = true;
+    }
+    check(bound, "колодец замечен и объявлен");
+    const glm::vec3 saved = rp->point;
+    check(glm::length(glm::vec2(saved.x - well.x, saved.z - well.z)) < 4.f,
+          "точка возвращения встала у колодца");
+    check(glm::length(glm::vec2(saved.x - well.x, saved.z - well.z)) > 1.f,
+          "но не в самой воде посреди него");
+
+    // ---- Второй раз тот же колодец не объявляется ----
+    bool again = false;
+    for (int i = 0; i < 120; ++i) {
+        pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+        if (pl.newRespawnPoint) again = true;
+    }
+    check(!again, "и повторно про тот же колодец не напоминает");
+
+    // ---- Смерть и возвращение ----
+    pl.controller.setPosition(well + glm::vec3(40.f, 6.f, 40.f));
+    auto* hp = reg.get<ecs::Health>(pl.entity());
+    check(hp != nullptr, "здоровье есть");
+    if (!hp) { jobs::gJobs.stop(); return; }
+    hp->current = 0.f;
+
+    bool died = false, back = false;
+    for (int i = 0; i < 60 * 6 && !back; ++i) {
+        pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+        if (pl.justDied)      died = true;
+        if (pl.justRespawned) back = true;
+    }
+    check(died, "смерть замечена");
+    check(back, "и игрок вернулся сам, а не остался лежать");
+    check(hp->current > hp->max - 0.01f, "вернулся целым");
+    const glm::vec3 now = pl.controller.state().position;
+    check(glm::length(glm::vec2(now.x - saved.x, now.z - saved.z)) < 1.f,
+          "и ровно к запомненному колодцу");
+
+    // ---- Точка переживает сохранение ----
+    {
+        save::ByteWriter w;
+        save::serializePlayer(w, reg, pl.entity());
+
+        ecs::Registry reg2;
+        player::Player pl2;
+        pl2.init(reg2, glm::vec3(0.f, 64.f, 0.f));
+        save::ByteReader r(w.data());
+        check(save::deserializePlayer(r, reg2, pl2.entity()),
+              "игрок прочитан обратно");
+        auto* rp2 = reg2.get<ecs::Respawn>(pl2.entity());
+        check(rp2 && rp2->set, "точка возвращения прочитана");
+        if (rp2) check(glm::length(rp2->point - saved) < 0.01f,
+                       "и это тот же колодец");
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testForestIsBigAndDense() {
     group("лес: большие деревья, кусты и кроны через границу");
 
@@ -11693,6 +11809,7 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testWellIsRespawnPoint();
     testForestIsBigAndDense();
     testTreeDungeonIsClimbable();
     testShurikenFliesAndHits();

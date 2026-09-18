@@ -1204,8 +1204,14 @@ VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
     site.exists = true;
     site.seed   = L.seed;
     // Колодец ставится ровно в середину раскладки — там же, где его
-    // рисует stampVillage.
-    site.center = { cx, 0, cz };
+    // рисует stampVillage, и на ту же высоту.
+    //
+    // Высота раньше отдавалась нулём, и спрашивающий не мог узнать,
+    // где колодец стоит: точка возрождения по такому ответу ушла бы
+    // под мир. Без генератора её не узнать, поэтому нуль остаётся
+    // только когда его не передали.
+    const i32 wy = terrain ? terrain->surfaceHeight(cx, cz) : 0;
+    site.center = { cx, wy, cz };
     return site;
 }
 

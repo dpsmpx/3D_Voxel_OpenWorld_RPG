@@ -140,6 +140,9 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Notif_Deleted */     "Deleted",
     /* Notif_RepGained */   "Reputation changed",
     /* Notif_Loading */     "Generating world...",
+    /* Notif_Died */        "You died",
+    /* Notif_Respawned */   "Back at the well",
+    /* Notif_WellBound */   "Well remembered",
 
     /* Hud_Use */           "USE",
     /* Ench_Altar */        "Enchant Altar",
@@ -277,6 +280,9 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Notif_Deleted */     "Удалено",
     /* Notif_RepGained */   "Репутация изменена",
     /* Notif_Loading */     "Генерация мира...",
+    /* Notif_Died */        "Вы погибли",
+    /* Notif_Respawned */   "Снова у колодца",
+    /* Notif_WellBound */   "Колодец запомнен",
 
     /* Hud_Use */           "ИСПОЛЬЗОВАТЬ",
     /* Ench_Altar */        "Алтарь зачарования",

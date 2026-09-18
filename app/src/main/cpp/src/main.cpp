@@ -1063,6 +1063,20 @@ struct Engine {
                 player->updateWithHash(*world, &spatialHash, pin, dt,
                                        cameraYawPitch.x, cameraYawPitch.y);
 
+                // Смерть, возвращение и запомненный колодец — игрок
+                // должен узнать о каждом.
+                if (ui) {
+                    if (player->justDied)
+                        ui->notify(cfg::T(cfg::StrKey::Notif_Died),
+                                   ui::theme::NotifyPriority::High);
+                    if (player->justRespawned)
+                        ui->notify(cfg::T(cfg::StrKey::Notif_Respawned),
+                                   ui::theme::NotifyPriority::High);
+                    if (player->newRespawnPoint)
+                        ui->notify(cfg::T(cfg::StrKey::Notif_WellBound),
+                                   ui::theme::NotifyPriority::Normal);
+                }
+
                 // Спасение из-под мира. Провалиться теперь неоткуда — ниже
                 // нулевой отметки мир отвечает камнем, — но сохранения,
                 // сделанные до этой починки, хранят игрока далеко внизу, да

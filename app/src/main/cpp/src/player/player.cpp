@@ -92,6 +92,13 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
 
     reg.add(entity_, progression::AttributeBuffs{});
 
+    // Точка возвращения по умолчанию — там, где начали. Иначе первая
+    // же смерть до ближайшего колодца уносила бы в нулевые координаты.
+    ecs::Respawn rp;
+    rp.point = spawnPos;
+    rp.set   = true;
+    reg.add(entity_, rp);
+
     items::Inventory inv{};
     reg.add(entity_, inv);
 
@@ -262,6 +269,17 @@ void Player::updateImpl(world::ChunkManager& world,
                         f32 cameraPitch)
 {
     if (!reg_) return;
+
+    // ---- Смерть и возвращение ----
+    //
+    // До всего остального: мёртвый не ходит, не бьёт и не собирает
+    // предметы, а лежит. Дать ему ещё кадр обычной жизни значило бы
+    // показать труп, идущий по своим делам.
+    tickDeath(world, dt);
+    if (dead) {
+        controller.update(world, physics::MoveInput{}, dt);
+        return;
+    }
 
     // ---- Производные характеристики → контроллер ----
     const auto& d = derived();
@@ -482,6 +500,15 @@ void Player::updateImpl(world::ChunkManager& world,
         if (levelUpFlashTimer <= 0.f) pendingLevelUpNotification = false;
     }
 
+    // ---- Смерть, возвращение и колодцы ----
+    //
+    // Смерть считается ДО движения: мёртвый не ходит, а лежит, и
+    // дать ему ещё кадр ходьбы значило бы показать труп, идущий по
+    // своим делам.
+    newRespawnPoint = false;
+    wellTimer_ += dt;
+    if (wellTimer_ >= 0.5f) { wellTimer_ = 0.f; noticeWell(world); }
+
     // ---- Уведомление о смене тира репутации ----
     noticeReputationChange();
     if (reputationFlashTimer > 0.f) {
@@ -577,6 +604,87 @@ void Player::resyncReputationBaseline() {
     for (u8 i = 0; i < (u8)factions::FactionId::Count; ++i)
         prevRepTiers_[i] = rep->tier((factions::FactionId)i);
     repTiersKnown_ = true;
+}
+
+void Player::noticeWell(world::ChunkManager& world) {
+    if (!reg_) return;
+    auto* rp = reg_->get<ecs::Respawn>(entity_);
+    if (!rp) return;
+
+    const glm::vec3 p = controller.state().position;
+    const i32 sx = (i32)std::floor(p.x / (f32)world::SUPER_CHUNK_BLOCKS);
+    const i32 sz = (i32)std::floor(p.z / (f32)world::SUPER_CHUNK_BLOCKS);
+
+    // Девять супер-чанков: деревня большая, её колодец может лежать
+    // в соседней ячейке от той, в которой стоит игрок.
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            const world::VillageSite v = world::villageAt(
+                sx + dx, sz + dz, world.seed(), &world.generator());
+            if (!v.exists) continue;
+
+            const f32 ddx = (f32)v.center.x + 0.5f - p.x;
+            const f32 ddz = (f32)v.center.z + 0.5f - p.z;
+            if (ddx * ddx + ddz * ddz > WELL_TOUCH_DIST * WELL_TOUCH_DIST) continue;
+
+            // Возвращаемся НА край колодца, а не в него: в середине
+            // вода, и респаун туда был бы падением в воду.
+            const glm::vec3 spot{ (f32)v.center.x + 2.5f,
+                                  (f32)v.center.y + 1.f,
+                                  (f32)v.center.z + 0.5f };
+            const glm::vec3 d = spot - rp->point;
+            if (glm::dot(d, d) < 1.f) return;   // этот уже запомнен
+
+            rp->point = spot;
+            rp->set   = true;
+            newRespawnPoint = true;
+            audio::events().uiClick();
+            return;
+        }
+}
+
+void Player::tickDeath(world::ChunkManager& world, f32 dt) {
+    if (!reg_) return;
+    auto* hp = reg_->get<ecs::Health>(entity_);
+    if (!hp) return;
+
+    justDied = justRespawned = false;
+
+    if (!dead) {
+        if (hp->current > 0.f) return;
+        dead       = true;
+        deathTimer = DEATH_DELAY;
+        justDied   = true;
+        return;
+    }
+
+    deathTimer -= dt;
+    if (deathTimer > 0.f) return;
+
+    // ---- Возвращение ----
+    const auto* rp = reg_->get<ecs::Respawn>(entity_);
+    glm::vec3 to = rp && rp->set ? rp->point : controller.state().position;
+
+    // Если под точкой ничего нет — мир мог не догрузиться, — ставим
+    // на поверхность по генератору: провалиться сквозь пол хуже, чем
+    // появиться на метр выше.
+    world::VoxelReader rd(world);
+    if (rd.at((i32)std::floor(to.x), (i32)std::floor(to.y) - 1,
+              (i32)std::floor(to.z)) == world::UNKNOWN)
+    {
+        to.y = (f32)world.generator().surfaceHeight((i32)std::floor(to.x),
+                                                    (i32)std::floor(to.z)) + 1.f;
+    }
+
+    controller.setPosition(to);
+    hp->current = hp->max;
+    if (auto* m = reg_->get<ecs::Mana>(entity_))    m->current = m->max;
+    if (auto* st = reg_->get<ecs::Stamina>(entity_)) st->current = st->max;
+    if (auto* se = reg_->get<combat::StatusEffects>(entity_)) *se = {};
+
+    dead          = false;
+    deathTimer    = 0.f;
+    justRespawned = true;
 }
 
 void Player::noticeReputationChange() {
