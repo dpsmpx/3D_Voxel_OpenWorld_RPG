@@ -81,7 +81,7 @@ void ProjectileRenderer::rebuild(ecs::Registry& reg) {
 
             MobInstance inst{};
             inst.pos   = tf->position;
-            inst.color = p->colorRGBA;
+            inst.colorGpu = packInstanceColor(p->colorRGBA);
 
             // Снаряд летит вдоль своей скорости — и выглядеть обязан
             // так же. Заклинание это сгусток, ему направление не
@@ -122,7 +122,7 @@ void ProjectileRenderer::rebuild(ecs::Registry& reg) {
             MobInstance inst{};
             inst.pos   = tf->position;
             inst.size  = glm::vec3(s);
-            inst.color = faded;
+            inst.colorGpu = packInstanceColor(faded);
             inst.rot = orient::yawQuat(0.f);
             cpu_.push_back(inst);
         }

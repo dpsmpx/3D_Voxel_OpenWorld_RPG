@@ -161,21 +161,22 @@ void MobRenderer::rebuild(ecs::Registry& reg, f32 timeSec) {
             MobInstance inst{};
             inst.pos   = parts[p].center;
             inst.size  = parts[p].size;
-            inst.color = parts[p].color;
             inst.rot   = glm::vec4(parts[p].rot.x, parts[p].rot.y,
                                    parts[p].rot.z, parts[p].rot.w);
+            u32 rgba   = parts[p].color;
 
             // Красная вспышка при получении урона
             if (ai->damageFlash > 0.f) {
-                u8 r = (inst.color >> 24) & 0xFF;
-                u8 g = (inst.color >> 16) & 0xFF;
-                u8 b = (inst.color >>  8) & 0xFF;
+                u8 r = (rgba >> 24) & 0xFF;
+                u8 g = (rgba >> 16) & 0xFF;
+                u8 b = (rgba >>  8) & 0xFF;
                 f32 t = ai->damageFlash / 0.25f;
                 r = (u8)(r * (1.f - t) + 255.f * t);
                 g = (u8)(g * (1.f - t) +  40.f * t);
                 b = (u8)(b * (1.f - t) +  40.f * t);
-                inst.color = ((u32)r << 24) | ((u32)g << 16) | ((u32)b << 8) | 0xFF;
+                rgba = ((u32)r << 24) | ((u32)g << 16) | ((u32)b << 8) | 0xFF;
             }
+            inst.colorGpu = packInstanceColor(rgba);
 
             cpuInstances_.push_back(inst);
         }

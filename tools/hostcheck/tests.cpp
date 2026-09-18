@@ -7109,6 +7109,82 @@ void testEntityInstanceBudget() {
 // стене -Z независимо от того, где центр деревни, поэтому у половины
 // домов вход смотрел в поле. Окон не было вовсе.
 // ------------------------------------------------------------
+// Порядок каналов цвета у инстансных коробок
+// ------------------------------------------------------------
+void testInstanceColorByteOrder() {
+    group("инстансы: цвет доходит до видеокарты в своём порядке");
+
+    // Атрибут объявлен VK_FORMAT_R8G8B8A8_UNORM. Такой формат берёт
+    // четыре байта В ПОРЯДКЕ ПАМЯТИ, а не разряды слова. Значит
+    // проверять надо именно память, а не число.
+    render::MobInstance inst{};
+    inst.colorGpu = render::packInstanceColor(0xF2D3B0FFu);   // тон кожи
+
+    u8 bytes[4];
+    std::memcpy(bytes, &inst.colorGpu, 4);
+    check(bytes[0] == 0xF2, "первый байт — красный");
+    check(bytes[1] == 0xD3, "второй — зелёный");
+    check(bytes[2] == 0xB0, "третий — синий");
+    check(bytes[3] == 0xFF, "четвёртый — альфа");
+
+    // Тот же тон без упаковки лёг бы в память задом наперёд, и
+    // шейдер прочёл бы ярко-розовое вместо кожи. Проверка не на
+    // реализацию, а на то, что упаковка вообще что-то меняет.
+    u32 raw = 0xF2D3B0FFu;
+    u8 rawBytes[4];
+    std::memcpy(rawBytes, &raw, 4);
+    check(rawBytes[0] != 0xF2 || rawBytes[3] != 0xFF,
+          "без упаковки порядок байтов был бы другим");
+
+    // Непрозрачное остаётся непрозрачным: раньше альфа приходила из
+    // байта R, и у снарядов со смешиванием она выходила произвольной.
+    for (u32 c : { 0x000000FFu, 0xFFFFFFFFu, 0x60D060FFu, 0x4090FFFFu }) {
+        u8 b4[4];
+        const u32 packed = render::packInstanceColor(c);
+        std::memcpy(b4, &packed, 4);
+        if (b4[3] != 0xFF) { check(false, "альфа непрозрачного цвета уцелела"); break; }
+        if (c == 0x4090FFFFu) check(true, "альфа непрозрачного цвета уцелела");
+    }
+
+    // Полупрозрачность снаряда доходит как задумана.
+    const u32 fade = render::packInstanceColor(0x80C0FF40u);
+    u8 fb[4];
+    std::memcpy(fb, &fade, 4);
+    check(fb[3] == 0x40, "полупрозрачность снаряда доходит как задумана");
+
+    // Обратное преобразование ничего не теряет.
+    const u32 back = render::packInstanceColor(render::packInstanceColor(0x123456A5u));
+    check(back == 0x123456A5u, "упаковка обратима сама себе");
+
+    // ---- Исходники ----
+    //
+    // Поле называется colorGpu нарочно: забытое место присваивания не
+    // соберётся. Проверка стережёт и это имя, и формат атрибута — на
+    // нём держится вся раскладка байтов.
+    const std::string h = readSource("app/src/main/cpp/src/render/mob_renderer.h");
+    if (!h.empty()) {
+        check(h.find("u32       colorGpu;") != std::string::npos,
+              "поле инстанса называется colorGpu");
+        check(h.find("VK_FORMAT_R8G8B8A8_UNORM") != std::string::npos,
+              "атрибут цвета читает байты в порядке памяти");
+        check(h.find("static_assert(offsetof(MobInstance, colorGpu) == 24);")
+              != std::string::npos, "смещение цвета сверяется компилятором");
+    }
+    usize raws = 0;
+    for (const char* f : { "app/src/main/cpp/src/render/mob_renderer.cpp",
+                           "app/src/main/cpp/src/render/npc_renderer.cpp",
+                           "app/src/main/cpp/src/render/item_renderer.cpp",
+                           "app/src/main/cpp/src/render/projectile_renderer.cpp" }) {
+        const std::string s = readSource(f);
+        for (usize i = s.find("inst.color"); i != std::string::npos;
+             i = s.find("inst.color", i + 1))
+            if (s.compare(i, 14, "inst.colorGpu ") != 0 &&
+                s.compare(i, 13, "inst.colorGpu") != 0) ++raws;
+    }
+    check(raws == 0, "цвет инстанса нигде не присваивается в обход упаковки");
+}
+
+// ------------------------------------------------------------
 void testVillageHousesAreBuildings() {
     group("деревня: дом построен, а не насыпан");
 
@@ -9979,6 +10055,7 @@ int main() {
     testWalkingNeverTeleports();
     testShowcaseHoldsEveryModel();
     testEntityInstanceBudget();
+    testInstanceColorByteOrder();
     testGaitPhaseFollowsDistance();
     testPlayerHasModel();
     testBufferMapContract();

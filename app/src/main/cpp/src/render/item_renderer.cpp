@@ -119,7 +119,7 @@ void ItemRenderer::rebuild(ecs::Registry& reg) {
         MobInstance inst{};
         inst.pos   = tf->position + glm::vec3(0, 0.25f + bob, 0);
         inst.size  = glm::vec3(0.35f);
-        inst.color = c;
+        inst.colorGpu = packInstanceColor(c);
         inst.rot = orient::yawQuat(tf->position.x * 0.3f + tf->position.z * 0.4f);
 
         cpu_.push_back(inst);
