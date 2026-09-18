@@ -101,7 +101,9 @@ public:
 
     void tryInteract(ecs::Registry& reg, world::ChunkManager& world);
 
-    items::UseResult useItem(u32 slotIndex);
+    /// Применить предмет. Метательное бросается по направлению
+    /// взгляда — для этого и нужен мир.
+    items::UseResult useItem(world::ChunkManager& world, u32 slotIndex);
     bool dropItem(u32 slotIndex);
 
     void setActiveHotbar(u8 idx);

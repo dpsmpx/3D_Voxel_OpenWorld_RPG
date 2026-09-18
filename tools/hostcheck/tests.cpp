@@ -13,6 +13,7 @@
 #include "save/world_delta.h"
 #include "items/item_def.h"
 #include "items/item_pickup.h"
+#include "items/throwable.h"
 #include "combat/components.h"
 #include "trade/trade.h"
 #include "ecs/components.h"
@@ -7671,6 +7672,130 @@ void testEveryAudioEventIsFired() {
 // «эффекта нет», и предмет даже не тратился: четыре предмета в игре
 // не делали ровно ничего.
 // ------------------------------------------------------------
+// Батут летит, ложится и подбрасывает.
+//
+// Бросок идёт не по дуге, а лучом: место падения ищется взглядом и
+// опускается до земли. Дуга выглядела бы красивее, но батут кидают
+// ровно туда, куда собираются прыгнуть, — и промах на два блока
+// означал бы, что прыжок не состоялся.
+// ------------------------------------------------------------
+void testTrampolineThrowAndBounce() {
+    group("батут: бросается, ложится и подбрасывает");
+
+    world::blocks();
+    items::items();
+
+    check(items::items().get(items::ITEM_TRAMPOLINE).category ==
+          items::ItemCategory::Throwable, "батут — метательный предмет");
+
+    // ---- Бросать некуда: земли под точкой падения нет ----
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager empty(0xE3, 1);   // чанки не строились
+
+        auto* inv = pl.inventory();
+        check(inv != nullptr, "инвентарь есть");
+        if (!inv) return;
+        auto& slot = inv->activeSlot();
+        slot.itemId = items::ITEM_TRAMPOLINE;
+        slot.count  = 2;
+
+        const items::UseResult r = pl.useItem(
+            empty, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+        check(r == items::UseResult::NoEffect, "в пустоту батут не кидается");
+        check(inv->activeSlot().count == 2,
+              "и из рук при этом не пропадает");
+    }
+
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager world(0x7A3B, 2);
+        bool ready = false;
+        for (int i = 0; i < 600 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир под ногами построен");
+
+        if (ready) {
+            const i32 surf = world.generator().surfaceHeight(8, 8);
+
+            ecs::Registry reg;
+            player::Player pl;
+            pl.init(reg, glm::vec3(8.5f, (f32)surf, 8.5f));
+            auto* inv = pl.inventory();
+            auto& slot = inv->activeSlot();
+            slot.itemId = items::ITEM_TRAMPOLINE;
+            slot.count  = 2;
+
+            // ---- Бросок ----
+            const items::UseResult r = pl.useItem(
+                world, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+            check(r == items::UseResult::Consumed, "батут брошен");
+            check(inv->activeSlot().count == 1, "и списан из пояса");
+
+            auto& pool = reg.pool<items::Trampoline>();
+            check(pool.size() == 1, "в мире появился ровно один батут");
+            if (pool.size() != 1) { jobs::gJobs.stop(); return; }
+
+            const ecs::Entity te = pool.entityAt(0);
+            auto* ttf = reg.get<ecs::Transform>(te);
+            check(ttf != nullptr, "у него есть место в мире");
+            if (!ttf) { jobs::gJobs.stop(); return; }
+
+            // Лёг на землю, а не завис и не утонул в камне.
+            world::VoxelReader rd(world);
+            const i32 bx = (i32)std::floor(ttf->position.x);
+            const i32 by = (i32)std::floor(ttf->position.y);
+            const i32 bz = (i32)std::floor(ttf->position.z);
+            check(rd.at(bx, by, bz) == world::AIR, "сам он в воздухе");
+            check(world::blocks().isSolid(rd.at(bx, by - 1, bz)),
+                  "а под ним твёрдый блок");
+
+            // И лёг ВПЕРЕДИ: прицел по умолчанию смотрит на север.
+            check(ttf->position.z < 8.5f - 1.f,
+                  "лёг перед игроком, а не под ноги");
+
+            // ---- Подброс ----
+            const f32 up = items::trampolineBounceAt(
+                reg, ttf->position, -6.f);
+            check(up > 5.f, "падающего он подбрасывает");
+
+            // Сразу второй раз — нет: иначе батут ловит игрока на
+            // первом же кадре подъёма.
+            check(items::trampolineBounceAt(reg, ttf->position, -6.f) == 0.f,
+                  "и не подбрасывает второй раз подряд");
+
+            // Летящего вверх не трогает вовсе.
+            items::updateTrampolines(reg, 1.f);
+            check(items::trampolineBounceAt(reg, ttf->position, 6.f) == 0.f,
+                  "летящего вверх не трогает");
+
+            // Мимо площадки — тоже нет.
+            check(items::trampolineBounceAt(
+                      reg, ttf->position + glm::vec3(3.f, 0.f, 0.f), -6.f) == 0.f,
+                  "и в стороне от площадки не срабатывает");
+
+            // ---- Через весь путь игрока ----
+            pl.controller.setPosition(ttf->position + glm::vec3(0.f, 0.2f, 0.f));
+            pl.controller.state().velocity.y = -4.f;
+            pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+            check(pl.controller.state().velocity.y > 5.f,
+                  "наступивший улетает вверх");
+
+            // ---- Не лежит вечно ----
+            for (int i = 0; i < 200; ++i) items::updateTrampolines(reg, 1.f);
+            check(reg.pool<items::Trampoline>().size() == 0,
+                  "со временем батут исчезает");
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testElixirsGrantTimedBuff() {
     group("эликсиры: временная прибавка к атрибуту");
 
@@ -11161,6 +11286,7 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testTrampolineThrowAndBounce();
     testElixirsGrantTimedBuff();
     testInventoryDragMovesItems();
     testReputationCanBeLost();

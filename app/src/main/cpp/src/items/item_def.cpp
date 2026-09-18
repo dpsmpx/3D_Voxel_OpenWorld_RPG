@@ -117,6 +117,23 @@ ItemRegistry::ItemRegistry() {
         reg(id, d);
     };
 
+    auto throwableItem = [&](u16 id, const char* name, u32 value,
+                             ThrowKind kind, u16 stack,
+                             ItemRarity rarity, u8 iconTile)
+    {
+        ItemDef d{};
+        d.name = name;
+        d.description = "";
+        d.category = ItemCategory::Throwable;
+        d.rarity = rarity;
+        d.maxStack = stack;
+        d.value = value;
+        d.throwKind = kind;
+        d.iconTile = iconTile;
+        d.iconIsBlock = false;
+        reg(id, d);
+    };
+
     auto foodItem = [&](u16 id, const char* name, u32 value,
                         f32 hp, f32 sp, ItemRarity rarity, u8 iconTile)
     {
@@ -153,6 +170,10 @@ ItemRegistry::ItemRegistry() {
     materialItem(ITEM_LEATHER,    "Leather",     8, ItemRarity::Common,   22);
     materialItem(ITEM_BONE,       "Bone",        5, ItemRarity::Common,   23);
     materialItem(ITEM_CLOTH,      "Cloth",       4, ItemRarity::Common,   24);
+
+    // ============ Метательное ============
+    throwableItem(ITEM_TRAMPOLINE, "Trampoline", 35,
+                  ThrowKind::Trampoline, 8, ItemRarity::Uncommon, 40);
 
     // ============ Оружие ============
     weaponItem(ITEM_IRON_SWORD,      combat::WEAPON_IRON_SWORD,      "Iron Sword",        30, ItemRarity::Common);

@@ -197,6 +197,7 @@ add_library(native-lib SHARED
     src/items/item_pickup.cpp
     src/items/item_stack.cpp
     src/items/item_use.cpp
+    src/items/throwable.cpp
     src/items/loot_table.cpp
 
     # Крафт

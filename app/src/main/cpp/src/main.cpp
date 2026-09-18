@@ -63,6 +63,7 @@
 #include "npc/dialogue.h"
 
 #include "items/item_pickup.h"
+#include "items/throwable.h"
 #include "items/item_use.h"
 #include "items/inventory.h"
 #include "items/currency.h"
@@ -336,7 +337,7 @@ struct Engine {
 
         ui->onUseItem = [this](u32 slotIndex) {
             if (!player) return;
-            auto res = player->useItem(slotIndex);
+            auto res = player->useItem(*world, slotIndex);
             if (res == items::UseResult::Equipped) {
                 audio::events().uiClick();
                 ui->setStatus("Equipped");
@@ -1101,7 +1102,7 @@ struct Engine {
             if (evUseItem_) {
                 if (auto* inv = player->inventory()) {
                     u32 slot = items::INV_HOTBAR_OFFSET + inv->activeHotbar;
-                    player->useItem(slot);
+                    player->useItem(*world, slot);
                 }
             }
 
@@ -1140,6 +1141,7 @@ struct Engine {
             // Phase 15: обновление пикапов с raycast-коллизией.
             items::updatePickups(*world, registry, player->entity(),
                                  player->controller.state().position, dt);
+            items::updateTrampolines(registry, dt);
 
             if (ui) {
                 ui->nearbyStation = crafting::detectNearbyStation(

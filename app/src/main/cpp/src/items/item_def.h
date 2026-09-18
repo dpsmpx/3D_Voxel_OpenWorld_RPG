@@ -21,6 +21,7 @@ enum class ItemCategory : u8 {
     Food,            // восстанавливает HP/SP
     Key,             // открывает что-то
     Currency,        // золото и подобное
+    Throwable,       // бросается перед собой: батут, сюрикен
     Count
 };
 
@@ -32,6 +33,12 @@ enum class ItemRarity : u8 {
     Epic,
     Legendary,
     Count
+};
+
+/// Что происходит, когда предмет бросают.
+enum class ThrowKind : u8 {
+    None = 0,
+    Trampoline,   ///< ложится площадкой и подбрасывает наступившего
 };
 
 /// Какой атрибут поднимает эликсир на время своего действия.
@@ -81,6 +88,9 @@ struct ItemDef {
     ///
     /// Какой атрибут — данные, а не разбор по номеру предмета:
     /// иначе таблица эликсиров жила бы в двух местах.
+    /// Для Throwable — что из брошенного получится.
+    ThrowKind throwKind = ThrowKind::None;
+
     BuffAttr buffAttr   = BuffAttr::None;
     i32      buffAmount = 0;
     f32 effectDuration = 0.f;
@@ -110,6 +120,9 @@ enum ItemId : u16 {
     ITEM_BONE         = 14,
     ITEM_CLOTH        = 15,
     ITEM_CACTUS       = 16,
+
+    // --- Метательное ---
+    ITEM_TRAMPOLINE   = 150,
 
     // --- Оружие ---
     ITEM_IRON_SWORD     = 50,

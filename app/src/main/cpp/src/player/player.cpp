@@ -10,6 +10,8 @@
 #include "../combat/hit_detection.h"
 #include "../progression/resource_regen.h"
 #include "../items/item_pickup.h"
+#include "../items/item_use.h"
+#include "../items/throwable.h"
 #include "../quests/quest.h"
 #include "../npc/npc_ai.h"
 #include "../world/block.h"
@@ -167,8 +169,22 @@ void Player::setActiveHotbar(u8 idx) {
     inv->activeHotbar = idx;
 }
 
-items::UseResult Player::useItem(u32 slotIndex) {
+items::UseResult Player::useItem(world::ChunkManager& world, u32 slotIndex) {
     if (!reg_) return items::UseResult::Failed;
+
+    // Метательное уходит своим путём: ему нужны мир и взгляд.
+    auto* inv = reg_->get<items::Inventory>(entity_);
+    if (inv && slotIndex < items::INV_TOTAL_SLOTS) {
+        const auto& st = inv->at(slotIndex);
+        if (!st.empty() &&
+            items::items().get(st.itemId).category ==
+                items::ItemCategory::Throwable)
+        {
+            return items::throwItemFromSlot(*reg_, world, entity_, slotIndex,
+                                            eyePosition(), aimDir_);
+        }
+    }
+
     auto res = items::useItemFromSlot(*reg_, entity_, slotIndex);
 
     if (auto* eq = reg_->get<combat::EquippedWeapon>(entity_)) equipped = *eq;
@@ -286,6 +302,22 @@ void Player::updateImpl(world::ChunkManager& world,
 
     // Phase 15: step-up/snap-down работают через controller.update.
     controller.update(world, mi, dt);
+
+    // ---- Батут ----
+    //
+    // После движения, а не до: контроллер как раз обнулил падение,
+    // приземлив игрока, — и подброс встаёт ровно на место посадки.
+    // Горизонтальная скорость при этом сохраняется, поэтому батут и
+    // разгоняет: с разбегу он кидает вперёд, а не только вверх.
+    if (reg_) {
+        const f32 bounce = items::trampolineBounceAt(
+            *reg_, controller.state().position, controller.state().velocity.y);
+        if (bounce > 0.f) {
+            controller.state().velocity.y = bounce;
+            controller.state().onGround   = false;
+            audio::events().jump(controller.state().position);
+        }
+    }
 
     // ---- Детект событий после апдейта ----
     const bool isOnGround = controller.state().onGround;

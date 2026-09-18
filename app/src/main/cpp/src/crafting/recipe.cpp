@@ -55,6 +55,12 @@ RecipeRegistry::RecipeRegistry() {
 
     // ============ Workbench ============
 
+    // Батут: кожа на полотно, дерево на раму. Кидается под ноги и
+    // подбрасывает — им перепрыгивают монстра и разгоняются.
+    add("Trampoline", StationType::Workbench, 1, false,
+        { { ITEM_LEATHER, 2 }, { ITEM_WOOD, 3 } },
+        ITEM_TRAMPOLINE, 1);
+
     // Iron Ingot from Iron Ore + Wood (топливо)
     add("Smelt Iron Ingot", StationType::Workbench, 1, false,
         { { ITEM_IRON_ORE, 2 }, { ITEM_WOOD, 1 } },

@@ -3,6 +3,7 @@
  * @brief Рендер: меширование чанков, отсечение, инстансинг, камера.
  */
 #include "item_renderer.h"
+#include "../items/throwable.h"
 #include "../items/item_pickup.h"
 #include "../items/item_def.h"
 #include "../ecs/components.h"
@@ -123,6 +124,37 @@ void ItemRenderer::rebuild(ecs::Registry& reg) {
         inst.rot = orient::yawQuat(tf->position.x * 0.3f + tf->position.z * 0.4f);
 
         cpu_.push_back(inst);
+    }
+
+    // ---- Брошенные батуты ----
+    //
+    // Рисуются здесь же: это такая же лежащая в мире коробка, и
+    // заводить ради неё отдельный конвейер не за чем. Площадка
+    // низкая и широкая — по ней и видно, что это не предмет, который
+    // можно подобрать.
+    {
+        auto& tramps = reg.pool<items::Trampoline>();
+        for (usize i = 0; i < tramps.size(); ++i) {
+            const ecs::Entity e = tramps.entityAt((u32)i);
+            auto* t  = tramps.get(e);
+            auto* tf = reg.get<ecs::Transform>(e);
+            if (!t || !tf) continue;
+
+            // Мигает перед тем, как исчезнуть, — как и подбираемое.
+            u8 alpha = 255;
+            if (t->lifeRemaining < 5.f &&
+                std::sin(t->lifeRemaining * 8.f) < 0.f) alpha = 80;
+
+            MobInstance inst{};
+            inst.pos  = tf->position +
+                        glm::vec3(0.f, items::TRAMPOLINE_PAD_H * 0.5f, 0.f);
+            inst.size = glm::vec3(t->radius * 2.f,
+                                  items::TRAMPOLINE_PAD_H,
+                                  t->radius * 2.f);
+            inst.colorGpu = packInstanceColor(0x2E6ED800u | alpha);
+            inst.rot = orient::yawQuat(0.f);
+            cpu_.push_back(inst);
+        }
     }
 
     instanceCount_ = (u32)cpu_.size();
