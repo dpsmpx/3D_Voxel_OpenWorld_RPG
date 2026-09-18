@@ -8,6 +8,7 @@
 #include "../ecs/components.h"
 #include "../physics/raycast.h"
 #include "../world/block.h"
+#include "../audio/audio_events.h"
 #include <cmath>
 #include <algorithm>
 #include <vector>
@@ -117,6 +118,16 @@ ecs::Entity checkOneCandidate(ecs::Registry& reg,
     return {};
 }
 
+/// Звук попадания снаряда.
+///
+/// Стрелы и заклинания попадали молча: audio::AudioEvents::arrowHit и
+/// spellHit были написаны и ни разу не позваны. Отличаем одно от
+/// другого по тому же полю isSpell, по которому снаряд рисуется.
+void projectileImpactSound(const Projectile& proj, const glm::vec3& pos) {
+    if (proj.isSpell) audio::events().spellHit(pos, (u8)proj.damage.type);
+    else              audio::events().arrowHit(pos);
+}
+
 } // namespace
 
 void updateProjectiles(world::ChunkManager& world,
@@ -154,6 +165,7 @@ void updateProjectiles(world::ChunkManager& world,
                 tf->position += dir * vhit.distance;
                 spawnHitFx(reg, tf->position, proj->colorRGBA,
                            0.15f, 0.55f, 0.18f);
+                projectileImpactSound(*proj, tf->position);
                 toDestroy.push_back(e);
                 continue;
             }
@@ -191,6 +203,7 @@ void updateProjectiles(world::ChunkManager& world,
 
             spawnHitFx(reg, tf->position, proj->colorRGBA,
                        0.25f, 1.10f, 0.22f);
+            projectileImpactSound(*proj, tf->position);
             toDestroy.push_back(e);
             continue;
         }

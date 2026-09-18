@@ -11,6 +11,7 @@
 #include "../items/item_pickup.h"
 #include "../items/loot_table.h"
 #include "../world/block.h"
+#include "../audio/audio_events.h"
 #include "../core/log.h"
 #include <cmath>
 #include <random>
@@ -433,6 +434,10 @@ void updateMobs(world::ChunkManager& world,
                     }
                     ai->attackCooldown = cooldown;
                     ai->attackAnim = 1.0f;
+                    // Замах моба был беззвучным: mobAttack() написан и
+                    // ни разу не позван. Игрок слышал только свой удар
+                    // и собственную боль — между ними ничего.
+                    audio::events().mobAttack(tf->position);
                 }
 
                 if (ai->stateTime > 1.5f) {

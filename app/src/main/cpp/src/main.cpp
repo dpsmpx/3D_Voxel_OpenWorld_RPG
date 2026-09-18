@@ -359,6 +359,20 @@ struct Engine {
             audio::events().uiClick();
         };
 
+        // Кнопка «в пояс» звала onMoveItem, а его никто не назначал:
+        // std::function пустой, вызова нет, выделение снималось — и
+        // предмет оставался на месте. Единственный коллбэк интерфейса
+        // из двенадцати, оставшийся без обработчика.
+        ui->onMoveItem = [this](u32 slotIndex, i32 dst) {
+            if (!player || dst < 0) return;
+            auto* inv = player->inventory();
+            if (!inv) return;
+            if (slotIndex >= items::INV_TOTAL_SLOTS ||
+                (u32)dst >= items::INV_TOTAL_SLOTS) return;
+            inv->swapSlots(slotIndex, (u32)dst);
+            audio::events().uiClick();
+        };
+
         ui->onDropItem = [this](u32 slotIndex) {
             if (!player) return;
             player->dropItem(slotIndex);
@@ -1112,6 +1126,12 @@ struct Engine {
                 physics::RayHit hit = player->targetBlock(*world);
                 if (player->tryBreakBlock(*world)) {
                     audio::events().blockBreak(hit.blockType, target);
+                } else if (hit.hit) {
+                    // Удар пришёлся, но блок остался: коренная порода.
+                    // Раньше это была полная тишина — неотличимая от
+                    // «палец не попал». hitBlock() как раз для такого
+                    // и написан, и до сих пор его никто не звал.
+                    audio::events().hitBlock(hit.blockType, target);
                 }
             }
 

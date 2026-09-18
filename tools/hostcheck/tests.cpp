@@ -63,7 +63,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <set>
+#include <dirent.h>
 #include "ui/hud_layout.h"
 #include "config/localization.h"
 #include "core/orientation.h"
@@ -925,6 +927,34 @@ static std::string readSource(const char* path) {
     while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
     std::fclose(f);
     return out;
+}
+
+/// Все .cpp и .h дерева исходников, кроме перечисленных.
+///
+/// Нужно там, где вопрос звучит «а ЗОВЁТ ли это хоть кто-нибудь».
+/// Список файлов вручную для такого вопроса не годится: дыру как раз
+/// и создаёт файл, который забыли внести в список.
+static void collectSources(const std::string& dir,
+                           const std::set<std::string>& skipNames,
+                           std::string& out)
+{
+    DIR* d = ::opendir(dir.c_str());
+    if (!d) return;
+    while (struct dirent* e = ::readdir(d)) {
+        const std::string name = e->d_name;
+        if (name == "." || name == "..") continue;
+        const std::string full = dir + "/" + name;
+        DIR* sub = ::opendir(full.c_str());
+        if (sub) { ::closedir(sub); collectSources(full, skipNames, out); continue; }
+        const usize dot = name.rfind('.');
+        if (dot == std::string::npos) continue;
+        const std::string ext = name.substr(dot);
+        if (ext != ".cpp" && ext != ".h") continue;
+        if (skipNames.count(name)) continue;
+        out += readSource(full.c_str());
+        out += "\n";
+    }
+    ::closedir(d);
 }
 
 /// Убирает строчные комментарии: в них слова «pow» и «smoothstep»
@@ -7354,6 +7384,121 @@ void testEveryPassSetsViewport() {
 }
 
 // ------------------------------------------------------------
+void testEveryUiCallbackIsWired() {
+    group("интерфейс: у каждого коллбэка есть обработчик");
+
+    // UiSystem не делает ничего сам: он зовёт std::function, которую
+    // ему выдали снаружи. Незаданная std::function пустая, и вызов
+    // через `if (cb) cb();` просто не случается — молча, без ошибки.
+    // Так кнопка «в пояс» два выпуска подряд снимала выделение и не
+    // перекладывала предмет: onMoveItem не назначал никто.
+    const std::string hdr =
+        readSource("app/src/main/cpp/src/ui/ui_system.h");
+    const std::string mainSrc =
+        readSource("app/src/main/cpp/src/main.cpp");
+    check(!hdr.empty() && !mainSrc.empty(), "исходники прочитаны");
+    if (hdr.empty() || mainSrc.empty()) return;
+
+    // Имена коллбэков: `std::function<...> onЧтоТо;` из раздела
+    // «Коллбэки». Дальше по файлу std::function встречается и внутри
+    // вложенных структур (Confirm::onYes) — там обработчик задаёт не
+    // main.cpp, а тот, кто открыл окно.
+    const usize secFrom = hdr.find("---- \u041a\u043e\u043b\u043b\u0431\u044d\u043a\u0438 ----");
+    const usize secTo   = (secFrom == std::string::npos)
+                        ? std::string::npos : hdr.find("struct ", secFrom);
+    check(secFrom != std::string::npos, "раздел коллбэков найден");
+    if (secFrom == std::string::npos) return;
+
+    std::vector<std::string> names;
+    usize p = secFrom;
+    while ((p = hdr.find("std::function<", p)) != std::string::npos &&
+           (secTo == std::string::npos || p < secTo)) {
+        const usize semi = hdr.find(';', p);
+        if (semi == std::string::npos) break;
+        const std::string decl = hdr.substr(p, semi - p);
+        // Искать «on» с начала нельзя: оно есть уже в «std::function».
+        // Имя стоит после закрывающей скобки шаблона.
+        const usize gt = decl.rfind('>');
+        const usize on = (gt == std::string::npos)
+                       ? std::string::npos : decl.find("on", gt);
+        if (on != std::string::npos) {
+            usize e = on;
+            while (e < decl.size() &&
+                   (std::isalnum((unsigned char)decl[e]) || decl[e] == '_')) ++e;
+            const std::string n = decl.substr(on, e - on);
+            if (n.size() > 2) names.push_back(n);
+        }
+        p = semi + 1;
+    }
+
+    check(names.size() >= 10, "коллбэки в заголовке найдены");
+    if (names.size() < 10) std::printf("       найдено %zu\n", names.size());
+
+    usize unwired = 0;
+    std::string firstBad;
+    for (const auto& n : names) {
+        // Присваивание обработчика: `ui->имя = `.
+        if (mainSrc.find("ui->" + n + " =") != std::string::npos) continue;
+        ++unwired;
+        if (firstBad.empty()) firstBad = n;
+    }
+    check(unwired == 0, "каждому назначен обработчик в main.cpp");
+    if (unwired) std::printf("       первый без обработчика: %s\n",
+                             firstBad.c_str());
+}
+
+// ------------------------------------------------------------
+void testEveryAudioEventIsFired() {
+    group("звук: каждое событие кто-то вызывает");
+
+    // AudioEvents — это список того, что игра умеет озвучить.
+    // Метод, который написан и ни разу не позван, выглядит в
+    // заголовке как работающий звук, а на устройстве его просто нет.
+    // Так молчали попадание стрелы, попадание заклинания, замах моба
+    // и закрытие окна: четыре события из тридцати одного.
+    const std::string hdr =
+        readSource("app/src/main/cpp/src/audio/audio_events.h");
+    check(!hdr.empty(), "заголовок звуковых событий прочитан");
+    if (hdr.empty()) return;
+
+    // Имена методов: строки вида `    void имя(` внутри class.
+    std::vector<std::string> names;
+    usize p = 0;
+    while ((p = hdr.find("void ", p)) != std::string::npos) {
+        const usize s0 = p + 5;
+        usize e = s0;
+        while (e < hdr.size() &&
+               (std::isalnum((unsigned char)hdr[e]) || hdr[e] == '_')) ++e;
+        if (e < hdr.size() && hdr[e] == '(') {
+            const std::string n = hdr.substr(s0, e - s0);
+            if (n != "setEngine") names.push_back(n);
+        }
+        p = e;
+    }
+    check(names.size() >= 25, "события в заголовке найдены");
+    if (names.size() < 25) std::printf("       найдено %zu\n", names.size());
+
+    // Весь код игры, кроме самого модуля звука: там эти имена стоят
+    // в определениях, а не в вызовах.
+    std::string all;
+    collectSources("app/src/main/cpp/src",
+                   { "audio_events.h", "audio_events.cpp" }, all);
+    check(all.size() > 100000, "исходники игры прочитаны");
+    if (all.size() <= 100000) return;
+
+    usize silent = 0;
+    std::string firstBad;
+    for (const auto& n : names) {
+        if (all.find("()." + n + "(") != std::string::npos) continue;
+        ++silent;
+        if (firstBad.empty()) firstBad = n;
+    }
+    check(silent == 0, "ни одно не осталось без вызова");
+    if (silent) std::printf("       первое без вызова: %s (всего %zu)\n",
+                            firstBad.c_str(), silent);
+}
+
+// ------------------------------------------------------------
 void testVillageHousesAreBuildings() {
     group("деревня: дом построен, а не насыпан");
 
@@ -10227,6 +10372,8 @@ int main() {
     testEntityInstanceBudget();
     testInstanceColorByteOrder();
     testEveryPassSetsViewport();
+    testEveryUiCallbackIsWired();
+    testEveryAudioEventIsFired();
     testGaitPhaseFollowsDistance();
     testPlayerHasModel();
     testBufferMapContract();

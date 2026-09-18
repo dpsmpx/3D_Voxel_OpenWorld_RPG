@@ -23,6 +23,7 @@
 #include "../world/enchant_altar.h"
 #include "../config/settings.h"
 #include "../config/localization.h"
+#include "../audio/audio_events.h"
 #include "../ecs/components.h"
 #include "../core/log.h"
 #include <cstdio>
@@ -2503,7 +2504,14 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
 // с остальными, и заметить это было бы негде.
 void UiSystem::drawCloseButton(std::function<void()> onClose) {
     const Rect r = layout_.closeButton();
-    const int idx = ui_.pushInteractiveRect(r, std::move(onClose));
+    // Открытие экрана щёлкало, закрытие — нет: uiBack() был написан и
+    // ни разу не позван. Здесь единственная кнопка закрытия на все
+    // экраны, поэтому звук ставится один раз и на все сразу.
+    const int idx = ui_.pushInteractiveRect(
+        r, [close = std::move(onClose)]() {
+            audio::events().uiBack();
+            if (close) close();
+        });
     const bool pressed = ui_.isInteractivePressed(idx);
 
     ui_.rect(r.x, r.y, r.w, r.h, pressed ? theme::Danger : theme::PanelRaised);
