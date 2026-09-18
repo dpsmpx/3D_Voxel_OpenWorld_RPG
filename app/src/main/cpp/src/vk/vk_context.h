@@ -40,6 +40,33 @@ public:
     VkRenderPass     renderPass()    const { return renderPass_; }
     VkCommandBuffer  currentCmd()    const { return cmdBuffers_[currentFrame_]; }
     VkExtent2D       extent()        const { return swapExtent_; }
+
+    /// Вьюпорт и ножницы во весь кадр — для ТЕКУЩЕГО командного буфера.
+    ///
+    /// Оба объявлены динамическим состоянием у каждого конвейера
+    /// (vk_pipeline.cpp), а динамическое состояние НЕ наследуется
+    /// между командными буферами и не имеет значения по умолчанию:
+    /// рисовать, не задав его в этом буфере, — неопределённое
+    /// поведение. Задавали его не все проходы: трава, вода и контур
+    /// блока пользовались тем, что оставил предыдущий. Держалось это
+    /// только на их порядке, а с выключателем проходов
+    /// (render_passes) порядок перестал быть постоянным: сняв
+    /// ландшафт, сущности и небо, оставшиеся проходы рисовали вовсе
+    /// без вьюпорта. Слоя проверки на устройстве нет, и сказать об
+    /// этом было некому.
+    ///
+    /// Поэтому зовёт её КАЖДЫЙ проход, и определение одно на всех.
+    void setFullViewport(VkCommandBuffer cmd) const {
+        VkViewport vp{};
+        vp.x = 0.f; vp.y = 0.f;
+        vp.width  = (f32)swapExtent_.width;
+        vp.height = (f32)swapExtent_.height;
+        vp.minDepth = 0.f; vp.maxDepth = 1.f;
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+
+        VkRect2D sc{}; sc.extent = swapExtent_;
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+    }
     VkFormat         colorFormat()   const { return swapFormat_; }
     VkFormat         depthFormat()   const { return depthFormat_; }
     VkQueue          gfxQueue()      const { return gfxQueue_; }

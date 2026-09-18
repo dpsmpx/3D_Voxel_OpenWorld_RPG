@@ -80,8 +80,9 @@ void updateProjectiles(world::ChunkManager& world,
 /// Покадровое обновление HitFx.
 void updateHitFx(ecs::Registry& reg, f32 dt);
 
-ecs::Entity projectileCheckEntityHit(ecs::Registry& reg,
-                                     const Projectile& proj,
-                                     const glm::vec3& position);
+// Здесь объявлялась projectileCheckEntityHit(). Тело у неё было
+// «return {}» — то есть «ни в кого не попал», всегда, — и звать её
+// никто не звал: попадание снаряда в сущность давно считает
+// updateProjectiles(), там же, где применяет урон.
 
 } // namespace combat

@@ -30,10 +30,35 @@ namespace render {
 /// Теперь кватернион: 32 → 48 байт на коробку. При полусотне сущностей
 /// по дюжине частей это 600 коробок, то есть 28 КБ вместо 19 — цена
 /// пренебрежимая, а качание в суставе становится возможным.
+/// Цвет 0xRRGGBBAA — в слово, которое видеокарта прочитает как R,G,B,A.
+///
+/// Весь проект складывает цвет как 0xRRGGBBAA: так его видно в
+/// исходнике (тон кожи 0xF2D3B0FF — это 242, 211, 176). Атрибут же
+/// объявлен VK_FORMAT_R8G8B8A8_UNORM, а такой формат берёт четыре
+/// байта В ПОРЯДКЕ ПАМЯТИ. На порядке байтов от младшего (ARM, x86)
+/// слово 0xRRGGBBAA лежит в памяти как AA BB GG RR, и шейдер получал
+/// R=A, G=B, B=G, A=R.
+///
+/// Тот же тон кожи приходил как (255, 176, 211) — ярко-розовый; тело
+/// стражника rgb(60,60,70) — как (255, 70, 60), красное. Альфа при
+/// этом бралась из байта R, а конвейер снарядов объявлен со
+/// смешиванием: прозрачность выходила произвольной.
+///
+/// Террейн и трава этим не болеют — они хранят цвет байтами по
+/// отдельности. Здесь то же самое делается на входе в буфер.
+inline u32 packInstanceColor(u32 rgba) {
+    const u32 r = (rgba >> 24) & 0xFFu, g = (rgba >> 16) & 0xFFu;
+    const u32 b = (rgba >>  8) & 0xFFu, a =  rgba        & 0xFFu;
+    return r | (g << 8) | (b << 16) | (a << 24);
+}
+
 struct MobInstance {
     glm::vec3 pos;      ///< центр коробки в мире
     glm::vec3 size;
-    u32       color;
+    /// Байты в порядке R,G,B,A — так, как их читает видеокарта.
+    /// Присваивать только через packInstanceColor(). Имя нарочно не
+    /// color: забытое место не соберётся, а не покрасится молча.
+    u32       colorGpu;
     f32       _pad;     ///< выравнивание кватерниона на 16 байт
     glm::vec4 rot;      ///< кватернион (x, y, z, w)
 };
@@ -64,7 +89,7 @@ static const vk::VertexAttr MOB_ATTRS[5] = {
 // были исходной ошибкой.
 static_assert(offsetof(MobInstance, pos)   ==  0);
 static_assert(offsetof(MobInstance, size)  == 12);
-static_assert(offsetof(MobInstance, color) == 24);
+static_assert(offsetof(MobInstance, colorGpu) == 24);
 static_assert(offsetof(MobInstance, rot)   == 32);
 constexpr u32 MOB_BINDING_COUNT = 2;
 constexpr u32 MOB_ATTR_COUNT    = 5;

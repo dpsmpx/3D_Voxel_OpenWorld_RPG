@@ -80,6 +80,7 @@ void BlockOutline::render(vk::Context& ctx, VkDescriptorSet uboSet,
     pc.pos = glm::vec4((f32)bp.x - 0.002f, (f32)bp.y - 0.002f,
                        (f32)bp.z - 0.002f, 1.f);
 
+    ctx.setFullViewport(cmd);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline_.layout(), 0, 1, &uboSet, 0, nullptr);

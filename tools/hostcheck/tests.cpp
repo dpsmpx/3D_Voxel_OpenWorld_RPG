@@ -52,6 +52,7 @@
 #include "mobs/mob_def.h"
 #include "save/save_manager.h"
 #include "ui/ui_context.h"
+#include "ui/slider.h"
 #include "world/features.h"
 #include "world/ai/pathfinding.h"
 #include "core/job_system.h"
@@ -62,7 +63,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <set>
+#include <dirent.h>
 #include "ui/hud_layout.h"
 #include "config/localization.h"
 #include "core/orientation.h"
@@ -924,6 +927,34 @@ static std::string readSource(const char* path) {
     while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
     std::fclose(f);
     return out;
+}
+
+/// Все .cpp и .h дерева исходников, кроме перечисленных.
+///
+/// Нужно там, где вопрос звучит «а ЗОВЁТ ли это хоть кто-нибудь».
+/// Список файлов вручную для такого вопроса не годится: дыру как раз
+/// и создаёт файл, который забыли внести в список.
+static void collectSources(const std::string& dir,
+                           const std::set<std::string>& skipNames,
+                           std::string& out)
+{
+    DIR* d = ::opendir(dir.c_str());
+    if (!d) return;
+    while (struct dirent* e = ::readdir(d)) {
+        const std::string name = e->d_name;
+        if (name == "." || name == "..") continue;
+        const std::string full = dir + "/" + name;
+        DIR* sub = ::opendir(full.c_str());
+        if (sub) { ::closedir(sub); collectSources(full, skipNames, out); continue; }
+        const usize dot = name.rfind('.');
+        if (dot == std::string::npos) continue;
+        const std::string ext = name.substr(dot);
+        if (ext != ".cpp" && ext != ".h") continue;
+        if (skipNames.count(name)) continue;
+        out += readSource(full.c_str());
+        out += "\n";
+    }
+    ::closedir(d);
 }
 
 /// Убирает строчные комментарии: в них слова «pow» и «smoothstep»
@@ -3945,6 +3976,93 @@ void testShadersAvoidUndefinedMath() {
         const usize o = vf.find("outColor = vec4(clamp(");
         check(o != std::string::npos,
               "итоговый цвет террейна ограничен [0,1]");
+    }
+}
+
+// ------------------------------------------------------------
+// Переключатели настроек
+// ------------------------------------------------------------
+void testSettingsTogglesActuallyToggle() {
+    group("настройки: переключатель и правда переключает");
+
+    // Тап разбирается С КОНЦА списка интерактивных областей: побеждает
+    // зарегистрированный ПОСЛЕДНИМ. Место вызова заводит область со
+    // своим обработчиком, а рисующий виджет заводил поверх неё вторую,
+    // с nullptr, — и обработчик не срабатывал никогда. Слайдеры
+    // устроены иначе и работали: там область одна, и значение двигает
+    // сам виджет.
+    ui::UiContext ctx;
+    ctx.init(nullptr, 1000, 500);
+
+    bool value  = false;
+    int  taps   = 0;
+    const ui::Rect r{ 100.f, 100.f, 300.f, 60.f };
+
+    auto frame = [&]() {
+        ctx.beginFrame();
+        const int idx = ctx.pushInteractiveRect(r, [&]() { value = !value; ++taps; });
+        ui::toggleWidget(ctx, r, idx, &value, "Инверсия X");
+        ctx.endFrame();
+        return idx;
+    };
+
+    frame();
+    check(ctx.handleTouch(1, 200.f, 130.f, 0), "нажатие попало в переключатель");
+    frame();
+    check(ctx.handleTouch(1, 200.f, 130.f, 1), "отпускание принято");
+    check(taps == 1, "обработчик места вызова сработал");
+    check(value, "значение переключилось");
+
+    // И обратно.
+    frame();
+    ctx.handleTouch(2, 200.f, 130.f, 0);
+    frame();
+    ctx.handleTouch(2, 200.f, 130.f, 1);
+    check(taps == 2 && !value, "второй тап вернул значение обратно");
+
+    // Нажатое состояние виджет берёт у места вызова, а не заводит своё.
+    frame();
+    ctx.handleTouch(3, 200.f, 130.f, 0);
+    const int idx = frame();
+    check(ctx.isInteractivePressed(idx), "подсветка нажатия видна виджету");
+    ctx.handleTouch(3, 200.f, 130.f, 1);
+
+    // Выбор из списка — то же самое.
+    u32 lang = 0;
+    int cycles = 0;
+    static const char* opts[3] = { "English", "Русский", "Deutsch" };
+    auto cycleFrame = [&]() {
+        ctx.beginFrame();
+        const int i = ctx.pushInteractiveRect(r, [&]() {
+            lang = (lang + 1) % 3; ++cycles;
+        });
+        ui::cycleWidget(ctx, r, i, "Язык", opts, 3, &lang);
+        ctx.endFrame();
+    };
+    cycleFrame();
+    ctx.handleTouch(4, 200.f, 130.f, 0);
+    cycleFrame();
+    ctx.handleTouch(4, 200.f, 130.f, 1);
+    check(cycles == 1 && lang == 1, "выбор языка переключился");
+
+    // ---- Исходники ----
+    //
+    // Виджет рисует. Заводить интерактивную область — дело места
+    // вызова: оно одно знает, что делать по тапу.
+    const std::string s = readSource("app/src/main/cpp/src/ui/slider.cpp");
+    if (!s.empty()) {
+        const usize t = s.find("void toggleWidget");
+        const usize c = s.find("void cycleWidget");
+        check(t != std::string::npos && c != std::string::npos,
+              "оба виджета на месте");
+        if (t != std::string::npos && c != std::string::npos) {
+            const std::string tb = s.substr(t, c - t);
+            check(tb.find("pushInteractiveRect") == std::string::npos,
+                  "переключатель своей области не заводит");
+            const std::string cb = s.substr(c);
+            check(cb.find("pushInteractiveRect") == std::string::npos,
+                  "выбор из списка — тоже");
+        }
     }
 }
 
@@ -7109,6 +7227,278 @@ void testEntityInstanceBudget() {
 // стене -Z независимо от того, где центр деревни, поэтому у половины
 // домов вход смотрел в поле. Окон не было вовсе.
 // ------------------------------------------------------------
+// Порядок каналов цвета у инстансных коробок
+// ------------------------------------------------------------
+void testInstanceColorByteOrder() {
+    group("инстансы: цвет доходит до видеокарты в своём порядке");
+
+    // Атрибут объявлен VK_FORMAT_R8G8B8A8_UNORM. Такой формат берёт
+    // четыре байта В ПОРЯДКЕ ПАМЯТИ, а не разряды слова. Значит
+    // проверять надо именно память, а не число.
+    render::MobInstance inst{};
+    inst.colorGpu = render::packInstanceColor(0xF2D3B0FFu);   // тон кожи
+
+    u8 bytes[4];
+    std::memcpy(bytes, &inst.colorGpu, 4);
+    check(bytes[0] == 0xF2, "первый байт — красный");
+    check(bytes[1] == 0xD3, "второй — зелёный");
+    check(bytes[2] == 0xB0, "третий — синий");
+    check(bytes[3] == 0xFF, "четвёртый — альфа");
+
+    // Тот же тон без упаковки лёг бы в память задом наперёд, и
+    // шейдер прочёл бы ярко-розовое вместо кожи. Проверка не на
+    // реализацию, а на то, что упаковка вообще что-то меняет.
+    u32 raw = 0xF2D3B0FFu;
+    u8 rawBytes[4];
+    std::memcpy(rawBytes, &raw, 4);
+    check(rawBytes[0] != 0xF2 || rawBytes[3] != 0xFF,
+          "без упаковки порядок байтов был бы другим");
+
+    // Непрозрачное остаётся непрозрачным: раньше альфа приходила из
+    // байта R, и у снарядов со смешиванием она выходила произвольной.
+    for (u32 c : { 0x000000FFu, 0xFFFFFFFFu, 0x60D060FFu, 0x4090FFFFu }) {
+        u8 b4[4];
+        const u32 packed = render::packInstanceColor(c);
+        std::memcpy(b4, &packed, 4);
+        if (b4[3] != 0xFF) { check(false, "альфа непрозрачного цвета уцелела"); break; }
+        if (c == 0x4090FFFFu) check(true, "альфа непрозрачного цвета уцелела");
+    }
+
+    // Полупрозрачность снаряда доходит как задумана.
+    const u32 fade = render::packInstanceColor(0x80C0FF40u);
+    u8 fb[4];
+    std::memcpy(fb, &fade, 4);
+    check(fb[3] == 0x40, "полупрозрачность снаряда доходит как задумана");
+
+    // Обратное преобразование ничего не теряет.
+    const u32 back = render::packInstanceColor(render::packInstanceColor(0x123456A5u));
+    check(back == 0x123456A5u, "упаковка обратима сама себе");
+
+    // ---- Исходники ----
+    //
+    // Поле называется colorGpu нарочно: забытое место присваивания не
+    // соберётся. Проверка стережёт и это имя, и формат атрибута — на
+    // нём держится вся раскладка байтов.
+    const std::string h = readSource("app/src/main/cpp/src/render/mob_renderer.h");
+    if (!h.empty()) {
+        check(h.find("u32       colorGpu;") != std::string::npos,
+              "поле инстанса называется colorGpu");
+        check(h.find("VK_FORMAT_R8G8B8A8_UNORM") != std::string::npos,
+              "атрибут цвета читает байты в порядке памяти");
+        check(h.find("static_assert(offsetof(MobInstance, colorGpu) == 24);")
+              != std::string::npos, "смещение цвета сверяется компилятором");
+    }
+    usize raws = 0;
+    for (const char* f : { "app/src/main/cpp/src/render/mob_renderer.cpp",
+                           "app/src/main/cpp/src/render/npc_renderer.cpp",
+                           "app/src/main/cpp/src/render/item_renderer.cpp",
+                           "app/src/main/cpp/src/render/projectile_renderer.cpp" }) {
+        const std::string s = readSource(f);
+        for (usize i = s.find("inst.color"); i != std::string::npos;
+             i = s.find("inst.color", i + 1))
+            if (s.compare(i, 14, "inst.colorGpu ") != 0 &&
+                s.compare(i, 13, "inst.colorGpu") != 0) ++raws;
+    }
+    check(raws == 0, "цвет инстанса нигде не присваивается в обход упаковки");
+}
+
+// ------------------------------------------------------------
+// Динамическое состояние задают все проходы
+// ------------------------------------------------------------
+void testEveryPassSetsViewport() {
+    group("проходы: вьюпорт и ножницы задаёт каждый, кто рисует");
+
+    // Вьюпорт и ножницы объявлены динамическим состоянием у каждого
+    // конвейера. Динамическое состояние НЕ наследуется между
+    // командными буферами и не имеет значения по умолчанию: рисовать,
+    // не задав его в этом буфере, — неопределённое поведение.
+    //
+    // Задавали его не все: трава, вода и контур блока пользовались
+    // тем, что оставил предыдущий проход. Держалось это на их
+    // порядке, а выключатель проходов (render_passes) сделал порядок
+    // непостоянным — сняв ландшафт, сущности и небо, оставшиеся
+    // рисовали вовсе без вьюпорта. Слоя проверки на устройстве нет,
+    // сказать об этом было некому.
+    static const char* files[] = {
+        "app/src/main/cpp/src/render/chunk_renderer.cpp",
+        "app/src/main/cpp/src/render/instanced_renderer.cpp",
+        "app/src/main/cpp/src/render/mob_renderer.cpp",
+        "app/src/main/cpp/src/render/npc_renderer.cpp",
+        "app/src/main/cpp/src/render/item_renderer.cpp",
+        "app/src/main/cpp/src/render/projectile_renderer.cpp",
+        "app/src/main/cpp/src/render/block_outline.cpp",
+        "app/src/main/cpp/src/render/skybox.cpp",
+        "app/src/main/cpp/src/ui/ui_renderer.cpp",
+    };
+
+    usize draws = 0, missing = 0;
+    std::string firstBad;
+    for (const char* f : files) {
+        const std::string src = readSource(f);
+        if (src.empty()) continue;
+        // Тела функций верхнего уровня: между закрывающими скобками в
+        // первой колонке. Грубо, но для этих файлов ровно так и есть.
+        usize from = 0;
+        while (from < src.size()) {
+            usize end = src.find("\n}\n", from);
+            const std::string body =
+                src.substr(from, (end == std::string::npos ? src.size() : end) - from);
+            from = (end == std::string::npos) ? src.size() : end + 3;
+
+            // Точка входа прохода — та, которой передали контекст и
+            // которая привязывает свой конвейер. Внутренние помощники
+            // вроде ChunkRenderer::drawMesh рисуют по чужому
+            // командному буферу и уже привязанным конвейером: вьюпорт
+            // за них задал позвавший.
+            if (body.find("vkCmdBindPipeline") == std::string::npos) continue;
+            if (body.find("vk::Context& ctx") == std::string::npos) continue;
+            ++draws;
+            if (body.find("setFullViewport") != std::string::npos) continue;
+            ++missing;
+            if (firstBad.empty()) {
+                const usize s = body.rfind("\nvoid ");
+                firstBad = std::string(f) + ": " +
+                           (s == std::string::npos ? std::string("?")
+                                                   : body.substr(s + 1, 60));
+            }
+        }
+    }
+
+    check(draws >= 10, "проходы, которые рисуют, найдены");
+    if (draws < 9) std::printf("       найдено только %zu\n", draws);
+    check(missing == 0, "каждый из них задаёт вьюпорт и ножницы сам");
+    if (missing) std::printf("       первый без вьюпорта: %s\n", firstBad.c_str());
+
+    // Определение одно на всех: семь дословных копий этого блока и
+    // были тем, из-за чего три прохода про него забыли.
+    const std::string h = readSource("app/src/main/cpp/src/vk/vk_context.h");
+    if (!h.empty())
+        check(h.find("void setFullViewport(VkCommandBuffer cmd) const")
+              != std::string::npos, "и берёт его из одного определения");
+    usize copies = 0;
+    for (const char* f : files) {
+        const std::string src = readSource(f);
+        if (src.find("vkCmdSetViewport") != std::string::npos) ++copies;
+    }
+    check(copies == 0, "своих копий vkCmdSetViewport у проходов не осталось");
+}
+
+// ------------------------------------------------------------
+void testEveryUiCallbackIsWired() {
+    group("интерфейс: у каждого коллбэка есть обработчик");
+
+    // UiSystem не делает ничего сам: он зовёт std::function, которую
+    // ему выдали снаружи. Незаданная std::function пустая, и вызов
+    // через `if (cb) cb();` просто не случается — молча, без ошибки.
+    // Так кнопка «в пояс» два выпуска подряд снимала выделение и не
+    // перекладывала предмет: onMoveItem не назначал никто.
+    const std::string hdr =
+        readSource("app/src/main/cpp/src/ui/ui_system.h");
+    const std::string mainSrc =
+        readSource("app/src/main/cpp/src/main.cpp");
+    check(!hdr.empty() && !mainSrc.empty(), "исходники прочитаны");
+    if (hdr.empty() || mainSrc.empty()) return;
+
+    // Имена коллбэков: `std::function<...> onЧтоТо;` из раздела
+    // «Коллбэки». Дальше по файлу std::function встречается и внутри
+    // вложенных структур (Confirm::onYes) — там обработчик задаёт не
+    // main.cpp, а тот, кто открыл окно.
+    const usize secFrom = hdr.find("---- \u041a\u043e\u043b\u043b\u0431\u044d\u043a\u0438 ----");
+    const usize secTo   = (secFrom == std::string::npos)
+                        ? std::string::npos : hdr.find("struct ", secFrom);
+    check(secFrom != std::string::npos, "раздел коллбэков найден");
+    if (secFrom == std::string::npos) return;
+
+    std::vector<std::string> names;
+    usize p = secFrom;
+    while ((p = hdr.find("std::function<", p)) != std::string::npos &&
+           (secTo == std::string::npos || p < secTo)) {
+        const usize semi = hdr.find(';', p);
+        if (semi == std::string::npos) break;
+        const std::string decl = hdr.substr(p, semi - p);
+        // Искать «on» с начала нельзя: оно есть уже в «std::function».
+        // Имя стоит после закрывающей скобки шаблона.
+        const usize gt = decl.rfind('>');
+        const usize on = (gt == std::string::npos)
+                       ? std::string::npos : decl.find("on", gt);
+        if (on != std::string::npos) {
+            usize e = on;
+            while (e < decl.size() &&
+                   (std::isalnum((unsigned char)decl[e]) || decl[e] == '_')) ++e;
+            const std::string n = decl.substr(on, e - on);
+            if (n.size() > 2) names.push_back(n);
+        }
+        p = semi + 1;
+    }
+
+    check(names.size() >= 10, "коллбэки в заголовке найдены");
+    if (names.size() < 10) std::printf("       найдено %zu\n", names.size());
+
+    usize unwired = 0;
+    std::string firstBad;
+    for (const auto& n : names) {
+        // Присваивание обработчика: `ui->имя = `.
+        if (mainSrc.find("ui->" + n + " =") != std::string::npos) continue;
+        ++unwired;
+        if (firstBad.empty()) firstBad = n;
+    }
+    check(unwired == 0, "каждому назначен обработчик в main.cpp");
+    if (unwired) std::printf("       первый без обработчика: %s\n",
+                             firstBad.c_str());
+}
+
+// ------------------------------------------------------------
+void testEveryAudioEventIsFired() {
+    group("звук: каждое событие кто-то вызывает");
+
+    // AudioEvents — это список того, что игра умеет озвучить.
+    // Метод, который написан и ни разу не позван, выглядит в
+    // заголовке как работающий звук, а на устройстве его просто нет.
+    // Так молчали попадание стрелы, попадание заклинания, замах моба
+    // и закрытие окна: четыре события из тридцати одного.
+    const std::string hdr =
+        readSource("app/src/main/cpp/src/audio/audio_events.h");
+    check(!hdr.empty(), "заголовок звуковых событий прочитан");
+    if (hdr.empty()) return;
+
+    // Имена методов: строки вида `    void имя(` внутри class.
+    std::vector<std::string> names;
+    usize p = 0;
+    while ((p = hdr.find("void ", p)) != std::string::npos) {
+        const usize s0 = p + 5;
+        usize e = s0;
+        while (e < hdr.size() &&
+               (std::isalnum((unsigned char)hdr[e]) || hdr[e] == '_')) ++e;
+        if (e < hdr.size() && hdr[e] == '(') {
+            const std::string n = hdr.substr(s0, e - s0);
+            if (n != "setEngine") names.push_back(n);
+        }
+        p = e;
+    }
+    check(names.size() >= 25, "события в заголовке найдены");
+    if (names.size() < 25) std::printf("       найдено %zu\n", names.size());
+
+    // Весь код игры, кроме самого модуля звука: там эти имена стоят
+    // в определениях, а не в вызовах.
+    std::string all;
+    collectSources("app/src/main/cpp/src",
+                   { "audio_events.h", "audio_events.cpp" }, all);
+    check(all.size() > 100000, "исходники игры прочитаны");
+    if (all.size() <= 100000) return;
+
+    usize silent = 0;
+    std::string firstBad;
+    for (const auto& n : names) {
+        if (all.find("()." + n + "(") != std::string::npos) continue;
+        ++silent;
+        if (firstBad.empty()) firstBad = n;
+    }
+    check(silent == 0, "ни одно не осталось без вызова");
+    if (silent) std::printf("       первое без вызова: %s (всего %zu)\n",
+                            firstBad.c_str(), silent);
+}
+
+// ------------------------------------------------------------
 void testVillageHousesAreBuildings() {
     group("деревня: дом построен, а не насыпан");
 
@@ -9944,6 +10334,7 @@ int main() {
     testFrameRateLimitSetting();
     testClipboardLogTrimming();
     testWaterSortedByWaterCenter();
+    testSettingsTogglesActuallyToggle();
     testUiTapSurvivesRedraw();
     testHudAndButtonsDoNotOverlap();
     testLoadingIsAPanelNotACurtain();
@@ -9979,6 +10370,10 @@ int main() {
     testWalkingNeverTeleports();
     testShowcaseHoldsEveryModel();
     testEntityInstanceBudget();
+    testInstanceColorByteOrder();
+    testEveryPassSetsViewport();
+    testEveryUiCallbackIsWired();
+    testEveryAudioEventIsFired();
     testGaitPhaseFollowsDistance();
     testPlayerHasModel();
     testBufferMapContract();

@@ -81,7 +81,7 @@ void ProjectileRenderer::rebuild(ecs::Registry& reg) {
 
             MobInstance inst{};
             inst.pos   = tf->position;
-            inst.color = p->colorRGBA;
+            inst.colorGpu = packInstanceColor(p->colorRGBA);
 
             // Снаряд летит вдоль своей скорости — и выглядеть обязан
             // так же. Заклинание это сгусток, ему направление не
@@ -122,7 +122,7 @@ void ProjectileRenderer::rebuild(ecs::Registry& reg) {
             MobInstance inst{};
             inst.pos   = tf->position;
             inst.size  = glm::vec3(s);
-            inst.color = faded;
+            inst.colorGpu = packInstanceColor(faded);
             inst.rot = orient::yawQuat(0.f);
             cpu_.push_back(inst);
         }
@@ -146,13 +146,7 @@ void ProjectileRenderer::render(vk::Context& ctx, VkDescriptorSet set) {
     if (instanceCount_ == 0 || !instances_.handle() || !pipeline_.valid()) return;
     VkCommandBuffer cmd = ctx.currentCmd();
 
-    VkViewport vp{};
-    vp.width  = (f32)ctx.extent().width;
-    vp.height = (f32)ctx.extent().height;
-    vp.minDepth = 0.f; vp.maxDepth = 1.f;
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-    VkRect2D sc{}; sc.extent = ctx.extent();
-    vkCmdSetScissor(cmd, 0, 1, &sc);
+    ctx.setFullViewport(cmd);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,

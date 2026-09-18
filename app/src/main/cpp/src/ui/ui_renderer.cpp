@@ -192,13 +192,7 @@ bool UiRenderer::ensureCapacity(FrameBuf& b, u32 vertsNeeded) {
 void UiRenderer::flush(vk::Context& ctx) {
     VkCommandBuffer cmd = ctx.currentCmd();
 
-    VkViewport vp{};
-    vp.width  = (f32)ctx.extent().width;
-    vp.height = (f32)ctx.extent().height;
-    vp.minDepth = 0.f; vp.maxDepth = 1.f;
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-    VkRect2D sc{}; sc.extent = ctx.extent();
-    vkCmdSetScissor(cmd, 0, 1, &sc);
+    ctx.setFullViewport(cmd);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
 

@@ -119,7 +119,7 @@ void ItemRenderer::rebuild(ecs::Registry& reg) {
         MobInstance inst{};
         inst.pos   = tf->position + glm::vec3(0, 0.25f + bob, 0);
         inst.size  = glm::vec3(0.35f);
-        inst.color = c;
+        inst.colorGpu = packInstanceColor(c);
         inst.rot = orient::yawQuat(tf->position.x * 0.3f + tf->position.z * 0.4f);
 
         cpu_.push_back(inst);
@@ -143,13 +143,7 @@ void ItemRenderer::render(vk::Context& ctx, VkDescriptorSet set) {
     if (instanceCount_ == 0 || !instances_.handle() || !pipeline_.valid()) return;
     VkCommandBuffer cmd = ctx.currentCmd();
 
-    VkViewport vp{};
-    vp.width  = (f32)ctx.extent().width;
-    vp.height = (f32)ctx.extent().height;
-    vp.minDepth = 0.f; vp.maxDepth = 1.f;
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-    VkRect2D sc{}; sc.extent = ctx.extent();
-    vkCmdSetScissor(cmd, 0, 1, &sc);
+    ctx.setFullViewport(cmd);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,

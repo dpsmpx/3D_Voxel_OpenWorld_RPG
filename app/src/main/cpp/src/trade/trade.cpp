@@ -16,14 +16,6 @@ using namespace items;
 // ============================================================
 // TradeInventory
 // ============================================================
-void TradeInventory::tick(f32 dt) {
-    restockTimer += dt;
-    if (restockTimer >= RESTOCK_INTERVAL_SEC) {
-        restockTimer = 0.f;
-        restock();
-    }
-}
-
 void TradeInventory::restock() {
     for (auto& e : entries) {
         if (e.stock < e.maxStock) {

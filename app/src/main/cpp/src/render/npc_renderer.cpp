@@ -148,20 +148,21 @@ void NpcRenderer::rebuild(ecs::Registry& reg, f32 timeSec, bool showPlayer) {
             MobInstance inst{};
             inst.pos   = parts[k].center;
             inst.size  = parts[k].size;
-            inst.color = parts[k].color;
             inst.rot   = glm::vec4(parts[k].rot.x, parts[k].rot.y,
                                    parts[k].rot.z, parts[k].rot.w);
+            u32 rgba   = parts[k].color;
 
             if (ai->damageFlash > 0.f) {
                 const f32 t = ai->damageFlash / 0.15f;
-                u8 r = (inst.color >> 24) & 0xFF;
-                u8 g = (inst.color >> 16) & 0xFF;
-                u8 b = (inst.color >>  8) & 0xFF;
+                u8 r = (rgba >> 24) & 0xFF;
+                u8 g = (rgba >> 16) & 0xFF;
+                u8 b = (rgba >>  8) & 0xFF;
                 r = (u8)(r * (1.f - t) + 255.f * t);
                 g = (u8)(g * (1.f - t) +  40.f * t);
                 b = (u8)(b * (1.f - t) +  40.f * t);
-                inst.color = ((u32)r << 24) | ((u32)g << 16) | ((u32)b << 8) | 0xFF;
+                rgba = ((u32)r << 24) | ((u32)g << 16) | ((u32)b << 8) | 0xFF;
             }
+            inst.colorGpu = packInstanceColor(rgba);
             cpu_.push_back(inst);
         }
 
@@ -178,8 +179,9 @@ void NpcRenderer::rebuild(ecs::Registry& reg, f32 timeSec, bool showPlayer) {
                              glm::vec3(0.f, def.bodyHeight + 0.35f, 0.f);
                 inst.size  = quest ? glm::vec3(0.35f, 0.35f, 0.1f)
                                    : glm::vec3(0.30f, 0.30f, 0.1f);
-                inst.color = quest ? 0xFFD040FFu    // жёлтый «!»
-                                   : 0xFFC040FFu;   // золотая монета
+                inst.colorGpu = packInstanceColor(
+                                     quest ? 0xFFD040FFu    // жёлтый «!»
+                                           : 0xFFC040FFu);  // золотая монета
                 inst.rot   = orient::yawQuat(yaw);
                 cpu_.push_back(inst);
             }
@@ -248,7 +250,7 @@ void NpcRenderer::appendPlayer(ecs::Registry& reg, f32 timeSec) {
             MobInstance inst{};
             inst.pos   = parts[k].center;
             inst.size  = parts[k].size;
-            inst.color = parts[k].color;
+            inst.colorGpu = packInstanceColor(parts[k].color);
             inst.rot   = glm::vec4(parts[k].rot.x, parts[k].rot.y,
                                    parts[k].rot.z, parts[k].rot.w);
             cpu_.push_back(inst);
@@ -271,13 +273,7 @@ void NpcRenderer::render(vk::Context& ctx, VkDescriptorSet set) {
     if (instanceCount_ == 0 || !instances_.handle() || !pipeline_.valid()) return;
     VkCommandBuffer cmd = ctx.currentCmd();
 
-    VkViewport vp{};
-    vp.width  = (f32)ctx.extent().width;
-    vp.height = (f32)ctx.extent().height;
-    vp.minDepth = 0.f; vp.maxDepth = 1.f;
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-    VkRect2D sc{}; sc.extent = ctx.extent();
-    vkCmdSetScissor(cmd, 0, 1, &sc);
+    ctx.setFullViewport(cmd);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,

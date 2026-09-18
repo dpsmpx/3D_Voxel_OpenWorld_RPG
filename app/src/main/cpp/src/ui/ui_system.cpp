@@ -23,6 +23,7 @@
 #include "../world/enchant_altar.h"
 #include "../config/settings.h"
 #include "../config/localization.h"
+#include "../audio/audio_events.h"
 #include "../ecs/components.h"
 #include "../core/log.h"
 #include <cstdio>
@@ -446,9 +447,6 @@ void UiSystem::drawInteractPrompt() {
                                : T(StrKey::Ench_Altar);
 
     const Rect r = layout_.interactPrompt();
-    const f32 chamfer = layout_.dp(theme::CHAMFER_PANEL_DP);
-    (void)chamfer;   // срез появится вместе с общим примитивом панели
-
     const int idx = ui_.pushInteractiveRect(r, [this, station]() {
         if (station) openCrafting(nearbyStation);
         else if (nearbyAltar) openEnchant(nearbyAltar);
@@ -1124,7 +1122,6 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                  panel.y + pad + (f32)row * (rowH + rowGap), colW, rowH };
     };
     const f32 innerX = panel.x + pad;
-    (void)innerX;
 
     auto changeCb = [this]() { if (onSettingsChanged) onSettingsChanged(); };
 
@@ -1140,18 +1137,18 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
             // Invert X
             {
                 Rect r = nextRow();
-                ui_.pushInteractiveRect(r, [&s, &changeCb]() {
+                const int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
                     s.invertX = !s.invertX; changeCb();
                 });
-                toggleWidget(ui_, r, &s.invertX, T(StrKey::Settings_InvertX));
+                toggleWidget(ui_, r, idx, &s.invertX, T(StrKey::Settings_InvertX));
             }
             // Invert Y
             {
                 Rect r = nextRow();
-                ui_.pushInteractiveRect(r, [&s, &changeCb]() {
+                const int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
                     s.invertY = !s.invertY; changeCb();
                 });
-                toggleWidget(ui_, r, &s.invertY, T(StrKey::Settings_InvertY));
+                toggleWidget(ui_, r, idx, &s.invertY, T(StrKey::Settings_InvertY));
             }
             // Joystick left
             {
@@ -1159,8 +1156,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
                     s.joystickLeftHanded = !s.joystickLeftHanded; changeCb();
                 });
-                (void)idx;
-                toggleWidget(ui_, r, &s.joystickLeftHanded,
+                toggleWidget(ui_, r, idx, &s.joystickLeftHanded,
                              T(StrKey::Settings_JoystickLeft));
             }
             // Joystick radius
@@ -1201,10 +1197,10 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
             // Режим перемещения кнопок (ТЗ 5.2)
             {
                 Rect r = nextRow();
-                ui_.pushInteractiveRect(r, [this]() {
+                const int idx = ui_.pushInteractiveRect(r, [this]() {
                     buttonLayoutMode = !buttonLayoutMode;
                 });
-                toggleWidget(ui_, r, &buttonLayoutMode,
+                toggleWidget(ui_, r, idx, &buttonLayoutMode,
                              T(StrKey::Settings_ButtonLayout));
             }
             if (buttonLayoutMode) {
@@ -1252,16 +1248,14 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
                     s.showFps = !s.showFps; changeCb();
                 });
-                (void)idx;
-                toggleWidget(ui_, r, &s.showFps, T(StrKey::Settings_ShowFps));
+                toggleWidget(ui_, r, idx, &s.showFps, T(StrKey::Settings_ShowFps));
             }
             {
                 Rect r = nextRow();
                 int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
                     s.showDebugPos = !s.showDebugPos; changeCb();
                 });
-                (void)idx;
-                toggleWidget(ui_, r, &s.showDebugPos, T(StrKey::Settings_ShowDebug));
+                toggleWidget(ui_, r, idx, &s.showDebugPos, T(StrKey::Settings_ShowDebug));
             }
             break;
         }
@@ -1304,8 +1298,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                     cfg::L().setLanguage(s.language);
                     changeCb();
                 });
-                (void)idx;
-                cycleWidget(ui_, r, T(StrKey::Settings_Language), opts,
+                cycleWidget(ui_, r, idx, T(StrKey::Settings_Language), opts,
                             (u32)cfg::Language::Count, &cur);
             }
             {
@@ -1313,8 +1306,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
                     s.autosaveEnabled = !s.autosaveEnabled; changeCb();
                 });
-                (void)idx;
-                toggleWidget(ui_, r, &s.autosaveEnabled,
+                toggleWidget(ui_, r, idx, &s.autosaveEnabled,
                              T(StrKey::Settings_Autosave));
             }
             {
@@ -1342,8 +1334,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
                     s.unlimitedFps = !s.unlimitedFps; changeCb();
                 });
-                (void)idx;
-                toggleWidget(ui_, r, &s.unlimitedFps,
+                toggleWidget(ui_, r, idx, &s.unlimitedFps,
                              T(StrKey::Settings_UnlimitedFps));
             }
             break;
@@ -2513,7 +2504,14 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
 // с остальными, и заметить это было бы негде.
 void UiSystem::drawCloseButton(std::function<void()> onClose) {
     const Rect r = layout_.closeButton();
-    const int idx = ui_.pushInteractiveRect(r, std::move(onClose));
+    // Открытие экрана щёлкало, закрытие — нет: uiBack() был написан и
+    // ни разу не позван. Здесь единственная кнопка закрытия на все
+    // экраны, поэтому звук ставится один раз и на все сразу.
+    const int idx = ui_.pushInteractiveRect(
+        r, [close = std::move(onClose)]() {
+            audio::events().uiBack();
+            if (close) close();
+        });
     const bool pressed = ui_.isInteractivePressed(idx);
 
     ui_.rect(r.x, r.y, r.w, r.h, pressed ? theme::Danger : theme::PanelRaised);

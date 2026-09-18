@@ -391,15 +391,7 @@ void ChunkRenderer::renderOpaque(vk::Context& ctx,
 {
     VkCommandBuffer cmd = ctx.currentCmd();
 
-    VkViewport vp{};
-    vp.x = 0.f; vp.y = 0.f;
-    vp.width  = (f32)ctx.extent().width;
-    vp.height = (f32)ctx.extent().height;
-    vp.minDepth = 0.f; vp.maxDepth = 1.f;
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-
-    VkRect2D sc{}; sc.extent = ctx.extent();
-    vkCmdSetScissor(cmd, 0, 1, &sc);
+    ctx.setFullViewport(cmd);
 
     cull(frustum, cameraPos);
     if (visible_.empty()) return;
@@ -428,6 +420,7 @@ void ChunkRenderer::renderBlended(vk::Context& ctx,
     // здесь не годится, он считан от центров чанков.
     if (blended_.empty()) return;
     VkCommandBuffer cmd = ctx.currentCmd();
+    ctx.setFullViewport(cmd);
     std::sort(blended_.begin(), blended_.end(),
               [](const Blended& a, const Blended& b) { return a.distSq > b.distSq; });
 
