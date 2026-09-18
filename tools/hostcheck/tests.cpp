@@ -52,6 +52,7 @@
 #include "mobs/mob_def.h"
 #include "save/save_manager.h"
 #include "ui/ui_context.h"
+#include "ui/slider.h"
 #include "world/features.h"
 #include "world/ai/pathfinding.h"
 #include "core/job_system.h"
@@ -3945,6 +3946,93 @@ void testShadersAvoidUndefinedMath() {
         const usize o = vf.find("outColor = vec4(clamp(");
         check(o != std::string::npos,
               "итоговый цвет террейна ограничен [0,1]");
+    }
+}
+
+// ------------------------------------------------------------
+// Переключатели настроек
+// ------------------------------------------------------------
+void testSettingsTogglesActuallyToggle() {
+    group("настройки: переключатель и правда переключает");
+
+    // Тап разбирается С КОНЦА списка интерактивных областей: побеждает
+    // зарегистрированный ПОСЛЕДНИМ. Место вызова заводит область со
+    // своим обработчиком, а рисующий виджет заводил поверх неё вторую,
+    // с nullptr, — и обработчик не срабатывал никогда. Слайдеры
+    // устроены иначе и работали: там область одна, и значение двигает
+    // сам виджет.
+    ui::UiContext ctx;
+    ctx.init(nullptr, 1000, 500);
+
+    bool value  = false;
+    int  taps   = 0;
+    const ui::Rect r{ 100.f, 100.f, 300.f, 60.f };
+
+    auto frame = [&]() {
+        ctx.beginFrame();
+        const int idx = ctx.pushInteractiveRect(r, [&]() { value = !value; ++taps; });
+        ui::toggleWidget(ctx, r, idx, &value, "Инверсия X");
+        ctx.endFrame();
+        return idx;
+    };
+
+    frame();
+    check(ctx.handleTouch(1, 200.f, 130.f, 0), "нажатие попало в переключатель");
+    frame();
+    check(ctx.handleTouch(1, 200.f, 130.f, 1), "отпускание принято");
+    check(taps == 1, "обработчик места вызова сработал");
+    check(value, "значение переключилось");
+
+    // И обратно.
+    frame();
+    ctx.handleTouch(2, 200.f, 130.f, 0);
+    frame();
+    ctx.handleTouch(2, 200.f, 130.f, 1);
+    check(taps == 2 && !value, "второй тап вернул значение обратно");
+
+    // Нажатое состояние виджет берёт у места вызова, а не заводит своё.
+    frame();
+    ctx.handleTouch(3, 200.f, 130.f, 0);
+    const int idx = frame();
+    check(ctx.isInteractivePressed(idx), "подсветка нажатия видна виджету");
+    ctx.handleTouch(3, 200.f, 130.f, 1);
+
+    // Выбор из списка — то же самое.
+    u32 lang = 0;
+    int cycles = 0;
+    static const char* opts[3] = { "English", "Русский", "Deutsch" };
+    auto cycleFrame = [&]() {
+        ctx.beginFrame();
+        const int i = ctx.pushInteractiveRect(r, [&]() {
+            lang = (lang + 1) % 3; ++cycles;
+        });
+        ui::cycleWidget(ctx, r, i, "Язык", opts, 3, &lang);
+        ctx.endFrame();
+    };
+    cycleFrame();
+    ctx.handleTouch(4, 200.f, 130.f, 0);
+    cycleFrame();
+    ctx.handleTouch(4, 200.f, 130.f, 1);
+    check(cycles == 1 && lang == 1, "выбор языка переключился");
+
+    // ---- Исходники ----
+    //
+    // Виджет рисует. Заводить интерактивную область — дело места
+    // вызова: оно одно знает, что делать по тапу.
+    const std::string s = readSource("app/src/main/cpp/src/ui/slider.cpp");
+    if (!s.empty()) {
+        const usize t = s.find("void toggleWidget");
+        const usize c = s.find("void cycleWidget");
+        check(t != std::string::npos && c != std::string::npos,
+              "оба виджета на месте");
+        if (t != std::string::npos && c != std::string::npos) {
+            const std::string tb = s.substr(t, c - t);
+            check(tb.find("pushInteractiveRect") == std::string::npos,
+                  "переключатель своей области не заводит");
+            const std::string cb = s.substr(c);
+            check(cb.find("pushInteractiveRect") == std::string::npos,
+                  "выбор из списка — тоже");
+        }
     }
 }
 
@@ -10101,6 +10189,7 @@ int main() {
     testFrameRateLimitSetting();
     testClipboardLogTrimming();
     testWaterSortedByWaterCenter();
+    testSettingsTogglesActuallyToggle();
     testUiTapSurvivesRedraw();
     testHudAndButtonsDoNotOverlap();
     testLoadingIsAPanelNotACurtain();

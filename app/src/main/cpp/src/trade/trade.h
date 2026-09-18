@@ -18,7 +18,6 @@ namespace trade {
 ///   basePrice       — базовая цена в золоте
 ///   stock           — сколько штук в наличии
 ///   maxStock        — максимальное (обновление восстанавливает до max)
-///   restockInterval — не реализовано, но фиксируется
 ///   isBuyable       — продаёт ли NPC этот предмет игроку
 ///   isSellable      — скупает ли NPC этот предмет у игрока
 struct TradeEntry {
@@ -35,11 +34,16 @@ struct TradeInventory {
     std::vector<TradeEntry> entries;
     u64 gold = 0;
 
-    /// Обновление ассортимента (при открытии диалога, раз в игровой день).
-    f32 restockTimer = 0.f;
-    static constexpr f32 RESTOCK_INTERVAL_SEC = 300.f;  // 5 минут игровых
-
-    void tick(f32 dt);
+    /// Обновление ассортимента — раз в игровой день (ТЗ 4.4). Зовёт
+    /// игровой цикл по dayCycle.dayJustChanged(); своего таймера у
+    /// ассортимента нет.
+    ///
+    /// Здесь он был: поле restockTimer, константа в пять минут и
+    /// tick(dt), который его крутил. Крутить было некому — tick не
+    /// звали ниоткуда, — так что пополнение всё это время держалось
+    /// только на смене суток, а пятиминутный таймер существовал на
+    /// бумаге. Заодно ушло описание поля restockInterval, которого в
+    /// TradeEntry нет вовсе.
     void restock();
 
     TradeEntry* find(u16 itemId);

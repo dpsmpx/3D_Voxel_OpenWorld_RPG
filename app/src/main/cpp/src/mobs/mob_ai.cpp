@@ -171,10 +171,6 @@ void dealDamage(ecs::Registry& reg, ecs::Entity target, f32 dmg) {
     combat::applyDamage(reg, target, d);
 }
 
-void onMobDeath(ecs::Registry& reg, world::ChunkManager& world, ecs::Entity mob) {
-    (void)reg; (void)world; (void)mob;
-}
-
 void updateMobs(world::ChunkManager& world,
                 ecs::Registry& reg,
                 ecs::Entity playerEntity,

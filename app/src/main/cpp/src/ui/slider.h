@@ -22,18 +22,30 @@ bool sliderWidget(UiContext& ui,
                   float step = 0.f,
                   std::function<void(float)> onChanged = nullptr);
 
-bool toggleWidget(UiContext& ui,
+/// Переключатель и выбор из списка ТОЛЬКО РИСУЮТ.
+///
+/// Интерактивную область заводит место вызова: оно одно знает, что
+/// делать по тапу, и оно же хранит значение. Виджету нужен лишь номер
+/// этой области — чтобы показать нажатие.
+///
+/// Раньше оба заводили СВОЮ область поверх чужой, с пустым
+/// обработчиком. Тап разбирается с конца списка, побеждает
+/// зарегистрированный последним — и обработчик места вызова не
+/// срабатывал никогда. Девять переключателей настроек, включая язык,
+/// автосохранение и снятие ограничения кадров, рисовались, нажимались
+/// и не делали ничего.
+void toggleWidget(UiContext& ui,
                   Rect r,
-                  bool* value,
-                  const std::string& label,
-                  std::function<void(bool)> onChanged = nullptr);
+                  int interactiveIdx,
+                  const bool* value,
+                  const std::string& label);
 
-bool cycleWidget(UiContext& ui,
+void cycleWidget(UiContext& ui,
                  Rect r,
+                 int interactiveIdx,
                  const std::string& label,
                  const char* const* options,
                  u32 count,
-                 u32* index,
-                 std::function<void(u32)> onChanged = nullptr);
+                 const u32* index);
 
 } // namespace ui

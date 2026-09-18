@@ -72,10 +72,10 @@ void updateMobs(world::ChunkManager& world,
 
 /// Хелперы.
 void dealDamage(ecs::Registry& reg, ecs::Entity target, f32 dmg);
-/// Обработка смерти моба: выпадение лута и начисление опыта убийце.
-/// @param reg   реестр сущностей
-/// @param world мир — нужен, чтобы положить лут на землю
-/// @param mob   погибший моб
-void onMobDeath(ecs::Registry& reg, world::ChunkManager& world, ecs::Entity mob);
+
+// Здесь объявлялась onMobDeath() — «выпадение лута и начисление опыта
+// убийце». Тело у неё было пустое, а звать её никто не звал: и лут, и
+// опыт давно считает сам updateMobs(), по флагу AIAgent::Dead. Осталась
+// только подпись с описанием того, чего она не делала.
 
 } // namespace mobs

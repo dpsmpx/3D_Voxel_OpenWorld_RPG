@@ -104,24 +104,15 @@ bool sliderWidget(UiContext& ui,
     return changed;
 }
 
-bool toggleWidget(UiContext& ui,
+void toggleWidget(UiContext& ui,
                   Rect r,
-                  bool* value,
-                  const std::string& label,
-                  std::function<void(bool)> onChanged)
+                  int interactiveIdx,
+                  const bool* value,
+                  const std::string& label)
 {
-    if (!value) return false;
+    if (!value) return;
 
-    int idx = ui.pushInteractiveRect(r, nullptr);
-    bool pressed = ui.isInteractivePressed(idx);
-    bool changed = false;
-
-    // Триггер по release (через pendingTaps) — используем button().
-    // Но нам нужен кастомный вид, поэтому ловим клик через isInteractivePressed
-    // + pointerInside.
-    if (ui.hasActivePointer() && ui.pointerInside(r)) {
-        // не трогаем — тап произойдёт при release
-    }
+    const bool pressed = ui.isInteractivePressed(interactiveIdx);
 
     UiColor bg = *value ? rgba(80, 160, 80, 220) : rgba(80, 80, 80, 220);
     if (pressed) bg = rgba(180, 180, 180, 255);
@@ -138,25 +129,20 @@ bool toggleWidget(UiContext& ui,
     float sw = ui.textWidth(stateStr, 1.6f);
     ui.text(stateStr, r.x + r.w - sw - 12.f,
             r.y + (r.h - ui.textHeight(1.6f)) * 0.5f, 1.6f, COL_WHITE);
-
-    (void)changed;
-    (void)onChanged;
-    return false;
 }
 
-bool cycleWidget(UiContext& ui,
+void cycleWidget(UiContext& ui,
                  Rect r,
+                 int interactiveIdx,
                  const std::string& label,
                  const char* const* options,
                  u32 count,
-                 u32* index,
-                 std::function<void(u32)> onChanged)
+                 const u32* index)
 {
-    if (!index || !options || count == 0) return false;
-    if (*index >= count) *index = 0;
+    if (!index || !options || count == 0) return;
+    const u32 cur = *index < count ? *index : 0;
 
-    int idx = ui.pushInteractiveRect(r, nullptr);
-    bool pressed = ui.isInteractivePressed(idx);
+    const bool pressed = ui.isInteractivePressed(interactiveIdx);
 
     UiColor bg = pressed ? rgba(180, 180, 180, 255) : rgba(60, 60, 80, 220);
     ui.rect(r.x, r.y, r.w, r.h, bg);
@@ -167,14 +153,11 @@ bool cycleWidget(UiContext& ui,
                 1.6f, COL_WHITE);
     }
 
-    const char* cur = options[*index];
-    float cw = ui.textWidth(cur, 1.6f);
-    ui.text(cur, r.x + r.w - cw - 12.f,
+    const char* text = options[cur];
+    float cw = ui.textWidth(text, 1.6f);
+    ui.text(text, r.x + r.w - cw - 12.f,
             r.y + (r.h - ui.textHeight(1.6f)) * 0.5f, 1.6f,
             rgba(255, 240, 160, 255));
-
-    (void)onChanged;
-    return false;
 }
 
 } // namespace ui

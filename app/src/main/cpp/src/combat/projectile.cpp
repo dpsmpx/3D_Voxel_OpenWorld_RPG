@@ -78,14 +78,6 @@ ecs::Entity spawnHitFx(ecs::Registry& reg,
     return e;
 }
 
-ecs::Entity projectileCheckEntityHit(ecs::Registry& reg,
-                                     const Projectile& /*proj*/,
-                                     const glm::vec3& /*position*/)
-{
-    (void)reg;
-    return {};
-}
-
 namespace {
 
 ecs::Entity checkOneCandidate(ecs::Registry& reg,
