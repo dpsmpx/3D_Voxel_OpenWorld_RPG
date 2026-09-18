@@ -292,11 +292,6 @@ struct Engine {
         ui->setSurfaceRotation(vk.surfaceRotationDegrees());
         ui->showFps = cfg::settingsConst().showFps;
 
-        ui->minimap.init(vk, 128);
-        // Второй атлас интерфейса — миникарта. Слот под него был
-        // заведён с самого начала и не использовался.
-        ui->attachExternalAtlas(ui->minimap.view(), ui->minimap.sampler());
-
         ui->onQuit = [this]() { wantQuit = true; };
         ui->onSave = [this]() { doSave(lastSaveProfile, lastSaveSlot); };
         ui->onSaveRequested = [this](u32 p, u32 s) { doSave(p, s); };
@@ -1272,16 +1267,6 @@ struct Engine {
             auto p = player->controller.state().position;
             quests::notifyLocationReached(registry, (u32)player->entity(),
                                           { (i32)p.x, (i32)p.y, (i32)p.z });
-        }
-
-        // Миникарта. Перерисовка растянута по строкам на полтора
-        // десятка кадров, поэтому зовём её каждый кадр: она сама
-        // решает, начинать ли новый проход. Раньше здесь стоял
-        // таймер на секунду, и вся перерисовка — около дюжины
-        // миллисекунд — приходилась на один кадр из шестидесяти.
-        if (ui && ui->minimap.size() > 0) {
-            ui->minimap.update(*world, player->controller.state().position, 64.f, dt);
-            if (ui->minimap.dirty()) ui->minimap.flushUpload(vk);
         }
 
         // Phase 14: audio update

@@ -1,6 +1,6 @@
 /**
  * @file ui_renderer.cpp
- * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню.
  */
 #include "ui_renderer.h"
 #include "ui_atlas.h"
@@ -47,12 +47,14 @@ bool UiRenderer::init(vk::Context& ctx, AAssetManager* mgr) {
     lci.pBindings = &b;
     if (vkCreateDescriptorSetLayout(dev_, &lci, nullptr, &descLayout_) != VK_SUCCESS) return false;
 
+    // Набор ровно один — атлас шрифта. Второй заводился под внешний
+    // атлас, которым рисовалась миникарта.
     VkDescriptorPoolSize ps{};
     ps.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    ps.descriptorCount = 2;
+    ps.descriptorCount = 1;
 
     VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pci.maxSets = 2;
+    pci.maxSets = 1;
     pci.poolSizeCount = 1;
     pci.pPoolSizes = &ps;
     if (vkCreateDescriptorPool(dev_, &pci, nullptr, &descPool_) != VK_SUCCESS) return false;
@@ -92,35 +94,9 @@ bool UiRenderer::init(vk::Context& ctx, AAssetManager* mgr) {
     pd.attrCount    = 3;
     if (!pipeline_.create(dev_, shaders_, pd)) return false;
 
-    verts_[0].reserve(8192);
-    verts_[1].reserve(2048);
+    verts_.reserve(8192);
     LOGI("UiRenderer готов");
     return true;
-}
-
-void UiRenderer::attachExternalAtlas(VkImageView view, VkSampler sampler) {
-    if (extSet_ != VK_NULL_HANDLE) return;
-
-    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool = descPool_;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &descLayout_;
-    if (vkAllocateDescriptorSets(dev_, &ai, &extSet_) != VK_SUCCESS) {
-        LOGE("UiRenderer: не удалось аллоцировать external atlas set");
-        return;
-    }
-    VkDescriptorImageInfo ii{};
-    ii.imageView   = view;
-    ii.sampler     = sampler;
-    ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w.dstSet = extSet_;
-    w.dstBinding = 0;
-    w.descriptorCount = 1;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    w.pImageInfo = &ii;
-    vkUpdateDescriptorSets(dev_, 1, &w, 0, nullptr);
-    LOGI("UiRenderer: external atlas подключён");
 }
 
 void UiRenderer::setSurfaceRotation(u32 degrees) {
@@ -135,11 +111,8 @@ void UiRenderer::setSurfaceRotation(u32 degrees) {
 }
 
 void UiRenderer::beginFrame() {
-    verts_[0].clear();
-    verts_[1].clear();
-    activeSlot_ = 0;
+    verts_.clear();
 }
-void UiRenderer::setAtlas(int slot) { activeSlot_ = (slot == 1) ? 1 : 0; }
 void UiRenderer::endFrame() {}
 
 void UiRenderer::pushQuad(glm::vec2 pos, glm::vec2 size,
@@ -147,7 +120,7 @@ void UiRenderer::pushQuad(glm::vec2 pos, glm::vec2 size,
 {
     u8 r = (rgba >> 24) & 0xFF, g = (rgba >> 16) & 0xFF;
     u8 b = (rgba >>  8) & 0xFF, a = (rgba      ) & 0xFF;
-    auto& V = verts_[activeSlot_];
+    auto& V = verts_;
     const glm::vec2 p1 = pos + size;
 
     // Ровно шесть вершин: рисуем списком треугольников без индексов.
@@ -166,7 +139,7 @@ void UiRenderer::pushQuad(glm::vec2 pos, glm::vec2 size,
 void UiRenderer::pushTri(glm::vec2 a, glm::vec2 b, glm::vec2 c, u32 rgba) {
     u8 r = (rgba >> 24) & 0xFF, g = (rgba >> 16) & 0xFF;
     u8 bl = (rgba >>  8) & 0xFF, al = (rgba      ) & 0xFF;
-    auto& V = verts_[activeSlot_];
+    auto& V = verts_;
     // -1 — признак сплошной заливки, см. shaders/ui.frag.
     const glm::vec2 uv{ -1.f, -1.f };
     V.push_back({ rotate(a), uv, r, g, bl, al });
@@ -196,7 +169,7 @@ void UiRenderer::flush(vk::Context& ctx) {
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
 
-    lastVerts_ = (u32)(verts_[0].size() + verts_[1].size());
+    lastVerts_ = (u32)verts_.size();
     lastDrawn_ = 0;
     lastDrawCalls_ = 0;
 
@@ -209,43 +182,38 @@ void UiRenderer::flush(vk::Context& ctx) {
         LOGW("интерфейс: за кадр не построено ни одной вершины");
     }
 
+    if (verts_.empty()) return;
+
     const u32 frame = ctx.frameInFlight() % MAX_FRAMES;
-    for (int slot = 0; slot < 2; ++slot) {
-        auto& V = verts_[slot];
-        if (V.empty()) continue;
+    FrameBuf& fb = frames_[frame];
+    if (!ensureCapacity(fb, (u32)verts_.size())) return;
 
-        FrameBuf& fb = frames_[frame][slot];
-        if (!ensureCapacity(fb, (u32)V.size())) continue;
+    void* m = fb.vb.map();
+    if (!m) return;
+    std::memcpy(m, verts_.data(), verts_.size() * sizeof(UiVertex));
+    // Отображение НЕ снимаем. Буфер отображается при создании и
+    // остаётся таким на всю жизнь — так задумано, и так работают
+    // все остальные буферы, доступные процессору. Здесь стоял
+    // unmap(), и следующий map() возвращал nullptr: кадр молча
+    // пропускался, и интерфейс жил ровно два первых кадра за весь
+    // запуск. По журналу это выглядело как «вершин 3468,
+    // нарисовано 0».
+    fb.vertexCount = (u32)verts_.size();
 
-        void* m = fb.vb.map();
-        if (!m) continue;
-        std::memcpy(m, V.data(), V.size() * sizeof(UiVertex));
-        // Отображение НЕ снимаем. Буфер отображается при создании и
-        // остаётся таким на всю жизнь — так задумано, и так работают
-        // все остальные буферы, доступные процессору. Здесь стоял
-        // unmap(), и следующий map() возвращал nullptr: кадр молча
-        // пропускался, и интерфейс жил ровно два первых кадра за весь
-        // запуск. По журналу это выглядело как «вершин 3468,
-        // нарисовано 0».
-        fb.vertexCount = (u32)V.size();
+    if (fontSet_ == VK_NULL_HANDLE) return;
 
-        VkDescriptorSet ds = (slot == 0) ? fontSet_ : extSet_;
-        if (ds == VK_NULL_HANDLE) continue;
-
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipeline_.layout(), 0, 1, &ds, 0, nullptr);
-        VkDeviceSize offs[] = { 0 };
-        const VkBuffer vb = fb.vb.handle();
-        vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offs);
-        vkCmdDraw(cmd, fb.vertexCount, 1, 0, 0);
-        lastDrawn_ += fb.vertexCount;
-        ++lastDrawCalls_;
-    }
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline_.layout(), 0, 1, &fontSet_, 0, nullptr);
+    VkDeviceSize offs[] = { 0 };
+    const VkBuffer vb = fb.vb.handle();
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offs);
+    vkCmdDraw(cmd, fb.vertexCount, 1, 0, 0);
+    lastDrawn_ += fb.vertexCount;
+    ++lastDrawCalls_;
 }
 
 void UiRenderer::destroy() {
-    for (auto& row : frames_)
-        for (auto& f : row) f.vb.destroy();
+    for (auto& f : frames_) f.vb.destroy();
     pipeline_.destroy();
     shaders_.destroyAll();
     fontAtlas_.destroy();
@@ -253,7 +221,7 @@ void UiRenderer::destroy() {
     if (descLayout_) vkDestroyDescriptorSetLayout(dev_, descLayout_, nullptr);
     descPool_ = VK_NULL_HANDLE;
     descLayout_ = VK_NULL_HANDLE;
-    fontSet_ = extSet_ = VK_NULL_HANDLE;
+    fontSet_ = VK_NULL_HANDLE;
 }
 
 } // namespace ui

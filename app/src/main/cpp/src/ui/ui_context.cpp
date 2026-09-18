@@ -1,6 +1,6 @@
 /**
  * @file ui_context.cpp
- * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню.
  */
 #include "ui_context.h"
 #include "font_data.h"
@@ -60,19 +60,9 @@ void UiContext::rect(float x, float y, float w, float h, UiColor c) {
     float ny = toNdcY(y, screenH_);
     float nw = toNdcW(w, screenW_);
     float nh = toNdcH(h, screenH_);
-    r_->setAtlas(0);
     // -1 — признак сплошной заливки, см. shaders/ui.frag: текстура
     // для неё не нужна вовсе.
     r_->pushQuad({ nx, ny }, { nw, nh }, -1.f, -1.f, -1.f, -1.f, c);
-}
-
-void UiContext::image(float x, float y, float w, float h, UiColor tint) {
-    if (!r_) return;
-    r_->setAtlas(1);
-    r_->pushQuad({ toNdcX(x, screenW_), toNdcY(y, screenH_) },
-                 { toNdcW(w, screenW_), toNdcH(h, screenH_) },
-                 0.f, 0.f, 1.f, 1.f, tint);
-    r_->setAtlas(0);
 }
 
 void UiContext::rectOutline(float x, float y, float w, float h, float th, UiColor c) {
@@ -84,7 +74,6 @@ void UiContext::rectOutline(float x, float y, float w, float h, float th, UiColo
 
 void UiContext::text(const std::string& s, float x, float y, float scale, UiColor c) {
     if (!r_) return;
-    r_->setAtlas(0);
     float cx = x;
     const float cw = 6.f * scale;
 
@@ -122,7 +111,6 @@ void UiContext::circle(float cx, float cy, float r, UiColor c, int segments) {
     if (!r_ || r <= 0.f) return;
     if (segments < 6) segments = 6;
     if (segments > 64) segments = 64;
-    r_->setAtlas(0);
     const glm::vec2 mid{ toNdcX(cx, screenW_), toNdcY(cy, screenH_) };
     const float rx = toNdcW(r, screenW_);
     const float ry = toNdcH(r, screenH_);
@@ -141,7 +129,6 @@ void UiContext::ring(float cx, float cy, float rInner, float rOuter,
     if (!r_ || rOuter <= rInner) return;
     if (segments < 6) segments = 6;
     if (segments > 64) segments = 64;
-    r_->setAtlas(0);
     const glm::vec2 mid{ toNdcX(cx, screenW_), toNdcY(cy, screenH_) };
     const float ix = toNdcW(rInner, screenW_);
     const float iy = toNdcH(rInner, screenH_);
