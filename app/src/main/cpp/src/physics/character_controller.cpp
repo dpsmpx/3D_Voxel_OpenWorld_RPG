@@ -247,6 +247,34 @@ void CharacterController::update(world::ChunkManager& world,
         state_.velocity.z += dv.z;
     }
 
+    // --- Рывок ---
+    //
+    // Считается ПОСЛЕ разгона и ДО трения: рывок задаёт скорость
+    // целиком, и разгонять или тормозить в эти сто восемьдесят
+    // миллисекунд нечего.
+    state_.dashCooldown = std::max(0.f, state_.dashCooldown - dt);
+    if (input.dashPressed && state_.dashCooldown <= 0.f &&
+        !state_.dashing() && !state_.inWater)
+    {
+        glm::vec2 d = input.wishDir;
+        if (glm::dot(d, d) < 1e-4f) d = input.faceDir;
+        const f32 len = glm::length(d);
+        if (len > 1e-4f) {
+            state_.dashDir      = d / len;
+            state_.dashTimer    = dashTime;
+            state_.dashCooldown = dashCooldownTime;
+            state_.stepping     = false;   // рывок отменяет подъём
+        }
+    }
+    if (state_.dashing()) {
+        state_.dashTimer = std::max(0.f, state_.dashTimer - dt);
+        state_.velocity.x = state_.dashDir.x * dashSpeed;
+        state_.velocity.z = state_.dashDir.y * dashSpeed;
+        // Рывок горизонтальный: падать во время него нельзя, иначе с
+        // края обрыва он превращается в прыжок в пропасть.
+        state_.velocity.y = 0.f;
+    }
+
     // --- Трение ---
     if (state_.inWater) {
         f32 drag = std::exp(-waterDrag * dt);
@@ -261,7 +289,7 @@ void CharacterController::update(world::ChunkManager& world,
         if (input.crouch)   state_.velocity.y = -3.0f;
         if (state_.velocity.y > 3.5f)  state_.velocity.y = 3.5f;
         if (state_.velocity.y < -5.0f) state_.velocity.y = -5.0f;
-    } else if (state_.onGround && dvLen < 1e-4f) {
+    } else if (state_.onGround && dvLen < 1e-4f && !state_.dashing()) {
         f32 f = std::exp(-groundFriction * dt);
         state_.velocity.x *= f;
         state_.velocity.z *= f;
@@ -298,7 +326,7 @@ void CharacterController::update(world::ChunkManager& world,
     if (state_.velocity.y > stepClimbSpeed + 1e-3f) state_.stepping = false;
 
     // --- Гравитация ---
-    if (!state_.inWater && !state_.stepping) {
+    if (!state_.inWater && !state_.stepping && !state_.dashing()) {
         state_.velocity.y += gravity * dt;
         if (state_.velocity.y < maxFallSpeed) state_.velocity.y = maxFallSpeed;
     }

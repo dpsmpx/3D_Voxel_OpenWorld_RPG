@@ -149,6 +149,7 @@ struct Engine {
     glm::vec3 playerSpawn{ 4.5f, 60.f, 4.5f };
 
     u32 btnJump_    = 0;
+    u32 btnDash_    = 0;
     u32 btnBreak_   = 0;
     u32 btnPlace_   = 0;
     u32 btnCamera_  = 0;
@@ -167,6 +168,7 @@ struct Engine {
     bool evFinish_  = false;
     bool evInteract_= false;
     bool evUseItem_ = false;
+    bool evDash_    = false;
 
     bool running     = false;
     bool initialized = false;
@@ -694,6 +696,7 @@ struct Engine {
         btnPlace_    = add(cfg::Btn_Place,    [this](u32) { evPlace_    = true; });
         btnInteract_ = add(cfg::Btn_Interact, [this](u32) { evInteract_ = true; });
         btnUseItem_  = add(cfg::Btn_UseItem,  [this](u32) { evUseItem_  = true; });
+        btnDash_     = add(cfg::Btn_Dash,     [this](u32) { evDash_ = true; });
         btnCamera_   = add(cfg::Btn_Camera,   [this](u32) {
                 if (!player) return;
                 player->cameraMode =
@@ -710,6 +713,7 @@ struct Engine {
         buttonIds_[cfg::Btn_Interact] = btnInteract_;
         buttonIds_[cfg::Btn_UseItem]  = btnUseItem_;
         buttonIds_[cfg::Btn_Camera]   = btnCamera_;
+        buttonIds_[cfg::Btn_Dash]     = btnDash_;
 
         // Перетаскивание кнопки сразу сохраняется в настройки.
         touch.setLayoutCallback([this](u32 buttonId, glm::vec2 off) {
@@ -849,7 +853,7 @@ struct Engine {
         // Касания принимаются, но никуда не идут: буферы всё равно
         // надо закрывать покадрово, иначе состояние пальцев копится.
         evJump_ = evBreak_ = evPlace_ = evAttack_ = evFinish_ =
-            evInteract_ = evUseItem_ = false;
+            evInteract_ = evUseItem_ = evDash_ = false;
         touch.endFrame();
 
         debugSceneLog();
@@ -1030,6 +1034,7 @@ struct Engine {
             pin.attackHeld    = touch.isButtonHeld(btnAttack_);
             pin.finisherInput = evFinish_;
             pin.interactPressed = evInteract_;
+            pin.dashPressed   = evDash_;
 
             // Записываем скорость до апдейта (для звука шагов).
             glm::vec3 prevPos = player->controller.state().position;
@@ -1344,7 +1349,7 @@ struct Engine {
         if (ui) ui->tickUi(dt);
 
         evJump_ = evBreak_ = evPlace_ = evAttack_ = evFinish_ =
-            evInteract_ = evUseItem_ = false;
+            evInteract_ = evUseItem_ = evDash_ = false;
 
         touch.endFrame();
     }
@@ -1457,6 +1462,11 @@ static int32_t handleInput(android_app* app, AInputEvent* e) {
                 return 1;
             case AKEYCODE_BUTTON_THUMBL:
                 eng->touch.injectGamepadSprint(down);
+                return 1;
+            // Рывок на левом бампере: он под тем же пальцем, что и
+            // стик направления, а рвутся туда, куда идут.
+            case AKEYCODE_BUTTON_L2:
+                eng->touch.injectGamepadButton(eng->btnDash_, down);
                 return 1;
             case AKEYCODE_BUTTON_START:
                 if (down && eng->ui) eng->ui->togglePause();

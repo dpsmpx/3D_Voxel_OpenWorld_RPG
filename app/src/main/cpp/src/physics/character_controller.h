@@ -12,10 +12,15 @@ namespace physics {
 
 struct MoveInput {
     glm::vec2 wishDir{0};
+    /// Куда смотрит камера по горизонтали. Нужен рывку: стоя на
+    /// месте, игрок жмёт рывок и ждёт, что его бросит ВПЕРЁД, а не
+    /// оставит на месте за неимением направления движения.
+    glm::vec2 faceDir{0, -1};
     bool      jumpPressed = false;
     bool      jumpHeld    = false;
     bool      sprint      = false;
     bool      crouch      = false;
+    bool      dashPressed = false;
 };
 
 struct CharacterState {
@@ -39,6 +44,19 @@ struct CharacterState {
     bool stepping   = false;
     f32  stepTargetY = 0.f;
     f32  stepTimer   = 0.f;   ///< страховка от застревания в подъёме
+
+    /// ---- Рывок ----
+    ///
+    /// Рывок — это скорость на короткое время, а не перенос позиции.
+    /// Перенос пришлось бы проверять на проходимость самому и по
+    /// дороге он бы протаскивал сквозь стены; скорость идёт через то
+    /// же разрешение коллизий, что и обычный шаг, и упирается в стену
+    /// сама.
+    f32       dashTimer    = 0.f;   ///< сколько рывку осталось
+    f32       dashCooldown = 0.f;   ///< сколько до следующего
+    glm::vec2 dashDir{0, -1};       ///< куда рвём, XZ, единичный
+
+    bool dashing() const { return dashTimer > 0.f; }
 };
 
 class CharacterController {
@@ -67,6 +85,14 @@ public:
     f32 airAccelFactor  = 0.35f;
     f32 coyoteTime      = 0.12f;
     f32 jumpBufferTime  = 0.15f;
+
+    /// ---- Рывок ----
+    /// 22 м/с за 0.18 с — это около четырёх блоков: расстояние, на
+    /// котором рывок и правда уводит из-под удара, но не заменяет
+    /// ходьбу.
+    f32 dashSpeed       = 22.0f;
+    f32 dashTime        = 0.18f;
+    f32 dashCooldownTime = 1.2f;
 
     /// Phase 15
     ///

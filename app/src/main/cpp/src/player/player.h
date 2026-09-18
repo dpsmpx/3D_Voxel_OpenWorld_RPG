@@ -40,9 +40,16 @@ struct PlayerInput {
     bool attackPressed = false;
     bool attackHeld    = false;
     bool finisherInput = false;
+    bool dashPressed   = false;
 
     bool interactPressed = false;
 };
+
+/// Сколько выносливости стоит рывок.
+///
+/// Двадцать пять из ста: четыре рывка подряд на полной шкале, дальше
+/// придётся отдышаться. Без цены рывок заменил бы ходьбу.
+constexpr f32 DASH_STAMINA = 25.f;
 
 class Player {
 public:

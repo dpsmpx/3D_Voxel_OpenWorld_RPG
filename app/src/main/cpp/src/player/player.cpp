@@ -291,10 +291,25 @@ void Player::updateImpl(world::ChunkManager& world,
 
     physics::MoveInput mi;
     mi.wishDir     = { wish.x, wish.z };
+    mi.faceDir     = { fwd.x, fwd.z };
     mi.jumpPressed = input.jumpPressed && !dialogueOpen;
     mi.jumpHeld    = input.jumpHeld && !dialogueOpen;
     mi.sprint      = input.sprint;
     mi.crouch      = input.crouch;
+
+    // ---- Рывок ----
+    //
+    // Выносливость снимается ЗДЕСЬ, а не в контроллере: физика не
+    // знает ни о каких ресурсах, и знать не должна. Не хватило —
+    // рывка просто не происходит, кнопка при этом ничего не тратит.
+    mi.dashPressed = false;
+    if (input.dashPressed && !dialogueOpen &&
+        controller.state().dashCooldown <= 0.f &&
+        !controller.state().dashing())
+    {
+        if (progression::tryConsumeStamina(*reg_, entity_, DASH_STAMINA))
+            mi.dashPressed = true;
+    }
 
     // Запоминаем состояние до апдейта для детекта событий (land, jump).
     const bool wasOnGround = controller.state().onGround;

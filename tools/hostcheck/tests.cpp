@@ -7679,6 +7679,116 @@ void testEveryAudioEventIsFired() {
 // ровно туда, куда собираются прыгнуть, — и промах на два блока
 // означал бы, что прыжок не состоялся.
 // ------------------------------------------------------------
+// Рывок уносит вперёд, стоит выносливости и не проходит сквозь стены.
+//
+// Рывок — это скорость на короткое время, а не перенос позиции.
+// Перенос пришлось бы проверять на проходимость самому, и по дороге
+// он протаскивал бы сквозь стены; скорость идёт через то же
+// разрешение коллизий, что и обычный шаг, и упирается сама.
+// ------------------------------------------------------------
+void testDashMovesForward() {
+    group("рывок: уносит вперёд и упирается в стену");
+
+    world::blocks();
+    items::items();
+
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager world(0xDA54, 2);
+        bool ready = false;
+        for (int i = 0; i < 600 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        // Ровная площадка: рельеф не должен решать, докуда дорвёшь.
+        const i32 surf = world.generator().surfaceHeight(8, 8) + 4;
+        for (i32 z = -4; z <= 24; ++z)
+            for (i32 x = -4; x <= 12; ++x) {
+                world.setVoxel(x, surf - 1, z, world::STONE);
+                for (i32 y = surf; y < surf + 3; ++y)
+                    world.setVoxel(x, y, z, world::AIR);
+            }
+
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(4.5f, (f32)surf, 4.5f));
+
+        auto* st = reg.get<ecs::Stamina>(pl.entity());
+        check(st != nullptr, "выносливость есть");
+        if (!st) { jobs::gJobs.stop(); return; }
+
+        auto runFrames = [&](player::PlayerInput in, int n) {
+            for (int i = 0; i < n; ++i) {
+                pl.update(world, in, 1.f / 60.f, 0.f, 0.f);
+                in.dashPressed = false;   // нажатие, а не удержание
+            }
+        };
+
+        // ---- Рывок вперёд ----
+        // При нулевом рыскании «вперёд» — это +Z.
+        st->current = st->max;
+        const glm::vec3 before = pl.controller.state().position;
+        player::PlayerInput dash;
+        dash.dashPressed = true;
+        runFrames(dash, 20);
+        const glm::vec3 after = pl.controller.state().position;
+
+        const f32 gone = after.z - before.z;
+        std::printf("       унесло на %.2f блока\n", (double)gone);
+        check(gone > 3.f, "рывок уносит больше чем на три блока");
+        check(std::fabs(after.x - before.x) < 0.5f, "и ровно вперёд");
+        check(st->current < st->max - 1.f, "выносливость потрачена");
+
+        // ---- Откат ----
+        //
+        // Сперва даём инерции сойти: после рывка игрок ещё катится, и
+        // мерить «сдвинулся или нет» прямо сейчас значило бы мерить
+        // накат, а не второй рывок.
+        for (int i = 0; i < 20; ++i)
+            pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+        check(pl.controller.state().dashCooldown > 0.f, "откат ещё идёт");
+
+        const glm::vec3 p2 = pl.controller.state().position;
+        st->current = st->max;
+        const f32 stBefore = st->current;
+        runFrames(dash, 10);
+        const f32 again = pl.controller.state().position.z - p2.z;
+        check(again < 0.5f, "пока откат не вышел, рывка не происходит");
+        check(st->current >= stBefore - 0.5f,
+              "и выносливость за несостоявшийся рывок не берут");
+
+        // ---- Без выносливости рывка нет ----
+        for (int i = 0; i < 200; ++i) pl.update(world, player::PlayerInput{},
+                                                1.f / 60.f, 0.f, 0.f);
+        const glm::vec3 p3 = pl.controller.state().position;
+        st->current = 1.f;
+        runFrames(dash, 20);
+        check(pl.controller.state().position.z - p3.z < 1.f,
+              "без выносливости рывка нет");
+        check(st->current >= 1.f, "и она при этом не списана");
+
+        // ---- В стену не проходит ----
+        pl.controller.setPosition(glm::vec3(4.5f, (f32)surf, 4.5f));
+        for (i32 y = surf; y < surf + 3; ++y)
+            for (i32 x = 0; x <= 12; ++x)
+                world.setVoxel(x, y, 7, world::STONE);
+
+        for (int i = 0; i < 200; ++i) pl.update(world, player::PlayerInput{},
+                                                1.f / 60.f, 0.f, 0.f);
+        st->current = st->max;
+        runFrames(dash, 20);
+        const f32 z = pl.controller.state().position.z;
+        std::printf("       упёрся на z = %.2f\n", (double)z);
+        check(z < 7.f, "рывок упирается в стену, а не проходит сквозь");
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testTrampolineThrowAndBounce() {
     group("батут: бросается, ложится и подбрасывает");
 
@@ -11286,6 +11396,7 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testDashMovesForward();
     testTrampolineThrowAndBounce();
     testElixirsGrantTimedBuff();
     testInventoryDragMovesItems();
