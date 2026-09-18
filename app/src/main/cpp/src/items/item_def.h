@@ -87,6 +87,7 @@ enum ItemId : u16 {
     ITEM_LEATHER      = 13,
     ITEM_BONE         = 14,
     ITEM_CLOTH        = 15,
+    ITEM_CACTUS       = 16,
 
     // --- Оружие ---
     ITEM_IRON_SWORD     = 50,

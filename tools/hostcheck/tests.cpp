@@ -7608,6 +7608,77 @@ void testEveryAudioEventIsFired() {
 // считало свой, u32, из других полей, записывало — и при загрузке
 // выбрасывало: «Пока просто читаем и игнорируем».
 // ------------------------------------------------------------
+// Кактус сделан из кактуса.
+//
+// В пустыне стояли деревянные столбики цвета дубовой коры: ствол
+// кактуса строился из WOOD с пометкой «временно; в идеале — CACTUS»,
+// а блока CACTUS в реестре не было вовсе.
+// ------------------------------------------------------------
+void testDesertGrowsCactus() {
+    group("мир: кактус сделан из кактуса");
+
+    world::blocks();
+    items::items();
+
+    check(world::blocks().get(world::CACTUS).isSolid,
+          "блок кактуса есть в реестре и он твёрдый");
+    check(items::items().blockToItem(world::CACTUS) == items::ITEM_CACTUS,
+          "и у него есть предмет: сломанный кактус не пропадает");
+
+    // Чанк строится целиком и на месте, той же функцией, что и в игре:
+    // планировщик задач для этого не нужен, а результат детерминирован
+    // по (seed, координате чанка).
+    //
+    // Кактусов приходится искать долго: treeDensity у пустыни 0.05,
+    // то есть один кактус на двадцать чанков, и биом берётся по ЦЕНТРУ
+    // чанка. Полтора десятка пустынных чанков ничего не докажут —
+    // ноль там законен. Поэтому обход идёт по сотням.
+    constexpr u64 SEED = 0xCAC705ULL;
+    world::ChunkManager mgr(SEED, 1);
+    const auto& gen = mgr.generator();
+
+    constexpr usize WANT_CHUNKS = 80;
+    usize desertChunks = 0, withCactus = 0, cactusVoxels = 0, woodVoxels = 0;
+    std::vector<world::TerrainGenerator::Column> cols;
+
+    for (i32 cz = -64; cz <= 64 && desertChunks < WANT_CHUNKS; ++cz) {
+        for (i32 cx = -64; cx <= 64 && desertChunks < WANT_CHUNKS; ++cx) {
+            const i32 midX = cx * world::CHUNK_SIZE + world::CHUNK_SIZE / 2;
+            const i32 midZ = cz * world::CHUNK_SIZE + world::CHUNK_SIZE / 2;
+            if (gen.biomeAt(midX, midZ) != world::Desert) continue;
+            ++desertChunks;
+
+            auto chunk = std::make_unique<world::Chunk>();
+            chunk->coord = { cx, 0, cz };
+            world::computeChunkColumns(gen, cx, cz, cols);
+            world::generateChunkVoxels(*chunk, gen, cols.data(), SEED);
+
+            usize here = 0;
+            for (i32 lz = 0; lz < world::CHUNK_SIZE; ++lz)
+                for (i32 lx = 0; lx < world::CHUNK_SIZE; ++lx)
+                    for (i32 y = 0; y < world::CHUNK_SIZE_Y; ++y) {
+                        const u16 b = chunk->voxels[world::chunkIndex(lx, y, lz)];
+                        if (b == world::CACTUS) { ++here; ++cactusVoxels; }
+                        if (b == world::WOOD)   ++woodVoxels;
+                    }
+            if (here) ++withCactus;
+        }
+    }
+
+    std::printf("       пустынных чанков %zu, с кактусом %zu, вокселей кактуса %zu\n",
+                desertChunks, withCactus, cactusVoxels);
+    check(desertChunks == WANT_CHUNKS, "пустынные чанки нашлись");
+    // Ровно эта проверка отличает «кактус есть» от «кактус из дуба»:
+    // до правки ствол ставился блоком WOOD, и CACTUS в мире не
+    // появлялся ни разу.
+    check(cactusVoxels > 0, "в пустыне вырос кактус");
+    check(withCactus >= 2, "и не в одном-единственном чанке на весь обход");
+    // Дерево в пустыне встречается и законно — деревни строятся из
+    // него в любом биоме, — поэтому «дерева нет» проверять нельзя.
+    (void)woodVoxels;
+}
+
+// ------------------------------------------------------------
 void testDeadNpcStaysDead() {
     group("NPC: убитый не возвращается");
 
@@ -10616,6 +10687,7 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testDesertGrowsCactus();
     testDeadNpcStaysDead();
     testVillageHousesAreBuildings();
     testBlockEconomy();

@@ -123,6 +123,7 @@ ItemRegistry::ItemRegistry() {
     blockItem(ITEM_ICE,      world::ICE,      "Ice",       64,  2, ItemRarity::Common);
     blockItem(ITEM_IRON_ORE, world::IRON_ORE, "Iron Ore",  64,  8, ItemRarity::Uncommon);
     blockItem(ITEM_GOLD_ORE, world::GOLD_ORE, "Gold Ore",  64, 15, ItemRarity::Rare);
+    blockItem(ITEM_CACTUS,   world::CACTUS,   "Cactus",    64,  2, ItemRarity::Common);
 
     // ============ Материалы (не block) ============
     materialItem(ITEM_IRON_INGOT, "Iron Ingot", 25, ItemRarity::Uncommon, 20);
