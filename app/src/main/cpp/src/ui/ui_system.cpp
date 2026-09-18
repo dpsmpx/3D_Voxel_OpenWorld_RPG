@@ -1,6 +1,6 @@
 /**
  * @file ui_system.cpp
- * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню.
  */
 #include "ui_system.h"
 #include "hud_layout.h"
@@ -348,7 +348,6 @@ void UiSystem::drawHud(vk::Context& /*ctx*/,
     drawResonanceBar(player);
     drawStatusIcons(player);
     drawHotbar(player);
-    drawMinimap(player);
 
     if (showFps) {
         char buf[64];
@@ -527,40 +526,6 @@ void UiSystem::drawHudResources(player::Player& player) {
                  last.y + last.h + layout_.dp(theme::SPACE_S_DP),
                  theme::TEXT_LABEL, theme::Accent);
     }
-}
-
-void UiSystem::drawMinimap(player::Player& player) {
-    if (minimap.size() == 0) return;
-
-    // Числа берутся из раскладки — из той же, по которой проверяются
-    // наложения. Раньше здесь стояли свои константы без общего
-    // масштаба, и на 1280x720 карта рисовалась на 68 точек левее и
-    // выше, чем считала проверка.
-    const Rect r = layout_.minimap();
-    const f32 fr = layout_.dp(theme::STROKE_DP);
-
-    ui_.rect(r.x - fr, r.y - fr, r.w + fr * 2.f, r.h + fr * 2.f,
-             hudTint(theme::Ink));
-    ui_.rectOutline(r.x - fr, r.y - fr, r.w + fr * 2.f, r.h + fr * 2.f,
-                    fr, hudTint(theme::Stroke));
-
-    ui_.rect(r.x, r.y, r.w, r.h, hudTint(theme::Panel));
-    ui_.image(r.x, r.y, r.w, r.h);
-
-    const f32 cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
-    const f32 mk = layout_.dp(4.f);
-    ui_.rect(cx - mk, cy - mk, mk * 2.f, mk * 2.f, theme::Accent);
-    ui_.rectOutline(cx - mk, cy - mk, mk * 2.f, mk * 2.f,
-                    layout_.dp(1.f), theme::Ink);
-
-    const glm::vec3 fwd = player.aimDir();
-    const f32 fl = layout_.dp(12.f);
-    ui_.rect(cx + fwd.x * fl - mk * 0.5f, cy + fwd.z * fl - mk * 0.5f,
-             mk, mk, theme::Danger);
-
-    ui_.text("N", cx - ui_.textWidth("N", theme::TEXT_CAPTION) * 0.5f,
-             r.y + layout_.dp(theme::SPACE_XS_DP),
-             theme::TEXT_CAPTION, theme::TextPrimary);
 }
 
 void UiSystem::drawResonanceBar(player::Player& player) {
@@ -2631,7 +2596,6 @@ void UiSystem::drawStatusToast() {
 }
 
 void UiSystem::destroy() {
-    minimap.destroy();
     renderer_.destroy();
 }
 

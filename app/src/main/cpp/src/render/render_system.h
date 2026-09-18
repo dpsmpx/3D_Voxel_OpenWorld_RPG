@@ -51,10 +51,6 @@ public:
         chunkRenderer_.forgetChunk(coord);
     }
 
-    // Проброс к миникарте (использует main)
-    ui::Minimap* minimap() { return minimap_; }
-    void setMinimap(ui::Minimap* m) { minimap_ = m; }
-
     Camera& camera() { return camera_; }
 
     /// Счётчики кадра по проходам. Время GPU лежит не здесь, а в
@@ -113,7 +109,6 @@ private:
     /// Когда и откуда в последний раз рассаживали траву.
     f32       grassTimer_  = 0.f;
     glm::vec3 grassOrigin_{ 0.f };
-    ui::Minimap*          minimap_ = nullptr;
     player::Player*       currentPlayer_ = nullptr;
     world::ChunkManager*  currentWorld_ = nullptr;
     f32                   currentFps_ = 0.f;

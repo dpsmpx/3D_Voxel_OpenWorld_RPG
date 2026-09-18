@@ -1,6 +1,6 @@
 /**
  * @file drag_drop.cpp
- * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню.
  */
 #include "drag_drop.h"
 

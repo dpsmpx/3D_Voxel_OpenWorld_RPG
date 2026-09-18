@@ -1,6 +1,6 @@
 /**
  * @file drag_drop.h
- * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню.
  */
 #pragma once
 #include "../core/types.h"

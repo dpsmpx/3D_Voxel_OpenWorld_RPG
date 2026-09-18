@@ -1,6 +1,6 @@
 /**
  * @file ui_system.h
- * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню.
  */
 #pragma once
 #include "../core/types.h"
@@ -9,7 +9,6 @@
 #include "ui_context.h"
 #include "drag_drop.h"
 #include "scroll.h"
-#include "minimap.h"
 #include "hud_layout.h"
 #include "../player/player.h"
 #include "../world/chunk_manager.h"
@@ -138,9 +137,6 @@ public:
 
     /// ---- Drag & drop ----
     DragDrop drag{};
-
-    /// ---- Миникарта ----
-    Minimap minimap;
 
     /// ---- Настройки ----
     SettingsTab settingsTab = SettingsTab::Input;
@@ -292,10 +288,6 @@ public:
     std::function<void()> onSave;
     std::function<void()> onQuit;
 
-    void attachExternalAtlas(VkImageView view, VkSampler sampler) {
-        renderer_.attachExternalAtlas(view, sampler);
-    }
-
     void setDialogueActive(bool active) {
         if (active) screen = Screen::Dialogue;
         else if (screen == Screen::Dialogue) screen = Screen::Hud;
@@ -330,7 +322,6 @@ private:
     void drawStatusIcons(player::Player& player);
     void drawLevelUpNotification(player::Player& player);
     void drawReputationNotification(player::Player& player);
-    void drawMinimap(player::Player& player);
     /// Подсказка «использовать»: отпирает ремесло и зачарование.
     void drawInteractPrompt();
     void drawHudResources(player::Player& player);

@@ -179,8 +179,8 @@ void ChunkManager::jobGenerate(void* data) {
             generateChunkVoxels(*c, terrain, columns.data(), mgr->seed_);
 
         // Высоты поверхности — из тех же колонок, что уже посчитаны.
-        // Даром: колонки всё равно в руках, а миникарте и траве иначе
-        // придётся пересчитывать шум по каждой точке. Индексация та
+        // Даром: колонки всё равно в руках, а траве иначе придётся
+        // пересчитывать шум по каждой точке. Индексация та
         // же, что у computeChunkColumns: x * CHUNK_SIZE + z.
         for (i32 x = 0; x < CHUNK_SIZE; ++x)
             for (i32 z = 0; z < CHUNK_SIZE; ++z)

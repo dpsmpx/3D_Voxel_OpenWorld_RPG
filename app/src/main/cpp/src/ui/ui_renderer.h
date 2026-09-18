@@ -1,6 +1,6 @@
 /**
  * @file ui_renderer.h
- * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню, миникарта.
+ * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню.
  */
 #pragma once
 #include "../core/types.h"
@@ -36,7 +36,6 @@ public:
     void setSurfaceRotation(u32 degrees);
 
     void beginFrame();
-    void setAtlas(int slot);   // 0 или 1
     void pushQuad(glm::vec2 pos, glm::vec2 size,
                   float u0, float v0, float u1, float v1,
                   u32 rgba);
@@ -53,9 +52,6 @@ public:
     /// Загружает накопленные вершины в GPU и выпускает команды.
     void flush(vk::Context& ctx);
 
-    /// Второй атлас (block atlas) — подключается извне
-    void attachExternalAtlas(VkImageView view, VkSampler sampler);
-
     /// Сколько вершин ушло на GPU в последнем кадре и сколько из них
     /// нарисовано. Интерфейс не видно уже который круг, а по коду он
     /// обязан рисоваться: это единственный способ отличить «не
@@ -64,13 +60,10 @@ public:
     u32 lastDrawn()    const { return lastDrawn_; }
     u32 lastDrawCalls() const { return lastDrawCalls_; }
 
-    /// Вершины, накопленные за текущий кадр, по атласам (0 — шрифт,
-    /// 1 — внешний). Интерфейс целиком строится на процессоре, так
-    /// что по этому потоку его можно проверить без устройства —
-    /// этим занимается tools/hostcheck.
-    const std::vector<UiVertex>& pendingVertices(int slot) const {
-        return verts_[slot == 1 ? 1 : 0];
-    }
+    /// Вершины, накопленные за текущий кадр. Интерфейс целиком
+    /// строится на процессоре, так что по этому потоку его можно
+    /// проверить без устройства — этим занимается tools/hostcheck.
+    const std::vector<UiVertex>& pendingVertices() const { return verts_; }
 
     float whiteU() const { return whiteU_; }
     float whiteV() const { return whiteV_; }
@@ -93,28 +86,24 @@ private:
     // Атлас шрифта
     vk::Texture2D fontAtlas_;
 
-    /// Внешний (block) атлас — descriptor set для него
-    VkDescriptorSet extSet_ = VK_NULL_HANDLE;
-
     VkDescriptorSetLayout descLayout_ = VK_NULL_HANDLE;
     VkDescriptorPool      descPool_   = VK_NULL_HANDLE;
     VkDescriptorSet fontSet_ = VK_NULL_HANDLE;
 
-    /// Буферы вершин (по 2 на кадр in flight)
+    /// Буфер вершин на каждый кадр в работе
     struct FrameBuf {
         vk::Buffer vb;
         u32 vertexCount = 0;
         u32 capacity = 0;
     };
     static constexpr u32 MAX_FRAMES = vk::Context::MAX_FRAMES;
-    /// По буферу на кадр в работе и на атлас. Раньше индексом был
-    /// только атлас: пока GPU читал вершины прошлого кадра, процессор
-    /// переписывал их для следующего — интерфейс мигал и рвался.
-    FrameBuf frames_[MAX_FRAMES][2];
+    /// По буферу на кадр в работе. Раньше буфер был один на всех:
+    /// пока GPU читал вершины прошлого кадра, процессор переписывал
+    /// их для следующего — интерфейс мигал и рвался.
+    FrameBuf frames_[MAX_FRAMES];
 
-    /// CPU-side буферы
-    std::vector<UiVertex> verts_[2];  // по атласу
-    int activeSlot_ = 0;
+    /// CPU-side буфер
+    std::vector<UiVertex> verts_;
 
     float whiteU_ = 0.f, whiteV_ = 0.f;
     u32 lastVerts_ = 0, lastDrawn_ = 0, lastDrawCalls_ = 0;
