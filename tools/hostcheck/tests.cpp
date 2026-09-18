@@ -73,6 +73,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cctype>
+#include <map>
+#include <memory>
 #include <set>
 #include <dirent.h>
 #include "ui/hud_layout.h"
@@ -7694,6 +7696,125 @@ void testEveryAudioEventIsFired() {
 // Летит настильно, без гравитации: на его дистанции дуга была бы
 // только помехой прицелу.
 // ------------------------------------------------------------
+// По дереву-подземелью и правда можно подняться.
+//
+// Отдельного блока-лестницы в игре нет: подъём делает контроллер, и
+// делает его на один блок за шаг. Значит лестница внутри ствола
+// обязана быть ступенчатой и соседней по стороне, а над каждой
+// ступенью должно оставаться место для тела.
+//
+// Проверка не знает, как именно лестница построена, и знать не
+// должна. Она берёт СВОЙСТВО: на каждой высоте есть клетка, где
+// блок твёрдый, а два над ним пустые, и такая клетка на следующей
+// высоте стоит рядом. Ровно это и значит «можно подняться».
+// ------------------------------------------------------------
+void testTreeDungeonIsClimbable() {
+    group("дерево-подземелье: по нему можно подняться");
+
+    world::blocks();
+    constexpr u64 SEED = 0x7E4D;
+    world::ChunkManager mgr(SEED, 1);
+    const auto& gen = mgr.generator();
+
+    // Ищем дерево-подземелье там же, где его ищет спавнер боссов.
+    world::DungeonSite site;
+    for (i32 r = 0; r < 24 && !site.exists; ++r)
+        for (i32 a = -r; a <= r && !site.exists; ++a)
+            for (i32 b = -r; b <= r && !site.exists; ++b) {
+                if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                site = world::treeDungeonAt(a, b, SEED, &gen);
+            }
+    check(site.exists, "дерево-подземелье нашлось");
+    if (!site.exists) return;
+
+    const i32 cx = site.center.x, cz = site.center.z;
+    const i32 ground = gen.surfaceHeight(cx, cz);
+
+    // ---- Строим все задетые чанки ----
+    std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> chunks;
+    std::vector<world::TerrainGenerator::Column> cols;
+    const i32 c0x = (cx - 14) >> 5, c1x = (cx + 14) >> 5;
+    const i32 c0z = (cz - 14) >> 5, c1z = (cz + 14) >> 5;
+    for (i32 ccz = c0z; ccz <= c1z; ++ccz)
+        for (i32 ccx = c0x; ccx <= c1x; ++ccx) {
+            auto ch = std::make_unique<world::Chunk>();
+            ch->coord = { ccx, 0, ccz };
+            world::computeChunkColumns(gen, ccx, ccz, cols);
+            world::generateChunkVoxels(*ch, gen, cols.data(), SEED);
+            chunks.emplace(std::make_pair(ccx, ccz), std::move(ch));
+        }
+
+    auto at = [&](i32 wx, i32 wy, i32 wz) -> u16 {
+        if (wy < 0 || wy >= world::CHUNK_SIZE_Y) return world::AIR;
+        const i32 ccx = wx >> 5, ccz = wz >> 5;
+        auto it = chunks.find({ ccx, ccz });
+        if (it == chunks.end()) return world::UNKNOWN;
+        return it->second->voxels[world::chunkIndex(wx - ccx * 32, wy,
+                                                   wz - ccz * 32)];
+    };
+
+    // ---- Ствол есть, и он полый ----
+    check(at(cx + 6, ground + 10, cz) == world::WOOD, "стена ствола на месте");
+    check(at(cx, ground + 6, cz) == world::AIR ||
+          at(cx, ground + 6, cz) == world::LANTERN, "внутри пусто");
+
+    // ---- Вход ----
+    bool entrance = true;
+    for (i32 wx = cx + 1; wx <= cx + 7; ++wx)
+        for (i32 y = ground + 1; y <= ground + 2; ++y)
+            if (at(wx, y, cz) != world::AIR) entrance = false;
+    check(entrance, "вход прорезан насквозь через стену");
+
+    // ---- Подъём ----
+    //
+    // Клетка «на ней стоят»: блок твёрдый, два над ним пустые.
+    auto standable = [&](i32 dy) {
+        std::vector<std::pair<i32, i32>> out;
+        for (i32 dz = -6; dz <= 6; ++dz)
+            for (i32 dx = -6; dx <= 6; ++dx) {
+                const u16 b  = at(cx + dx, ground + dy,     cz + dz);
+                const u16 a1 = at(cx + dx, ground + dy + 1, cz + dz);
+                const u16 a2 = at(cx + dx, ground + dy + 2, cz + dz);
+                if (!world::blocks().isSolid(b)) continue;
+                if (a1 != world::AIR || a2 != world::AIR) continue;
+                out.push_back({ dx, dz });
+            }
+        return out;
+    };
+
+    const i32 topDy = site.center.y - 1 - ground;   // пол верхнего зала
+    check(topDy > 30, "зал наверху, а не у земли");
+
+    i32 broken = -1;
+    for (i32 dy = 1; dy + 1 < topDy && broken < 0; ++dy) {
+        const auto here = standable(dy);
+        const auto next = standable(dy + 1);
+        bool linked = false;
+        for (const auto& a : here) {
+            for (const auto& b : next) {
+                const i32 m = std::abs(a.first - b.first) +
+                              std::abs(a.second - b.second);
+                if (m <= 1) { linked = true; break; }
+            }
+            if (linked) break;
+        }
+        if (!linked) broken = dy;
+    }
+    if (broken >= 0)
+        std::printf("       подъём рвётся на высоте %d над землёй\n", broken);
+    check(broken < 0, "подъём непрерывен от земли до верхнего зала");
+
+    // ---- Верхний зал ----
+    check(at(cx, site.center.y, cz) == world::AIR ||
+          at(cx, site.center.y, cz) == world::LANTERN,
+          "в зале есть куда встать");
+    check(world::blocks().isSolid(at(cx, site.center.y - 1, cz)),
+          "и под ногами пол, а не пустота");
+    check(at(cx, site.center.y + 3, cz) == world::AIR,
+          "и потолок не на голове");
+}
+
+// ------------------------------------------------------------
 void testShurikenFliesAndHits() {
     group("сюрикен: летит настильно и бьёт");
 
@@ -11507,6 +11628,7 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testTreeDungeonIsClimbable();
     testShurikenFliesAndHits();
     testDashMovesForward();
     testTrampolineThrowAndBounce();

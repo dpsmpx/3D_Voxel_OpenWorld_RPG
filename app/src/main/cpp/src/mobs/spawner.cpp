@@ -185,7 +185,11 @@ void Spawner::updateBosses(world::ChunkManager& world, ecs::Registry& reg,
             const u64 key = ((u64)(u32)cx << 32) | (u32)cz;
             if (bossPlaced_.count(key)) continue;
 
-            const world::DungeonSite site = world::dungeonAt(cx, cz, worldSeed);
+            // Подземелья двух видов, и обходятся они одним кодом:
+            // различаются только тем, где стоит зал.
+            world::DungeonSite site = world::dungeonAt(cx, cz, worldSeed);
+            if (!site.exists)
+                site = world::treeDungeonAt(cx, cz, worldSeed, &world.generator());
             if (!site.exists) continue;
 
             // Ждём, пока чанк с залом действительно загрузится:

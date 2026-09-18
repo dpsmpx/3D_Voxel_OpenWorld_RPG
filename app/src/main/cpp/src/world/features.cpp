@@ -315,6 +315,7 @@ enum Kind : u8 {
     Dungeon,
     Ruin,
     Altar,
+    TreeDungeon,   ///< подземелье внутри исполинского дерева
 };
 
 // Описание структуры: AABB в блоках, тип, seed
@@ -332,11 +333,13 @@ Layout layoutFor(i32 sx, i32 sz, u64 worldSeed) {
     // Расположение внутри super-chunk: смещение от 0..100, размер ≤156
     u32 sel = h & 0xFF;
 
-    // 20% — деревня, 15% — руины, 25% — подземелье, 8% — алтарь, иначе пусто
+    // 20% деревня, 15% руины, 25% подземелье, 8% алтарь,
+    // 9% дерево-подземелье, иначе пусто.
     if (sel < 51)       L.kind = Village;
     else if (sel < 90)  L.kind = Ruin;
     else if (sel < 154) L.kind = Dungeon;
     else if (sel < 174) L.kind = Altar;
+    else if (sel < 197) L.kind = TreeDungeon;
     else return L;
 
     i32 baseX = sx * SUPER_BLOCKS;
@@ -345,8 +348,9 @@ Layout layoutFor(i32 sx, i32 sz, u64 worldSeed) {
     i32 oz = (i32)((h >> 14) & 0x3F);
 
     // Размер зависит от типа
-    i32 halfX = (L.kind == Village) ? 48 : (L.kind == Dungeon) ? 56 : 12;
-    i32 halfZ = (L.kind == Village) ? 48 : (L.kind == Dungeon) ? 56 : 12;
+    i32 halfX = (L.kind == Village) ? 48 : (L.kind == Dungeon) ? 56
+              : (L.kind == TreeDungeon) ? 20 : 12;
+    i32 halfZ = halfX;
     i32 cx = baseX + ox + 32;            // центр
     i32 cz = baseZ + oz + 32;
 
@@ -813,6 +817,181 @@ void stampDungeon(Chunk& c, const FeatureContext& ctx, const structs::Layout& L)
     }
 }
 
+// ============================================================
+// Подземелье внутри исполинского дерева
+// ============================================================
+//
+// Ствол полый: стена в два блока, внутри шахта, по стене поднимается
+// лестница, этажи её пересекают.
+//
+// Лестница идёт по КВАДРАТНОМУ кольцу, а не по спирали из синуса с
+// косинусом, и это не украшение. Отдельного блока-лестницы в игре
+// нет: подъём делает контроллер, и делает его на один блок за шаг.
+// Значит ступени обязаны быть соседними по стороне — по диагонали
+// тело шириной 0.8 между двумя углами не проходит. Обход квадрата
+// даёт соседство по стороне по построению; круг, округлённый до
+// целых, — нет, там через раз выходит диагональ.
+//
+// Из того же обхода берётся и запас над головой. Кольцо в 24 клетки,
+// подъём на блок за клетку: одна и та же клетка занята ступенями,
+// отстоящими на 24 блока по высоте. Игроку нужно два — с запасом.
+// Считать высоту и проверять её отдельно не нужно вовсе.
+namespace treedung {
+
+constexpr i32 R_OUT      = 7;    ///< внешний радиус ствола
+constexpr i32 R_IN       = 5;    ///< внутренний
+constexpr i32 HEIGHT     = 46;   ///< высота ствола над землёй
+constexpr i32 FLOOR_STEP = 9;    ///< через сколько блоков этаж
+constexpr i32 TOP_ROOM   = 7;    ///< высота верхнего зала
+
+/// Радиус лестничного кольца.
+///
+/// Три, а не четыре: углы кольца отстоят от середины на sqrt(2)*R, и
+/// при четырёх это 5.66 — дальше внутренней стены. Ступени в углах
+/// оказались бы замурованы в дереве.
+constexpr i32 STAIR_R    = 3;
+constexpr i32 RING_LEN   = 8 * STAIR_R;   ///< клеток в кольце
+
+/// k-я клетка обхода кольца, смещением от середины.
+inline void ringCell(i32 k, i32& dx, i32& dz) {
+    const i32 R = STAIR_R, side = 2 * R;
+    k = ((k % RING_LEN) + RING_LEN) % RING_LEN;
+    if      (k < side)     { dx =  R;                dz = -R + k; }
+    else if (k < 2 * side) { dx =  R - (k - side);   dz =  R; }
+    else if (k < 3 * side) { dx = -R;                dz =  R - (k - 2 * side); }
+    else                   { dx = -R + (k - 3 * side); dz = -R; }
+}
+
+/// Высота верхнего зала над землёй — там же стоит босс.
+inline i32 topFloorDy() { return HEIGHT - TOP_ROOM; }
+
+/// Попадает ли клетка в проём перекрытия на высоте dy.
+///
+/// Вырез идёт по трём ступеням — той, что на уровне этажа, и двум под
+/// ней: через них игрок и проходит сквозь перекрытие. Правило одно на
+/// все перекрытия, включая пол верхнего зала: там оно однажды и
+/// разошлось, зал накрыл голову поднимающемуся, и подъём обрывался за
+/// три блока до конца.
+inline bool floorHole(i32 dy, i32 dx, i32 dz) {
+    for (i32 k = 0; k < 3; ++k) {
+        i32 hx, hz;
+        ringCell(dy - k, hx, hz);
+        if (std::abs(dx - hx) <= 2 && std::abs(dz - hz) <= 2) return true;
+    }
+    return false;
+}
+
+/// Годится ли рельеф под дерево. Условие одно на всех, кто спрашивает.
+inline bool groundFits(i32 ground) {
+    return ground >= 6 && ground <= CHUNK_SIZE_Y - HEIGHT - 16;
+}
+
+} // namespace treedung
+
+void stampTreeDungeon(Chunk& c, const FeatureContext& ctx,
+                      const structs::Layout& L)
+{
+    using namespace treedung;
+
+    const i32 cx = (L.minBlock.x + L.maxBlock.x) / 2;
+    const i32 cz = (L.minBlock.z + L.maxBlock.z) / 2;
+    const i32 ground = ctx.terrain->surfaceHeight(cx, cz);
+    if (!groundFits(ground)) return;
+
+    // Столбцы обходим ТОЛЬКО в пределах своего чанка. Дерево шире
+    // чанка, и без этого каждый из задетых чанков перебирал бы весь
+    // ствол целиком — кратная работа на ровном месте.
+    const i32 bx0 = c.coord.x * CHUNK_SIZE, bx1 = bx0 + CHUNK_SIZE - 1;
+    const i32 bz0 = c.coord.z * CHUNK_SIZE, bz1 = bz0 + CHUNK_SIZE - 1;
+    const i32 x0 = std::max(cx - 12, bx0), x1 = std::min(cx + 12, bx1);
+    const i32 z0 = std::max(cz - 12, bz0), z1 = std::min(cz + 12, bz1);
+    if (x0 > x1 || z0 > z1) return;
+
+    const i32 top = ground + HEIGHT;
+
+    // ---- Ствол и крона ----
+    for (i32 wz = z0; wz <= z1; ++wz) {
+        for (i32 wx = x0; wx <= x1; ++wx) {
+            const i32 dx = wx - cx, dz = wz - cz;
+            const i32 r2 = dx * dx + dz * dz;
+
+            if (r2 <= 12 * 12) {
+                const i32 cy = top + 4;
+                for (i32 y = cy - 5; y <= cy + 5; ++y) {
+                    const i32 dy = y - cy;
+                    if (r2 + dy * dy * 4 > 12 * 12) continue;
+                    putWorld(c, wx, y, wz, LEAVES, false);
+                }
+            }
+
+            if (r2 > R_OUT * R_OUT) continue;
+            const bool inside = (r2 <= R_IN * R_IN);
+            for (i32 y = ground; y <= top; ++y)
+                putWorld(c, wx, y, wz, inside ? AIR : WOOD, true);
+            // Пол шахты: у входа земля может уйти вниз, и без пола
+            // шахта проваливается.
+            if (inside) putWorld(c, wx, ground - 1, wz, PLANK, true);
+        }
+    }
+
+    // ---- Вход ----
+    //
+    // Со стороны +X, на всю толщину стены: без него дерево — глухой
+    // столб, и подземелья внутри никто не найдёт.
+    //
+    // Режется ДО лестницы, а не после. Наоборот — и проём сносит
+    // первые три ступени вместе с началом подъёма: они приходятся
+    // ровно на его высоту и ширину.
+    for (i32 wx = cx; wx <= cx + R_OUT; ++wx)
+        for (i32 wz = cz - 1; wz <= cz + 1; ++wz)
+            for (i32 y = ground; y <= ground + 3; ++y)
+                putWorld(c, wx, y, wz, AIR, true);
+
+    // ---- Этажи ----
+    //
+    // Режутся вокруг лестницы: сплошной этаж запер бы подъём. Вырез
+    // идёт по трём ступеням — той, что на уровне этажа, и двум под
+    // ней: через них игрок и проходит сквозь перекрытие.
+    for (i32 dy = FLOOR_STEP; dy < topFloorDy(); dy += FLOOR_STEP) {
+        for (i32 wz = std::max(cz - R_IN, z0); wz <= std::min(cz + R_IN, z1); ++wz)
+            for (i32 wx = std::max(cx - R_IN, x0); wx <= std::min(cx + R_IN, x1); ++wx) {
+                const i32 dx = wx - cx, dz = wz - cz;
+                if (dx * dx + dz * dz > R_IN * R_IN) continue;
+                if (floorHole(dy, dx, dz)) continue;
+                putWorld(c, wx, ground + dy, wz, PLANK, true);
+            }
+    }
+
+    // ---- Лестница ----
+    for (i32 dy = 1; dy < topFloorDy(); ++dy) {
+        i32 dx, dz;
+        ringCell(dy, dx, dz);
+        putWorld(c, cx + dx, ground + dy, cz + dz, PLANK, true);
+        // Фонарь по столбу в середине: без света внутри ствола не
+        // видно ни этажей, ни проёмов.
+        if (dy % 6 == 0) putWorld(c, cx, ground + dy, cz, LANTERN, true);
+    }
+
+    // ---- Верхний зал ----
+    //
+    // Шире шахты: здесь стоит босс, и драться в колодце диаметром в
+    // десять блоков негде.
+    {
+        const i32 fy = ground + topFloorDy();
+        for (i32 wz = std::max(cz - R_OUT + 1, z0); wz <= std::min(cz + R_OUT - 1, z1); ++wz)
+            for (i32 wx = std::max(cx - R_OUT + 1, x0); wx <= std::min(cx + R_OUT - 1, x1); ++wx) {
+                const i32 dx = wx - cx, dz = wz - cz;
+                if (dx * dx + dz * dz > (R_OUT - 1) * (R_OUT - 1)) continue;
+                for (i32 y = fy; y < fy + TOP_ROOM; ++y)
+                    putWorld(c, wx, y, wz, AIR, true);
+                if (floorHole(topFloorDy() - 1, dx, dz)) continue;
+                putWorld(c, wx, fy - 1, wz, PLANK, true);
+            }
+        putWorld(c, cx, fy + 1, cz, LANTERN, true);
+    }
+
+}
+
 void stampRuin(Chunk& c, const FeatureContext& ctx, const structs::Layout& L) {
     i32 cx = (L.minBlock.x + L.maxBlock.x) / 2;
     i32 cz = (L.minBlock.z + L.maxBlock.z) / 2;
@@ -855,6 +1034,30 @@ void stampAltar(Chunk& c, const FeatureContext& ctx, const structs::Layout& L) {
 // Публичный запрос подземелий: та же детерминированная раскладка,
 // что использует applyStructures, но без генерации вокселей.
 // ============================================================
+DungeonSite treeDungeonAt(i32 superX, i32 superZ, u64 worldSeed,
+                          const TerrainGenerator* terrain)
+{
+    DungeonSite site;
+    if (!terrain) return site;
+    const structs::Layout L = structs::layoutFor(superX, superZ, worldSeed);
+    if (L.kind != structs::TreeDungeon) return site;
+
+    const i32 cx = (L.minBlock.x + L.maxBlock.x) / 2;
+    const i32 cz = (L.minBlock.z + L.maxBlock.z) / 2;
+    const i32 ground = terrain->surfaceHeight(cx, cz);
+
+    // Тот же отказ, что и в stampTreeDungeon: дерева здесь не выросло,
+    // значит и зала нет. Две копии условия разошлись бы молча, поэтому
+    // числа берутся из одного места.
+    if (!treedung::groundFits(ground)) return site;
+
+    site.exists = true;
+    site.seed   = L.seed;
+    // Пол зала лежит блоком НИЖЕ отметки: стоят на нём, а не в нём.
+    site.center = { cx, ground + treedung::topFloorDy(), cz };
+    return site;
+}
+
 DungeonSite dungeonAt(i32 superX, i32 superZ, u64 worldSeed) {
     DungeonSite site;
     const structs::Layout L = structs::layoutFor(superX, superZ, worldSeed);
@@ -940,6 +1143,8 @@ void applyStructures(Chunk& chunk, const FeatureContext& ctx) {
                         stampVillage(chunk, ctx, L);
                     break;
                 case structs::Dungeon: stampDungeon(chunk, ctx, L); break;
+                case structs::TreeDungeon:
+                    stampTreeDungeon(chunk, ctx, L); break;
                 case structs::Ruin:    stampRuin(chunk, ctx, L);    break;
                 case structs::Altar:   stampAltar(chunk, ctx, L);   break;
                 default: break;
