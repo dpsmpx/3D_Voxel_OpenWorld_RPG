@@ -7185,6 +7185,87 @@ void testInstanceColorByteOrder() {
 }
 
 // ------------------------------------------------------------
+// Динамическое состояние задают все проходы
+// ------------------------------------------------------------
+void testEveryPassSetsViewport() {
+    group("проходы: вьюпорт и ножницы задаёт каждый, кто рисует");
+
+    // Вьюпорт и ножницы объявлены динамическим состоянием у каждого
+    // конвейера. Динамическое состояние НЕ наследуется между
+    // командными буферами и не имеет значения по умолчанию: рисовать,
+    // не задав его в этом буфере, — неопределённое поведение.
+    //
+    // Задавали его не все: трава, вода и контур блока пользовались
+    // тем, что оставил предыдущий проход. Держалось это на их
+    // порядке, а выключатель проходов (render_passes) сделал порядок
+    // непостоянным — сняв ландшафт, сущности и небо, оставшиеся
+    // рисовали вовсе без вьюпорта. Слоя проверки на устройстве нет,
+    // сказать об этом было некому.
+    static const char* files[] = {
+        "app/src/main/cpp/src/render/chunk_renderer.cpp",
+        "app/src/main/cpp/src/render/instanced_renderer.cpp",
+        "app/src/main/cpp/src/render/mob_renderer.cpp",
+        "app/src/main/cpp/src/render/npc_renderer.cpp",
+        "app/src/main/cpp/src/render/item_renderer.cpp",
+        "app/src/main/cpp/src/render/projectile_renderer.cpp",
+        "app/src/main/cpp/src/render/block_outline.cpp",
+        "app/src/main/cpp/src/render/skybox.cpp",
+        "app/src/main/cpp/src/ui/ui_renderer.cpp",
+    };
+
+    usize draws = 0, missing = 0;
+    std::string firstBad;
+    for (const char* f : files) {
+        const std::string src = readSource(f);
+        if (src.empty()) continue;
+        // Тела функций верхнего уровня: между закрывающими скобками в
+        // первой колонке. Грубо, но для этих файлов ровно так и есть.
+        usize from = 0;
+        while (from < src.size()) {
+            usize end = src.find("\n}\n", from);
+            const std::string body =
+                src.substr(from, (end == std::string::npos ? src.size() : end) - from);
+            from = (end == std::string::npos) ? src.size() : end + 3;
+
+            // Точка входа прохода — та, которой передали контекст и
+            // которая привязывает свой конвейер. Внутренние помощники
+            // вроде ChunkRenderer::drawMesh рисуют по чужому
+            // командному буферу и уже привязанным конвейером: вьюпорт
+            // за них задал позвавший.
+            if (body.find("vkCmdBindPipeline") == std::string::npos) continue;
+            if (body.find("vk::Context& ctx") == std::string::npos) continue;
+            ++draws;
+            if (body.find("setFullViewport") != std::string::npos) continue;
+            ++missing;
+            if (firstBad.empty()) {
+                const usize s = body.rfind("\nvoid ");
+                firstBad = std::string(f) + ": " +
+                           (s == std::string::npos ? std::string("?")
+                                                   : body.substr(s + 1, 60));
+            }
+        }
+    }
+
+    check(draws >= 10, "проходы, которые рисуют, найдены");
+    if (draws < 9) std::printf("       найдено только %zu\n", draws);
+    check(missing == 0, "каждый из них задаёт вьюпорт и ножницы сам");
+    if (missing) std::printf("       первый без вьюпорта: %s\n", firstBad.c_str());
+
+    // Определение одно на всех: семь дословных копий этого блока и
+    // были тем, из-за чего три прохода про него забыли.
+    const std::string h = readSource("app/src/main/cpp/src/vk/vk_context.h");
+    if (!h.empty())
+        check(h.find("void setFullViewport(VkCommandBuffer cmd) const")
+              != std::string::npos, "и берёт его из одного определения");
+    usize copies = 0;
+    for (const char* f : files) {
+        const std::string src = readSource(f);
+        if (src.find("vkCmdSetViewport") != std::string::npos) ++copies;
+    }
+    check(copies == 0, "своих копий vkCmdSetViewport у проходов не осталось");
+}
+
+// ------------------------------------------------------------
 void testVillageHousesAreBuildings() {
     group("деревня: дом построен, а не насыпан");
 
@@ -10056,6 +10137,7 @@ int main() {
     testShowcaseHoldsEveryModel();
     testEntityInstanceBudget();
     testInstanceColorByteOrder();
+    testEveryPassSetsViewport();
     testGaitPhaseFollowsDistance();
     testPlayerHasModel();
     testBufferMapContract();
