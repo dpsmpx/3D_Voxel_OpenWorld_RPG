@@ -7,6 +7,7 @@
 #include "../ecs/registry.h"
 #include "../world/chunk_manager.h"
 #include "../world/day_cycle.h"
+#include "../npc/npc_spawner.h"
 #include "save_format.h"
 #include "save_slot.h"
 #include "world_delta.h"
@@ -51,7 +52,8 @@ public:
                     const WorldDeltaStore& deltas,
                     u64 worldSeed,
                     u32 playtimeSec,
-                    const world::DayCycle& day);
+                    const world::DayCycle& day,
+                    const npc::NpcSpawner& npcSpawner);
 
     /// Загрузить состояние. world должен быть уже создан с тем же seed.
     SaveStatus load(const SaveSlot& slot,
@@ -61,7 +63,8 @@ public:
                     WorldDeltaStore& deltas,
                     u64* outSeed,
                     u32* outPlaytimeSec,
-                    world::DayCycle* outDay);
+                    world::DayCycle* outDay,
+                    npc::NpcSpawner& npcSpawner);
 
     /// ---- Автосейв — в служебный слот (profile=2, slot=2). ----
     static constexpr u32 AUTOSAVE_PROFILE = 2;

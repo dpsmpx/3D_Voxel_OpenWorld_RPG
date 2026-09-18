@@ -12,11 +12,13 @@
 #include "save/save_inventory.h"
 #include "save/world_delta.h"
 #include "items/item_def.h"
+#include "items/item_pickup.h"
 #include "combat/components.h"
 #include "trade/trade.h"
 #include "ecs/components.h"
 #include "npc/dialogue.h"
 #include "save/save_player.h"
+#include "save/save_npc.h"
 #include "progression/skill_tree.h"
 #include "progression/progression.h"
 #include "factions/faction.h"
@@ -6248,6 +6250,102 @@ void testPlayerHasModel() {
 }
 
 // ------------------------------------------------------------
+// Блоки не берутся из ниоткуда и не пропадают в никуда.
+//
+// Установка читала активную ячейку пояса и ничего из неё не списывала:
+// стопка не таяла никогда. Разрушение обращало воксель в воздух и не
+// выдавало ничего — таблица ItemRegistry::blockToItem была построена
+// при старте и ни разу не спрошена. В игре, целиком состоящей из
+// блоков, добыча не приносила ничего, а строительство не стоило ничего.
+// ------------------------------------------------------------
+void testBlockEconomy() {
+    group("блоки: установка списывает, разрушение выдаёт");
+
+    world::blocks();
+    items::items();
+
+    // Таблица «блок → предмет» заполняется при старте реестра. Если
+    // она пуста, всё остальное ниже проверяет пустоту.
+    check(items::items().blockToItem(world::STONE) == items::ITEM_STONE,
+          "таблица «блок → предмет» заполнена");
+
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager mgr(0xB10CULL, 2);
+        bool ready = false;
+        for (int i = 0; i < 500 && !ready; ++i) {
+            mgr.update({ 8.f, 70.f, 8.f });
+            ready = mgr.isReadyAt(8, 8);
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "чанк сгенерирован");
+
+        if (ready) {
+            ecs::Registry reg;
+            player::Player pl;
+            const i32 surf = mgr.generator().surfaceHeight(8, 8);
+            pl.init(reg, glm::vec3(8.5f, (f32)surf + 4.f, 8.5f));
+
+            // Прицел по умолчанию смотрит на север (0,0,-1). Ставим
+            // цель в двух блоках перед глазами и расчищаем путь,
+            // чтобы луч дошёл именно до неё.
+            const glm::vec3 eye = pl.eyePosition();
+            const i32 bx = (i32)std::floor(eye.x);
+            const i32 by = (i32)std::floor(eye.y);
+            const i32 bz = (i32)std::floor(eye.z);
+            mgr.setVoxel(bx, by, bz - 1, world::AIR);
+            mgr.setVoxel(bx, by, bz - 2, world::STONE);
+
+            // ---- Разрушение выдаёт предмет ----
+            const usize before = reg.pool<items::ItemPickup>().size();
+            check(pl.tryBreakBlock(mgr), "блок сломан");
+            check(mgr.getVoxel(bx, by, bz - 2) == world::AIR,
+                  "и воксель стал воздухом");
+
+            auto& pool = reg.pool<items::ItemPickup>();
+            check(pool.size() == before + 1, "из него выпал ровно один предмет");
+            if (pool.size() == before + 1) {
+                auto* pick = pool.get(pool.entityAt((u32)before));
+                check(pick != nullptr, "выпавшее — настоящий предмет");
+                if (pick) {
+                    check(pick->stack.itemId == items::ITEM_STONE,
+                          "и это камень, а не что попало");
+                    check(pick->stack.count == 1, "в количестве одной штуки");
+                }
+            }
+
+            // ---- Установка списывает из пояса ----
+            auto* inv = pl.inventory();
+            check(inv != nullptr, "инвентарь у игрока есть");
+            if (inv) {
+                auto& slot = inv->activeSlot();
+                slot.itemId = items::ITEM_STONE;
+                slot.count  = 5;
+
+                // Ставить нужно во что-то: возвращаем опору.
+                mgr.setVoxel(bx, by, bz - 2, world::STONE);
+                check(pl.tryPlaceBlock(mgr, world::STONE), "блок поставлен");
+                check(inv->activeSlot().count == 4,
+                      "и одна штука списана из активной ячейки");
+
+                // Последняя штука очищает ячейку, а не уходит в минус.
+                inv->activeSlot().count = 1;
+                mgr.setVoxel(bx, by, bz - 1, world::AIR);
+                check(pl.tryPlaceBlock(mgr, world::STONE),
+                      "последний блок из стопки ставится");
+                check(inv->activeSlot().empty(),
+                      "и ячейка после него пуста");
+
+                // Пустая ячейка ничего не списывает и не уходит в минус.
+                const u16 cnt = inv->activeSlot().count;
+                check(cnt == 0, "счётчик не ушёл ниже нуля");
+            }
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 // У каждой экранной кнопки есть обработчик.
 //
 // Кнопка прыжка была зарегистрирована с `nullptr` вместо действия:
@@ -7496,6 +7594,160 @@ void testEveryAudioEventIsFired() {
     check(silent == 0, "ни одно не осталось без вызова");
     if (silent) std::printf("       первое без вызова: %s (всего %zu)\n",
                             firstBad.c_str(), silent);
+}
+
+// ------------------------------------------------------------
+// Убитый житель не возвращается.
+//
+// Тело убитого npc_ai убирал через три секунды, а спавнер считал
+// деревню заселённой, пока жив ХОТЬ ОДИН её житель. Отойти на 260
+// метров и вернуться — и деревня стояла в полном составе, вместе с
+// убитыми. Сохранение для этого не требовалось: хватало прогулки.
+//
+// Механизм «убитых» при этом был написан дважды. Спавнер считал
+// постоянный ключ u64 и тратил его на цвет рубахи; сохранение
+// считало свой, u32, из других полей, записывало — и при загрузке
+// выбрасывало: «Пока просто читаем и игнорируем».
+// ------------------------------------------------------------
+void testDeadNpcStaysDead() {
+    group("NPC: убитый не возвращается");
+
+    world::blocks();
+    items::items();
+    npc::npcRegistry();
+
+    constexpr u64 SEED = 4242;
+    world::ChunkManager mgr(SEED, 1);
+
+    // Та же деревня, что и в проверке домов, и найденная тем же
+    // способом — через общую раскладку, а не копию её правил.
+    world::VillageSite site;
+    for (i32 r = 0; r < 12 && !site.exists; ++r)
+        for (i32 a = -r; a <= r && !site.exists; ++a)
+            for (i32 b = -r; b <= r && !site.exists; ++b) {
+                if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                const auto s2 = world::villageAt(a, b, SEED, &mgr.generator());
+                if (s2.exists) site = s2;
+            }
+    if (!site.exists) { check(false, "деревня не нашлась"); return; }
+
+    const glm::vec3 home{
+        (f32)site.center.x,
+        (f32)mgr.generator().surfaceHeight(site.center.x, site.center.z),
+        (f32)site.center.z };
+
+    ecs::Registry reg;
+    npc::NpcSpawner spawner;
+
+    auto pump = [&](const glm::vec3& pos, int frames) {
+        for (int i = 0; i < frames; ++i) spawner.update(mgr, reg, pos, SEED);
+    };
+    auto liveKeys = [&](ecs::Registry& r) {
+        std::set<u64> out;
+        auto& pool = r.pool<npc::NpcAI>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            auto* tag = r.get<npc::NpcTag>(pool.entityAt((u32)i));
+            if (tag && tag->persistKey) out.insert(tag->persistKey);
+        }
+        return out;
+    };
+
+    pump(home, 60);
+    const std::set<u64> born = liveKeys(reg);
+    check(born.size() >= 5, "жители деревни вселились");
+    check(born.size() == reg.pool<npc::NpcAI>().size(),
+          "и у каждого свой постоянный ключ, а не общий");
+    if (born.empty()) return;
+
+    // ---- Убиваем одного ----
+    const u64 victim = *born.begin();
+    {
+        auto& pool = reg.pool<npc::NpcAI>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            ecs::Entity e = pool.entityAt((u32)i);
+            auto* tag = reg.get<npc::NpcTag>(e);
+            if (!tag || tag->persistKey != victim) continue;
+            if (auto* hp = reg.get<ecs::Health>(e)) hp->current = 0.f;
+            if (auto* ai = pool.get(e)) ai->state = npc::NpcAI::Dead;
+            break;
+        }
+    }
+    pump(home, 1);
+    check(spawner.isDead(victim), "спавнер запомнил убитого");
+    check(reg.pool<npc::NpcAI>().size() == born.size(),
+          "и оставил тело дожить свою анимацию, а не убрал сразу");
+
+    // Тело убирает npc_ai через три секунды — здесь за него.
+    {
+        auto& pool = reg.pool<npc::NpcAI>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            ecs::Entity e = pool.entityAt((u32)i);
+            auto* tag = reg.get<npc::NpcTag>(e);
+            if (tag && tag->persistKey == victim) { reg.destroy(e); break; }
+        }
+    }
+
+    // ---- Прогулка на 1400 метров и обратно ----
+    pump(home + glm::vec3(1000.f, 0.f, 1000.f), 200);
+    {
+        const std::set<u64> away = liveKeys(reg);
+        usize left = 0;
+        for (u64 k : born) if (away.count(k)) ++left;
+        check(left == 0, "пока игрок далеко, деревня опустела");
+    }
+
+    // Возвращаемся. Смотрим не только итог, но и каждый кадр:
+    // отказ вселять убитого и уборка по загруженному списку — два
+    // разных места, и достаточно снять первое, чтобы убитый на один
+    // кадр появлялся снова — со своим прилавком, кошельком и всем
+    // остальным, что заводится при вселении.
+    bool victimEverSeen = false;
+    for (int i = 0; i < 120; ++i) {
+        spawner.update(mgr, reg, home, SEED);
+        if (liveKeys(reg).count(victim)) victimEverSeen = true;
+    }
+    check(!victimEverSeen, "убитый не вселился ни на один кадр");
+    {
+        const std::set<u64> back = liveKeys(reg);
+        check(back.count(victim) == 0, "убитый не вернулся");
+        usize missing = 0;
+        for (u64 k : born) if (k != victim && !back.count(k)) ++missing;
+        check(missing == 0, "а все остальные вернулись");
+    }
+
+    // ---- Список переживает сохранение ----
+    {
+        save::ByteWriter w;
+        save::serializeNpcState(w, spawner);
+        save::ByteReader r(w.data());
+        npc::NpcSpawner restored;
+        check(save::deserializeNpcState(r, restored),
+              "список убитых записан и прочитан");
+        check(restored.isDead(victim),
+              "и убитый остался убитым после загрузки");
+        check(!restored.isDead(victim ^ 1ull),
+              "а посторонний ключ в список не попал");
+    }
+
+    // ---- Загруженный список выгоняет уже стоящего жителя ----
+    //
+    // Загрузку делают, стоя посреди деревни: те, кого убили до
+    // сохранения, уже вселены. Список должен убрать их сразу, а не
+    // ждать, пока игрок отойдёт на 260 метров.
+    {
+        ecs::Registry reg2;
+        npc::NpcSpawner sp2;
+        for (int i = 0; i < 60; ++i) sp2.update(mgr, reg2, home, SEED);
+        const std::set<u64> live = liveKeys(reg2);
+        check(live.count(victim) == 1, "до загрузки житель на месте");
+
+        sp2.setDeadKeys({ victim });
+        sp2.update(mgr, reg2, home, SEED);
+        const std::set<u64> after = liveKeys(reg2);
+        check(after.count(victim) == 0, "после загрузки его убрали");
+        check(after.size() == live.size() - 1,
+              "и убрали ровно его одного");
+    }
 }
 
 // ------------------------------------------------------------
@@ -8946,8 +9198,9 @@ void testSaveFileRoundTrip() {
     wal.gold = 4321;
     reg.add(player, wal);
 
+    npc::NpcSpawner spawner;
     const save::SaveStatus ws = mgr.save(slot, world, reg, player, deltas,
-                                         SEED, 777, day);
+                                         SEED, 777, day, spawner);
     if (ws != save::SaveStatus::Ok)
         std::printf("    (статус записи: %d, путь: %s)\n",
                     (int)ws, slot.dataPath().c_str());
@@ -8974,8 +9227,9 @@ void testSaveFileRoundTrip() {
     u64 outSeed = 0; u32 outPlay = 0;
     world::DayCycle day2;
 
+    npc::NpcSpawner spawner2;
     const save::SaveStatus rs = mgr.load(slot, world2, reg2, player2, deltas2,
-                                         &outSeed, &outPlay, &day2);
+                                         &outSeed, &outPlay, &day2, spawner2);
     check(rs == save::SaveStatus::Ok, "сейв прочитан обратно");
     check(outSeed == SEED, "зерно мира дошло целым");
     check(outPlay == 777, "наигранное время дошло целым");
@@ -10363,7 +10617,9 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testDeadNpcStaysDead();
     testVillageHousesAreBuildings();
+    testBlockEconomy();
     testEveryButtonHasAnAction();
     testSprintByDoubleTap();
     testPlayerControls();

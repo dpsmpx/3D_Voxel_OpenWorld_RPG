@@ -596,12 +596,13 @@ struct Engine {
     }
 
     void doSave(u32 profile, u32 slot) {
-        if (!player || !world) return;
+        if (!player || !world || !npcSpawner) return;
         auto sl = saveMgr.slots().slot(profile, slot);
 
         auto st = saveMgr.save(sl, *world, registry,
                                player->entity(), worldDelta,
-                               worldSeed, playtime.seconds(), dayCycle);
+                               worldSeed, playtime.seconds(), dayCycle,
+                               *npcSpawner);
 
         if (st == save::SaveStatus::Ok) {
             lastSaveProfile = profile;
@@ -621,7 +622,7 @@ struct Engine {
     }
 
     void doLoad(u32 profile, u32 slot) {
-        if (!player || !world) return;
+        if (!player || !world || !npcSpawner) return;
         auto sl = saveMgr.slots().slot(profile, slot);
 
         u64 loadedSeed = worldSeed;
@@ -629,7 +630,7 @@ struct Engine {
 
         auto st = saveMgr.load(sl, *world, registry, player->entity(),
                                worldDelta, &loadedSeed, &loadedPlaytime,
-                               &dayCycle);
+                               &dayCycle, *npcSpawner);
 
         if (st == save::SaveStatus::Ok) {
             worldSeed = loadedSeed;

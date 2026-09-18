@@ -12,6 +12,7 @@
 #include "../items/currency.h"
 #include "../world/block.h"
 #include "../core/log.h"
+#include <algorithm>
 #include <cmath>
 #include <unordered_set>
 #include <utility>
@@ -21,12 +22,6 @@ namespace npc {
 
 using namespace ecs;
 
-namespace {
-
-// Здесь лежала копия хэша из features.cpp — «тот же, что в
-// structs::layoutFor». Раскладку деревни теперь спрашивают у
-// генератора, и копия не нужна.
-
 // Детерминированный уникальный ключ для NPC.
 // Комбинируем координаты super-chunk + индекс внутри деревни.
 u64 npcPersistentKey(i32 sx, i32 sz, u32 idx) {
@@ -35,6 +30,13 @@ u64 npcPersistentKey(i32 sx, i32 sz, u32 idx) {
     k ^= (u64)idx * 0x9E3779B97F4A7C15ULL;
     return k;
 }
+
+namespace {
+
+// Здесь лежала копия хэша из features.cpp — «тот же, что в
+// structs::layoutFor». Раскладку деревни теперь спрашивают у
+// генератора, и копия не нужна.
+
 
 // Детерминированное позиционирование NPC внутри деревни
 // (позиция + роль + ID).
@@ -115,6 +117,23 @@ bool generateVillageNpcs(world::ChunkManager& world,
 
 } // namespace
 
+bool NpcSpawner::isDead(u64 key) const {
+    return std::binary_search(deadKeys_.begin(), deadKeys_.end(), key);
+}
+
+void NpcSpawner::markDead(u64 key) {
+    if (key == 0) return;
+    auto it = std::lower_bound(deadKeys_.begin(), deadKeys_.end(), key);
+    if (it != deadKeys_.end() && *it == key) return;
+    deadKeys_.insert(it, key);
+}
+
+void NpcSpawner::setDeadKeys(std::vector<u64> keys) {
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    deadKeys_ = std::move(keys);
+}
+
 void NpcSpawner::update(world::ChunkManager& world,
                         ecs::Registry& reg,
                         const glm::vec3& playerPos,
@@ -122,6 +141,35 @@ void NpcSpawner::update(world::ChunkManager& world,
 {
     spawnTimer_ += 1.f / 60.f;
     despawnTimer_ += 1.f / 60.f;
+
+    // ---- Кто умер, тот больше не появится ----
+    //
+    // Проход идёт каждый кадр, без таймера: тело убитого живёт три
+    // секунды (npc_ai), и пропустить их можно, только если спавнер
+    // перестанут звать. Порядок здесь важен. Умирающего помечаем и
+    // оставляем дожить свою анимацию; живого убираем только если его
+    // ключ УЖЕ в списке — а это бывает единственным способом:
+    // список пришёл из сохранения.
+    {
+        std::vector<ecs::Entity> loadedDead;
+        auto& pool = reg.pool<NpcAI>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            ecs::Entity e = pool.entityAt((u32)i);
+            auto* ai  = pool.get(e);
+            auto* tag = reg.get<NpcTag>(e);
+            if (!ai || !tag || tag->persistKey == 0) continue;
+
+            auto* hp = reg.get<Health>(e);
+            const bool dying = (ai->state == NpcAI::Dead) ||
+                               (hp && hp->current <= 0.f);
+            if (dying) { markDead(tag->persistKey); continue; }
+            if (isDead(tag->persistKey)) loadedDead.push_back(e);
+        }
+        for (auto e : loadedDead) {
+            reg.destroy(e);
+            if (activeCount_ > 0) --activeCount_;
+        }
+    }
 
     // ---- Спавн ----
     if (spawnTimer_ >= 0.75f) {
@@ -169,6 +217,12 @@ void NpcSpawner::update(world::ChunkManager& world,
 
                 for (usize si = 0; si < specs.size(); ++si) {
                     const NpcSpec& s = specs[si];
+
+                    // Постоянный ключ особи. Он же решает, вселять ли
+                    // её вообще: убитого не воскрешаем.
+                    const u64 key = (si < keys.size()) ? keys[si] : (u64)si;
+                    if (isDead(key)) continue;
+
                     const NpcDef& def = npcRegistry().get(s.typeId);
                     if (def.maxHealth <= 0.f) continue;
 
@@ -187,7 +241,6 @@ void NpcSpawner::update(world::ChunkManager& world,
                     // номера сущности: иначе селянин менял бы рост и
                     // цвет рубахи всякий раз, как чанк выгружался и
                     // загружался обратно.
-                    const u64 key = (si < keys.size()) ? keys[si] : (u64)si;
                     const u32 look = (u32)(key ^ (key >> 32));
                     reg.add(e, ecs::Appearance{ look });
 
@@ -218,6 +271,7 @@ void NpcSpawner::update(world::ChunkManager& world,
 
                     NpcTag tag;
                     tag.id = s.typeId;
+                    tag.persistKey = key;
                     reg.add(e, tag);
 
                     NpcAI ai;
