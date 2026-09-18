@@ -4908,10 +4908,13 @@ void testConfirmSwallowsTouchesOutsideIt() {
         check(swallow < body.find("confirmButton("),
               "глушитель кладётся ДО кнопок, иначе он перекроет их");
 
-    // И рисуется оно последним, поверх всего.
-    const usize render = src.find("void UiSystem::render(");
-    const usize rend   = src.find("\n}\n", render);
-    const std::string rb = src.substr(render, rend - render);
+    // И рисуется оно последним, поверх всего. Кадр собирает
+    // buildFrame: render() только отправляет собранное на видеокарту.
+    const usize build = src.find("void UiSystem::buildFrame(");
+    check(build != NONE, "кадр собирается отдельно от отправки");
+    if (build == NONE) return;
+    const usize bend = src.find("\n}\n", build);
+    const std::string rb = src.substr(build, bend - build);
     check(rb.find("drawConfirm()") != NONE, "подтверждение рисуется в кадре");
     check(rb.find("drawConfirm()") > rb.find("drawStatusToast()"),
           "и поверх всего остального");
@@ -7633,6 +7636,149 @@ void testEveryAudioEventIsFired() {
 // недостижима вовсе, а RelationModifiers::talksToPlayer и ::hostile
 // не читал никто: вырезав полдеревни, игрок брал квест у следующего
 // жителя и спокойно ходил мимо стражи.
+// ------------------------------------------------------------
+// Перенос предмета пальцем и правда переносит.
+//
+// ui::DragDrop был написан целиком — захват, порог перетаскивания,
+// деление стека долгим тапом, отмена — и DragDrop::begin() не звал
+// никто. drag.active не поднимался ни разу за всю жизнь программы, и
+// вместе с модулем без применения стояла половина API инвентаря.
+//
+// Кадр интерфейса строится целиком на процессоре, поэтому проверка
+// гоняет НАСТОЯЩИЙ экран инвентаря: те же прямоугольники ячеек, тот
+// же разбор касаний, тот же код перекладки.
+// ------------------------------------------------------------
+void testInventoryDragMovesItems() {
+    group("инвентарь: предмет переносится пальцем");
+
+    world::blocks();
+    items::items();
+
+    constexpr i32 W = 1600, H = 900, DPI = 400;
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+    world::ChunkManager world(0xD2A6, 1);
+
+    auto* inv = pl.inventory();
+    check(inv != nullptr, "инвентарь есть");
+    if (!inv) return;
+
+    ui::UiSystem sys;
+    sys.setDensityDpi(DPI);
+    sys.setScreenSize(W, H);
+    sys.screen = ui::Screen::Inventory;
+
+    // Та же раскладка, по которой экран и рисует: не копия её правил,
+    // а она сама.
+    const ui::HudLayout L((f32)W, (f32)H,
+                          ui::theme::Metrics::fromDensityDpi(
+                              DPI, config::settingsConst().uiScale),
+                          ui::SafeInsets{});
+    const ui::HudLayout::CellGrid mainGrid =
+        L.cellGrid(L.invLeft(), items::INV_MAIN_SLOTS);
+
+    auto centre = [&](u32 slot) {
+        const ui::Rect r = mainGrid.at(slot);
+        return glm::vec2{ r.x + r.w * 0.5f, r.y + r.h * 0.5f };
+    };
+    auto frame = [&]() {
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, world, 60.f);
+    };
+    auto total = [&]() {
+        u32 n = 0;
+        for (u32 i = 0; i < items::INV_TOTAL_SLOTS; ++i) n += inv->at(i).count;
+        return n;
+    };
+
+    // ---- Перенос целого стека в пустую ячейку ----
+    inv->at(0).itemId = items::ITEM_STONE;
+    inv->at(0).count  = 7;
+    const u32 before = total();
+
+    frame();
+    const glm::vec2 from = centre(0), to = centre(3);
+    check(sys.routeTouch(1, from.x, from.y, 0), "нажатие попало в ячейку");
+    frame();
+    check(!sys.drag.active, "одно нажатие переноса ещё не начинает");
+
+    // Сдвиг дальше порога — и перенос пошёл.
+    sys.routeTouch(1, from.x + ui::DragDrop::DRAG_THRESHOLD + 4.f, from.y, 2);
+    frame();
+    check(sys.drag.active, "сдвиг дальше порога начинает перенос");
+    check(sys.drag.fromSlot == 0, "и помнит, откуда несут");
+    check(sys.drag.stack.count == 7, "несут весь стек");
+    check(inv->at(0).count == 7,
+          "а из сумки предмет не вынут: выход из экрана его не потеряет");
+
+    sys.routeTouch(1, to.x, to.y, 2);
+    frame();
+    sys.routeTouch(1, to.x, to.y, 1);
+    frame();
+    check(!sys.drag.active, "отпускание завершает перенос");
+    check(inv->at(0).empty(), "источник опустел");
+    check(inv->at(3).itemId == items::ITEM_STONE && inv->at(3).count == 7,
+          "а стек целиком лёг в цель");
+    check(total() == before, "ничего не размножилось и не пропало");
+
+    // ---- Долгий тап делит стек пополам ----
+    frame();
+    const glm::vec2 h0 = centre(3);
+    check(sys.routeTouch(1, h0.x, h0.y, 0), "нажатие на стек принято");
+    for (int i = 0; i < 40 && !sys.drag.active; ++i) frame();
+    check(sys.drag.active, "долгий тап на месте начинает перенос");
+    check(sys.drag.isSplit, "и это перенос половины");
+    check(sys.drag.stack.count == 3, "семь делится на три и четыре");
+
+    const glm::vec2 h1 = centre(5);
+    sys.routeTouch(1, h1.x, h1.y, 2);
+    frame();
+    sys.routeTouch(1, h1.x, h1.y, 1);
+    frame();
+    check(inv->at(3).count == 4, "в источнике остался остаток");
+    check(inv->at(5).count == 3, "а половина уехала");
+    check(total() == before, "и сумма опять сошлась");
+
+    // ---- Отпускание мимо ячеек ничего не теряет ----
+    frame();
+    const glm::vec2 g0 = centre(3);
+    sys.routeTouch(1, g0.x, g0.y, 0);
+    frame();
+    sys.routeTouch(1, g0.x + ui::DragDrop::DRAG_THRESHOLD + 4.f, g0.y, 2);
+    frame();
+    check(sys.drag.active, "перенос начат");
+    sys.routeTouch(1, (f32)W - 2.f, (f32)H - 2.f, 2);
+    frame();
+    sys.routeTouch(1, (f32)W - 2.f, (f32)H - 2.f, 1);
+    frame();
+    check(!sys.drag.active, "перенос завершён");
+    check(inv->at(3).count == 4, "предмет остался на месте");
+    check(total() == before, "и сумма цела");
+
+    // ---- Несовместимое в занятую ячейку меняется местами ----
+    inv->at(7).itemId = items::ITEM_DIRT;
+    inv->at(7).count  = 2;
+    const u32 before2 = total();
+
+    frame();
+    const glm::vec2 s0 = centre(3), s1 = centre(7);
+    sys.routeTouch(1, s0.x, s0.y, 0);
+    frame();
+    sys.routeTouch(1, s0.x + ui::DragDrop::DRAG_THRESHOLD + 4.f, s0.y, 2);
+    frame();
+    sys.routeTouch(1, s1.x, s1.y, 2);
+    frame();
+    sys.routeTouch(1, s1.x, s1.y, 1);
+    frame();
+    check(inv->at(3).itemId == items::ITEM_DIRT && inv->at(3).count == 2,
+          "ячейки поменялись местами: в источнике то, что лежало в цели");
+    check(inv->at(7).itemId == items::ITEM_STONE && inv->at(7).count == 4,
+          "а в цели — то, что несли");
+    check(total() == before2, "и сумма цела");
+}
+
 // ------------------------------------------------------------
 void testReputationCanBeLost() {
     group("репутация: за убийство приходит счёт");
@@ -10927,6 +11073,7 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testInventoryDragMovesItems();
     testReputationCanBeLost();
     testWisdomNodesActuallyWork();
     testDesertGrowsCactus();

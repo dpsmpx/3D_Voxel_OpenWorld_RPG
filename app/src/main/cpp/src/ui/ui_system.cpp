@@ -141,7 +141,13 @@ void UiSystem::tickUi(f32 dt) {
     questScroll.tick(dt);
     tradeScroll.tick(dt);
 
-    drag.update({ ui_.pointerX(), ui_.pointerY() }, dt);
+    uiDt_ = dt;
+    // Пока палец на экране. После отпускания pointerX/Y остаются
+    // последними известными, и обновлять по ним нечего — а
+    // отпускание разбирает экран инвентаря, ему нужна именно
+    // последняя позиция.
+    if (ui_.hasActivePointer())
+        drag.update({ ui_.pointerX(), ui_.pointerY() }, dt);
 }
 
 // ============================================================
@@ -151,6 +157,14 @@ void UiSystem::render(vk::Context& ctx,
                       player::Player& player,
                       world::ChunkManager& world,
                       f32 fps)
+{
+    buildFrame(player, world, fps);
+    renderer_.flush(ctx);
+}
+
+void UiSystem::buildFrame(player::Player& player,
+                          world::ChunkManager& world,
+                          f32 fps)
 {
     ui_.beginFrame();
 
@@ -164,55 +178,55 @@ void UiSystem::render(vk::Context& ctx,
 
     switch (screen) {
         case Screen::Hud:
-            drawHud(ctx, player, world, fps);
+            drawHud(player, world, fps);
             drawTouchControls();
             if (loading()) drawLoadingOverlay();
             break;
         case Screen::PauseMenu:
-            drawHud(ctx, player, world, fps);
+            drawHud(player, world, fps);
             drawPauseMenu(player);
             break;
         case Screen::Inventory:
-            drawHud(ctx, player, world, fps);
+            drawHud(player, world, fps);
             drawInventory(player);
             break;
         case Screen::Settings:
             drawSettingsScreen(player);
             break;
         case Screen::SkillTree:
-            drawHud(ctx, player, world, fps);
+            drawHud(player, world, fps);
             drawSkillTreeScreen(player);
             break;
         case Screen::Attributes:
-            drawHud(ctx, player, world, fps);
+            drawHud(player, world, fps);
             drawAttributesScreen(player);
             break;
         case Screen::Dialogue:
-            drawHud(ctx, player, world, fps);
+            drawHud(player, world, fps);
             drawDialogueScreen(player);
             break;
         case Screen::QuestLog:
-            drawHud(ctx, player, world, fps);
+            drawHud(player, world, fps);
             drawQuestLogScreen(player);
             break;
         case Screen::Reputation:
-            drawHud(ctx, player, world, fps);
+            drawHud(player, world, fps);
             drawReputationScreen(player);
             break;
         case Screen::SaveLoad:
-            drawHud(ctx, player, world, fps);
+            drawHud(player, world, fps);
             drawSaveLoadScreen(player);
             break;
         case Screen::Crafting:
-            drawHud(ctx, player, world, fps);
+            drawHud(player, world, fps);
             drawCraftingScreen(player);
             break;
         case Screen::Trade:
-            drawHud(ctx, player, world, fps);
+            drawHud(player, world, fps);
             drawTradeScreen(player);
             break;
         case Screen::Enchant:
-            drawHud(ctx, player, world, fps);
+            drawHud(player, world, fps);
             drawEnchantScreen(player);
             break;
     }
@@ -223,7 +237,6 @@ void UiSystem::render(vk::Context& ctx,
     drawConfirm();
 
     ui_.endFrame();
-    renderer_.flush(ctx);
 }
 
 // ============================================================
@@ -312,8 +325,7 @@ void UiSystem::drawLoadingOverlay() {
         ui_.rect(r.x + pad, barY, barW * p, barH, hudTint(theme::Success));
 }
 
-void UiSystem::drawHud(vk::Context& /*ctx*/,
-                       player::Player& player,
+void UiSystem::drawHud(player::Player& player,
                        world::ChunkManager& /*world*/,
                        f32 fps)
 {
@@ -856,6 +868,11 @@ void UiSystem::drawInventory(player::Player& player) {
     drawSlotGrid(player, hb, items::INV_HOTBAR_OFFSET, items::INV_HOTBAR_SLOTS);
 
     drawItemDetails(player);
+
+    // Сетки прошли — значит цель переноса уже найдена, если палец
+    // отпустили над ячейкой. Разбираем здесь, а не внутри сетки:
+    // сеток три, а перенос один.
+    updateSlotDrag(*inv);
 }
 
 // ============================================================
@@ -877,10 +894,36 @@ void UiSystem::drawSlotGrid(player::Player& player,
         const u32 slot = firstSlot + i;
 
         const int idx = ui_.pushInteractiveRect(r, [this, slot]() {
+            // Отпускание, завершающее перенос, — не тап: выбирать им
+            // ячейку нельзя. Обработчик срабатывает раньше, чем
+            // updateSlotDrag разберёт отпускание, поэтому drag.active
+            // здесь ещё поднят.
+            if (drag.active) return;
             selectedInvSlot = (selectedInvSlot == (i32)slot) ? -1 : (i32)slot;
         });
         const bool pressed  = ui_.isInteractivePressed(idx);
         const bool selected = (selectedInvSlot == (i32)slot);
+
+        // Палец лёг на непустую ячейку — запоминаем её как возможное
+        // начало переноса. Само решение принимается позже: по сдвигу
+        // или по времени.
+        if (!drag.active && dragPressSlot_ < 0 && ui_.hasActivePointer() &&
+            r.contains(ui_.pointerX(), ui_.pointerY()) &&
+            !inv->at(slot).empty())
+        {
+            dragPressSlot_ = (i32)slot;
+            dragPressPos_  = { ui_.pointerX(), ui_.pointerY() };
+            dragPressTime_ = 0.f;
+        }
+
+        // Цель переноса. Активного тача в кадре отпускания уже нет,
+        // но pointerX/Y хранят координаты именно события UP — то есть
+        // точное место, где палец оторвали.
+        if (drag.active && dragPointerWas_ && !ui_.hasActivePointer() &&
+            r.contains(ui_.pointerX(), ui_.pointerY()))
+        {
+            dragDropSlot_ = (i32)slot;
+        }
 
         ui_.rect(r.x, r.y, r.w, r.h,
                  pressed ? theme::PanelRaised : theme::Panel);
@@ -891,7 +934,14 @@ void UiSystem::drawSlotGrid(player::Player& player,
                                             : theme::STROKE_DP),
                         selected ? theme::Accent : theme::Stroke);
 
-        auto& st = inv->at(slot);
+        // Во время переноса ячейка-источник показывает ОСТАТОК.
+        // Предмет из неё не вынут — иначе выход из экрана посреди
+        // переноса терял бы его, — поэтому остаток считается здесь.
+        items::ItemStack st = inv->at(slot);
+        if (drag.active && (i32)slot == (i32)drag.fromSlot) {
+            if (st.count > drag.stack.count) st.count -= drag.stack.count;
+            else                             st.clear();
+        }
         if (!st.empty()) {
             const f32 pad = layout_.dp(theme::SPACE_XS_DP);
             drawItemIcon(st, r.x + pad, r.y + pad, r.w - pad * 2.f, selected);
@@ -905,6 +955,98 @@ void UiSystem::drawSlotGrid(player::Player& player,
             ui_.rect(r.x, r.y, m, m, theme::Accent);
         }
     }
+}
+
+// ============================================================
+// Перенос предмета пальцем
+// ============================================================
+//
+// Модуль ui::DragDrop был написан целиком — захват, порог, деление
+// стека долгим тапом, отмена — и его begin() не звал никто: drag.active
+// не поднимался ни разу за всю жизнь программы. Вместе с ним без
+// применения стояла половина API инвентаря.
+//
+// Перекладка делается одним движением здесь, при отпускании. Пока
+// палец в пути, в drag лежит только «что несём и откуда»: предмет
+// остаётся в сумке, и выход из экрана посреди переноса ничего не
+// теряет.
+namespace {
+
+/// Переложить count штук из src в dst.
+///
+/// Обычный случай — уместить в цель, сколько влезет, и ровно столько
+/// снять с источника. Если не влезло ничего, а несут стек ЦЕЛИКОМ и
+/// цель занята несовместимым — меняем ячейки местами: это то, чего
+/// игрок и ждёт, перетаскивая предмет на занятое место.
+void moveBetweenSlots(items::Inventory& inv, u32 src, u32 dst, u16 count) {
+    if (src == dst || count == 0) return;
+    if (src >= items::INV_TOTAL_SLOTS || dst >= items::INV_TOTAL_SLOTS) return;
+
+    items::ItemStack from = inv.at(src);
+    if (from.empty()) return;
+    if (count > from.count) count = from.count;
+
+    items::ItemStack moving = from;
+    moving.count = count;
+
+    const items::AddResult res = inv.putStack(dst, moving);
+    if (res.added > 0) {
+        inv.removeFromSlot(src, res.added);
+        return;
+    }
+    if (count == from.count && !inv.at(dst).canStackWith(moving))
+        inv.swapSlots(src, dst);
+}
+
+} // namespace
+
+void UiSystem::updateSlotDrag(items::Inventory& inv) {
+    const bool ptr = ui_.hasActivePointer();
+
+    // ---- Отпускание ----
+    if (dragPointerWas_ && !ptr) {
+        if (drag.active) {
+            if (dragDropSlot_ >= 0)
+                moveBetweenSlots(inv, drag.fromSlot, (u32)dragDropSlot_,
+                                 drag.stack.count);
+            // Мимо ячеек — предмет просто остаётся на месте: он из
+            // сумки и не уходил.
+            drag.end();
+        }
+        dragPressSlot_ = -1;
+        dragPressTime_ = 0.f;
+        dragDropSlot_  = -1;
+        dragPointerWas_ = false;
+        return;
+    }
+    dragPointerWas_ = ptr;
+
+    if (!ptr) { dragPressSlot_ = -1; dragPressTime_ = 0.f; return; }
+    if (drag.active || dragPressSlot_ < 0) return;
+
+    const items::ItemStack& src = inv.at((u32)dragPressSlot_);
+    if (src.empty()) { dragPressSlot_ = -1; return; }
+
+    dragPressTime_ += uiDt_;
+
+    const glm::vec2 now{ ui_.pointerX(), ui_.pointerY() };
+    const glm::vec2 d = now - dragPressPos_;
+    const bool moved = glm::dot(d, d) >=
+                       DragDrop::DRAG_THRESHOLD * DragDrop::DRAG_THRESHOLD;
+    const bool longTap = dragPressTime_ >= DragDrop::LONG_TAP_TIME;
+    if (!moved && !longTap) return;
+
+    // Сдвинулся — несём стек целиком. Простоял на месте — половину:
+    // делить стек больше нечем, отдельной кнопки для этого нет.
+    items::ItemStack carried = src;
+    const bool split = (!moved && longTap && src.count >= 2);
+    if (split) carried.count = (u16)(src.count / 2);
+
+    drag.begin(ui_.activePointerId(), (u32)dragPressSlot_, now, carried);
+    drag.isSplit = split;
+    // Выделение снимаем: сведения справа относятся к ячейке, из
+    // которой предмет вот-вот уедет.
+    selectedInvSlot = -1;
 }
 
 // ============================================================

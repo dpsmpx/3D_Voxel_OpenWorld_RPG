@@ -101,6 +101,18 @@ public:
 
     bool routeTouch(i32 id, float px, float py, int phase);
 
+    /// Построить кадр: все вершины интерфейса и все области касания.
+    ///
+    /// Вулкан здесь не участвует ни разу — интерфейс целиком строится
+    /// на процессоре. Поэтому кадр можно собрать и разобрать без
+    /// устройства, чем и занимаются проверки в tools/hostcheck: до
+    /// сих пор единственный вход был через render(), а он требовал
+    /// контекст, которого на хосте нет.
+    void buildFrame(player::Player& player,
+                    world::ChunkManager& world,
+                    f32 fps);
+
+    /// Построить кадр и отправить его на видеокарту.
     void render(vk::Context& ctx,
                 player::Player& player,
                 world::ChunkManager& world,
@@ -136,6 +148,18 @@ public:
     i32 selectedInvSlot = -1;
 
     /// ---- Drag & drop ----
+    ///
+    /// Перенос предмета пальцем. Тап по-прежнему ВЫБИРАЕТ: перенос
+    /// начинается только после того, как палец сдвинулся дальше
+    /// порога или простоял на месте дольше долгого тапа. Иначе одно
+    /// касание значило бы сразу два действия — ровно то, от чего
+    /// инвентарь в своё время и уходил.
+    ///
+    /// Предмет НЕ вынимается из сумки на время переноса: в drag
+    /// лежит только «что несём и откуда», а сама перекладка
+    /// происходит одним движением при отпускании. Вынимать было бы
+    /// проще, но тогда любой выход из экрана посреди переноса — а
+    /// его делает drag.clear() — терял бы предмет.
     DragDrop drag{};
 
     /// ---- Настройки ----
@@ -315,7 +339,7 @@ public:
 private:
     const input::TouchInput* touch_ = nullptr;
 
-    void drawHud(vk::Context& ctx, player::Player& player,
+    void drawHud(player::Player& player,
                  world::ChunkManager& world, f32 fps);
     void drawXpBar(player::Player& player);
     void drawResonanceBar(player::Player& player);
@@ -364,6 +388,23 @@ private:
     void drawItemIcon(items::ItemStack& stack, float x, float y, float size,
                       bool selected);
     void drawDragOverlay();
+
+    /// ---- Перенос предмета пальцем ----
+    /// Замечает начало переноса и завершает его при отпускании.
+    /// Зовётся из экрана инвентаря, после всех сеток ячеек.
+    void updateSlotDrag(items::Inventory& inv);
+
+    /// Ячейка, на которой палец задержался перед началом переноса.
+    i32       dragPressSlot_ = -1;
+    glm::vec2 dragPressPos_{0.f, 0.f};
+    f32       dragPressTime_ = 0.f;
+    /// Был ли палец на экране в прошлом кадре: отпускание — это
+    /// переход true → false, отдельного события интерфейс не даёт.
+    bool      dragPointerWas_ = false;
+    /// Ячейка под пальцем в момент отпускания; -1, если мимо всех.
+    i32       dragDropSlot_ = -1;
+    /// Шаг времени последнего кадра — для порога долгого тапа.
+    f32       uiDt_ = 0.f;
 
     UiRenderer renderer_;
     UiContext  ui_;
