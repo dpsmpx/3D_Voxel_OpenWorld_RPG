@@ -10,19 +10,6 @@
 namespace combat {
 
 /// Класс оружия. Определяет базовое поведение.
-enum class WeaponClass : u8 {
-    Sword = 0,       // быстрый, средний урон
-    Axe,             // медленный, высокий урон
-    Spear,           // длинный, узкий конус, укол
-    Dagger,          // очень быстрый, высокий крит
-    Bow,             // натяжение, траектория
-    Crossbow,        // мощный выстрел, перезарядка
-    ThrowingKnife,   // метательное
-    Staff,           // магический снаряд
-    Wand,            // AoE-каст
-    Bracelet,        // баффы/дебаффы
-    Count
-};
 
 enum class AttackStyle : u8 {
     Melee = 0,
@@ -32,21 +19,13 @@ enum class AttackStyle : u8 {
     Buff,
 };
 
-enum class WeaponHands : u8 {
-    OneHand = 0,
-    TwoHand,
-};
-
 /// Полное определение оружия. Создаётся один раз в реестре.
 struct WeaponDef {
     const char*  name;
-    WeaponClass  cls;
     AttackStyle  style;
-    WeaponHands  hands;
 
     DamageType   damageType;
     f32          baseDamage;
-    f32          attackSpeed;      // ударов/сек
     f32          reach;            // метры (для melee — длина конуса)
     f32          coneAngle;        // радианы, полный угол конуса
     f32          projectileSpeed;  // для ranged/magic (м/с)
@@ -55,7 +34,6 @@ struct WeaponDef {
     f32          staminaCost;
     f32          critChance;       // 0..1
     f32          critMult;
-    i32          comboLength;      // сколько ударов до финишера комбо
     f32          knockback;        // м/с, отбрасывание
 
     f32          windupTime;       // сек до активной фазы

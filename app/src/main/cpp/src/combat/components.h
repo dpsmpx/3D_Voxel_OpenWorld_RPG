@@ -39,8 +39,6 @@ struct WeaponState {
 
     Phase       phase      = Idle;
     f32         phaseTime  = 0.f;
-    i32         comboCounter = 0;
-    f32         comboTimer   = 0.f;
 
     f32         swingAnim  = 0.f;
     glm::vec3   swingDir{ 0.f, 0.f, 1.f };

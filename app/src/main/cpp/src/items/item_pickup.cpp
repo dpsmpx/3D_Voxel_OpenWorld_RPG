@@ -41,7 +41,6 @@ ecs::Entity spawnPickup(ecs::Registry& reg,
 
     Collider col;
     col.halfExtents = glm::vec3(0.2f, 0.2f, 0.2f);
-    col.isStatic = false;
     reg.add(e, col);
 
     reg.add(e, Kind{ EntityKind::Item });

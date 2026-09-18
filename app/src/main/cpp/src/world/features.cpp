@@ -61,7 +61,7 @@ static TreeShape treeShapeFor(TreeType t, u32 rng) {
             break;
         case TreeType::Cactus:
             s.trunkHeight = 2 + (rng % 2);
-            s.trunkBlock = WOOD;    // временно; в идеале — CACTUS
+            s.trunkBlock = CACTUS;
             s.leafBlock = AIR;
             s.kind = 3;
             break;

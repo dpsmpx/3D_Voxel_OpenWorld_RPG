@@ -37,9 +37,6 @@ struct Progression {
     DerivedStats derived{};
     bool derivedDirty = true;
 
-    /// XP для следующего уровня, уже посчитанное
-    u64 xpForNext = 0;
-
     /// Возвращает true, если в результате добавления XP подняли уровень.
     /// levelUpsOut — сколько уровней получено за один вызов.
     bool addXP(u64 amount, u32& levelUpsOut);
@@ -67,16 +64,10 @@ struct Progression {
 };
 
 /// Точка входа: обработка смерти врага — награда XP.
-/// Возвращает true, если игрок поднял уровень (для UI-эффектов).
-struct LevelUpEvent {
-    bool happened = false;
-    u32  newLevel = 1;
-    u32  levelsGained = 0;
-};
 
 /// Начислить награду за убийство моба.
 /// attacker должен иметь Progression.
-LevelUpEvent rewardKillXP(ecs::Registry& reg,
+void rewardKillXP(ecs::Registry& reg,
                           ecs::Entity attacker,
                           u64 xpReward);
 

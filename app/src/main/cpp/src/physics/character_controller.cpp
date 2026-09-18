@@ -19,15 +19,14 @@ void CharacterController::detectEnvironment(world::ChunkManager& world) {
 
     glm::vec3 feet = state_.position + glm::vec3(0, 0.1f, 0);
     glm::vec3 mid  = state_.position + glm::vec3(0, box.height * 0.5f, 0);
-    glm::vec3 eye  = state_.position + glm::vec3(0, box.height - 0.1f, 0);
 
+    // Уровень глаз тоже читался — в headUnderwater, которое не читал
+    // никто: под водой в игре не менялось ничего.
     u16 bF = blockAt(feet);
     u16 bM = blockAt(mid);
-    u16 bE = blockAt(eye);
 
     state_.inWater  = (bF == world::WATER) || (bM == world::WATER);
     state_.inLava   = (bF == world::LAVA)  || (bM == world::LAVA);
-    state_.headUnderwater = (bE == world::WATER);
 }
 
 // ============================================================

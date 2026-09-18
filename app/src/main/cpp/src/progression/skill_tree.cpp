@@ -105,13 +105,13 @@ SkillRegistry::SkillRegistry() {
         "Alchemist",     "+20% potion effect per rank.",
         2, 1, SkillNodeId::Wis_Enchanter, 4);
     reg(SkillNodeId::Wis_CraftMaster,    SkillBranch::Wisdom,
-        "Craft Master",  "+1 crafting tier.",
+        "Craft Master",  "Recipes count you 1 level higher.",
         2, 1, SkillNodeId::Wis_Alchemist, 5);
     reg(SkillNodeId::Wis_ArcaneShield,   SkillBranch::Wisdom,
         "Arcane Shield", "+5% magic resist per rank.",
         3, 1, SkillNodeId::Wis_CraftMaster, 6);
     reg(SkillNodeId::Wis_ResonanceMaster,SkillBranch::Wisdom,
-        "Resonance Master","+15% max resonance per rank.",
+        "Resonance Master","+15% resonance reserve: peak holds longer.",
         3, 1, SkillNodeId::Wis_ArcaneShield, 7);
 
     LOGI("SkillRegistry: зарегистрировано %u узлов", (unsigned)((u16)SkillNodeId::Count - 1));

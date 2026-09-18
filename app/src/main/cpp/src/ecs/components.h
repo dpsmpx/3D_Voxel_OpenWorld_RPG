@@ -172,7 +172,6 @@ struct AIAgent {
 /// — Коллайдер (для физики)
 struct Collider {
     glm::vec3 halfExtents{0.4f, 0.9f, 0.4f};
-    bool      isStatic = false;
 };
 
 // Здесь были Renderable (meshId/textureId/tint) и PersistentId: ни

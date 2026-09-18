@@ -386,6 +386,7 @@ struct Engine {
             ctx.skillTree = tree;
             ctx.playerLevel = prog ? prog->level : 1;
             ctx.nearbyStation = ui->nearbyStation;
+            ctx.craftTierBonus = player->derived().craftTierBonus;
 
             const auto& r = crafting::recipes().get((u16)recipeId);
             auto st = crafting::craft(ctx, r);
@@ -636,6 +637,9 @@ struct Engine {
             if (auto* tf = registry.get<ecs::Transform>(player->entity())) {
                 player->controller.setPosition(tf->position);
             }
+            // Загруженная репутация — не событие: объявлять смену тира
+            // за прошлую жизнь незачем.
+            player->resyncReputationBaseline();
             if (ui) {
                 char buf[96];
                 std::snprintf(buf, sizeof(buf), "%s P%u S%u",

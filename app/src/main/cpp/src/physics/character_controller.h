@@ -24,7 +24,6 @@ struct CharacterState {
     bool onGround = false;
     bool inWater  = false;
     bool inLava   = false;
-    bool headUnderwater = false;
     f32  coyoteTimer = 0.f;
     f32  jumpBufferTimer = 0.f;
 

@@ -95,6 +95,28 @@ ItemRegistry::ItemRegistry() {
         reg(id, d);
     };
 
+    // Эликсир: не восстанавливает ничего, а поднимает атрибут на
+    // время. Отдельная фабрика, а не седьмой параметр к potionItem:
+    // общего у них только категория.
+    auto elixirItem = [&](u16 id, const char* name, u32 value,
+                          BuffAttr attr, i32 amount, f32 dur,
+                          ItemRarity rarity, u8 iconTile)
+    {
+        ItemDef d{};
+        d.name = name;
+        d.description = "";
+        d.category = ItemCategory::Potion;
+        d.rarity = rarity;
+        d.maxStack = 8;
+        d.value = value;
+        d.buffAttr       = attr;
+        d.buffAmount     = amount;
+        d.effectDuration = dur;
+        d.iconTile = iconTile;
+        d.iconIsBlock = false;
+        reg(id, d);
+    };
+
     auto foodItem = [&](u16 id, const char* name, u32 value,
                         f32 hp, f32 sp, ItemRarity rarity, u8 iconTile)
     {
@@ -123,6 +145,7 @@ ItemRegistry::ItemRegistry() {
     blockItem(ITEM_ICE,      world::ICE,      "Ice",       64,  2, ItemRarity::Common);
     blockItem(ITEM_IRON_ORE, world::IRON_ORE, "Iron Ore",  64,  8, ItemRarity::Uncommon);
     blockItem(ITEM_GOLD_ORE, world::GOLD_ORE, "Gold Ore",  64, 15, ItemRarity::Rare);
+    blockItem(ITEM_CACTUS,   world::CACTUS,   "Cactus",    64,  2, ItemRarity::Common);
 
     // ============ Материалы (не block) ============
     materialItem(ITEM_IRON_INGOT, "Iron Ingot", 25, ItemRarity::Uncommon, 20);
@@ -149,10 +172,14 @@ ItemRegistry::ItemRegistry() {
     potionItem(ITEM_POTION_MANA_SMALL,   "Mana Potion",          25,   0.f,40.f,   0.f, 0.f, ItemRarity::Common,   32);
     potionItem(ITEM_POTION_MANA_LARGE,   "Greater Mana Potion",  80,   0.f,120.f,  0.f, 0.f, ItemRarity::Uncommon, 33);
     potionItem(ITEM_POTION_STAMINA,      "Stamina Potion",       20,   0.f,  0.f, 100.f,0.f, ItemRarity::Common,   34);
-    potionItem(ITEM_ELIXIR_STRENGTH,     "Elixir of Strength",  120,   0.f,  0.f,   0.f,60.f,ItemRarity::Rare,     35);
-    potionItem(ITEM_ELIXIR_AGILITY,      "Elixir of Agility",   120,   0.f,  0.f,   0.f,60.f,ItemRarity::Rare,     36);
-    potionItem(ITEM_ELIXIR_INTELLECT,    "Elixir of Intellect", 120,   0.f,  0.f,   0.f,60.f,ItemRarity::Rare,     37);
-    potionItem(ITEM_ELIXIR_ENDURANCE,    "Elixir of Endurance", 120,   0.f,  0.f,   0.f,60.f,ItemRarity::Rare,     38);
+    elixirItem(ITEM_ELIXIR_STRENGTH,  "Elixir of Strength",  120,
+               BuffAttr::Strength,     5, 60.f, ItemRarity::Rare, 35);
+    elixirItem(ITEM_ELIXIR_AGILITY,   "Elixir of Agility",   120,
+               BuffAttr::Agility,      5, 60.f, ItemRarity::Rare, 36);
+    elixirItem(ITEM_ELIXIR_INTELLECT, "Elixir of Intellect", 120,
+               BuffAttr::Intelligence, 5, 60.f, ItemRarity::Rare, 37);
+    elixirItem(ITEM_ELIXIR_ENDURANCE, "Elixir of Endurance", 120,
+               BuffAttr::Endurance,    5, 60.f, ItemRarity::Rare, 38);
 
     // ============ Еда ============
     foodItem(ITEM_BREAD,       "Bread",        5,  15.f, 10.f, ItemRarity::Common, 40);

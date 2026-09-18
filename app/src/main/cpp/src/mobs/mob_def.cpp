@@ -27,10 +27,6 @@ MobRegistry::MobRegistry() {
         d.eyeHeight = 1.0f;
         d.hostile = false;
         d.canSwim = true;
-        d.spawnWeight = 1.2f;
-        d.spawnsInLight = true;
-        d.dropBlock = 15;
-        d.dropMin = 1; d.dropMax = 2;
         d.xpReward = 12;
         defs_[MOB_SHEEP] = d;
     }
@@ -47,10 +43,6 @@ MobRegistry::MobRegistry() {
         d.bodyHeight = 1.35f;
         d.eyeHeight = 1.15f;
         d.canSwim = true;
-        d.spawnWeight = 1.0f;
-        d.spawnsInLight = true;
-        d.dropBlock = 0;
-        d.dropMin = 0; d.dropMax = 0;
         d.xpReward = 20;
         defs_[MOB_COW] = d;
     }
@@ -67,10 +59,6 @@ MobRegistry::MobRegistry() {
         d.bodyHeight = 0.7f;
         d.eyeHeight = 0.55f;
         d.canSwim = false;
-        d.spawnWeight = 0.9f;
-        d.spawnsInLight = true;
-        d.dropBlock = 0;
-        d.dropMin = 0; d.dropMax = 0;
         d.xpReward = 8;
         defs_[MOB_CHICKEN] = d;
     }
@@ -91,10 +79,6 @@ MobRegistry::MobRegistry() {
         d.eyeHeight = 0.85f;
         d.hostile = true;
         d.canSwim = true;
-        d.spawnWeight = 0.8f;
-        d.spawnsInLight = false;
-        d.dropBlock = 0;
-        d.dropMin = 0; d.dropMax = 0;
         d.xpReward = 40;
         defs_[MOB_WOLF] = d;
     }
@@ -115,10 +99,6 @@ MobRegistry::MobRegistry() {
         d.eyeHeight = 1.7f;
         d.hostile = true;
         d.canSwim = false;
-        d.spawnWeight = 0.6f;
-        d.spawnsInLight = false;
-        d.dropBlock = 0;
-        d.dropMin = 0; d.dropMax = 0;
         d.xpReward = 55;
         defs_[MOB_SKELETON] = d;
     }
@@ -139,10 +119,6 @@ MobRegistry::MobRegistry() {
         d.eyeHeight = 1.2f;
         d.hostile = true;
         d.canSwim = true;
-        d.spawnWeight = 0.9f;
-        d.spawnsInLight = false;
-        d.dropBlock = 0;
-        d.dropMin = 0; d.dropMax = 0;
         d.xpReward = 35;
         defs_[MOB_GOBLIN] = d;
     }
@@ -163,10 +139,6 @@ MobRegistry::MobRegistry() {
         d.eyeHeight = 0.6f;
         d.hostile = true;
         d.canSwim = true;
-        d.spawnWeight = 0.5f;
-        d.spawnsInLight = false;
-        d.dropBlock = 0;
-        d.dropMin = 0; d.dropMax = 0;
         d.xpReward = 50;
         defs_[MOB_SLIME] = d;
     }
@@ -189,10 +161,6 @@ MobRegistry::MobRegistry() {
         d.eyeHeight = 2.9f;
         d.hostile = true;
         d.canSwim = false;
-        d.spawnWeight = 0.f;      // обычным спавном не появляется
-        d.spawnsInLight = true;   // подземелье тёмное, но босс стоит всегда
-        d.dropBlock = 0;
-        d.dropMin = 0; d.dropMax = 0;
         d.xpReward = 4000;
 
         d.isBoss     = true;
@@ -220,8 +188,6 @@ MobRegistry::MobRegistry() {
         d.eyeHeight = 2.3f;
         d.hostile = true;
         d.canSwim = false;
-        d.spawnWeight = 0.f;
-        d.spawnsInLight = true;
         d.xpReward = 2800;
 
         d.isBoss     = true;

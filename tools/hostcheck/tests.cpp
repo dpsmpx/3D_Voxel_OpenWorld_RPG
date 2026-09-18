@@ -17,10 +17,15 @@
 #include "trade/trade.h"
 #include "ecs/components.h"
 #include "npc/dialogue.h"
+#include "npc/npc_ai.h"
 #include "save/save_player.h"
 #include "save/save_npc.h"
 #include "progression/skill_tree.h"
 #include "progression/progression.h"
+#include "crafting/crafting.h"
+#include "crafting/recipe.h"
+#include "items/item_use.h"
+#include "combat/resonance.h"
 #include "factions/faction.h"
 #include "quests/quest.h"
 #include "quests/quest_def.h"
@@ -89,6 +94,10 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+
+/// Читает файл проекта целиком. Определение ниже по тексту:
+/// часть проверок пользуется им раньше.
+static std::string readSource(const char* path);
 
 namespace {
 
@@ -897,7 +906,18 @@ void testBossPhases() {
     const auto& warden = mobs::mobRegistry().get(mobs::MOB_BOSS_WARDEN);
     check(warden.isBoss && warden.phaseCount == 3, "Каменный Страж — босс с тремя фазами");
     check(warden.slamRadius > 0.f, "у Стража есть удар по площади");
-    check(warden.spawnWeight == 0.f, "босс не участвует в обычном спавне");
+
+    // Босса ставит только updateBosses. Раньше это проверялось по полю
+    // spawnWeight == 0 — но вес спавна не читал никто, а отсекал
+    // боссов от обычного спавна отдельный `if (def.isBoss) continue;`.
+    // Проверка сверяла поле, к которому спавнер не обращается.
+    {
+        const std::string src =
+            readSource("app/src/main/cpp/src/mobs/spawner.cpp");
+        check(!src.empty() && src.find("if (def.isBoss) continue;")
+                              != std::string::npos,
+              "обычный спавн пропускает боссов");
+    }
 
     const auto& hollow = mobs::mobRegistry().get(mobs::MOB_BOSS_HOLLOW);
     check(hollow.isBoss && hollow.phaseCount == 2, "Полый Владыка — босс с двумя фазами");
@@ -4903,10 +4923,13 @@ void testConfirmSwallowsTouchesOutsideIt() {
         check(swallow < body.find("confirmButton("),
               "глушитель кладётся ДО кнопок, иначе он перекроет их");
 
-    // И рисуется оно последним, поверх всего.
-    const usize render = src.find("void UiSystem::render(");
-    const usize rend   = src.find("\n}\n", render);
-    const std::string rb = src.substr(render, rend - render);
+    // И рисуется оно последним, поверх всего. Кадр собирает
+    // buildFrame: render() только отправляет собранное на видеокарту.
+    const usize build = src.find("void UiSystem::buildFrame(");
+    check(build != NONE, "кадр собирается отдельно от отправки");
+    if (build == NONE) return;
+    const usize bend = src.find("\n}\n", build);
+    const std::string rb = src.substr(build, bend - build);
     check(rb.find("drawConfirm()") != NONE, "подтверждение рисуется в кадре");
     check(rb.find("drawConfirm()") > rb.find("drawStatusToast()"),
           "и поверх всего остального");
@@ -7607,6 +7630,528 @@ void testEveryAudioEventIsFired() {
 // постоянный ключ u64 и тратил его на цвет рубахи; сохранение
 // считало свой, u32, из других полей, записывало — и при загрузке
 // выбрасывало: «Пока просто читаем и игнорируем».
+// ------------------------------------------------------------
+// Кактус сделан из кактуса.
+//
+// В пустыне стояли деревянные столбики цвета дубовой коры: ствол
+// кактуса строился из WOOD с пометкой «временно; в идеале — CACTUS»,
+// а блока CACTUS в реестре не было вовсе.
+// ------------------------------------------------------------
+// Узлы ветки Мудрости и правда работают.
+//
+// Три из двадцати четырёх узлов Древа считались в computeDerived и
+// никуда не доходили: potionPowerMult, craftTierBonus и
+// maxResonanceMult не читал никто. Очки в них уходили впустую, а два
+// из трёх — обязательные родители для работающих узлов ниже по ветке.
+// ------------------------------------------------------------
+// Репутацию можно потерять, и это что-то меняет.
+//
+// Reputation::add звали ровно из одного места — награды за квест, и
+// только в плюс. Половина шкалы (Unfriendly, Hostile, Hated) была
+// недостижима вовсе, а RelationModifiers::talksToPlayer и ::hostile
+// не читал никто: вырезав полдеревни, игрок брал квест у следующего
+// жителя и спокойно ходил мимо стражи.
+// ------------------------------------------------------------
+// Перенос предмета пальцем и правда переносит.
+//
+// ui::DragDrop был написан целиком — захват, порог перетаскивания,
+// деление стека долгим тапом, отмена — и DragDrop::begin() не звал
+// никто. drag.active не поднимался ни разу за всю жизнь программы, и
+// вместе с модулем без применения стояла половина API инвентаря.
+//
+// Кадр интерфейса строится целиком на процессоре, поэтому проверка
+// гоняет НАСТОЯЩИЙ экран инвентаря: те же прямоугольники ячеек, тот
+// же разбор касаний, тот же код перекладки.
+// ------------------------------------------------------------
+// Эликсиры что-то делают.
+//
+// Четыре эликсира не восстанавливали ни здоровья, ни маны, ни
+// выносливости, а ItemDef::effectDuration — единственное, что у них
+// было заполнено, — не читал никто. applyConsumable возвращал
+// «эффекта нет», и предмет даже не тратился: четыре предмета в игре
+// не делали ровно ничего.
+// ------------------------------------------------------------
+void testElixirsGrantTimedBuff() {
+    group("эликсиры: временная прибавка к атрибуту");
+
+    world::blocks();
+    items::items();
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+    const ecs::Entity e = pl.entity();
+
+    progression::tickProgression(reg, 0.001f);
+    auto* prog = reg.get<progression::Progression>(e);
+    check(prog != nullptr, "прогрессия есть");
+    if (!prog) return;
+    const f32 baseHealth = prog->derived.maxHealth;
+    check(baseHealth > 0.f, "здоровье до эликсира известно");
+
+    auto* inv = pl.inventory();
+    check(inv != nullptr, "инвентарь есть");
+    if (!inv) return;
+    auto& slot = inv->activeSlot();
+    slot.itemId = items::ITEM_ELIXIR_ENDURANCE;
+    slot.count  = 2;
+
+    const items::UseResult r = items::useItemFromSlot(
+        reg, e, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+    check(r == items::UseResult::Consumed, "эликсир выпит, а не отвергнут");
+    check(inv->activeSlot().count == 1, "и списан со стопки");
+
+    auto* buffs = reg.get<progression::AttributeBuffs>(e);
+    check(buffs != nullptr, "прибавка записана");
+    if (!buffs) return;
+    check(buffs->add[3] == 5, "стойкость поднята на пять");
+    check(buffs->timeLeft[3] > 59.f, "на минуту");
+
+    progression::tickProgression(reg, 0.001f);
+    const f32 buffedHealth = prog->derived.maxHealth;
+    check(buffedHealth > baseHealth, "и здоровье выросло вместе с ней");
+
+    // Базовый атрибут при этом НЕ тронут: он сохраняется, и эликсир
+    // не должен оседать в сейве прибавкой навсегда.
+    auto* attr = reg.get<ecs::Attributes>(e);
+    check(attr && attr->endurance == 10, "базовая стойкость не тронута");
+
+    // ---- Минута прошла — всё вернулось ----
+    for (int i = 0; i < 61 * 60; ++i) progression::tickProgression(reg, 1.f / 60.f);
+    check(!buffs->any(), "действие кончилось");
+    check(std::fabs(prog->derived.maxHealth - baseHealth) < 0.01f,
+          "и здоровье вернулось к прежнему");
+
+    // ---- Второй эликсир продлевает, а не складывается ----
+    items::useItemFromSlot(reg, e, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+    progression::tickProgression(reg, 1.f / 60.f);
+    check(buffs->add[3] == 5, "одна прибавка");
+    for (int i = 0; i < 30 * 60; ++i) progression::tickProgression(reg, 1.f / 60.f);
+    const f32 leftAfter30 = buffs->timeLeft[3];
+    slot.itemId = items::ITEM_ELIXIR_ENDURANCE;
+    slot.count  = 1;
+    items::useItemFromSlot(reg, e, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+    check(buffs->add[3] == 5, "и после второго эликсира она всё та же");
+    check(buffs->timeLeft[3] > leftAfter30 + 25.f, "но время продлилось");
+}
+
+// ------------------------------------------------------------
+void testInventoryDragMovesItems() {
+    group("инвентарь: предмет переносится пальцем");
+
+    world::blocks();
+    items::items();
+
+    constexpr i32 W = 1600, H = 900, DPI = 400;
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+    world::ChunkManager world(0xD2A6, 1);
+
+    auto* inv = pl.inventory();
+    check(inv != nullptr, "инвентарь есть");
+    if (!inv) return;
+
+    ui::UiSystem sys;
+    sys.setDensityDpi(DPI);
+    sys.setScreenSize(W, H);
+    sys.screen = ui::Screen::Inventory;
+
+    // Та же раскладка, по которой экран и рисует: не копия её правил,
+    // а она сама.
+    const ui::HudLayout L((f32)W, (f32)H,
+                          ui::theme::Metrics::fromDensityDpi(
+                              DPI, config::settingsConst().uiScale),
+                          ui::SafeInsets{});
+    const ui::HudLayout::CellGrid mainGrid =
+        L.cellGrid(L.invLeft(), items::INV_MAIN_SLOTS);
+
+    auto centre = [&](u32 slot) {
+        const ui::Rect r = mainGrid.at(slot);
+        return glm::vec2{ r.x + r.w * 0.5f, r.y + r.h * 0.5f };
+    };
+    auto frame = [&]() {
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, world, 60.f);
+    };
+    auto total = [&]() {
+        u32 n = 0;
+        for (u32 i = 0; i < items::INV_TOTAL_SLOTS; ++i) n += inv->at(i).count;
+        return n;
+    };
+
+    // ---- Перенос целого стека в пустую ячейку ----
+    inv->at(0).itemId = items::ITEM_STONE;
+    inv->at(0).count  = 7;
+    const u32 before = total();
+
+    frame();
+    const glm::vec2 from = centre(0), to = centre(3);
+    check(sys.routeTouch(1, from.x, from.y, 0), "нажатие попало в ячейку");
+    frame();
+    check(!sys.drag.active, "одно нажатие переноса ещё не начинает");
+
+    // Сдвиг дальше порога — и перенос пошёл.
+    sys.routeTouch(1, from.x + ui::DragDrop::DRAG_THRESHOLD + 4.f, from.y, 2);
+    frame();
+    check(sys.drag.active, "сдвиг дальше порога начинает перенос");
+    check(sys.drag.fromSlot == 0, "и помнит, откуда несут");
+    check(sys.drag.stack.count == 7, "несут весь стек");
+    check(inv->at(0).count == 7,
+          "а из сумки предмет не вынут: выход из экрана его не потеряет");
+
+    sys.routeTouch(1, to.x, to.y, 2);
+    frame();
+    sys.routeTouch(1, to.x, to.y, 1);
+    frame();
+    check(!sys.drag.active, "отпускание завершает перенос");
+    check(inv->at(0).empty(), "источник опустел");
+    check(inv->at(3).itemId == items::ITEM_STONE && inv->at(3).count == 7,
+          "а стек целиком лёг в цель");
+    check(total() == before, "ничего не размножилось и не пропало");
+
+    // ---- Долгий тап делит стек пополам ----
+    frame();
+    const glm::vec2 h0 = centre(3);
+    check(sys.routeTouch(1, h0.x, h0.y, 0), "нажатие на стек принято");
+    for (int i = 0; i < 40 && !sys.drag.active; ++i) frame();
+    check(sys.drag.active, "долгий тап на месте начинает перенос");
+    check(sys.drag.isSplit, "и это перенос половины");
+    check(sys.drag.stack.count == 3, "семь делится на три и четыре");
+
+    const glm::vec2 h1 = centre(5);
+    sys.routeTouch(1, h1.x, h1.y, 2);
+    frame();
+    sys.routeTouch(1, h1.x, h1.y, 1);
+    frame();
+    check(inv->at(3).count == 4, "в источнике остался остаток");
+    check(inv->at(5).count == 3, "а половина уехала");
+    check(total() == before, "и сумма опять сошлась");
+
+    // ---- Отпускание мимо ячеек ничего не теряет ----
+    frame();
+    const glm::vec2 g0 = centre(3);
+    sys.routeTouch(1, g0.x, g0.y, 0);
+    frame();
+    sys.routeTouch(1, g0.x + ui::DragDrop::DRAG_THRESHOLD + 4.f, g0.y, 2);
+    frame();
+    check(sys.drag.active, "перенос начат");
+    sys.routeTouch(1, (f32)W - 2.f, (f32)H - 2.f, 2);
+    frame();
+    sys.routeTouch(1, (f32)W - 2.f, (f32)H - 2.f, 1);
+    frame();
+    check(!sys.drag.active, "перенос завершён");
+    check(inv->at(3).count == 4, "предмет остался на месте");
+    check(total() == before, "и сумма цела");
+
+    // ---- Несовместимое в занятую ячейку меняется местами ----
+    inv->at(7).itemId = items::ITEM_DIRT;
+    inv->at(7).count  = 2;
+    const u32 before2 = total();
+
+    frame();
+    const glm::vec2 s0 = centre(3), s1 = centre(7);
+    sys.routeTouch(1, s0.x, s0.y, 0);
+    frame();
+    sys.routeTouch(1, s0.x + ui::DragDrop::DRAG_THRESHOLD + 4.f, s0.y, 2);
+    frame();
+    sys.routeTouch(1, s1.x, s1.y, 2);
+    frame();
+    sys.routeTouch(1, s1.x, s1.y, 1);
+    frame();
+    check(inv->at(3).itemId == items::ITEM_DIRT && inv->at(3).count == 2,
+          "ячейки поменялись местами: в источнике то, что лежало в цели");
+    check(inv->at(7).itemId == items::ITEM_STONE && inv->at(7).count == 4,
+          "а в цели — то, что несли");
+    check(total() == before2, "и сумма цела");
+}
+
+// ------------------------------------------------------------
+void testReputationCanBeLost() {
+    group("репутация: за убийство приходит счёт");
+
+    world::blocks();
+    items::items();
+    npc::npcRegistry();
+
+    world::ChunkManager world(0x5EED, 1);
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+    const ecs::Entity player = pl.entity();
+
+    auto* rep = reg.get<factions::Reputation>(player);
+    check(rep != nullptr, "репутация у игрока есть");
+    if (!rep) return;
+    check(rep->tier(factions::FactionId::Villagers) ==
+          factions::ReputationTier::Neutral, "и начинается с нейтралитета");
+
+    auto makeNpc = [&](u16 typeId, const glm::vec3& at) {
+        const ecs::Entity e = reg.create();
+        ecs::Transform tf; tf.position = at;
+        reg.add(e, tf);
+        reg.add(e, ecs::Velocity{});
+        const auto& def = npc::npcRegistry().get(typeId);
+        reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
+        reg.add(e, ecs::Kind{ ecs::EntityKind::NPC });
+        reg.add(e, ecs::NPCTag{});
+        combat::Combatant cmb;
+        cmb.faction = combat::Faction::NPC;
+        reg.add(e, cmb);
+        reg.add(e, combat::StatusEffects{});
+        npc::NpcTag tag; tag.id = typeId; tag.persistKey = 1000 + (u64)typeId;
+        reg.add(e, tag);
+        npc::NpcAI ai; ai.homePos = at; ai.state = npc::NpcAI::Idle;
+        reg.add(e, ai);
+        return e;
+    };
+
+    auto murder = [&]() {
+        const ecs::Entity v = makeNpc(npc::NPC_VILLAGER, glm::vec3(2.f, 64.f, 0.f));
+        combat::DamageInstance dmg{};
+        dmg.amount       = 9999.f;
+        dmg.type         = combat::DamageType::Physical;
+        dmg.sourceEntity = (u32)player;
+        combat::applyDamage(reg, v, dmg);
+    };
+
+    // ---- Одно убийство: цена известна и тир поехал вниз ----
+    murder();
+    check(rep->get(factions::FactionId::Villagers) == -factions::REP_MURDER_PENALTY,
+          "убитый житель стоит ровно объявленной цены");
+    check(rep->tier(factions::FactionId::Villagers) ==
+          factions::ReputationTier::Unfriendly,
+          "и одного убийства хватает, чтобы перестать быть своим");
+
+    // ---- Четыре: с врагом деревни не разговаривают ----
+    for (int i = 0; i < 3; ++i) murder();
+    check(rep->tier(factions::FactionId::Villagers) ==
+          factions::ReputationTier::Hostile, "четыре убийства — вражда");
+
+    {
+        const ecs::Entity witness =
+            makeNpc(npc::NPC_VILLAGER, glm::vec3(1.f, 64.f, 0.f));
+        const auto& def = npc::npcRegistry().get(npc::NPC_VILLAGER);
+        check(!npc::startDialogue(reg, world, (u32)player, (u32)witness,
+                                  def.dialogueRoot),
+              "враг деревни не может заговорить с жителем");
+        reg.destroy(witness);
+    }
+
+    // ---- Семь: стража бьёт ----
+    for (int i = 0; i < 3; ++i) murder();
+    check(rep->tier(factions::FactionId::Villagers) ==
+          factions::ReputationTier::Hated, "семь убийств — ненависть");
+
+    {
+        const glm::vec3 guardPos{ 3.f, 64.f, 0.f };
+        const ecs::Entity guard = makeNpc(npc::NPC_GUARD, guardPos);
+        auto* gai = reg.get<npc::NpcAI>(guard);
+        check(gai != nullptr, "стражник создан");
+        if (gai) {
+            // Патрулирование: в этой ветке стража осматривается без
+            // проверки прямой видимости, и пустой мир ей не мешает.
+            gai->state = npc::NpcAI::Wander;
+            gai->wanderTarget = guardPos + glm::vec3(20.f, 0.f, 0.f);
+            gai->stateTime = 0.f;
+
+            npc::updateNpcs(world, reg, player,
+                            pl.controller.state().position, 1.f / 60.f);
+
+            check(gai->state == npc::NpcAI::Combat,
+                  "стража переходит в бой с ненавистным");
+            check(gai->guardTarget == (u32)player,
+                  "и целью выбирает именно игрока");
+        }
+    }
+
+    // ---- Игрок узнаёт о случившемся ----
+    //
+    // reputationFlashActive не поднимал никто: экран смены тира был
+    // написан целиком и не показывался ни разу.
+    pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+    check(pl.reputationFlashActive, "смена тира показывается на экране");
+    check(pl.lastRepFaction == factions::FactionId::Villagers,
+          "и названа та фракция, у которой она произошла");
+    check(pl.lastRepTier == factions::ReputationTier::Hated,
+          "и тот тир, до которого докатились");
+}
+
+// ------------------------------------------------------------
+void testWisdomNodesActuallyWork() {
+    group("древо: узлы Мудрости доходят до игры");
+
+    world::blocks();
+    items::items();
+
+    // ---- Alchemist: зелье лечит сильнее ----
+    auto healWith = [](u8 rank) -> f32 {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        const ecs::Entity e = pl.entity();
+
+        if (auto* tree = reg.get<progression::SkillTree>(e))
+            tree->ranks[(u16)progression::SkillNodeId::Wis_Alchemist] = rank;
+        if (auto* prog = reg.get<progression::Progression>(e))
+            prog->derivedDirty = true;
+        progression::tickProgression(reg, 0.001f);
+
+        auto* h = reg.get<ecs::Health>(e);
+        if (!h) return 0.f;
+        h->current = 1.f;
+        const f32 before = h->current;
+
+        auto* inv = pl.inventory();
+        if (!inv) return 0.f;
+        auto& slot = inv->activeSlot();
+        slot.itemId = items::ITEM_POTION_HEALTH_SMALL;
+        slot.count  = 1;
+        items::useItemFromSlot(reg, e,
+                               items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+        return h->current - before;
+    };
+
+    const f32 plain = healWith(0);
+    const f32 maxed = healWith(2);
+    check(plain > 0.f, "зелье лечит и без алхимии");
+    // Два ранга по +20% — ровно 1.4 от базового.
+    check(std::fabs(maxed - plain * 1.4f) < 0.01f,
+          "а с двумя рангами Alchemist — на 40% больше");
+
+    // ---- Craft Master: рецепт берётся на уровень раньше ----
+    {
+        crafting::Recipe r{};
+        r.id = 1;
+        r.requiredLevel = 5;
+        r.station = crafting::StationType::None;
+        r.output.itemId = items::ITEM_STONE;
+        r.output.count  = 1;
+
+        items::Inventory inv{};
+        crafting::CraftContext ctx{};
+        ctx.inventory   = &inv;
+        ctx.playerLevel = 4;
+
+        check(crafting::canCraft(ctx, r) == crafting::CraftStatus::LevelTooLow,
+              "на четвёртом уровне рецепт пятого недоступен");
+        ctx.craftTierBonus = 1;
+        check(crafting::canCraft(ctx, r) != crafting::CraftStatus::LevelTooLow,
+              "а мастеру крафта — доступен");
+    }
+
+    // ---- Resonance Master: запас выше, ступени на месте ----
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        const ecs::Entity e = pl.entity();
+
+        auto* res = reg.get<combat::ResonanceState>(e);
+        check(res != nullptr, "резонанс у игрока есть");
+        if (!res) return;
+        check(std::fabs(res->maxValue - combat::RESONANCE_MAX) < 0.01f,
+              "без узла потолок обычный");
+
+        if (auto* tree = reg.get<progression::SkillTree>(e))
+            tree->ranks[(u16)progression::SkillNodeId::Wis_ResonanceMaster] = 3;
+        if (auto* prog = reg.get<progression::Progression>(e))
+            prog->derivedDirty = true;
+        progression::tickProgression(reg, 0.001f);
+
+        res = reg.get<combat::ResonanceState>(e);
+        check(std::fabs(res->maxValue - combat::RESONANCE_MAX * 1.45f) < 0.01f,
+              "с тремя рангами — на 45% выше");
+
+        // Копим до упора: запас набирается СВЕРХ пятой ступени, а сама
+        // ступень остаётся на прежней отметке. Иначе «+15% максимума»
+        // было бы ослаблением — до пятой пришлось бы бить дольше.
+        for (int i = 0; i < 40; ++i) res->onHit(false);
+        check(res->value > combat::RESONANCE_MAX + 1.f,
+              "накопить можно выше прежнего потолка");
+        check(res->value <= res->maxValue + 0.01f, "но не выше своего");
+        check(res->stack == combat::RESONANCE_MAX_STACKS,
+              "и пятая ступень всё равно достигается");
+
+        // Запас утекает первым — ступень держится дольше обычного.
+        f32 held = 0.f;
+        for (int i = 0; i < 1000 && res->stack == combat::RESONANCE_MAX_STACKS; ++i) {
+            res->update(1.f / 60.f);
+            held += 1.f / 60.f;
+        }
+        const f32 decayDelay = combat::RESONANCE_DECAY_DELAY;
+        check(held > decayDelay + 0.5f,
+              "и держится дольше, чем просто задержка распада");
+    }
+}
+
+// ------------------------------------------------------------
+void testDesertGrowsCactus() {
+    group("мир: кактус сделан из кактуса");
+
+    world::blocks();
+    items::items();
+
+    check(world::blocks().get(world::CACTUS).isSolid,
+          "блок кактуса есть в реестре и он твёрдый");
+    check(items::items().blockToItem(world::CACTUS) == items::ITEM_CACTUS,
+          "и у него есть предмет: сломанный кактус не пропадает");
+
+    // Чанк строится целиком и на месте, той же функцией, что и в игре:
+    // планировщик задач для этого не нужен, а результат детерминирован
+    // по (seed, координате чанка).
+    //
+    // Кактусов приходится искать долго: treeDensity у пустыни 0.05,
+    // то есть один кактус на двадцать чанков, и биом берётся по ЦЕНТРУ
+    // чанка. Полтора десятка пустынных чанков ничего не докажут —
+    // ноль там законен. Поэтому обход идёт по сотням.
+    constexpr u64 SEED = 0xCAC705ULL;
+    world::ChunkManager mgr(SEED, 1);
+    const auto& gen = mgr.generator();
+
+    constexpr usize WANT_CHUNKS = 80;
+    usize desertChunks = 0, withCactus = 0, cactusVoxels = 0, woodVoxels = 0;
+    std::vector<world::TerrainGenerator::Column> cols;
+
+    for (i32 cz = -64; cz <= 64 && desertChunks < WANT_CHUNKS; ++cz) {
+        for (i32 cx = -64; cx <= 64 && desertChunks < WANT_CHUNKS; ++cx) {
+            const i32 midX = cx * world::CHUNK_SIZE + world::CHUNK_SIZE / 2;
+            const i32 midZ = cz * world::CHUNK_SIZE + world::CHUNK_SIZE / 2;
+            if (gen.biomeAt(midX, midZ) != world::Desert) continue;
+            ++desertChunks;
+
+            auto chunk = std::make_unique<world::Chunk>();
+            chunk->coord = { cx, 0, cz };
+            world::computeChunkColumns(gen, cx, cz, cols);
+            world::generateChunkVoxels(*chunk, gen, cols.data(), SEED);
+
+            usize here = 0;
+            for (i32 lz = 0; lz < world::CHUNK_SIZE; ++lz)
+                for (i32 lx = 0; lx < world::CHUNK_SIZE; ++lx)
+                    for (i32 y = 0; y < world::CHUNK_SIZE_Y; ++y) {
+                        const u16 b = chunk->voxels[world::chunkIndex(lx, y, lz)];
+                        if (b == world::CACTUS) { ++here; ++cactusVoxels; }
+                        if (b == world::WOOD)   ++woodVoxels;
+                    }
+            if (here) ++withCactus;
+        }
+    }
+
+    std::printf("       пустынных чанков %zu, с кактусом %zu, вокселей кактуса %zu\n",
+                desertChunks, withCactus, cactusVoxels);
+    check(desertChunks == WANT_CHUNKS, "пустынные чанки нашлись");
+    // Ровно эта проверка отличает «кактус есть» от «кактус из дуба»:
+    // до правки ствол ставился блоком WOOD, и CACTUS в мире не
+    // появлялся ни разу.
+    check(cactusVoxels > 0, "в пустыне вырос кактус");
+    check(withCactus >= 2, "и не в одном-единственном чанке на весь обход");
+    // Дерево в пустыне встречается и законно — деревни строятся из
+    // него в любом биоме, — поэтому «дерева нет» проверять нельзя.
+    (void)woodVoxels;
+}
+
 // ------------------------------------------------------------
 void testDeadNpcStaysDead() {
     group("NPC: убитый не возвращается");
@@ -10616,6 +11161,11 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testElixirsGrantTimedBuff();
+    testInventoryDragMovesItems();
+    testReputationCanBeLost();
+    testWisdomNodesActuallyWork();
+    testDesertGrowsCactus();
     testDeadNpcStaysDead();
     testVillageHousesAreBuildings();
     testBlockEconomy();

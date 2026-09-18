@@ -155,7 +155,6 @@ void StationSpawner::update(ecs::Registry& reg,
                     col.halfExtents = glm::vec3(st.sizeX * 0.5f,
                                                 st.sizeY * 0.5f,
                                                 st.sizeZ * 0.5f);
-                    col.isStatic = true;
                     reg.add(e, col);
 
                     reg.add(e, Kind{ EntityKind::Structure });
