@@ -19,23 +19,23 @@ static const std::array<BiomeDef, BIOME_COUNT> BIOMES = {{
     // Ocean
     { "Ocean",    SAND,    DIRT,    STONE, WATER, 0.00f, TreeType::None,   0.0f, 0,  -0.3f },
     // Beach
-    { "Beach",    SAND,    SAND,    STONE, WATER, 0.02f, TreeType::Palm,   2.0f, 0,   0.3f },
+    { "Beach",    SAND,    SAND,    STONE, WATER, 0.30f, TreeType::Palm,   2.0f, 0,   0.3f },
     // Plains
-    { "Plains",   GRASS,   DIRT,    STONE, WATER, 0.15f, TreeType::Oak,    8.0f, 2,   0.2f },
+    { "Plains",   GRASS,   DIRT,    STONE, WATER, 1.40f, TreeType::Oak,    8.0f, 2,   0.2f },
     // Forest
-    { "Forest",   GRASS,   DIRT,    STONE, WATER, 1.80f, TreeType::Oak,   12.0f, 3,   0.1f },
+    { "Forest",   GRASS,   DIRT,    STONE, WATER, 7.00f, TreeType::Oak,   12.0f, 3,   0.1f },
     // Taiga
-    { "Taiga",    GRASS,   DIRT,    STONE, WATER, 1.20f, TreeType::Pine,   6.0f, 4,  -0.5f },
+    { "Taiga",    GRASS,   DIRT,    STONE, WATER, 5.00f, TreeType::Pine,   6.0f, 4,  -0.5f },
     // Desert
-    { "Desert",   SAND,    SAND,    STONE, WATER, 0.05f, TreeType::Cactus, 0.3f, 0,   0.6f },
+    { "Desert",   SAND,    SAND,    STONE, WATER, 0.25f, TreeType::Cactus, 0.3f, 0,   0.6f },
     // Savanna
-    { "Savanna",  GRASS,   DIRT,    STONE, WATER, 0.25f, TreeType::Dead,   4.0f, 1,   0.5f },
+    { "Savanna",  GRASS,   DIRT,    STONE, WATER, 1.20f, TreeType::Dead,   4.0f, 1,   0.5f },
     // Tundra
-    { "Tundra",   SNOW,    DIRT,    STONE, ICE,   0.05f, TreeType::Pine,   0.5f, 3,  -0.8f },
+    { "Tundra",   SNOW,    DIRT,    STONE, ICE,   0.40f, TreeType::Pine,   0.5f, 3,  -0.8f },
     // Mountains
-    { "Mountains",STONE,   STONE,   STONE, WATER, 0.10f, TreeType::Pine,   0.5f, 20, -0.4f },
+    { "Mountains",STONE,   STONE,   STONE, WATER, 0.60f, TreeType::Pine,   0.5f, 20, -0.4f },
     // Swamp
-    { "Swamp",    GRASS,   DIRT,    STONE, WATER, 0.40f, TreeType::Dead,  10.0f, -2,  0.4f },
+    { "Swamp",    GRASS,   DIRT,    STONE, WATER, 2.50f, TreeType::Dead,  10.0f, -2,  0.4f },
     // Volcanic
     { "Volcanic", STONE,   STONE,   STONE, LAVA,  0.00f, TreeType::None,   0.0f, 15,  0.8f },
 }};

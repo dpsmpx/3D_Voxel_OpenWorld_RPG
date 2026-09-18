@@ -42,31 +42,32 @@ static TreeShape treeShapeFor(TreeType t, u32 rng) {
     TreeShape s{};
     switch (t) {
         case TreeType::Oak:
-            s.trunkHeight = 4 + (rng % 3);  // 4..6
+            s.trunkHeight = 7 + (rng % 5);   // 7..11
             s.trunkBlock = WOOD;
             s.leafBlock = LEAVES;
             s.kind = 0;
             break;
         case TreeType::Pine:
-            s.trunkHeight = 6 + (rng % 4);  // 6..9
+            s.trunkHeight = 11 + (rng % 6);  // 11..16
             s.trunkBlock = WOOD;
             s.leafBlock = LEAVES;
             s.kind = 1;
             break;
         case TreeType::Palm:
-            s.trunkHeight = 5 + (rng % 3);
+            s.trunkHeight = 8 + (rng % 4);
             s.trunkBlock = WOOD;
             s.leafBlock = LEAVES;
             s.kind = 2;
             break;
         case TreeType::Cactus:
+            // Кактус остаётся низким: он кактус, а не дерево.
             s.trunkHeight = 2 + (rng % 2);
             s.trunkBlock = CACTUS;
             s.leafBlock = AIR;
             s.kind = 3;
             break;
         case TreeType::Dead:
-            s.trunkHeight = 3 + (rng % 3);
+            s.trunkHeight = 6 + (rng % 4);
             s.trunkBlock = WOOD;
             s.leafBlock = AIR;
             s.kind = 4;
@@ -76,106 +77,173 @@ static TreeShape treeShapeFor(TreeType t, u32 rng) {
     return s;
 }
 
-static void stampBlob(Chunk& c, i32 bx, i32 by, i32 bz, u8 leaf) {
-    // Стандартный oak: 5x3x5 радиусы
-    for (i32 dy = -2; dy <= 1; ++dy) {
-        i32 r = (dy <= -1) ? 2 : ((dy == 0) ? 2 : 1);
+// Кроны кладутся в МИРОВЫХ координатах и обрезаются по своему чанку.
+//
+// Раньше дерево жило строго в своём чанке: анкер выбирался в нём, и
+// крона резалась о границу. При кроне радиусом два это было «изредка
+// обрезанные ветви», при радиусе пять — половина дерева, срезанная по
+// линейке. Теперь каждый чанк доращивает и деревья соседей: раскладка
+// детерминирована, и сосед строит ровно ту же крону, что и хозяин.
+
+static void stampBlob(Chunk& c, i32 bx, i32 by, i32 bz, u8 leaf, i32 r) {
+    // Шар, сплюснутый сверху: вытянутый вверх выглядит как столб, а
+    // идеальный — как шарик на палочке.
+    for (i32 dy = -r; dy <= r - 1; ++dy) {
         for (i32 dx = -r; dx <= r; ++dx) {
             for (i32 dz = -r; dz <= r; ++dz) {
-                // Скругление
-                if (std::abs(dx) == r && std::abs(dz) == r && r > 1) continue;
-                if (dy == 1 && (std::abs(dx) == 1 || std::abs(dz) == 1)) continue;
-                put(c, bx + dx, by + dy, bz + dz, leaf, /*overwrite=*/false);
+                const i32 d2 = dx * dx + dz * dz + dy * dy * 2;
+                if (d2 > r * r + r) continue;
+                putWorld(c, bx + dx, by + dy, bz + dz, leaf, false);
             }
         }
     }
 }
 
 static void stampCone(Chunk& c, i32 bx, i32 by, i32 bz, u8 leaf, i32 height) {
-    // Pine: конус, сужается к вершине
-    for (i32 dy = -height + 1; dy <= 0; ++dy) {
-        i32 level = dy + height;  // 1..height
-        i32 r = std::max(0, (level + 1) / 2);
-        if (r > 3) r = 3;
+    // Ель: конус, сужается к вершине.
+    for (i32 dy = -height + 1; dy <= 1; ++dy) {
+        const i32 level = dy + height;          // 1..height+1
+        i32 r = std::max(0, (level + 1) / 3);
+        if (r > 5) r = 5;
         for (i32 dx = -r; dx <= r; ++dx) {
             for (i32 dz = -r; dz <= r; ++dz) {
                 if (std::abs(dx) + std::abs(dz) > r + 1) continue;
-                put(c, bx + dx, by + dy, bz + dz, leaf, false);
+                putWorld(c, bx + dx, by + dy, bz + dz, leaf, false);
             }
         }
     }
 }
 
 static void stampPalm(Chunk& c, i32 bx, i32 by, i32 bz, u8 leaf) {
-    // Umbrella: центральная шапка + 4 листа по сторонам
-    for (i32 dx = -2; dx <= 2; ++dx)
-        for (i32 dz = -2; dz <= 2; ++dz) {
-            if (std::abs(dx) + std::abs(dz) <= 2)
-                put(c, bx + dx, by, bz + dz, leaf, false);
+    for (i32 dx = -3; dx <= 3; ++dx)
+        for (i32 dz = -3; dz <= 3; ++dz) {
+            if (std::abs(dx) + std::abs(dz) <= 3)
+                putWorld(c, bx + dx, by, bz + dz, leaf, false);
         }
-    // Свисающие листья по краям
-    put(c, bx + 2, by - 1, bz, leaf, false);
-    put(c, bx - 2, by - 1, bz, leaf, false);
-    put(c, bx, by - 1, bz + 2, leaf, false);
-    put(c, bx, by - 1, bz - 2, leaf, false);
+    putWorld(c, bx + 3, by - 1, bz, leaf, false);
+    putWorld(c, bx - 3, by - 1, bz, leaf, false);
+    putWorld(c, bx, by - 1, bz + 3, leaf, false);
+    putWorld(c, bx, by - 1, bz - 3, leaf, false);
 }
 
 static void stampTree(Chunk& c, i32 bx, i32 groundY, i32 bz, const TreeShape& s) {
-    // Ствол
-    for (i32 dy = 0; dy < s.trunkHeight; ++dy)
-        put(c, bx, groundY + dy, bz, s.trunkBlock);
+    // Ствол. У высоких лиственных он в два блока: столб толщиной в
+    // один под кроной радиусом пять читается как гриб.
+    const bool thick = (s.kind == 0 && s.trunkHeight >= 9);
+    for (i32 dy = 0; dy < s.trunkHeight; ++dy) {
+        putWorld(c, bx, groundY + dy, bz, s.trunkBlock, true);
+        if (!thick) continue;
+        putWorld(c, bx + 1, groundY + dy, bz,     s.trunkBlock, true);
+        putWorld(c, bx,     groundY + dy, bz + 1, s.trunkBlock, true);
+        putWorld(c, bx + 1, groundY + dy, bz + 1, s.trunkBlock, true);
+    }
 
-    i32 topY = groundY + s.trunkHeight;
+    const i32 topY = groundY + s.trunkHeight;
     if (s.leafBlock == AIR) return;
     switch (s.kind) {
-        case 0: stampBlob(c, bx, topY, bz, s.leafBlock); break;
+        case 0: stampBlob(c, bx, topY, bz, s.leafBlock,
+                          thick ? 5 : 4); break;
         case 1: stampCone(c, bx, topY, bz, s.leafBlock, s.trunkHeight); break;
         case 2: stampPalm(c, bx, topY, bz, s.leafBlock); break;
         default: break;
     }
 }
 
+/// Куст: шапка листвы прямо на земле, без ствола.
+static void stampBush(Chunk& c, i32 bx, i32 groundY, i32 bz, u32 rng) {
+    const i32 r = 1 + (i32)(rng & 1);
+    for (i32 dy = 0; dy <= r; ++dy)
+        for (i32 dx = -r; dx <= r; ++dx)
+            for (i32 dz = -r; dz <= r; ++dz) {
+                if (dx * dx + dz * dz + dy * dy * 2 > r * r + r) continue;
+                putWorld(c, bx + dx, groundY + dy, bz + dz, LEAVES, false);
+            }
+}
+
 } // namespace trees
 
-void applyTrees(Chunk& chunk, const FeatureContext& ctx) {
+namespace {
+
+/// Стоит ли на этом месте постройка.
+///
+/// Определение ниже, рядом с раскладкой структур: она объявлена
+/// дальше по тексту, а нужна здесь.
+bool structureBlocks(i32 wx, i32 wz, u64 seed);
+
+/// Деревья и кусты ОДНОГО чанка-источника, положенные в чанк c.
+///
+/// Источником может быть сосед: крона теперь шире чанка, и дерево,
+/// выросшее рядом, обязано дотянуться ветвями сюда. Раскладка
+/// детерминирована по (координата чанка, seed), поэтому сосед строит
+/// ровно то же дерево, что и хозяин, — двойных стволов не выходит.
+void growChunk(Chunk& c, const FeatureContext& ctx, i32 scx, i32 scz) {
     const auto& terrain = *ctx.terrain;
-    const i32 midX = chunk.coord.x * CHUNK_SIZE + CHUNK_SIZE / 2;
-    const i32 midZ = chunk.coord.z * CHUNK_SIZE + CHUNK_SIZE / 2;
-    const BiomeDef& biome = terrain.field().def(
-        ctx.columnAt(CHUNK_SIZE / 2, CHUNK_SIZE / 2, midX, midZ).climate.biome);
+    const bool own = (scx == c.coord.x && scz == c.coord.z);
+
+    const i32 midX = scx * CHUNK_SIZE + CHUNK_SIZE / 2;
+    const i32 midZ = scz * CHUNK_SIZE + CHUNK_SIZE / 2;
+    const auto midCol = own ? ctx.columnAt(CHUNK_SIZE / 2, CHUNK_SIZE / 2, midX, midZ)
+                            : terrain.column(midX, midZ);
+    const BiomeDef& biome = terrain.field().def(midCol.climate.biome);
 
     if (biome.treeType == TreeType::None || biome.treeDensity <= 0.01f) return;
 
-    // N деревьев в чанке — округление с вероятностной добавкой
+    auto columnAt = [&](i32 lx, i32 lz, i32 wx, i32 wz) {
+        return own ? ctx.columnAt(lx, lz, wx, wz) : terrain.column(wx, wz);
+    };
+
+    // ---- Деревья ----
     f32 d = biome.treeDensity;
     i32 N = (i32)d;
-    f32 frac = d - (f32)N;
-    u32 h = hashXZ(chunk.coord.x, chunk.coord.z, ctx.seed ^ 0x7EE5);
+    const f32 frac = d - (f32)N;
+    const u32 h = hashXZ(scx, scz, ctx.seed ^ 0x7EE5);
     if ((f32)(h & 0xFFFF) / 65536.f < frac) ++N;
 
     for (i32 i = 0; i < N; ++i) {
-        u32 rng = hashXZ(chunk.coord.x * 31 + i, chunk.coord.z * 17 + i, ctx.seed ^ 0xA11CE);
-        i32 lx = (i32)(rng & 0x1F);          // 0..31
-        i32 lz = (i32)((rng >> 5) & 0x1F);
+        const u32 rng = hashXZ(scx * 31 + i, scz * 17 + i, ctx.seed ^ 0xA11CE);
+        const i32 lx = (i32)(rng & 0x1F);
+        const i32 lz = (i32)((rng >> 5) & 0x1F);
 
-        const i32 wx = chunk.coord.x * CHUNK_SIZE + lx;
-        const i32 wz = chunk.coord.z * CHUNK_SIZE + lz;
-        const i32 surface = ctx.columnAt(lx, lz, wx, wz).surface;
-        if (surface >= CHUNK_SIZE_Y - 12) continue;
-
-        // Проверим, что под деревом подходящий блок (не вода, не песок в океане)
-        // (в реальности — читаем из готового chunk.voxels; но там ещё terrain)
-        // Здесь проверяем высоту над уровнем моря
+        const i32 wx = scx * CHUNK_SIZE + lx;
+        const i32 wz = scz * CHUNK_SIZE + lz;
+        const i32 surface = columnAt(lx, lz, wx, wz).surface;
+        if (surface >= CHUNK_SIZE_Y - 24) continue;
         if (surface <= TerrainGenerator::SEA_LEVEL + 1) continue;
+        if (structureBlocks(wx, wz, ctx.seed)) continue;
 
-        i32 localSurface = surface;
-        if (localSurface < 1 || localSurface >= CHUNK_SIZE_Y) continue;
-
-        trees::TreeShape shape = trees::treeShapeFor(biome.treeType, rng);
+        const trees::TreeShape shape = trees::treeShapeFor(biome.treeType, rng);
         if (shape.trunkHeight == 0) continue;
-
-        trees::stampTree(chunk, lx, localSurface, lz, shape);
+        trees::stampTree(c, wx, surface, wz, shape);
     }
+
+    // ---- Кусты ----
+    //
+    // Плотность выводится из древесной, а не заводится своей колонкой
+    // в таблице биомов: две колонки об одном и том же расходятся
+    // молча, а куст — это подлесок, и растёт он там же, где лес.
+    const i32 bushes = (i32)(biome.treeDensity * 3.f);
+    for (i32 i = 0; i < bushes; ++i) {
+        const u32 rng = hashXZ(scx * 13 + i, scz * 29 + i, ctx.seed ^ 0xB005);
+        const i32 lx = (i32)(rng & 0x1F);
+        const i32 lz = (i32)((rng >> 5) & 0x1F);
+
+        const i32 wx = scx * CHUNK_SIZE + lx;
+        const i32 wz = scz * CHUNK_SIZE + lz;
+        const i32 surface = columnAt(lx, lz, wx, wz).surface;
+        if (surface >= CHUNK_SIZE_Y - 8) continue;
+        if (surface <= TerrainGenerator::SEA_LEVEL + 1) continue;
+        if (structureBlocks(wx, wz, ctx.seed)) continue;
+        trees::stampBush(c, wx, surface, wz, rng >> 10);
+    }
+}
+
+} // namespace
+
+void applyTrees(Chunk& chunk, const FeatureContext& ctx) {
+    // Свой чанк и восемь соседних: крона большого дерева шире чанка.
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx)
+            growChunk(chunk, ctx, chunk.coord.x + dx, chunk.coord.z + dz);
 }
 
 // ============================================================
@@ -402,6 +470,33 @@ void cylinder(Chunk& c, i32 cx, i32 cz, i32 y, i32 radius, u16 block, bool overw
 // на ноль, то есть падение генератора мира на живом устройстве.
 
 } // namespace structs
+
+namespace {
+
+/// Лес не растёт сквозь постройки.
+///
+/// Деревья кладутся ПОСЛЕ структур, и с прежней плотностью в полтора
+/// дерева на чанк это почти не встречалось. С семью — дуб вырастает
+/// посреди деревенской мостовой, и дорожка под ним пропадает.
+///
+/// Запас в четыре блока: крона шире ствола, и дерево вплотную к стене
+/// накрывает крышу.
+bool structureBlocks(i32 wx, i32 wz, u64 seed) {
+    constexpr i32 MARGIN = 4;
+    const i32 sx = (i32)std::floor((f32)wx / (f32)structs::SUPER_BLOCKS);
+    const i32 sz = (i32)std::floor((f32)wz / (f32)structs::SUPER_BLOCKS);
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            const structs::Layout L = structs::layoutFor(sx + dx, sz + dz, seed);
+            if (L.kind == structs::None) continue;
+            if (wx < L.minBlock.x - MARGIN || wx > L.maxBlock.x + MARGIN) continue;
+            if (wz < L.minBlock.z - MARGIN || wz > L.maxBlock.z + MARGIN) continue;
+            return true;
+        }
+    return false;
+}
+
+} // namespace
 
 // ============================================================
 // Реальная реализация stampStructure — с доступом к terrain

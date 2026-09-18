@@ -7708,6 +7708,114 @@ void testEveryAudioEventIsFired() {
 // блок твёрдый, а два над ним пустые, и такая клетка на следующей
 // высоте стоит рядом. Ровно это и значит «можно подняться».
 // ------------------------------------------------------------
+// Лес большой, густой и не обрезан по границам чанков.
+//
+// Раньше дерево жило строго в своём чанке: анкер выбирался в нём, и
+// крона резалась о границу. При кроне радиусом два это было «изредка
+// обрезанные ветви», при радиусе пять — половина дерева, срезанная по
+// линейке. Поэтому чанк доращивает и деревья соседей, и проверяется
+// это прямо: крона дерева с той стороны границы обязана быть здесь.
+// ------------------------------------------------------------
+void testForestIsBigAndDense() {
+    group("лес: большие деревья, кусты и кроны через границу");
+
+    world::blocks();
+    constexpr u64 SEED = 0xF04E57;
+    world::ChunkManager mgr(SEED, 1);
+    const auto& gen = mgr.generator();
+
+    // Ищем лесной чанк — биом берётся по его середине, как и в
+    // applyTrees.
+    i32 fcx = 0, fcz = 0;
+    bool found = false;
+    for (i32 r = 0; r < 30 && !found; ++r)
+        for (i32 a = -r; a <= r && !found; ++a)
+            for (i32 b = -r; b <= r && !found; ++b) {
+                if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                if (gen.biomeAt(a * 32 + 16, b * 32 + 16) != world::Forest) continue;
+                fcx = a; fcz = b; found = true;
+            }
+    check(found, "лесной чанк нашёлся");
+    if (!found) return;
+
+    // Каждый чанк строится сам по себе — ровно как в игре.
+    std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> chunks;
+    std::vector<world::TerrainGenerator::Column> cols;
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            auto ch = std::make_unique<world::Chunk>();
+            ch->coord = { fcx + dx, 0, fcz + dz };
+            world::computeChunkColumns(gen, fcx + dx, fcz + dz, cols);
+            world::generateChunkVoxels(*ch, gen, cols.data(), SEED);
+            chunks.emplace(std::make_pair(fcx + dx, fcz + dz), std::move(ch));
+        }
+    auto at = [&](i32 wx, i32 wy, i32 wz) -> u16 {
+        if (wy < 0 || wy >= world::CHUNK_SIZE_Y) return world::AIR;
+        const i32 ccx = wx >> 5, ccz = wz >> 5;
+        auto it = chunks.find({ ccx, ccz });
+        if (it == chunks.end()) return world::UNKNOWN;
+        return it->second->voxels[world::chunkIndex(wx - ccx * 32, wy,
+                                                   wz - ccz * 32)];
+    };
+
+    // ---- Стволы: сколько их и какой высоты ----
+    struct Trunk { i32 x, z, top, height; };
+    std::vector<Trunk> trunks;
+    usize bushLeaves = 0, allLeaves = 0;
+
+    const i32 wx0 = fcx * 32, wz0 = fcz * 32;
+    for (i32 wz = wz0; wz < wz0 + 32; ++wz)
+        for (i32 wx = wx0; wx < wx0 + 32; ++wx) {
+            const i32 surf = gen.surfaceHeight(wx, wz);
+            for (i32 y = surf; y < surf + 24; ++y) {
+                const u16 b = at(wx, y, wz);
+                if (b == world::LEAVES) {
+                    ++allLeaves;
+                    if (y <= surf + 2) ++bushLeaves;
+                }
+            }
+            if (at(wx, surf, wz) != world::WOOD) continue;
+            i32 top = surf;
+            while (top < surf + 24 && at(wx, top, wz) == world::WOOD) ++top;
+            trunks.push_back({ wx, wz, top, top - surf });
+        }
+
+    std::printf("       стволов %zu, листвы %zu, кустовой листвы %zu\n",
+                trunks.size(), allLeaves, bushLeaves);
+
+    check(trunks.size() >= 4, "лес густой: стволов в чанке хватает");
+    check(bushLeaves > 0, "и подлесок есть");
+
+    i32 tallest = 0;
+    for (const auto& t : trunks) tallest = std::max(tallest, t.height);
+    check(tallest >= 7, "деревья высокие, а не в четыре блока");
+
+    // ---- Крона переходит границу ----
+    //
+    // Берём ствол у самого края и смотрим, дотянулась ли его крона в
+    // соседний чанк. Сосед строился отдельно и про этот ствол знать
+    // не обязан — вот это и проверяем.
+    bool crossed = false, tested = false;
+    for (const auto& t : trunks) {
+        const i32 lx = t.x - wx0, lz = t.z - wz0;
+        i32 ox = 0, oz = 0;
+        if (lx <= 2)       ox = -3;
+        else if (lx >= 29) ox =  3;
+        else if (lz <= 2)  oz = -3;
+        else if (lz >= 29) oz =  3;
+        else continue;
+        tested = true;
+        for (i32 dy = -3; dy <= 0 && !crossed; ++dy)
+            if (at(t.x + ox, t.top + dy, t.z + oz) == world::LEAVES)
+                crossed = true;
+        if (crossed) break;
+    }
+    check(tested, "ствол у края чанка нашёлся");
+    check(!tested || crossed,
+          "крона такого ствола видна и в соседнем чанке");
+}
+
+// ------------------------------------------------------------
 void testTreeDungeonIsClimbable() {
     group("дерево-подземелье: по нему можно подняться");
 
@@ -11628,6 +11736,7 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testForestIsBigAndDense();
     testTreeDungeonIsClimbable();
     testShurikenFliesAndHits();
     testDashMovesForward();
