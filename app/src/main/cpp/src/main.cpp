@@ -1228,7 +1228,7 @@ struct Engine {
         // прибиты к числам из world/debug_scene.h — тем самым, по
         // которым tools/vkcheck --scene minimal рисует свой кадр.
         // Подвижная камера, ходящее солнце и качающаяся от времени
-        // трава не дали бы сравнить два кадра никогда.
+        // не дали бы сравнить два кадра никогда.
         if (config::settingsConst().debugScene) {
             cam.setFirstPerson(true);
             cam.setHeadBob(0.f, 0.f);
@@ -1658,7 +1658,7 @@ extern "C" void android_main(android_app* app) {
             // эпохи (~1.75e9) во float дают шаг дискретизации ~128 с,
             // из-за чего ломался цикл дня и ночи и анимация в шейдерах.
             f32 timeSec = std::chrono::duration<f32>(now - startTime).count();
-            // И на постоянном времени: по нему качается трава в шейдере.
+            // И на постоянном времени.
             if (dbgScene) timeSec = world::SCENE_TIME_SEC;
 
             // Покадровая раскладка по этапам. Без неё «15 кадров в
@@ -1757,7 +1757,7 @@ extern "C" void android_main(android_app* app) {
                 LOGI("кадры: показано %llu (%.1f/с), показ=%d, цепочка %llu | камера %.1f %.1f %.1f "
                      "| чанки: загружено %zu, нарисовано %u, индексов %u, "
                      "дыр %u (ждут меша %u) "
-                     "| трава %u, мобы %u, NPC %u, предметы %u, снаряды %u "
+                     "| мобы %u, NPC %u, предметы %u, снаряды %u "
                      "| интерфейс: вершин %u, нарисовано %u, экран %d "
                      "| мс: логика %.1f, подготовка %.1f, рисование %.1f "
                      "(ожидание экрана %.1f, запись команд %.1f, "
@@ -1771,7 +1771,6 @@ extern "C" void android_main(android_app* app) {
                      eng.render ? eng.render->drawnIndices() : 0u,
                      eng.render ? eng.render->emptyChunks() : 0u,
                      eng.render ? eng.render->waitingChunks() : 0u,
-                     eng.render ? eng.render->grassCount() : 0u,
                      eng.render ? eng.render->mobInstances() : 0u,
                      eng.render ? eng.render->npcInstances() : 0u,
                      // Выпавшие предметы и снаряды в сводке не

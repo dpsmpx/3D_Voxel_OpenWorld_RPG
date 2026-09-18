@@ -109,7 +109,6 @@ add_library(native-lib SHARED
     # Рендер
     src/render/block_outline.cpp
     src/render/chunk_renderer.cpp
-    src/render/instanced_renderer.cpp
     src/render/item_renderer.cpp
     src/render/mesh_builder.cpp
     src/render/pass_sweep.cpp
@@ -118,7 +117,6 @@ add_library(native-lib SHARED
     src/render/projectile_renderer.cpp
     src/render/render_system.cpp
     src/render/voxel_pipeline.cpp
-    src/render/grass_pipeline.cpp
     src/render/skybox.cpp
 
     # Физика

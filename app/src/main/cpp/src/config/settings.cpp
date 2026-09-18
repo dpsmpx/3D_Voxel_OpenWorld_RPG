@@ -138,7 +138,7 @@ void Settings::clamp() {
     autosaveInterval   = std::clamp(autosaveInterval, 60.f, 900.f);
     viewDistance       = std::clamp(viewDistance, 4, 12);
     debugShading       = std::clamp(debugShading, 0, 6);
-    renderPasses      &= 0x7Fu;
+    renderPasses      &= 0x3Fu;
     // Диагностическую сборку не выключить настройкой: файл с
     // debug_scene = false мог остаться от обычной сборки, а APK с
     // флагом обязан запускаться диагностическим всегда.
@@ -310,7 +310,7 @@ bool Settings::load(const std::string& path) {
         else if (std::strcmp(kv.key, "debug_shading") == 0)
             debugShading = readI32(kv.value, debugShading);
         else if (std::strcmp(kv.key, "render_passes") == 0)
-            renderPasses = (u32)readI32(kv.value, (i32)renderPasses) & 0x7Fu;
+            renderPasses = (u32)readI32(kv.value, (i32)renderPasses) & 0x3Fu;
         else if (std::strcmp(kv.key, "gpu_pass_timing") == 0)
             gpuPassTiming = readBool(kv.value, gpuPassTiming);
         else if (std::strcmp(kv.key, "render_pass_sweep") == 0)

@@ -47,7 +47,6 @@
 #include "core/clipboard.h"
 #include "config/settings.h"
 #include "render/camera.h"
-#include "render/instanced_renderer.h"
 #include "render/mob_renderer.h"
 #include "physics/character_controller.h"
 #include "input/touch.h"
@@ -1639,7 +1638,6 @@ void testWorldSharesOneLightingModel() {
     struct Src { const char* name; std::string text; };
     Src shaders[] = {
         { "voxel.frag", stripComments(readSource("app/src/main/cpp/shaders/voxel.frag")) },
-        { "grass.frag", stripComments(readSource("app/src/main/cpp/shaders/grass.frag")) },
         { "mob.frag",   stripComments(readSource("app/src/main/cpp/shaders/mob.frag"))   },
         { "sky.frag",   stripComments(readSource("app/src/main/cpp/shaders/sky.frag"))   },
     };
@@ -1674,7 +1672,7 @@ void testWorldSharesOneLightingModel() {
     // байты. Компилятор такого не видит, слой проверки тоже —
     // размер набора дескрипторов сходится.
     const char* files[] = {
-        "voxel.vert", "voxel.frag", "sky.frag", "grass.vert", "grass.frag",
+        "voxel.vert", "voxel.frag", "sky.frag",
         "mob.vert", "mob.frag", "projectile.vert", "projectile.frag",
         "outline.vert",
     };
@@ -1778,43 +1776,6 @@ void testWorldSharesOneLightingModel() {
             }
         }
     }
-}
-
-
-void testDistantGrassIsNotSubPixel() {
-    group("трава: субпиксельных пучков не бывает");
-
-    // Порог считается по настоящему экранному размеру, поэтому верен
-    // при любом поле зрения и разрешении.
-    const f32 pxPerUnit = 1080.f * 0.5f / std::tan(glm::radians(70.f) * 0.5f);
-    check(pxPerUnit > 700.f && pxPerUnit < 800.f,
-          "пикселей на единицу посчитано разумно");
-
-    // Пучок высотой 0.6 на 40 блоках занимает меньше трёх пикселей?
-    // Тогда он обязан быть отброшен ещё до отправки на GPU.
-    const f32 farScale = 0.6f;
-    const f32 farDist  = 200.f;
-    check(farScale * pxPerUnit / farDist < render::GRASS_MIN_PIXELS,
-          "на двухстах блоках пучок мельче порога");
-    check(farScale * pxPerUnit / 10.f > render::GRASS_MIN_PIXELS,
-          "а на десяти — крупнее");
-
-    const std::string g = readSource("app/src/main/cpp/src/render/instanced_renderer.cpp");
-    if (g.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
-    check(g.find("GRASS_MIN_PIXELS") != std::string::npos,
-          "порог применяется при наборе инстансов");
-    check(g.find("continue") != std::string::npos, "и пучок именно отбрасывается");
-
-    // Отбрасывать надо ДО записи в буфер, а не в шейдере.
-    const usize thr = g.find("GRASS_MIN_PIXELS");
-    const usize push = g.find("cpuInstances_.push_back");
-    check(thr != std::string::npos && push != std::string::npos && thr < push,
-          "отсечка стоит раньше отправки инстанса");
-
-    const std::string fs = readSource("app/src/main/cpp/shaders/grass.frag");
-    if (!fs.empty())
-        check(fs.find("discard") == std::string::npos,
-              "и не подменяется discard'ом во фрагментном шейдере");
 }
 
 void testDiagnosticBuildWired() {
@@ -3399,8 +3360,8 @@ void testFrameGpuBreakdown() {
         check(m != NONE, "маска проходов есть в настройках");
         if (m != NONE) {
             const std::string line = cfg.substr(m, cfg.find(';', m) - m);
-            check(line.find("0x7F") != NONE,
-                  "и по умолчанию включены все семь");
+            check(line.find("0x3F") != NONE,
+                  "и по умолчанию включены все шесть");
         }
     }
 }
@@ -3485,7 +3446,6 @@ void testFramePassOrder() {
     const usize mob      = at("mobRenderer_.render");
     const usize proj     = at("projRenderer_.render");
     const usize item     = at("itemRenderer_.render");
-    const usize grass    = at("grass_.render");
     const usize sky      = at("skybox_.render");
     const usize blended  = at("chunkRenderer_.renderBlended");
     const usize outline  = at("blockOutline_.render");
@@ -3502,11 +3462,10 @@ void testFramePassOrder() {
     check(mob    < sky,  "мобы рисуются до неба");
     check(proj   < sky,  "снаряды рисуются до неба");
     check(item   < sky,  "предметы рисуются до неба");
-    check(grass  < sky,  "трава рисуется до неба");
 
     // Полупрозрачное — после неба, и после всего непрозрачного.
     check(sky < blended, "небо рисуется до воды");
-    check(grass < blended && mob < blended && npc < blended && item < blended,
+    check(mob < blended && npc < blended && item < blended,
           "вода рисуется после непрозрачных сущностей");
     check(blended < outline, "контур блока — после воды");
     check(outline < ui, "интерфейс рисуется последним");
@@ -3864,7 +3823,7 @@ namespace {
 std::vector<std::pair<std::string, std::string>> allShaders() {
     static const char* names[] = {
         "voxel.vert", "voxel.frag", "sky.vert", "sky.frag",
-        "grass.vert", "grass.frag", "mob.vert", "mob.frag",
+        "mob.vert", "mob.frag",
         "outline.vert", "outline.frag", "projectile.vert", "projectile.frag",
         "ui.vert", "ui.frag",
     };
@@ -7445,7 +7404,6 @@ void testEveryPassSetsViewport() {
     // сказать об этом было некому.
     static const char* files[] = {
         "app/src/main/cpp/src/render/chunk_renderer.cpp",
-        "app/src/main/cpp/src/render/instanced_renderer.cpp",
         "app/src/main/cpp/src/render/mob_renderer.cpp",
         "app/src/main/cpp/src/render/npc_renderer.cpp",
         "app/src/main/cpp/src/render/item_renderer.cpp",
@@ -7488,7 +7446,7 @@ void testEveryPassSetsViewport() {
         }
     }
 
-    check(draws >= 10, "проходы, которые рисуют, найдены");
+    check(draws >= 9, "проходы, которые рисуют, найдены");
     if (draws < 9) std::printf("       найдено только %zu\n", draws);
     check(missing == 0, "каждый из них задаёт вьюпорт и ножницы сам");
     if (missing) std::printf("       первый без вьюпорта: %s\n", firstBad.c_str());
@@ -11692,7 +11650,6 @@ int main() {
     testBuildStampIsNotStale();
     testSkyPaysForMathNotBranches();
     testWorldSharesOneLightingModel();
-    testDistantGrassIsNotSubPixel();
     testShadersAvoidUndefinedMath();
     testJobsOutlivingTheirWorldAreSafe();
     testChunkStreamingIsBudgeted();

@@ -39,9 +39,6 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
     if (!skybox_.init(ctx, mgr, descriptors_.layout())) {
         LOGW("Skybox не инициализирован");
     }
-    if (!grass_.init(ctx, mgr, descriptors_.layout())) {
-        LOGW("InstancedRenderer не инициализирован");
-    }
     if (!blockOutline_.init(ctx, mgr, descriptors_.layout())) {
         LOGW("BlockOutline не инициализирован");
     }
@@ -98,26 +95,7 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     itemRenderer_.rebuild(registry);
     itemRenderer_.upload(ctx);
 
-    // Трава пересобирается по шести сотням проб шума вокруг игрока.
-    // Раньше это делалось строго раз в полсекунды, даже когда игрок
-    // стоит на месте и пересобирать нечего — ровный всплеск работы
-    // дважды в секунду на ровном месте. Теперь поводов два: игрок
-    // заметно сдвинулся, либо прошло достаточно времени, чтобы
-    // подхватить изменения рельефа от построек и раскопок.
-    // Счётчик — поле, а не статическая переменная функции: та
-    // переживала смену мира и путала первый кадр нового.
-    grassTimer_ += dt;
     const glm::vec3 camPos = camera_.position();
-    const f32 grassDx = camPos.x - grassOrigin_.x;
-    const f32 grassDz = camPos.z - grassOrigin_.z;
-    const bool grassMoved = grassDx * grassDx + grassDz * grassDz > 6.f * 6.f;
-    if (grass_.instanceCount() == 0 ||
-        (grassTimer_ > 0.5f && grassMoved) || grassTimer_ > 3.f) {
-        grassTimer_  = 0.f;
-        grassOrigin_ = camPos;
-        grass_.populateGrass(world, camPos, 40.f, camera_.pixelsPerUnit());
-        grass_.upload(ctx);
-    }
 
     // Применяем настройки viewDistance к миру
     const i32 vd = config::settingsConst().viewDistance;
@@ -238,12 +216,6 @@ void RenderSystem::render(vk::Context& ctx) {
     }
     ctx.markPass(Pass::Entities);
 
-    if (on(Pass::Grass)) {
-        grass_.render(ctx, ds, fr);
-        stats_.drawCalls[(u32)Pass::Grass] = grass_.instanceCount() ? 1u : 0u;
-    }
-    ctx.markPass(Pass::Grass);
-
     if (on(Pass::Sky)) {
         skybox_.render(ctx, ds);
         stats_.drawCalls[(u32)Pass::Sky] = 1;
@@ -276,7 +248,6 @@ void RenderSystem::shutdown() {
     projRenderer_.destroy();
     mobRenderer_.destroy();
     blockOutline_.destroy();
-    grass_.destroy();
     skybox_.destroy();
     chunkRenderer_.shutdown();
     for (auto& b : uboBuffers_) b.destroy();

@@ -42,7 +42,6 @@ struct BiomeDef {
     u16 liquidBlock;        // вода/лава/нет
     f32 treeDensity;        // деревьев на чанк (в среднем)
     TreeType treeType;
-    f32 grassDensity;       // инстансов травы на чанк
     i8 baseHeightOffset;    // смещение базовой высоты (может быть ниже базы)
     f32 temperature;        // справочная
 };
