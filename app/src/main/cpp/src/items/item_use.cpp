@@ -68,6 +68,26 @@ bool applyConsumable(ecs::Registry& reg, ecs::Entity player, const ItemDef& def)
         }
     }
 
+    // Эликсир: временная прибавка к атрибуту. До сих пор четыре
+    // эликсира не делали ничего — ни восстановления, ни эффекта, —
+    // и даже не тратились: applyConsumable возвращал «эффекта нет».
+    if (def.buffAttr != BuffAttr::None && def.effectDuration > 0.f) {
+        auto* b = reg.get<progression::AttributeBuffs>(player);
+        if (!b) {
+            reg.add(player, progression::AttributeBuffs{});
+            b = reg.get<progression::AttributeBuffs>(player);
+        }
+        if (b) {
+            // Алхимия тянет и эликсиры: она про силу зелья вообще, а
+            // не про то, восстанавливает оно или усиливает.
+            const i32 amount = (i32)((f32)def.buffAmount * power + 0.5f);
+            b->apply(def.buffAttr, amount, def.effectDuration);
+            if (auto* prog = reg.get<progression::Progression>(player))
+                prog->derivedDirty = true;
+            didSomething = true;
+        }
+    }
+
     return didSomething;
 }
 

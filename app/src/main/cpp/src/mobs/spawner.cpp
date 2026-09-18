@@ -134,8 +134,7 @@ ecs::Entity Spawner::spawnMob(world::ChunkManager& /*world*/,
     reg.add(e, ecs::Locomotion{});
     reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
     reg.add(e, ecs::Collider{
-        glm::vec3(def.bodyRadius, def.bodyHeight * 0.5f, def.bodyRadius),
-        false
+        glm::vec3(def.bodyRadius, def.bodyHeight * 0.5f, def.bodyRadius)
     });
     reg.add(e, ecs::Kind{
         def.hostile ? ecs::EntityKind::Mob : ecs::EntityKind::NPC

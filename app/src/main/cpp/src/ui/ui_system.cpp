@@ -1566,6 +1566,9 @@ void UiSystem::drawAttributesScreen(player::Player& player) {
     auto* prog = player.progression();
     auto* attr = player.attributes();
     if (!prog || !attr) return;
+    auto* reg = player.registryHandle();
+    const auto* buffs = reg
+        ? reg->get<progression::AttributeBuffs>(player.entity()) : nullptr;
 
     const Rect title = layout_.menuTitle();
     ui_.text(T(StrKey::Menu_Attributes), title.x,
@@ -1611,13 +1614,26 @@ void UiSystem::drawAttributesScreen(player::Player& player) {
                      - ui_.textHeight(theme::TEXT_CAPTION),
                  theme::TEXT_CAPTION, theme::TextSecondary);
 
+        // Действующий эликсир показан прибавкой рядом с числом и
+        // цветом самого числа. Иначе выпитый эликсир никак себя не
+        // обнаруживает: очки те же, а считается игра по другим.
+        const i32 bonus = buffs ? buffs->add[i] : 0;
+
         char val[16];
         std::snprintf(val, sizeof(val), "%d", *rows[i].value);
         const Rect minus = layout_.attrButton(i, false);
         const f32 vw = ui_.textWidth(val, theme::TEXT_TITLE);
-        ui_.text(val, minus.x - layout_.dp(theme::SPACE_L_DP) - vw,
-                 r.y + (r.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
-                 theme::TEXT_TITLE, theme::TextPrimary);
+        const f32 vx = minus.x - layout_.dp(theme::SPACE_L_DP) - vw;
+        ui_.text(val, vx, r.y + (r.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
+                 theme::TEXT_TITLE, bonus > 0 ? theme::Accent : theme::TextPrimary);
+        if (bonus > 0) {
+            char add[16];
+            std::snprintf(add, sizeof(add), "+%d", bonus);
+            const f32 aw = ui_.textWidth(add, theme::TEXT_CAPTION);
+            ui_.text(add, vx - layout_.dp(theme::SPACE_S_DP) - aw,
+                     r.y + (r.h - ui_.textHeight(theme::TEXT_CAPTION)) * 0.5f,
+                     theme::TEXT_CAPTION, theme::Accent);
+        }
 
         // ---- убавить ----
         const bool canSub = (*rows[i].value > 1);

@@ -64,35 +64,29 @@ bool Progression::addXP(u64 amount, u32& levelUpsOut) {
         leveled = true;
     }
 
-    xpForNext = xpForLevel(level + 1);
     return leveled;
 }
 
 void Progression::recalc(const ecs::Attributes& attr, const SkillTree& tree) {
     derived = computeDerived(attr, tree, level);
     derivedDirty = false;
-    xpForNext = xpForLevel(level + 1);
 }
 
 // ============================================================
 // Награда за убийство
 // ============================================================
-LevelUpEvent rewardKillXP(ecs::Registry& reg,
-                          ecs::Entity attacker,
-                          u64 xpReward)
+void rewardKillXP(ecs::Registry& reg,
+                  ecs::Entity attacker,
+                  u64 xpReward)
 {
-    LevelUpEvent ev{};
     auto* prog = reg.get<Progression>(attacker);
-    if (!prog) return ev;
+    if (!prog) return;
 
+    // Сколько уровней взято за раз, наружу не отдаём: уведомление
+    // игрок поднимает сам, по pendingLevelUps. Возвращался LevelUpEvent,
+    // и все три его поля выбрасывал единственный вызывающий.
     u32 gained = 0;
-    bool leveled = prog->addXP(xpReward, gained);
-    if (leveled) {
-        ev.happened     = true;
-        ev.newLevel     = prog->level;
-        ev.levelsGained = gained;
-    }
-    return ev;
+    prog->addXP(xpReward, gained);
 }
 
 // ============================================================
@@ -152,6 +146,11 @@ void tickProgression(ecs::Registry& reg, f32 dt) {
         auto* prog = progPool.get(e);
         if (!prog) continue;
 
+        // Действие эликсиров. Кончилось — производные пересчитать:
+        // иначе сила осталась бы поднятой навсегда.
+        auto* buffs = reg.get<AttributeBuffs>(e);
+        if (buffs && buffs->tick(dt)) prog->derivedDirty = true;
+
         // Пересчёт производных при изменении
         if (prog->derivedDirty) {
             auto* attr = reg.get<ecs::Attributes>(e);
@@ -160,7 +159,7 @@ void tickProgression(ecs::Registry& reg, f32 dt) {
             SkillTree defaultTree{};
             if (!attr) attr = &defaultAttr;
             if (!tree) tree = &defaultTree;
-            prog->recalc(*attr, *tree);
+            prog->recalc(boosted(*attr, buffs), *tree);
         }
 
         const auto& d = prog->derived;

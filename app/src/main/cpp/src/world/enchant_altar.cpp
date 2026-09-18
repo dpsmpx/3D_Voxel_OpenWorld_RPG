@@ -271,7 +271,6 @@ void EnchantAltarSpawner::update(ecs::Registry& reg,
                 col.halfExtents = glm::vec3(alt.sizeX * 0.5f,
                                             alt.sizeY * 0.5f,
                                             alt.sizeZ * 0.5f);
-                col.isStatic = true;
                 reg.add(e, col);
 
                 reg.add(e, Kind{ EntityKind::Structure });

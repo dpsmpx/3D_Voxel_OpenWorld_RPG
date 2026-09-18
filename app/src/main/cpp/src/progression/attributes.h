@@ -6,6 +6,7 @@
 #include "../core/types.h"
 #include "../ecs/components.h"
 #include "skill_tree.h"
+#include "../items/item_def.h"
 
 namespace progression {
 
@@ -65,6 +66,73 @@ struct DerivedStats {
     f32 manaCostMult     = 1.0f;
     f32 staminaCostMult  = 1.0f;
 };
+
+/// Временные прибавки к атрибутам — от эликсиров.
+///
+/// По одной на атрибут: выпить два эликсира силы разом нельзя,
+/// второй продлевает действие первого. Иначе стопка эликсиров
+/// складывалась бы в произвольную силу, а таймеров пришлось бы
+/// держать столько, сколько игрок успел выпить.
+///
+/// В сохранение не идут намеренно: минута действия не переживает
+/// выход из игры, и формат сейва ради неё менять незачем.
+struct AttributeBuffs {
+    static constexpr u32 COUNT = 4;   ///< сила, ловкость, разум, стойкость
+    i32 add[COUNT]{};
+    f32 timeLeft[COUNT]{};
+
+    /// Индекс атрибута, 0..3; COUNT — «никакой».
+    static u32 indexOf(items::BuffAttr a) {
+        switch (a) {
+            case items::BuffAttr::Strength:     return 0;
+            case items::BuffAttr::Agility:      return 1;
+            case items::BuffAttr::Intelligence: return 2;
+            case items::BuffAttr::Endurance:    return 3;
+            default:                            return COUNT;
+        }
+    }
+
+    /// Применить прибавку. Уже действующая не складывается, а
+    /// обновляется: берётся большая прибавка и большее время.
+    void apply(items::BuffAttr a, i32 amount, f32 seconds) {
+        const u32 i = indexOf(a);
+        if (i >= COUNT || amount == 0 || seconds <= 0.f) return;
+        if (amount > add[i]) add[i] = amount;
+        if (seconds > timeLeft[i]) timeLeft[i] = seconds;
+    }
+
+    /// Отсчитать время. Возвращает true, если что-то кончилось.
+    bool tick(f32 dt) {
+        bool expired = false;
+        for (u32 i = 0; i < COUNT; ++i) {
+            if (timeLeft[i] <= 0.f) continue;
+            timeLeft[i] -= dt;
+            if (timeLeft[i] > 0.f) continue;
+            timeLeft[i] = 0.f;
+            add[i] = 0;
+            expired = true;
+        }
+        return expired;
+    }
+
+    bool any() const {
+        for (u32 i = 0; i < COUNT; ++i) if (timeLeft[i] > 0.f) return true;
+        return false;
+    }
+};
+
+/// Атрибуты с учётом действующих эликсиров.
+inline ecs::Attributes boosted(const ecs::Attributes& base,
+                               const AttributeBuffs* b)
+{
+    ecs::Attributes out = base;
+    if (!b) return out;
+    out.strength     += b->add[0];
+    out.agility      += b->add[1];
+    out.intelligence += b->add[2];
+    out.endurance    += b->add[3];
+    return out;
+}
 
 /// Расчёт производных. Чистая функция от трёх входов.
 DerivedStats computeDerived(const ecs::Attributes& attr,

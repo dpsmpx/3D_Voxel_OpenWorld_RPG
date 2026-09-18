@@ -50,7 +50,6 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
 
     ecs::Collider col;
     col.halfExtents = glm::vec3(0.30f, 0.90f, 0.30f);
-    col.isStatic = false;
     reg.add(entity_, col);
 
     reg.add(entity_, ecs::Kind{ecs::EntityKind::Player});
@@ -88,6 +87,8 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
 
     npc::ActiveDialogue dlg{};
     reg.add(entity_, dlg);
+
+    reg.add(entity_, progression::AttributeBuffs{});
 
     items::Inventory inv{};
     reg.add(entity_, inv);
@@ -406,7 +407,6 @@ void Player::updateImpl(world::ChunkManager& world,
                 }
                 combat::spawnHitFx(*reg_, attackOrigin,
                                    0xFFCC00FF, 0.6f, 3.5f, 0.45f);
-                lastAction.didFinisher = true;
                 lastAction.hitCount = (i32)hits.size();
             }
         }

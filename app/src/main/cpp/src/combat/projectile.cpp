@@ -48,7 +48,6 @@ ecs::Entity spawnProjectile(ecs::Registry& reg,
 
     ecs::Collider col;
     col.halfExtents = glm::vec3(p.scale);
-    col.isStatic    = false;
     reg.add(e, col);
 
     return e;

@@ -255,7 +255,6 @@ void NpcSpawner::update(world::ChunkManager& world,
                     col.halfExtents = glm::vec3(def.bodyRadius,
                                                 def.bodyHeight * 0.5f,
                                                 def.bodyRadius);
-                    col.isStatic = false;
                     reg.add(e, col);
 
                     reg.add(e, ecs::Kind{ ecs::EntityKind::NPC });

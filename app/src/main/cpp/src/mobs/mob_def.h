@@ -43,15 +43,8 @@ struct MobDef {
     bool canFly;
     bool hostile;
 
-    u16      dropBlock  = 0;
-    u8       dropMin    = 0;
-    u8       dropMax    = 0;
-
     /// Phase 9: награда опытом за убийство
     u64      xpReward   = 0;
-
-    f32      spawnWeight = 1.f;
-    bool     spawnsInLight = false;
 
     // ---- Боссы (ТЗ 4.5) ----
     /// Босс не появляется обычным спавном: его ставит генератор

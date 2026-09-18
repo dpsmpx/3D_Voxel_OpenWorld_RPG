@@ -115,7 +115,6 @@ f32 applyHits(ecs::Registry& reg,
     }
 
     out.hitCount = count;
-    out.totalDamage = total;
     return total;
 }
 
@@ -200,8 +199,6 @@ void updateCombat(world::ChunkManager& world,
             enterPhase(*wstate, WeaponState::Windup);
             wstate->swingDir = aimDir;
             wstate->inputConsumed = true;
-            ++wstate->comboCounter;
-            wstate->comboTimer = 1.2f;
         }
         break;
     }
@@ -317,12 +314,6 @@ void updateCombat(world::ChunkManager& world,
             enterPhase(*wstate, WeaponState::Idle);
         }
 
-        if (wstate->comboTimer > 0.f) {
-            wstate->comboTimer -= dt;
-            if (wstate->comboTimer <= 0.f) {
-                wstate->comboCounter = 0;
-            }
-        }
         break;
     }
 

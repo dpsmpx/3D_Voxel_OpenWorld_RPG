@@ -95,6 +95,10 @@
 #include <thread>
 #include <chrono>
 
+/// Читает файл проекта целиком. Определение ниже по тексту:
+/// часть проверок пользуется им раньше.
+static std::string readSource(const char* path);
+
 namespace {
 
 int g_failed = 0;
@@ -902,7 +906,18 @@ void testBossPhases() {
     const auto& warden = mobs::mobRegistry().get(mobs::MOB_BOSS_WARDEN);
     check(warden.isBoss && warden.phaseCount == 3, "Каменный Страж — босс с тремя фазами");
     check(warden.slamRadius > 0.f, "у Стража есть удар по площади");
-    check(warden.spawnWeight == 0.f, "босс не участвует в обычном спавне");
+
+    // Босса ставит только updateBosses. Раньше это проверялось по полю
+    // spawnWeight == 0 — но вес спавна не читал никто, а отсекал
+    // боссов от обычного спавна отдельный `if (def.isBoss) continue;`.
+    // Проверка сверяла поле, к которому спавнер не обращается.
+    {
+        const std::string src =
+            readSource("app/src/main/cpp/src/mobs/spawner.cpp");
+        check(!src.empty() && src.find("if (def.isBoss) continue;")
+                              != std::string::npos,
+              "обычный спавн пропускает боссов");
+    }
 
     const auto& hollow = mobs::mobRegistry().get(mobs::MOB_BOSS_HOLLOW);
     check(hollow.isBoss && hollow.phaseCount == 2, "Полый Владыка — босс с двумя фазами");
@@ -7648,6 +7663,79 @@ void testEveryAudioEventIsFired() {
 // гоняет НАСТОЯЩИЙ экран инвентаря: те же прямоугольники ячеек, тот
 // же разбор касаний, тот же код перекладки.
 // ------------------------------------------------------------
+// Эликсиры что-то делают.
+//
+// Четыре эликсира не восстанавливали ни здоровья, ни маны, ни
+// выносливости, а ItemDef::effectDuration — единственное, что у них
+// было заполнено, — не читал никто. applyConsumable возвращал
+// «эффекта нет», и предмет даже не тратился: четыре предмета в игре
+// не делали ровно ничего.
+// ------------------------------------------------------------
+void testElixirsGrantTimedBuff() {
+    group("эликсиры: временная прибавка к атрибуту");
+
+    world::blocks();
+    items::items();
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+    const ecs::Entity e = pl.entity();
+
+    progression::tickProgression(reg, 0.001f);
+    auto* prog = reg.get<progression::Progression>(e);
+    check(prog != nullptr, "прогрессия есть");
+    if (!prog) return;
+    const f32 baseHealth = prog->derived.maxHealth;
+    check(baseHealth > 0.f, "здоровье до эликсира известно");
+
+    auto* inv = pl.inventory();
+    check(inv != nullptr, "инвентарь есть");
+    if (!inv) return;
+    auto& slot = inv->activeSlot();
+    slot.itemId = items::ITEM_ELIXIR_ENDURANCE;
+    slot.count  = 2;
+
+    const items::UseResult r = items::useItemFromSlot(
+        reg, e, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+    check(r == items::UseResult::Consumed, "эликсир выпит, а не отвергнут");
+    check(inv->activeSlot().count == 1, "и списан со стопки");
+
+    auto* buffs = reg.get<progression::AttributeBuffs>(e);
+    check(buffs != nullptr, "прибавка записана");
+    if (!buffs) return;
+    check(buffs->add[3] == 5, "стойкость поднята на пять");
+    check(buffs->timeLeft[3] > 59.f, "на минуту");
+
+    progression::tickProgression(reg, 0.001f);
+    const f32 buffedHealth = prog->derived.maxHealth;
+    check(buffedHealth > baseHealth, "и здоровье выросло вместе с ней");
+
+    // Базовый атрибут при этом НЕ тронут: он сохраняется, и эликсир
+    // не должен оседать в сейве прибавкой навсегда.
+    auto* attr = reg.get<ecs::Attributes>(e);
+    check(attr && attr->endurance == 10, "базовая стойкость не тронута");
+
+    // ---- Минута прошла — всё вернулось ----
+    for (int i = 0; i < 61 * 60; ++i) progression::tickProgression(reg, 1.f / 60.f);
+    check(!buffs->any(), "действие кончилось");
+    check(std::fabs(prog->derived.maxHealth - baseHealth) < 0.01f,
+          "и здоровье вернулось к прежнему");
+
+    // ---- Второй эликсир продлевает, а не складывается ----
+    items::useItemFromSlot(reg, e, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+    progression::tickProgression(reg, 1.f / 60.f);
+    check(buffs->add[3] == 5, "одна прибавка");
+    for (int i = 0; i < 30 * 60; ++i) progression::tickProgression(reg, 1.f / 60.f);
+    const f32 leftAfter30 = buffs->timeLeft[3];
+    slot.itemId = items::ITEM_ELIXIR_ENDURANCE;
+    slot.count  = 1;
+    items::useItemFromSlot(reg, e, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+    check(buffs->add[3] == 5, "и после второго эликсира она всё та же");
+    check(buffs->timeLeft[3] > leftAfter30 + 25.f, "но время продлилось");
+}
+
+// ------------------------------------------------------------
 void testInventoryDragMovesItems() {
     group("инвентарь: предмет переносится пальцем");
 
@@ -11073,6 +11161,7 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testElixirsGrantTimedBuff();
     testInventoryDragMovesItems();
     testReputationCanBeLost();
     testWisdomNodesActuallyWork();

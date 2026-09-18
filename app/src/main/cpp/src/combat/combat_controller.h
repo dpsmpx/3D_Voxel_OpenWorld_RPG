@@ -26,9 +26,7 @@ struct CombatAction {
     bool      didMeleeHit    = false;
     bool      didCastSpell   = false;
     bool      didShoot       = false;
-    bool      didFinisher    = false;
     i32       hitCount       = 0;
-    f32       totalDamage    = 0.f;
     glm::vec3 hitPoint{0};
 };
 
