@@ -7,6 +7,7 @@
 #include "../combat/components.h"
 #include "../combat/status_effects.h"
 #include "../combat/hit_detection.h"
+#include "../factions/faction.h"
 #include "../world/block.h"
 #include "../core/log.h"
 #include <cmath>
@@ -84,6 +85,7 @@ bool hasLOS(world::ChunkManager& world,
 }
 
 // Найти ближайшего врага (для Guard).
+/// Ближайший помеченный враг — мобы деревни.
 ecs::Entity findNearestEnemy(ecs::Registry& reg,
                              const glm::vec3& pos,
                              f32 maxDist)
@@ -106,6 +108,37 @@ ecs::Entity findNearestEnemy(ecs::Registry& reg,
         }
     }
     return best;
+}
+
+/// Кого стража считает врагом.
+///
+/// Игрок попадает сюда, когда его репутация у фракции NPC упала до
+/// враждебной. RelationModifiers::hostile («атакуют ли NPC игрока»)
+/// был написан и не читался нигде: вырезав полдеревни, игрок мог
+/// спокойно ходить мимо стражи.
+///
+/// Игрок в приоритете перед мобами: стража, отвернувшаяся от убийцы
+/// ради ближайшего гоблина, выглядит сломанной.
+ecs::Entity findGuardTarget(ecs::Registry& reg,
+                            ecs::Entity player,
+                            const NpcDef& def,
+                            const glm::vec3& pos,
+                            f32 maxDist)
+{
+    if (player.valid() && def.faction != factions::FactionId::None) {
+        if (auto* rep = reg.get<factions::Reputation>(player)) {
+            if (factions::modifiersFor(rep->tier(def.faction)).hostile) {
+                auto* tf = reg.get<Transform>(player);
+                auto* hp = reg.get<ecs::Health>(player);
+                if (tf && hp && hp->current > 0.f) {
+                    glm::vec3 d = tf->position - pos;
+                    d.y = 0.f;
+                    if (glm::dot(d, d) < maxDist * maxDist) return player;
+                }
+            }
+        }
+    }
+    return findNearestEnemy(reg, pos, maxDist);
 }
 
 void npcAttack(ecs::Registry& reg, ecs::Entity npc, ecs::Entity target,
@@ -189,7 +222,8 @@ void updateNpcs(world::ChunkManager& world,
 
             // Guard — сканирует врагов
             if (def.role == NpcRole::Guard && def.aggroRange > 0.f) {
-                ecs::Entity enemy = findNearestEnemy(reg, pos, def.aggroRange);
+                ecs::Entity enemy = findGuardTarget(reg, playerEntity, def,
+                                                   pos, def.aggroRange);
                 if (enemy.valid() &&
                     hasLOS(world, pos + glm::vec3(0, 1.2f, 0),
                                  [&]{ auto* t = reg.get<Transform>(enemy); return t ? t->position + glm::vec3(0, 1.f, 0) : pos; }()))
@@ -227,7 +261,8 @@ void updateNpcs(world::ChunkManager& world,
 
             // Guard снова сканирует
             if (def.role == NpcRole::Guard && def.aggroRange > 0.f) {
-                ecs::Entity enemy = findNearestEnemy(reg, pos, def.aggroRange);
+                ecs::Entity enemy = findGuardTarget(reg, playerEntity, def,
+                                                   pos, def.aggroRange);
                 if (enemy.valid()) {
                     ai->guardTarget = (u32)enemy;
                     ai->state = NpcAI::Combat;

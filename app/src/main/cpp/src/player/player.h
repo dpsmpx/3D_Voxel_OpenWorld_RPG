@@ -92,6 +92,13 @@ public:
 
     const progression::DerivedStats& derived() const;
 
+    /// Принять текущую репутацию за исходную, ничего не объявляя.
+    ///
+    /// Нужно после загрузки: там тиры меняются разом и не игроком, а
+    /// экран «репутация у такой-то фракции теперь такая» сообщал бы о
+    /// том, что случилось в прошлой жизни.
+    void resyncReputationBaseline();
+
     void tryInteract(ecs::Registry& reg, world::ChunkManager& world);
 
     items::UseResult useItem(u32 slotIndex);
@@ -146,6 +153,14 @@ private:
 
     /// Списать один поставленный блок из активной ячейки пояса.
     void consumePlacedBlock(u16 blockType);
+
+    /// Заметить смену тира репутации и поднять уведомление.
+    void noticeReputationChange();
+
+    /// Тиры на прошлом кадре. Иначе заметить СМЕНУ нечем: сама
+    /// Reputation хранит только текущее значение.
+    factions::ReputationTier prevRepTiers_[(u8)factions::FactionId::Count]{};
+    bool repTiersKnown_ = false;
 
     ecs::Registry* reg_ = nullptr;
     ecs::Entity    entity_{};

@@ -17,6 +17,7 @@
 #include "trade/trade.h"
 #include "ecs/components.h"
 #include "npc/dialogue.h"
+#include "npc/npc_ai.h"
 #include "save/save_player.h"
 #include "save/save_npc.h"
 #include "progression/skill_tree.h"
@@ -7625,6 +7626,126 @@ void testEveryAudioEventIsFired() {
 // maxResonanceMult не читал никто. Очки в них уходили впустую, а два
 // из трёх — обязательные родители для работающих узлов ниже по ветке.
 // ------------------------------------------------------------
+// Репутацию можно потерять, и это что-то меняет.
+//
+// Reputation::add звали ровно из одного места — награды за квест, и
+// только в плюс. Половина шкалы (Unfriendly, Hostile, Hated) была
+// недостижима вовсе, а RelationModifiers::talksToPlayer и ::hostile
+// не читал никто: вырезав полдеревни, игрок брал квест у следующего
+// жителя и спокойно ходил мимо стражи.
+// ------------------------------------------------------------
+void testReputationCanBeLost() {
+    group("репутация: за убийство приходит счёт");
+
+    world::blocks();
+    items::items();
+    npc::npcRegistry();
+
+    world::ChunkManager world(0x5EED, 1);
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+    const ecs::Entity player = pl.entity();
+
+    auto* rep = reg.get<factions::Reputation>(player);
+    check(rep != nullptr, "репутация у игрока есть");
+    if (!rep) return;
+    check(rep->tier(factions::FactionId::Villagers) ==
+          factions::ReputationTier::Neutral, "и начинается с нейтралитета");
+
+    auto makeNpc = [&](u16 typeId, const glm::vec3& at) {
+        const ecs::Entity e = reg.create();
+        ecs::Transform tf; tf.position = at;
+        reg.add(e, tf);
+        reg.add(e, ecs::Velocity{});
+        const auto& def = npc::npcRegistry().get(typeId);
+        reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
+        reg.add(e, ecs::Kind{ ecs::EntityKind::NPC });
+        reg.add(e, ecs::NPCTag{});
+        combat::Combatant cmb;
+        cmb.faction = combat::Faction::NPC;
+        reg.add(e, cmb);
+        reg.add(e, combat::StatusEffects{});
+        npc::NpcTag tag; tag.id = typeId; tag.persistKey = 1000 + (u64)typeId;
+        reg.add(e, tag);
+        npc::NpcAI ai; ai.homePos = at; ai.state = npc::NpcAI::Idle;
+        reg.add(e, ai);
+        return e;
+    };
+
+    auto murder = [&]() {
+        const ecs::Entity v = makeNpc(npc::NPC_VILLAGER, glm::vec3(2.f, 64.f, 0.f));
+        combat::DamageInstance dmg{};
+        dmg.amount       = 9999.f;
+        dmg.type         = combat::DamageType::Physical;
+        dmg.sourceEntity = (u32)player;
+        combat::applyDamage(reg, v, dmg);
+    };
+
+    // ---- Одно убийство: цена известна и тир поехал вниз ----
+    murder();
+    check(rep->get(factions::FactionId::Villagers) == -factions::REP_MURDER_PENALTY,
+          "убитый житель стоит ровно объявленной цены");
+    check(rep->tier(factions::FactionId::Villagers) ==
+          factions::ReputationTier::Unfriendly,
+          "и одного убийства хватает, чтобы перестать быть своим");
+
+    // ---- Четыре: с врагом деревни не разговаривают ----
+    for (int i = 0; i < 3; ++i) murder();
+    check(rep->tier(factions::FactionId::Villagers) ==
+          factions::ReputationTier::Hostile, "четыре убийства — вражда");
+
+    {
+        const ecs::Entity witness =
+            makeNpc(npc::NPC_VILLAGER, glm::vec3(1.f, 64.f, 0.f));
+        const auto& def = npc::npcRegistry().get(npc::NPC_VILLAGER);
+        check(!npc::startDialogue(reg, world, (u32)player, (u32)witness,
+                                  def.dialogueRoot),
+              "враг деревни не может заговорить с жителем");
+        reg.destroy(witness);
+    }
+
+    // ---- Семь: стража бьёт ----
+    for (int i = 0; i < 3; ++i) murder();
+    check(rep->tier(factions::FactionId::Villagers) ==
+          factions::ReputationTier::Hated, "семь убийств — ненависть");
+
+    {
+        const glm::vec3 guardPos{ 3.f, 64.f, 0.f };
+        const ecs::Entity guard = makeNpc(npc::NPC_GUARD, guardPos);
+        auto* gai = reg.get<npc::NpcAI>(guard);
+        check(gai != nullptr, "стражник создан");
+        if (gai) {
+            // Патрулирование: в этой ветке стража осматривается без
+            // проверки прямой видимости, и пустой мир ей не мешает.
+            gai->state = npc::NpcAI::Wander;
+            gai->wanderTarget = guardPos + glm::vec3(20.f, 0.f, 0.f);
+            gai->stateTime = 0.f;
+
+            npc::updateNpcs(world, reg, player,
+                            pl.controller.state().position, 1.f / 60.f);
+
+            check(gai->state == npc::NpcAI::Combat,
+                  "стража переходит в бой с ненавистным");
+            check(gai->guardTarget == (u32)player,
+                  "и целью выбирает именно игрока");
+        }
+    }
+
+    // ---- Игрок узнаёт о случившемся ----
+    //
+    // reputationFlashActive не поднимал никто: экран смены тира был
+    // написан целиком и не показывался ни разу.
+    pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+    check(pl.reputationFlashActive, "смена тира показывается на экране");
+    check(pl.lastRepFaction == factions::FactionId::Villagers,
+          "и названа та фракция, у которой она произошла");
+    check(pl.lastRepTier == factions::ReputationTier::Hated,
+          "и тот тир, до которого докатились");
+}
+
+// ------------------------------------------------------------
 void testWisdomNodesActuallyWork() {
     group("древо: узлы Мудрости доходят до игры");
 
@@ -10806,6 +10927,7 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testReputationCanBeLost();
     testWisdomNodesActuallyWork();
     testDesertGrowsCactus();
     testDeadNpcStaysDead();

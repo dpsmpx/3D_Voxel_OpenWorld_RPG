@@ -8,6 +8,8 @@
 #include "../mobs/mob_def.h"
 #include "../mobs/mob_ai.h"
 #include "../progression/progression.h"
+#include "../factions/faction.h"
+#include "../npc/npc_def.h"
 #include "../quests/quest.h"
 #include "../audio/audio_events.h"
 #include <algorithm>
@@ -69,6 +71,19 @@ static void onTargetDeath(ecs::Registry& reg,
 
     if (xpReward > 0) {
         progression::rewardKillXP(reg, reg.fromId(killerEntity), xpReward);
+    }
+
+    // Убитый житель стоит репутации у своей фракции. Раньше не стоил
+    // ничего: Reputation::add звали из одного места — награды за
+    // квест, и только в плюс. Проверка на Progression выше отсекает
+    // мобов и NPC, убивающих друг друга: платит только игрок.
+    if (auto* npcTag = reg.get<npc::NpcTag>(target)) {
+        const auto& ndef = npc::npcRegistry().get(npcTag->id);
+        if (ndef.faction != factions::FactionId::None) {
+            if (auto* rep = reg.get<factions::Reputation>(killerEntity)) {
+                rep->add(ndef.faction, -factions::REP_MURDER_PENALTY);
+            }
+        }
     }
 }
 

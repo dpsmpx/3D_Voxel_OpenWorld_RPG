@@ -237,6 +237,20 @@ bool startDialogue(ecs::Registry& reg,
     auto* active = reg.get<ActiveDialogue>(playerEntity);
     if (!active) return false;
 
+    // Заговорит ли он вообще. RelationModifiers::talksToPlayer
+    // существовал с самого начала и не читался нигде: вырезав
+    // полдеревни, игрок подходил к следующему жителю и спокойно брал
+    // у него квест.
+    if (auto* tag = reg.get<NpcTag>(npcEntity)) {
+        const NpcDef& ndef = npcRegistry().get(tag->id);
+        if (ndef.faction != FactionId::None) {
+            if (auto* rep = reg.get<Reputation>(playerEntity)) {
+                if (!factions::modifiersFor(rep->tier(ndef.faction)).talksToPlayer)
+                    return false;
+            }
+        }
+    }
+
     const auto& tmpl = dialogues().get(dialogueRoot);
     if (tmpl.nodes.empty()) return false;
 

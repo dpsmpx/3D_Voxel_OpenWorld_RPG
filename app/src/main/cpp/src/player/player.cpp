@@ -103,6 +103,10 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
     combatant    = cmb;
 
     controller.setPosition(spawnPos);
+
+    // Исходные тиры — сразу, а не на первом кадре: между init() и
+    // первым update() репутация уже может уехать (загрузка сейва).
+    resyncReputationBaseline();
 }
 
 // ============================================================
@@ -200,6 +204,11 @@ void Player::tryInteract(ecs::Registry& reg, world::ChunkManager& world) {
         }
         // Phase 14: звук открытия диалога (используем UI-click).
         audio::events().uiClick();
+    } else {
+        // Отказ тоже надо услышать. Житель, который не станет
+        // говорить с врагом деревни, иначе неотличим от промаха
+        // пальцем: экран не меняется, звука нет.
+        audio::events().uiError();
     }
 }
 
@@ -426,6 +435,13 @@ void Player::updateImpl(world::ChunkManager& world,
         if (levelUpFlashTimer <= 0.f) pendingLevelUpNotification = false;
     }
 
+    // ---- Уведомление о смене тира репутации ----
+    noticeReputationChange();
+    if (reputationFlashTimer > 0.f) {
+        reputationFlashTimer -= dt;
+        if (reputationFlashTimer <= 0.f) reputationFlashActive = false;
+    }
+
     // ---- Head bob ----
     const f32 hs = glm::length(glm::vec2(controller.state().velocity.x,
                                          controller.state().velocity.z));
@@ -505,6 +521,43 @@ bool Player::tryPlaceBlock(world::ChunkManager& world, u16 blockType) {
     // если она и правда держит этот блок.
     consumePlacedBlock(blockType);
     return true;
+}
+
+void Player::resyncReputationBaseline() {
+    if (!reg_) return;
+    auto* rep = reg_->get<factions::Reputation>(entity_);
+    if (!rep) return;
+    for (u8 i = 0; i < (u8)factions::FactionId::Count; ++i)
+        prevRepTiers_[i] = rep->tier((factions::FactionId)i);
+    repTiersKnown_ = true;
+}
+
+void Player::noticeReputationChange() {
+    if (!reg_) return;
+    auto* rep = reg_->get<factions::Reputation>(entity_);
+    if (!rep) return;
+
+    constexpr u8 N = (u8)factions::FactionId::Count;
+
+    // Исходное состояние берётся при init() и после загрузки. Сюда
+    // попадаем только если ни того, ни другого не было — тогда
+    // запоминаем молча: объявлять «репутация стала нейтральной»
+    // в момент появления на свет незачем.
+    if (!repTiersKnown_) { resyncReputationBaseline(); return; }
+
+    for (u8 i = 0; i < N; ++i) {
+        const auto now = rep->tier((factions::FactionId)i);
+        if (now == prevRepTiers_[i]) continue;
+        prevRepTiers_[i] = now;
+
+        // Экран показывает одну смену за раз. Если за кадр сменилось
+        // несколько — покажется последняя; такое бывает только при
+        // загрузке, и там уведомление не нужно вовсе.
+        lastRepFaction        = (factions::FactionId)i;
+        lastRepTier           = now;
+        reputationFlashActive = true;
+        reputationFlashTimer  = 2.0f;
+    }
 }
 
 void Player::consumePlacedBlock(u16 blockType) {
