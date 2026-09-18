@@ -386,6 +386,7 @@ struct Engine {
             ctx.skillTree = tree;
             ctx.playerLevel = prog ? prog->level : 1;
             ctx.nearbyStation = ui->nearbyStation;
+            ctx.craftTierBonus = player->derived().craftTierBonus;
 
             const auto& r = crafting::recipes().get((u16)recipeId);
             auto st = crafting::craft(ctx, r);

@@ -4,6 +4,7 @@
  */
 #pragma once
 #include "../core/types.h"
+#include <algorithm>
 
 namespace combat {
 
@@ -29,6 +30,19 @@ const ResonanceBonuses& resonanceBonuses(i32 stack);
 
 struct ResonanceState {
     f32  value              = 0.f;
+
+    /// Личный потолок резонанса. Базовый — RESONANCE_MAX; узел
+    /// «Resonance Master» поднимает его.
+    ///
+    /// Ступени при этом остаются на прежних АБСОЛЮТНЫХ отметках:
+    /// пятая по-прежнему на 100. Иначе «+15% максимума» оказался бы
+    /// не усилением, а ослаблением — вся польза резонанса в ступенях,
+    /// и растянутая шкала означала бы, что до пятой надо дольше
+    /// бить. Поднятый потолок даёт запас СВЕРХ пятой ступени: он
+    /// утекает первым, и ступень держится дольше, а финишер,
+    /// считающий множитель от заполнения, бьёт сильнее.
+    f32  maxValue           = RESONANCE_MAX;
+
     i32  stack              = 0;
     f32  timeSinceHit       = 999.f;
     f32  finisherCooldown   = 0.f;
@@ -45,7 +59,7 @@ struct ResonanceState {
     f32 consumeFinisher();
 
     const ResonanceBonuses& bonuses() const { return resonanceBonuses(stack); }
-    f32 fill() const { return value / RESONANCE_MAX; }
+    f32 fill() const { return value / std::max(1.f, maxValue); }
 
     f32 stackFill() const {
         const f32 perStack = RESONANCE_MAX / (f32)RESONANCE_MAX_STACKS;

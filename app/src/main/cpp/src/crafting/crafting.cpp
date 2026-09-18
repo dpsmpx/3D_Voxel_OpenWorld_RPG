@@ -31,8 +31,10 @@ const char* statusString(CraftStatus s) {
 CraftStatus canCraft(const CraftContext& ctx, const Recipe& r) {
     if (!ctx.inventory) return CraftStatus::InventoryFull;
 
-    // Уровень
-    if (ctx.playerLevel < r.requiredLevel) {
+    // Уровень. craftTierBonus считался в производных и не доходил
+    // сюда: второй ранг «Craft Master» не делал ничего.
+    const i32 effective = (i32)ctx.playerLevel + ctx.craftTierBonus;
+    if (effective < (i32)r.requiredLevel) {
         return CraftStatus::LevelTooLow;
     }
 

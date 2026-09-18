@@ -21,6 +21,10 @@
 #include "save/save_npc.h"
 #include "progression/skill_tree.h"
 #include "progression/progression.h"
+#include "crafting/crafting.h"
+#include "crafting/recipe.h"
+#include "items/item_use.h"
+#include "combat/resonance.h"
 #include "factions/faction.h"
 #include "quests/quest.h"
 #include "quests/quest_def.h"
@@ -7614,6 +7618,121 @@ void testEveryAudioEventIsFired() {
 // кактуса строился из WOOD с пометкой «временно; в идеале — CACTUS»,
 // а блока CACTUS в реестре не было вовсе.
 // ------------------------------------------------------------
+// Узлы ветки Мудрости и правда работают.
+//
+// Три из двадцати четырёх узлов Древа считались в computeDerived и
+// никуда не доходили: potionPowerMult, craftTierBonus и
+// maxResonanceMult не читал никто. Очки в них уходили впустую, а два
+// из трёх — обязательные родители для работающих узлов ниже по ветке.
+// ------------------------------------------------------------
+void testWisdomNodesActuallyWork() {
+    group("древо: узлы Мудрости доходят до игры");
+
+    world::blocks();
+    items::items();
+
+    // ---- Alchemist: зелье лечит сильнее ----
+    auto healWith = [](u8 rank) -> f32 {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        const ecs::Entity e = pl.entity();
+
+        if (auto* tree = reg.get<progression::SkillTree>(e))
+            tree->ranks[(u16)progression::SkillNodeId::Wis_Alchemist] = rank;
+        if (auto* prog = reg.get<progression::Progression>(e))
+            prog->derivedDirty = true;
+        progression::tickProgression(reg, 0.001f);
+
+        auto* h = reg.get<ecs::Health>(e);
+        if (!h) return 0.f;
+        h->current = 1.f;
+        const f32 before = h->current;
+
+        auto* inv = pl.inventory();
+        if (!inv) return 0.f;
+        auto& slot = inv->activeSlot();
+        slot.itemId = items::ITEM_POTION_HEALTH_SMALL;
+        slot.count  = 1;
+        items::useItemFromSlot(reg, e,
+                               items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+        return h->current - before;
+    };
+
+    const f32 plain = healWith(0);
+    const f32 maxed = healWith(2);
+    check(plain > 0.f, "зелье лечит и без алхимии");
+    // Два ранга по +20% — ровно 1.4 от базового.
+    check(std::fabs(maxed - plain * 1.4f) < 0.01f,
+          "а с двумя рангами Alchemist — на 40% больше");
+
+    // ---- Craft Master: рецепт берётся на уровень раньше ----
+    {
+        crafting::Recipe r{};
+        r.id = 1;
+        r.requiredLevel = 5;
+        r.station = crafting::StationType::None;
+        r.output.itemId = items::ITEM_STONE;
+        r.output.count  = 1;
+
+        items::Inventory inv{};
+        crafting::CraftContext ctx{};
+        ctx.inventory   = &inv;
+        ctx.playerLevel = 4;
+
+        check(crafting::canCraft(ctx, r) == crafting::CraftStatus::LevelTooLow,
+              "на четвёртом уровне рецепт пятого недоступен");
+        ctx.craftTierBonus = 1;
+        check(crafting::canCraft(ctx, r) != crafting::CraftStatus::LevelTooLow,
+              "а мастеру крафта — доступен");
+    }
+
+    // ---- Resonance Master: запас выше, ступени на месте ----
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        const ecs::Entity e = pl.entity();
+
+        auto* res = reg.get<combat::ResonanceState>(e);
+        check(res != nullptr, "резонанс у игрока есть");
+        if (!res) return;
+        check(std::fabs(res->maxValue - combat::RESONANCE_MAX) < 0.01f,
+              "без узла потолок обычный");
+
+        if (auto* tree = reg.get<progression::SkillTree>(e))
+            tree->ranks[(u16)progression::SkillNodeId::Wis_ResonanceMaster] = 3;
+        if (auto* prog = reg.get<progression::Progression>(e))
+            prog->derivedDirty = true;
+        progression::tickProgression(reg, 0.001f);
+
+        res = reg.get<combat::ResonanceState>(e);
+        check(std::fabs(res->maxValue - combat::RESONANCE_MAX * 1.45f) < 0.01f,
+              "с тремя рангами — на 45% выше");
+
+        // Копим до упора: запас набирается СВЕРХ пятой ступени, а сама
+        // ступень остаётся на прежней отметке. Иначе «+15% максимума»
+        // было бы ослаблением — до пятой пришлось бы бить дольше.
+        for (int i = 0; i < 40; ++i) res->onHit(false);
+        check(res->value > combat::RESONANCE_MAX + 1.f,
+              "накопить можно выше прежнего потолка");
+        check(res->value <= res->maxValue + 0.01f, "но не выше своего");
+        check(res->stack == combat::RESONANCE_MAX_STACKS,
+              "и пятая ступень всё равно достигается");
+
+        // Запас утекает первым — ступень держится дольше обычного.
+        f32 held = 0.f;
+        for (int i = 0; i < 1000 && res->stack == combat::RESONANCE_MAX_STACKS; ++i) {
+            res->update(1.f / 60.f);
+            held += 1.f / 60.f;
+        }
+        const f32 decayDelay = combat::RESONANCE_DECAY_DELAY;
+        check(held > decayDelay + 0.5f,
+              "и держится дольше, чем просто задержка распада");
+    }
+}
+
+// ------------------------------------------------------------
 void testDesertGrowsCactus() {
     group("мир: кактус сделан из кактуса");
 
@@ -10687,6 +10806,7 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testWisdomNodesActuallyWork();
     testDesertGrowsCactus();
     testDeadNpcStaysDead();
     testVillageHousesAreBuildings();

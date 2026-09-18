@@ -39,24 +39,31 @@ namespace {
 bool applyConsumable(ecs::Registry& reg, ecs::Entity player, const ItemDef& def) {
     bool didSomething = false;
 
+    // Узел «Alchemist» считался в potionPowerMult и не доходил сюда:
+    // зелье восстанавливало ровно то, что записано в предмете, сколько
+    // очков в алхимию ни вложи. Еда идёт тем же путём — это тот же
+    // расходник, и делить их правилом «алхимия только на склянки»
+    // значило бы завести второе место, где решается одно и то же.
+    const f32 power = progression::derivedOf(reg, player).potionPowerMult;
+
     if (def.restoreHealth > 0.f) {
         auto* h = reg.get<Health>(player);
         if (h && h->current < h->max) {
-            h->current = std::min(h->max, h->current + def.restoreHealth);
+            h->current = std::min(h->max, h->current + def.restoreHealth * power);
             didSomething = true;
         }
     }
     if (def.restoreMana > 0.f) {
         auto* m = reg.get<Mana>(player);
         if (m && m->current < m->max) {
-            m->current = std::min(m->max, m->current + def.restoreMana);
+            m->current = std::min(m->max, m->current + def.restoreMana * power);
             didSomething = true;
         }
     }
     if (def.restoreStamina > 0.f) {
         auto* s = reg.get<Stamina>(player);
         if (s && s->current < s->max) {
-            s->current = std::min(s->max, s->current + def.restoreStamina);
+            s->current = std::min(s->max, s->current + def.restoreStamina * power);
             didSomething = true;
         }
     }

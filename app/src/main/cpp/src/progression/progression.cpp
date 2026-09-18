@@ -3,6 +3,7 @@
  * @brief Прогрессия: опыт, уровни, атрибуты, Древо Познания.
  */
 #include "progression.h"
+#include "../combat/resonance.h"
 #include "resource_regen.h"
 #include "../core/log.h"
 #include "../ecs/components.h"
@@ -119,6 +120,13 @@ void clampResourcesToMax(ecs::Registry& reg, ecs::Entity e,
             if (m->current > m->max) m->current = m->max;
             if (m->current < 0.f) m->current = 0.f;
         }
+    }
+    // Личный потолок резонанса. Узел «Resonance Master» считался и
+    // никуда не доходил: RESONANCE_MAX — константа компиляции, и три
+    // ранга в самом конце ветки Мудрости не делали ничего.
+    if (auto* res = reg.get<combat::ResonanceState>(e)) {
+        res->maxValue = combat::RESONANCE_MAX * d.maxResonanceMult;
+        if (res->value > res->maxValue) res->value = res->maxValue;
     }
     if (auto* s = reg.get<ecs::Stamina>(e)) {
         if (s->max != d.maxStamina) {

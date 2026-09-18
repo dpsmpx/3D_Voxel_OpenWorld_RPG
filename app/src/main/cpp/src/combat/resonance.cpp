@@ -30,7 +30,7 @@ void ResonanceState::onHit(bool wasCritical, f32 gainMult) {
     const f32 base = wasCritical ? RESONANCE_PER_CRIT : RESONANCE_PER_HIT;
     const f32 gain = base * gainMult;
 
-    value = std::min(RESONANCE_MAX, value + gain);
+    value = std::min(maxValue, value + gain);
     timeSinceHit = 0.f;
     ++comboCounter;
     recentHitFlash = 0.15f;

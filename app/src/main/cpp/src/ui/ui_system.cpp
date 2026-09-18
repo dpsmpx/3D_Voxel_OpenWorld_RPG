@@ -546,9 +546,17 @@ void UiSystem::drawResonanceBar(player::Player& player) {
 
     ui_.rect(bx, by, bw * res.fill(), bh, fillColor);
 
-    for (i32 i = 1; i < combat::RESONANCE_MAX_STACKS; ++i) {
-        float px = bx + bw * ((float)i / (float)combat::RESONANCE_MAX_STACKS);
-        ui_.rect(px - 1.f, by, 2.f, bh, COL_BLACK);
+    // Деления — на АБСОЛЮТНЫХ отметках ступеней, а не на равных долях
+    // полосы. У игрока с «Resonance Master» потолок выше, ступени
+    // остаются там же, и хвост за пятым делением — это запас: он
+    // утекает первым и держит ступень дольше.
+    const f32 perStack = combat::RESONANCE_MAX /
+                         (f32)combat::RESONANCE_MAX_STACKS;
+    const f32 span = std::max(1.f, res.maxValue);
+    for (i32 i = 1; i <= combat::RESONANCE_MAX_STACKS; ++i) {
+        const f32 at = perStack * (f32)i / span;
+        if (at >= 0.999f) continue;
+        ui_.rect(bx + bw * at - 1.f, by, 2.f, bh, COL_BLACK);
     }
     ui_.text(T(StrKey::Hud_Resonance), bx + 4.f, by + 1.f, 1.5f, COL_WHITE);
 
@@ -2004,6 +2012,7 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
     ctx.skillTree     = tree;
     ctx.playerLevel   = prog ? prog->level : 1;
     ctx.nearbyStation = nearbyStation;
+    ctx.craftTierBonus = player.derived().craftTierBonus;
 
     std::vector<crafting::AvailableRecipe> available;
     crafting::gatherAvailable(ctx, available);
