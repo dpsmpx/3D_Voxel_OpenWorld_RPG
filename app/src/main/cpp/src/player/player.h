@@ -70,7 +70,9 @@ public:
     physics::RayHit targetBlock(world::ChunkManager& world, f32 reach = 5.5f) const;
     glm::vec3 aimDir() const { return aimDir_; }
 
+    /// Ломает блок под прицелом и роняет из него предмет.
     bool tryBreakBlock(world::ChunkManager& world);
+    /// Ставит блок и списывает его из активной ячейки пояса.
     bool tryPlaceBlock(world::ChunkManager& world, u16 blockType);
 
     ecs::Entity entity() const { return entity_; }
@@ -141,6 +143,9 @@ private:
                     f32 dt,
                     f32 cameraYaw,
                     f32 cameraPitch);
+
+    /// Списать один поставленный блок из активной ячейки пояса.
+    void consumePlacedBlock(u16 blockType);
 
     ecs::Registry* reg_ = nullptr;
     ecs::Entity    entity_{};

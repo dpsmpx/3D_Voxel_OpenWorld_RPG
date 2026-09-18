@@ -6,8 +6,17 @@
 #include "../core/types.h"
 #include "../ecs/registry.h"
 #include "../world/chunk_manager.h"
+#include <vector>
 
 namespace npc {
+
+/// Постоянный ключ жителя: super-chunk X, super-chunk Z и номер в
+/// деревне. Одна функция на всех, кто про этот ключ спрашивает.
+///
+/// Ключей было два: один здесь, `u64`, второй в сохранении, `u32`, из
+/// других полей. Ни один не доходил до другого, и список убитых
+/// записывался одним ключом, а спрашивался — никогда.
+u64 npcPersistentKey(i32 sx, i32 sz, u32 idx);
 
 /// Детерминированный спавнер NPC.
 ///
@@ -29,6 +38,20 @@ public:
 
     u32 activeNpcCount() const { return activeCount_; }
 
+    /// ---- Убитые ----
+    ///
+    /// Убитый житель удалялся через три секунды, а деревня считалась
+    /// заселённой, пока жив хотя бы один её NPC. Отойдя на 260 метров
+    /// и вернувшись, игрок заставал деревню в полном составе — вместе
+    /// с теми, кого убил. Сохранение для этого не требовалось.
+    bool isDead(u64 key) const;
+    void markDead(u64 key);
+
+    const std::vector<u64>& deadKeys() const { return deadKeys_; }
+    /// Восстановление из сохранения. Список приводится к порядку:
+    /// поиск по нему двоичный.
+    void setDeadKeys(std::vector<u64> keys);
+
 private:
     static constexpr i32 SUPER_CHUNKS = 8;
     static constexpr i32 SUPER_BLOCKS = SUPER_CHUNKS * 32;   // 256
@@ -39,6 +62,9 @@ private:
     f32 spawnTimer_ = 0.f;
     f32 despawnTimer_ = 0.f;
     u32 activeCount_ = 0;
+
+    /// Ключи убитых, в возрастающем порядке.
+    std::vector<u64> deadKeys_;
 };
 
 } // namespace npc

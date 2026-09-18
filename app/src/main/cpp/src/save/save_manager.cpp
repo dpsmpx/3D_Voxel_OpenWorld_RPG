@@ -44,9 +44,12 @@ SaveStatus SaveManager::save(const SaveSlot& slot,
                              const WorldDeltaStore& deltas,
                              u64 worldSeed,
                              u32 playtimeSec,
-                             const world::DayCycle& day)
+                             const world::DayCycle& day,
+                             const npc::NpcSpawner& npcSpawner)
 {
     if (!initialized_) return SaveStatus::WriteError;
+    // Воксели не сохраняются: мир восстанавливается из зерна, а
+    // изменения игрока — из дельт. Ссылка нужна ради seed в шапке.
     (void)world;
 
     ByteWriter body;
@@ -59,7 +62,7 @@ SaveStatus SaveManager::save(const SaveSlot& slot,
 
     serializePlayer(body, registry, playerEntity);
     deltas.write(body);
-    serializeNpcState(body, registry);
+    serializeNpcState(body, npcSpawner);
     serializePickups(body, registry);
 
     std::vector<u8> compressed = zcompress(body.data(), 6);
@@ -140,7 +143,8 @@ SaveStatus SaveManager::load(const SaveSlot& slot,
                              WorldDeltaStore& deltas,
                              u64* outSeed,
                              u32* outPlaytimeSec,
-                             world::DayCycle* outDay)
+                             world::DayCycle* outDay,
+                             npc::NpcSpawner& npcSpawner)
 {
     if (!initialized_) return SaveStatus::ReadError;
 
@@ -239,7 +243,7 @@ SaveStatus SaveManager::load(const SaveSlot& slot,
         return SaveStatus::CorruptedData;
     }
 
-    if (!deserializeNpcState(br, registry)) {
+    if (!deserializeNpcState(br, npcSpawner)) {
         LOGE("Save: npc deserialize failed");
         return SaveStatus::CorruptedData;
     }

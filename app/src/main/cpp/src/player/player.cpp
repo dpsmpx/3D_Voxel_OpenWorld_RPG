@@ -459,6 +459,22 @@ bool Player::tryBreakBlock(world::ChunkManager& world) {
     if (!hit.hit) return false;
     if (hit.blockType == world::BEDROCK) return false;
     world.setVoxel(hit.block.x, hit.block.y, hit.block.z, world::AIR);
+
+    // Блок уходил в никуда: воксель обращался в воздух, и на этом всё.
+    // Таблица «блок → предмет» была построена при старте и ни разу не
+    // спрошена — в игре, где мир состоит из блоков, добыча не давала
+    // ничего. Роняем предмет на землю, а не кладём прямо в сумку: так
+    // же поступают мобы, и полный инвентарь не съедает добытое молча.
+    const u16 itemId = items::items().blockToItem(hit.blockType);
+    if (itemId != items::ITEM_NONE && reg_) {
+        const glm::vec3 centre{ (f32)hit.block.x + 0.5f,
+                                (f32)hit.block.y + 0.5f,
+                                (f32)hit.block.z + 0.5f };
+        items::ItemStack drop;
+        drop.itemId = itemId;
+        drop.count  = 1;
+        items::spawnPickup(*reg_, centre, drop, glm::vec3(0.f, 1.5f, 0.f));
+    }
     return true;
 }
 
@@ -482,7 +498,29 @@ bool Player::tryPlaceBlock(world::ChunkManager& world, u16 blockType) {
     if (overlap) return false;
 
     world.setVoxel(np.x, np.y, np.z, blockType);
+
+    // Блок брался из ниоткуда: selectedBlock() читал активную ячейку
+    // пояса и ничего из неё не списывал — стопка не таяла никогда.
+    // Списываем ровно ту ячейку, из которой блок и был взят, и только
+    // если она и правда держит этот блок.
+    consumePlacedBlock(blockType);
     return true;
+}
+
+void Player::consumePlacedBlock(u16 blockType) {
+    if (!reg_) return;
+    auto* inv = reg_->get<items::Inventory>(entity_);
+    if (!inv) return;
+
+    auto& s = inv->activeSlot();
+    if (s.empty()) return;
+
+    const auto& def = items::items().get(s.itemId);
+    if (def.category != items::ItemCategory::Block) return;
+    if (def.payload.blockId != blockType) return;
+
+    if (s.count > 1) --s.count;
+    else             s.clear();
 }
 
 } // namespace player
