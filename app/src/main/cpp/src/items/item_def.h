@@ -39,6 +39,7 @@ enum class ItemRarity : u8 {
 enum class ThrowKind : u8 {
     None = 0,
     Trampoline,   ///< ложится площадкой и подбрасывает наступившего
+    Shuriken,     ///< летит настильно и бьёт того, в кого попал
 };
 
 /// Какой атрибут поднимает эликсир на время своего действия.
@@ -123,6 +124,7 @@ enum ItemId : u16 {
 
     // --- Метательное ---
     ITEM_TRAMPOLINE   = 150,
+    ITEM_SHURIKEN     = 151,
 
     // --- Оружие ---
     ITEM_IRON_SWORD     = 50,

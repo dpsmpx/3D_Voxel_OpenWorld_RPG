@@ -41,6 +41,24 @@ ecs::Entity throwTrampoline(ecs::Registry& reg,
                             const glm::vec3& origin,
                             const glm::vec3& dir);
 
+/// Метнуть сюрикен по направлению взгляда.
+///
+/// Урон не зависит от того, что в руках: сюрикен — не оружие, а
+/// расходник, и вкладывать в него ни ковку, ни зачарование некуда.
+/// Летит настильно, без гравитации: на его дистанции дуга была бы
+/// только помехой прицелу.
+///
+/// @return созданный снаряд
+ecs::Entity throwShuriken(ecs::Registry& reg,
+                          ecs::Entity thrower,
+                          const glm::vec3& origin,
+                          const glm::vec3& dir);
+
+/// Урон сюрикена. Небольшой: его сила в том, что он летит быстро и
+/// его много, а не в том, что он заменяет меч.
+constexpr f32 SHURIKEN_DAMAGE = 9.f;
+constexpr f32 SHURIKEN_SPEED  = 34.f;
+
 /// Отсчёт времени жизни и задержек. Истёкшие батуты убираются.
 void updateTrampolines(ecs::Registry& reg, f32 dt);
 

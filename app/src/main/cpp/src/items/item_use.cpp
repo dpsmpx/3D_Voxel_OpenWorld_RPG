@@ -212,6 +212,9 @@ UseResult throwItemFromSlot(ecs::Registry& reg,
         case ThrowKind::Trampoline:
             thrown = throwTrampoline(reg, world, origin, dir).valid();
             break;
+        case ThrowKind::Shuriken:
+            thrown = throwShuriken(reg, playerEntity, origin, dir).valid();
+            break;
         default:
             break;
     }

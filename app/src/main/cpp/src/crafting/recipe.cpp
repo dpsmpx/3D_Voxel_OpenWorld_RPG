@@ -55,6 +55,12 @@ RecipeRegistry::RecipeRegistry() {
 
     // ============ Workbench ============
 
+    // Сюрикены — четвёркой: поштучно их ковать столько же раз,
+    // сколько бросать, и крафт превратился бы в работу.
+    add("Shuriken", StationType::Workbench, 1, false,
+        { { ITEM_IRON_INGOT, 1 } },
+        ITEM_SHURIKEN, 4);
+
     // Батут: кожа на полотно, дерево на раму. Кидается под ноги и
     // подбрасывает — им перепрыгивают монстра и разгоняются.
     add("Trampoline", StationType::Workbench, 1, false,

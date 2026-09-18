@@ -6,6 +6,9 @@
 #include "../ecs/components.h"
 #include "../physics/raycast.h"
 #include "../world/block.h"
+#include "../combat/projectile.h"
+#include "../combat/components.h"
+#include "../audio/audio_events.h"
 
 #include <algorithm>
 #include <cmath>
@@ -62,6 +65,34 @@ ecs::Entity throwTrampoline(ecs::Registry& reg,
     reg.add(e, Trampoline{});
     reg.add(e, ecs::Kind{ ecs::EntityKind::Item });
     return e;
+}
+
+ecs::Entity throwShuriken(ecs::Registry& reg,
+                          ecs::Entity thrower,
+                          const glm::vec3& origin,
+                          const glm::vec3& dir)
+{
+    combat::ProjectileSpawnParams p{};
+    p.origin       = origin + dir * 0.5f;
+    p.direction    = dir;
+    p.ownerEntity  = (u32)thrower;
+    p.ownerFaction = combat::Faction::of(reg, thrower);
+
+    p.damage.amount       = SHURIKEN_DAMAGE;
+    p.damage.type         = combat::DamageType::Physical;
+    p.damage.sourceEntity = (u32)thrower;
+
+    p.speed     = SHURIKEN_SPEED;
+    p.gravity   = 0.f;     // настильно: дуга только мешала бы прицелу
+    p.lifeTime  = 2.0f;    // и далеко не летит: это ближний бросок
+    p.colorRGBA = 0xC8CED6FFu;
+    p.scale     = 0.12f;
+    p.isSpell   = false;
+
+    // Бросок слышно. Отдельного звука у сюрикена нет, а выстрел из
+    // лука — ровно то же событие: что-то маленькое ушло по воздуху.
+    audio::events().arrowShoot(origin);
+    return combat::spawnProjectile(reg, p);
 }
 
 void updateTrampolines(ecs::Registry& reg, f32 dt) {

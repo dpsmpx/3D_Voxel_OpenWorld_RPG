@@ -15,6 +15,7 @@
 #include "items/item_pickup.h"
 #include "items/throwable.h"
 #include "combat/components.h"
+#include "combat/projectile.h"
 #include "trade/trade.h"
 #include "ecs/components.h"
 #include "npc/dialogue.h"
@@ -7686,6 +7687,116 @@ void testEveryAudioEventIsFired() {
 // он протаскивал бы сквозь стены; скорость идёт через то же
 // разрешение коллизий, что и обычный шаг, и упирается сама.
 // ------------------------------------------------------------
+// Сюрикен летит и бьёт.
+//
+// Урон у него не зависит от того, что в руках: сюрикен — не оружие, а
+// расходник, и вкладывать в него ни ковку, ни зачарование некуда.
+// Летит настильно, без гравитации: на его дистанции дуга была бы
+// только помехой прицелу.
+// ------------------------------------------------------------
+void testShurikenFliesAndHits() {
+    group("сюрикен: летит настильно и бьёт");
+
+    world::blocks();
+    items::items();
+
+    check(items::items().get(items::ITEM_SHURIKEN).category ==
+          items::ItemCategory::Throwable, "сюрикен — метательный предмет");
+    check(items::items().get(items::ITEM_SHURIKEN).maxStack >= 16,
+          "и носится большой стопкой");
+
+    // Мир настоящий: снаряд на каждом шаге проверяет вокселя, и в
+    // несгенерированных чанках он гибнет о «неизвестно» на первом же
+    // метре. Игрока с целью ставим высоко над рельефом — там воздух.
+    jobs::gJobs.start(2);
+    world::ChunkManager world(0x5417, 2);
+    bool ready = false;
+    for (int i = 0; i < 600 && !ready; ++i) {
+        world.update({ 8.f, 70.f, 8.f });
+        ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+        if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    check(ready, "мир построен");
+    if (!ready) { jobs::gJobs.stop(); return; }
+    const f32 air = (f32)world.generator().surfaceHeight(8, 8) + 20.f;
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(8.5f, air, 8.5f));
+    const ecs::Entity me = pl.entity();
+
+    auto* inv = pl.inventory();
+    check(inv != nullptr, "инвентарь есть");
+    if (!inv) { jobs::gJobs.stop(); return; }
+    auto& slot = inv->activeSlot();
+    slot.itemId = items::ITEM_SHURIKEN;
+    slot.count  = 5;
+
+    // ---- Бросок ----
+    const items::UseResult r = pl.useItem(
+        world, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+    check(r == items::UseResult::Consumed, "сюрикен брошен");
+    check(inv->activeSlot().count == 4, "и списан из стопки");
+    check(reg.pool<combat::Projectile>().size() == 1,
+          "в мире появился ровно один снаряд");
+
+    {
+        auto& pool = reg.pool<combat::Projectile>();
+        auto* p = pool.get(pool.entityAt(0));
+        check(p != nullptr, "снаряд настоящий");
+        if (p) {
+            check(!p->affectedByGravity, "летит настильно");
+            check(p->ownerEntity == (u32)me, "и помнит, кто бросил");
+            check(std::fabs(p->damage.amount - items::SHURIKEN_DAMAGE) < 0.01f,
+                  "урон — свой собственный, не от оружия в руках");
+        }
+    }
+
+    // ---- Долетает и бьёт ----
+    //
+    // Цель ставим по курсу: прицел по умолчанию смотрит на север.
+    const ecs::Entity target = reg.create();
+    {
+        ecs::Transform tf;
+        tf.position = pl.eyePosition() + glm::vec3(0.f, -0.9f, -6.f);
+        reg.add(target, tf);
+        reg.add(target, ecs::Health{ 100.f, 100.f, 0.f, 0.f });
+        reg.add(target, ecs::Collider{ glm::vec3(0.5f, 0.9f, 0.5f) });
+        // Враждебность снаряд определяет по МЕТКЕ, а не по полю
+        // Combatant::faction: Faction::of смотрит PlayerTag/EnemyTag
+        // /NPCTag и Kind, и цель без метки для него никто.
+        reg.add(target, ecs::EnemyTag{});
+        reg.add(target, combat::Combatant{});
+        reg.add(target, combat::StatusEffects{});
+    }
+
+    for (int i = 0; i < 60; ++i) combat::updateProjectiles(world, reg, 1.f / 60.f);
+
+    auto* hp = reg.get<ecs::Health>(target);
+    check(hp != nullptr, "цель на месте");
+    if (hp) {
+        std::printf("       здоровья у цели осталось %.1f\n", (double)hp->current);
+        check(hp->current < 100.f, "сюрикен долетел и ударил");
+    }
+    check(reg.pool<combat::Projectile>().size() == 0,
+          "и на этом снаряд кончился");
+
+    // ---- В того, кто бросил, не попадает ----
+    {
+        auto* mine = reg.get<ecs::Health>(me);
+        check(mine != nullptr, "здоровье игрока есть");
+        if (mine) {
+            const f32 before = mine->current;
+            pl.useItem(world, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+            for (int i = 0; i < 60; ++i)
+                combat::updateProjectiles(world, reg, 1.f / 60.f);
+            check(mine->current >= before, "бросивший себя не ранит");
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testDashMovesForward() {
     group("рывок: уносит вперёд и упирается в стену");
 
@@ -11396,6 +11507,7 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testShurikenFliesAndHits();
     testDashMovesForward();
     testTrampolineThrowAndBounce();
     testElixirsGrantTimedBuff();

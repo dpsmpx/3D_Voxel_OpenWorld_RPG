@@ -174,6 +174,10 @@ ItemRegistry::ItemRegistry() {
     // ============ Метательное ============
     throwableItem(ITEM_TRAMPOLINE, "Trampoline", 35,
                   ThrowKind::Trampoline, 8, ItemRarity::Uncommon, 40);
+    // Стопка большая: сюрикен — расходник, и бегать за десятком
+    // штук в сумку игрок не должен.
+    throwableItem(ITEM_SHURIKEN,   "Shuriken",    6,
+                  ThrowKind::Shuriken,  32, ItemRarity::Common,   41);
 
     // ============ Оружие ============
     weaponItem(ITEM_IRON_SWORD,      combat::WEAPON_IRON_SWORD,      "Iron Sword",        30, ItemRarity::Common);
