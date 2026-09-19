@@ -8,6 +8,7 @@
 #include "../factions/faction.h"
 #include "../quests/quest.h"
 #include "../quests/quest_generator.h"
+#include "../quests/story.h"
 #include "../progression/progression.h"
 #include "../progression/resource_regen.h"
 #include "../items/currency.h"
@@ -301,7 +302,18 @@ bool startDialogue(ecs::Registry& reg,
                 opts.repTier = rep->tier(FactionId::Villagers);
             }
 
-            const ecs::Entity qe = quests::generateQuest(reg, world, opts);
+            // Сюжетная глава идёт ПЕРЕД побочным поручением: если
+            // очередная глава готова, раздатчик предлагает её, и
+            // только когда цепочка кончилась или её цели нет рядом —
+            // обычное поручение.
+            ecs::Entity qe{};
+            if (auto* tag = reg.get<NpcTag>(npcEntity)) {
+                if (npcRegistry().get(tag->id).role == NpcRole::QuestGiver)
+                    qe = quests::offerStoryChapter(reg, world,
+                                                   reg.fromId(playerEntity),
+                                                   npcPos);
+            }
+            if (!qe.valid()) qe = quests::generateQuest(reg, world, opts);
             ai->offeredQuest = (u32)qe;
         }
 
@@ -415,6 +427,14 @@ bool applyChoice(ecs::Registry& reg,
 
             // Награда
             quests::grantRewards(reg, dlg.playerEntity, *q);
+
+            // Сюжет двигается ТОЛЬКО сдачей: дойти до места мало,
+            // надо вернуться и рассказать. Иначе следующая глава
+            // выдавалась бы игроку прямо посреди леса.
+            if (q->isStory)
+                quests::completeStoryChapter(reg,
+                                             reg.fromId(dlg.playerEntity),
+                                             q->id);
 
             // Обновляем состояние и историю
             q->state = quests::QuestState::TurnedIn;

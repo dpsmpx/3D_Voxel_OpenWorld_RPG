@@ -151,6 +151,10 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Notif_Fall */          "A hard landing",
     /* Notif_Trap */          "A trap!",
     /* Notif_Treasure */      "A cache, and it is yours",
+    /* Notif_VillageFarmstead */  "A farmstead: bread, and plenty of folk",
+    /* Notif_VillageStonemason */ "A stonemason village: two forges, and trade",
+    /* Notif_VillageGarrison */   "A garrison: stone walls and twice the guard",
+    /* Notif_VillageWoodland */   "A woodland hamlet: no forge, no healer",
 
     /* Hud_Use */           "USE",
     /* Ench_Altar */        "Enchant Altar",
@@ -299,6 +303,10 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Notif_Fall */          "Тяжёлое приземление",
     /* Notif_Trap */          "Ловушка!",
     /* Notif_Treasure */      "Тайник, и он ваш",
+    /* Notif_VillageFarmstead */  "Хлебная деревня: хлеб и много народу",
+    /* Notif_VillageStonemason */ "Каменная деревня: две кузни и торг",
+    /* Notif_VillageGarrison */   "Сторожевая: кладка и двойная стража",
+    /* Notif_VillageWoodland */   "Лесной хутор: ни кузни, ни лекаря",
 
     /* Hud_Use */           "ИСПОЛЬЗОВАТЬ",
     /* Ench_Altar */        "Алтарь зачарования",

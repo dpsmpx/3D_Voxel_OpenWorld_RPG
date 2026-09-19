@@ -172,6 +172,7 @@ add_library(native-lib SHARED
     src/quests/quest.cpp
     src/quests/quest_def.cpp
     src/quests/quest_generator.cpp
+    src/quests/story.cpp
 
     # NPC
     src/npc/dialogue.cpp

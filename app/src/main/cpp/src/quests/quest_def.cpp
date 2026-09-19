@@ -44,8 +44,11 @@ QuestTemplateRegistry::QuestTemplateRegistry() {
         20, 30, 2200, 300, 60);
 
     // ---------------- Collect ----------------
+    // Заголовок — одно «%s», без числа: форма у заголовков одна на
+    // все квесты, и «Gather %d %s» её нарушал. Нарушение стоило бы
+    // ровно того же, что и перепутанный порядок аргументов.
     set(QuestType::Collect, QuestDifficulty::Trivial,
-        "Gather %d %s",   "Bring %d %s to the village elder.",
+        "Gather %s",      "Bring %d %s to the village elder.",
         5, 10, 80, 15, 5);
     set(QuestType::Collect, QuestDifficulty::Easy,
         "Supply %s",      "The craftsmen need %d %s.",

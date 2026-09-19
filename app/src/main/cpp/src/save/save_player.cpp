@@ -10,6 +10,7 @@
 #include "../progression/progression.h"
 #include "../progression/skill_tree.h"
 #include "../quests/quest.h"
+#include "../quests/story.h"
 #include "../factions/faction.h"
 #include <glm/glm.hpp>
 #include <algorithm>
@@ -198,6 +199,15 @@ void serializePlayer(ByteWriter& w, ecs::Registry& reg, ecs::Entity player) {
         w.writeU8(1);
         writeVec3(w, rp->point);
         w.writeU8(rp->set ? 1 : 0);
+    } else w.writeU8(0);
+
+    // Сюжетная глава. Без неё загрузившийся игрок начинал бы
+    // цепочку заново — и первая глава вела бы его в деревню, из
+    // которой он вышел десять глав назад.
+    if (auto* sp = reg.get<quests::StoryProgress>(player)) {
+        w.writeU8(1);
+        w.writeU8(sp->chapter);
+        w.varU32(sp->activeId);
     } else w.writeU8(0);
 
     serializeInventory(w, reg, player);
@@ -498,6 +508,22 @@ bool deserializePlayer(ByteReader& r, ecs::Registry& reg, ecs::Entity player) {
                 rp = reg.get<ecs::Respawn>(player);
             }
             if (rp) { rp->point = pt; rp->set = (set != 0); }
+        }
+    }
+
+    {
+        u8 has = 0;
+        if (!r.u8v(has)) return false;
+        if (has) {
+            u8 chapter = 0; u32 activeId = 0;
+            if (!r.u8v(chapter)) return false;
+            if (!r.varU32v(activeId)) return false;
+            auto* sp = reg.get<quests::StoryProgress>(player);
+            if (!sp) {
+                reg.add(player, quests::StoryProgress{});
+                sp = reg.get<quests::StoryProgress>(player);
+            }
+            if (sp) { sp->chapter = chapter; sp->activeId = activeId; }
         }
     }
 
