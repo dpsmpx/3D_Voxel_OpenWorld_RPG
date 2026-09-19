@@ -71,13 +71,68 @@ enum SoundId : u16 {
     /// Шум дождя: зацикленный, громкость идёт за силой осадков.
     SOUND_RAIN,
 
-    SOUND_MUSIC_EXPLORE,   ///< мирное исследование
+    SOUND_MUSIC_EXPLORE,   ///< мирное исследование, запасной трек
     SOUND_MUSIC_COMBAT,    ///< бой
     SOUND_MUSIC_DUNGEON,   ///< подземелье
-    SOUND_MUSIC_VILLAGE,   ///< деревня
 
-    SOUND_COUNT
+    // --- Музыка мест: по треку на биом и на уклад деревни ---
+    //
+    // Порядок внутри блоков обязан совпадать с world::BiomeId и
+    // world::VillageStyle. Звук не должен знать о мире, поэтому
+    // связь проверяется static_assert'ом на стороне мира, а здесь
+    // блоки просто идут подряд, чтобы номер считался сложением.
+    SOUND_MUSIC_BIOME_FIRST,
+    SOUND_MUSIC_BIOME_OCEAN = SOUND_MUSIC_BIOME_FIRST,
+    SOUND_MUSIC_BIOME_BEACH,
+    SOUND_MUSIC_BIOME_PLAINS,
+    SOUND_MUSIC_BIOME_FOREST,
+    SOUND_MUSIC_BIOME_TAIGA,
+    SOUND_MUSIC_BIOME_DESERT,
+    SOUND_MUSIC_BIOME_SAVANNA,
+    SOUND_MUSIC_BIOME_TUNDRA,
+    SOUND_MUSIC_BIOME_MOUNTAINS,
+    SOUND_MUSIC_BIOME_SWAMP,
+    SOUND_MUSIC_BIOME_VOLCANIC,
+    SOUND_MUSIC_BIOME_BLIGHT,
+    SOUND_MUSIC_BIOME_END,
+
+    SOUND_MUSIC_VILLAGE_FIRST = SOUND_MUSIC_BIOME_END,
+    SOUND_MUSIC_VILLAGE_FARMSTEAD = SOUND_MUSIC_VILLAGE_FIRST,
+    SOUND_MUSIC_VILLAGE_STONEMASON,
+    SOUND_MUSIC_VILLAGE_GARRISON,
+    SOUND_MUSIC_VILLAGE_WOODLAND,
+    SOUND_MUSIC_VILLAGE_END,
+
+    SOUND_COUNT = SOUND_MUSIC_VILLAGE_END
 };
+
+/// Сколько треков в каждом блоке. Считается из самого enum, а не
+/// повторяется числом: разойтись им тогда негде.
+constexpr u32 MUSIC_BIOME_COUNT =
+    (u32)SOUND_MUSIC_BIOME_END - (u32)SOUND_MUSIC_BIOME_FIRST;
+constexpr u32 MUSIC_VILLAGE_COUNT =
+    (u32)SOUND_MUSIC_VILLAGE_END - (u32)SOUND_MUSIC_VILLAGE_FIRST;
+
+/// Частота синтеза музыки.
+///
+/// Вчетверо ниже потока: у синусного пэда выше шести килогерц нет
+/// ничего, а шестнадцать шестнадцатисекундных дорожек на 48 кГц —
+/// это пятьдесят мегабайт, которые слышно ровно так же. Микшер
+/// доигрывает разницу интерполяцией.
+constexpr u32 MUSIC_RATE = 12000;
+
+/// Трек биома по его номеру. Вне диапазона — общий «исследование».
+inline SoundId musicForBiome(u32 biome) {
+    return biome < MUSIC_BIOME_COUNT
+         ? (SoundId)((u32)SOUND_MUSIC_BIOME_FIRST + biome)
+         : SOUND_MUSIC_EXPLORE;
+}
+/// Трек деревни по укладу. Вне диапазона — хлебная деревня.
+inline SoundId musicForVillage(u32 style) {
+    return style < MUSIC_VILLAGE_COUNT
+         ? (SoundId)((u32)SOUND_MUSIC_VILLAGE_FIRST + style)
+         : SOUND_MUSIC_VILLAGE_FARMSTEAD;
+}
 
 /// 3D-слушатель. Обновляется из main каждый кадр.
 struct AudioListener {

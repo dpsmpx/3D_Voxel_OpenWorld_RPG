@@ -326,7 +326,7 @@ int main(int argc, char** argv) {
         audio::VoiceHandle music[4];
         const audio::SoundId tracks[4] = {
             audio::SOUND_MUSIC_EXPLORE, audio::SOUND_MUSIC_COMBAT,
-            audio::SOUND_MUSIC_DUNGEON, audio::SOUND_MUSIC_VILLAGE };
+            audio::SOUND_MUSIC_DUNGEON, audio::SOUND_MUSIC_BIOME_FOREST };
         for (int i = 0; i < 4; ++i) {
             music[i] = snd.play(tracks[i], i == 0 ? 1.f : 0.f, true);
             snd.setVoiceIsMusic(music[i], true);

@@ -94,6 +94,20 @@
 #include "ecs/registry.h"
 #include "ecs/components.h"
 
+// Музыкальный трек места вычисляется сложением: номер биома или
+// уклада прибавляется к номеру первого трека блока. Значит, порядок
+// в audio::SoundId обязан совпадать с порядком в мире — и это
+// единственное место, где о такой связи вообще можно узнать.
+static_assert((u32)world::BIOME_COUNT == audio::MUSIC_BIOME_COUNT,
+              "у каждого биома должен быть свой трек");
+static_assert((u32)world::VillageStyle::Count == audio::MUSIC_VILLAGE_COUNT,
+              "у каждого уклада деревни должен быть свой трек");
+static_assert((u32)world::Ocean  == 0u && (u32)world::Blight  == 11u,
+              "порядок биомов в BiomeId сменился — переберите таблицу музыки");
+static_assert((u32)world::VillageStyle::Farmstead == 0u &&
+              (u32)world::VillageStyle::Woodland  == 3u,
+              "порядок укладов сменился — переберите таблицу музыки");
+
 // Отпечаток сборки: заголовок пишется на КАЖДУЮ сборку (см.
 // cmake/build_sha.cmake). Через __has_include — чтобы хостовые
 // инструменты, собирающие этот файл без CMake, не падали.
@@ -130,6 +144,8 @@ struct Engine {
     // Phase 14/15: audio
     audio::MusicDirector                   musicDirector;
     audio::MusicContext                    musicCtx;
+    /// Биом под игроком, обновляется вместе с остальной обстановкой.
+    u32                                    cachedBiome_ = (u32)world::Plains;
     f32                                    footstepTimer = 0.f;
 
     // Phase 15: spatial hash
@@ -1677,13 +1693,27 @@ struct Engine {
                 ambienceTimer_ = 0.f;
                 cachedHostiles_    = hostilesNearby();
                 cachedUnderground_ = isUnderground(player->controller.state().position);
+                if (world) {
+                    const auto pp = player->controller.state().position;
+                    cachedBiome_ = (u32)world->generator().biomeAt((i32)std::floor(pp.x),
+                                                                   (i32)std::floor(pp.z));
+                }
             }
             musicCtx.nearbyHostiles = cachedHostiles_;
             musicCtx.inCombat = musicCtx.nearbyHostiles > 0;
 
-            // Деревня — рядом станция крафта или NPC.
-            musicCtx.inVillage = ui && ui->nearbyStation != crafting::StationType::None;
+            // Деревня — та, в кольце которой стоим. Раньше здесь
+            // стояло «рядом станция крафта», и деревенская музыка
+            // включалась у любой наковальни посреди леса, а в самой
+            // деревне молчала, стоило отойти от верстака.
+            musicCtx.inVillage =
+                player->villageStyle != world::VillageStyle::Count;
+            musicCtx.villageStyle = (u32)player->villageStyle;
 
+            // Биом под игроком. Читается вместе с боем и подземельем,
+            // четыре раза в секунду: климат — четыре fBm-поля, каждый
+            // кадр их считать незачем.
+            musicCtx.biome = cachedBiome_;
             musicCtx.underground = cachedUnderground_;
 
             if (auto* hp = registry.get<ecs::Health>(player->entity()))

@@ -361,6 +361,250 @@ void genRain(Sound& s, u32 sr) {
 // Генерация музыки — отдельная функция.
 // ============================================================
 
+// ============================================================
+// Музыка места: один генератор, шестнадцать рецептов.
+// ============================================================
+//
+// У каждого биома и каждого уклада деревни своя дорожка. Писать
+// шестнадцать функций по сорок строк значило бы шестнадцать раз
+// повторить нормировку, сшивку петли и огибающую — и разойтись в
+// них. Отличается музыка мест не устройством, а ладом, темпом,
+// плотностью мелодии и шумовым слоем: это и есть рецепт.
+
+/// Лад: полутона ступеней от корня.
+enum class Mode : u8 { Major = 0, Minor, PentaMajor, Phrygian, WholeTone,
+                       Lydian, Mixolydian, Count };
+
+/// Ступени лада. Длина — сколько их в октаве.
+struct ScaleDef { const i8* steps; u8 count; };
+
+inline ScaleDef scaleOf(Mode m) {
+    static const i8 MAJOR[]      = { 0, 2, 4, 5, 7, 9, 11 };
+    static const i8 MINOR[]      = { 0, 2, 3, 5, 7, 8, 10 };
+    static const i8 PENTA[]      = { 0, 2, 4, 7, 9 };
+    static const i8 PHRYGIAN[]   = { 0, 1, 3, 5, 7, 8, 10 };
+    static const i8 WHOLE[]      = { 0, 2, 4, 6, 8, 10 };
+    static const i8 LYDIAN[]     = { 0, 2, 4, 6, 7, 9, 11 };
+    static const i8 MIXO[]       = { 0, 2, 4, 5, 7, 9, 10 };
+    switch (m) {
+        case Mode::Minor:      return { MINOR,    7 };
+        case Mode::PentaMajor: return { PENTA,    5 };
+        case Mode::Phrygian:   return { PHRYGIAN, 7 };
+        case Mode::WholeTone:  return { WHOLE,    6 };
+        case Mode::Lydian:     return { LYDIAN,   7 };
+        case Mode::Mixolydian: return { MIXO,     7 };
+        default:               return { MAJOR,    7 };
+    }
+}
+
+inline f32 semitone(f32 root, f32 st) {
+    return root * std::pow(2.f, st / 12.f);
+}
+
+/// Рецепт дорожки места.
+struct PlaceMusic {
+    f32  root;          ///< корень, Гц
+    Mode mode;
+    f32  barSec;        ///< сколько длится один аккорд
+    i8   chord[4];      ///< корни четырёх аккордов, полутона от root
+    u8   notesPerBar;   ///< плотность мелодии; 0 — без мелодии вовсе
+    f32  melodyUp;      ///< на сколько октав мелодия выше корня
+    f32  padAmp;
+    f32  melAmp;
+    f32  airAmp;        ///< шумовой слой: ветер, прибой, шорох
+    f32  airBright;     ///< 0 — гул, 1 — свист
+    f32  pulseHz;       ///< тремоло пэда; 0 — ровно
+    f32  detune;        ///< расстройка второго голоса, полутона
+    u32  seed;
+    f32  gain;
+};
+
+/// Синтез дорожки по рецепту.
+///
+/// Четыре аккорда по barSec, поверх — редкая мелодия из ступеней
+/// лада и ровный шумовой слой. Петля сшивается по краям: разрыв
+/// волны в точке склейки слышится щелчком каждые двадцать секунд, а
+/// музыка играет часами.
+void genPlaceMusic(Sound& s, u32 sr, const PlaceMusic& p) {
+    const f32 dur = p.barSec * 4.f;
+    const u32 n = (u32)((f32)sr * dur);
+    s.samples.assign(n, 0.f);
+    s.frames = n;
+    s.sampleRate = sr;
+    s.looping = true;
+    s.defaultGain = p.gain;
+
+    const ScaleDef sc = scaleOf(p.mode);
+    // Терция лада — вторая ступень гаммы, квинта — четвёртая у
+    // пятиступенных ладов и пятая у семиступенных. Аккорд строится
+    // из лада, а не из зашитой мажорной тройки: иначе фригийский
+    // биом звучал бы мажорно, и весь рецепт был бы впустую.
+    const u8 thirdIdx = 2u;
+    const u8 fifthIdx = (sc.count >= 7) ? 4u : 3u;
+
+    // ---- Пэд ----
+    for (u32 bar = 0; bar < 4; ++bar) {
+        const f32 t0 = (f32)bar * p.barSec;
+        const f32 base = semitone(p.root, (f32)p.chord[bar]);
+        const f32 f1 = base;
+        const f32 f2 = semitone(base, (f32)sc.steps[thirdIdx % sc.count]);
+        const f32 f3 = semitone(base, (f32)sc.steps[fifthIdx % sc.count]);
+
+        const u32 start = (u32)(t0 * (f32)sr);
+        const u32 nf    = (u32)(p.barSec * (f32)sr);
+        for (u32 j = 0; j < nf; ++j) {
+            const u32 idx = start + j;
+            if (idx >= n) break;
+            const f32 t = (f32)j / (f32)sr;
+            const f32 tt = t / p.barSec;
+            f32 env = std::sin(tt * 3.14159265f);
+            env *= env;
+            // Тремоло: болото и вулкан дышат, равнина — нет.
+            if (p.pulseHz > 0.f)
+                env *= 0.72f + 0.28f * std::sin(6.2831853f * p.pulseHz * (t0 + t));
+
+            const f32 tw = (t0 + t);   // расстроенный голос считаем от начала петли
+            f32 v = 0.f;
+            v += std::sin(tw * f1 * 6.2831853f) * 0.45f;
+            v += std::sin(tw * f2 * 6.2831853f) * 0.32f;
+            v += std::sin(tw * f3 * 6.2831853f) * 0.22f;
+            if (p.detune != 0.f) {
+                const f32 d = semitone(f1, p.detune);
+                v += std::sin(tw * d * 6.2831853f) * 0.24f;
+            }
+            s.samples[idx] += v * env * p.padAmp;
+        }
+    }
+
+    // ---- Мелодия ----
+    if (p.notesPerBar > 0) {
+        Rng r(p.seed);
+        const f32 noteDur = p.barSec / (f32)p.notesPerBar;
+        const f32 melRoot = p.root * std::pow(2.f, p.melodyUp);
+        const u32 total = 4u * p.notesPerBar;
+        for (u32 k = 0; k < total; ++k) {
+            // Не каждую долю: ровная цепочка нот звучит как гамма.
+            if ((r.next() & 3u) == 0u) continue;
+            const f32 t0 = (f32)k * noteDur;
+            const u8  deg = (u8)(r.next() % sc.count);
+            const f32 oct = (r.next() & 7u) == 0u ? 12.f : 0.f;
+            const f32 f = semitone(melRoot, (f32)sc.steps[deg] + oct);
+            const u32 start = (u32)(t0 * (f32)sr);
+            const u32 nf = (u32)(noteDur * 0.9f * (f32)sr);
+            for (u32 j = 0; j < nf; ++j) {
+                const u32 idx = start + j;
+                if (idx >= n) break;
+                const f32 t = (f32)j / (f32)sr;
+                const f32 tt = t / (noteDur * 0.9f);
+                f32 env = std::sin(tt * 3.14159265f);
+                env *= env;
+                s.samples[idx] += std::sin(t * f * 6.2831853f) * env * p.melAmp;
+            }
+        }
+    }
+
+    // ---- Шумовой слой ----
+    //
+    // Прибой у океана, позёмка в тундре, шелест в лесу. Один
+    // однополюсный фильтр: чем выше airBright, тем ближе к свисту.
+    if (p.airAmp > 0.f) {
+        Rng r(p.seed ^ 0x5EEDu);
+        const f32 alpha = 0.02f + 0.40f * p.airBright;
+        f32 lp = 0.f;
+        for (u32 i = 0; i < n; ++i) {
+            const f32 t = (f32)i / (f32)sr;
+            lp += alpha * (r.noise() - lp);
+            const f32 swell = 0.7f + 0.3f * std::sin(6.2831853f * (0.11f / p.barSec) * t);
+            s.samples[i] += lp * swell * p.airAmp * 2.4f;
+        }
+    }
+
+    // ---- Сшивка петли ----
+    {
+        const f32 edge = 0.12f;
+        const u32 ne = (u32)(edge * (f32)sr);
+        for (u32 i = 0; i < ne && i < n; ++i) {
+            const f32 k = (f32)i / (f32)ne;
+            s.samples[i] *= k;
+            s.samples[n - 1 - i] *= k;
+        }
+    }
+
+    // ---- Нормировка ----
+    //
+    // Пэд, мелодия и шум складываются с разным весом и дают пик выше
+    // единицы. Это не «громко», это клиппинг: всё, что выше, срезается
+    // в квадрат и хрипит.
+    f32 peak = 0.f;
+    for (f32 v : s.samples) peak = std::max(peak, std::fabs(v));
+    if (peak > 0.f) {
+        const f32 k = 0.85f / peak;
+        for (f32& v : s.samples) v *= k;
+    }
+}
+
+/// Рецепты биомов. Порядок — world::BiomeId.
+inline const PlaceMusic* biomeMusicTable() {
+    static const PlaceMusic T[MUSIC_BIOME_COUNT] = {
+        // Океан: широко и медленно, снизу прибой.
+        {  65.41f, Mode::Major,      6.0f, {  0, -5, -7, -3 }, 1, 2.0f,
+           0.30f, 0.07f, 0.22f, 0.10f, 0.08f,  0.00f, 0x0Cu, 0.42f },
+        // Пляж: светло, коротко, шорох песка.
+        { 130.81f, Mode::Major,      4.0f, {  0,  5,  7,  2 }, 2, 1.0f,
+           0.26f, 0.10f, 0.13f, 0.55f, 0.00f,  0.00f, 0x1Bu, 0.44f },
+        // Равнина: простор, мажорная пентатоника, почти без шума.
+        { 146.83f, Mode::PentaMajor, 4.0f, {  0,  7,  5,  9 }, 2, 1.0f,
+           0.28f, 0.11f, 0.05f, 0.35f, 0.00f,  0.00f, 0x2Au, 0.46f },
+        // Лес: тёплый минор, мелодия чаще, шелест листвы.
+        { 110.00f, Mode::Minor,      4.0f, {  0, -3,  5,  3 }, 3, 2.0f,
+           0.27f, 0.09f, 0.09f, 0.45f, 0.00f,  0.00f, 0x3Du, 0.45f },
+        // Тайга: холодно и редко, высокий свист позёмки.
+        {  98.00f, Mode::Minor,      5.0f, {  0, -5,  3, -2 }, 1, 2.0f,
+           0.26f, 0.08f, 0.11f, 0.80f, 0.00f,  0.00f, 0x4Eu, 0.43f },
+        // Пустыня: фригийский лад — вторая ступень пониженная.
+        { 123.47f, Mode::Phrygian,   5.0f, {  0,  1,  5,  1 }, 2, 1.0f,
+           0.25f, 0.10f, 0.15f, 0.70f, 0.00f,  0.00f, 0x5Fu, 0.43f },
+        // Саванна: миксолидийский, пульсирующий, бодрый шаг.
+        { 146.83f, Mode::Mixolydian, 3.0f, {  0, -2,  5,  3 }, 3, 1.0f,
+           0.26f, 0.11f, 0.07f, 0.50f, 2.00f,  0.00f, 0x6Au, 0.45f },
+        // Тундра: целотонный лад — ни мажора, ни минора, пустота.
+        {  87.31f, Mode::WholeTone,  7.0f, {  0,  2, -2,  4 }, 1, 2.0f,
+           0.24f, 0.07f, 0.13f, 0.85f, 0.00f,  0.00f, 0x7Bu, 0.41f },
+        // Горы: лидийский, величаво, медленно.
+        {  73.42f, Mode::Lydian,     6.0f, {  0,  7,  2,  9 }, 1, 2.0f,
+           0.29f, 0.08f, 0.10f, 0.30f, 0.00f,  0.00f, 0x8Cu, 0.44f },
+        // Болото: вязко, низко, пэд дышит.
+        {  61.74f, Mode::Minor,      6.0f, {  0, -2,  3, -5 }, 1, 2.0f,
+           0.30f, 0.06f, 0.18f, 0.15f, 0.60f,  0.00f, 0x9Du, 0.40f },
+        // Вулкан: гул без мелодии, расстроенный голос, тревожный пульс.
+        {  55.00f, Mode::Phrygian,   5.0f, {  0,  1, -4,  1 }, 0, 0.0f,
+           0.34f, 0.00f, 0.24f, 0.05f, 1.30f,  0.35f, 0xAEu, 0.40f },
+        // Порча: расстроено и мертво. Мелодии нет — некому играть.
+        {  58.27f, Mode::Phrygian,   6.0f, {  0, -1,  1, -6 }, 0, 0.0f,
+           0.31f, 0.00f, 0.16f, 0.25f, 0.25f, -0.45f, 0xBFu, 0.40f },
+    };
+    return T;
+}
+
+/// Рецепты деревень. Порядок — world::VillageStyle.
+inline const PlaceMusic* villageMusicTable() {
+    static const PlaceMusic T[MUSIC_VILLAGE_COUNT] = {
+        // Хлебная: светлый мажор, частая мелодия, людно.
+        { 130.81f, Mode::Major,      3.5f, {  0,  7,  9,  5 }, 4, 1.0f,
+           0.26f, 0.12f, 0.04f, 0.40f, 0.00f,  0.00f, 0xC1u, 0.46f },
+        // Каменная: степенный минор, мелодия реже.
+        { 110.00f, Mode::Minor,      4.0f, {  0,  5,  3,  7 }, 3, 1.0f,
+           0.28f, 0.10f, 0.05f, 0.30f, 0.00f,  0.00f, 0xD2u, 0.45f },
+        // Сторожевая: маршевый пульс, короткий шаг.
+        {  98.00f, Mode::Minor,      3.0f, {  0, -5,  3,  5 }, 4, 1.0f,
+           0.29f, 0.11f, 0.05f, 0.35f, 1.60f,  0.00f, 0xE3u, 0.45f },
+        // Лесная: пентатоника, разреженно, шелест вокруг.
+        { 123.47f, Mode::PentaMajor, 4.5f, {  0,  9,  2,  7 }, 2, 1.0f,
+           0.27f, 0.09f, 0.10f, 0.45f, 0.00f,  0.00f, 0xF4u, 0.44f },
+    };
+    return T;
+}
+
 void genExploreMusic(Sound& s, u32 sr) {
     f32 dur = 16.f;
     u32 n = (u32)(sr * dur);
@@ -449,50 +693,6 @@ void genDungeonMusic(Sound& s, u32 sr) {
             if (idx >= n) break;
             const f32 t = (f32)j / (f32)sr;
             const f32 env = std::exp(-t * 5.f);
-            s.samples[idx] += std::sin(t * f * 6.2831853f) * env * 0.10f;
-        }
-    }
-
-    f32 maxAmp = 0.f;
-    for (f32 v : s.samples) maxAmp = std::max(maxAmp, std::abs(v));
-    if (maxAmp > 0.f) {
-        const f32 k = 0.85f / maxAmp;
-        for (f32& v : s.samples) v *= k;
-    }
-}
-
-// Деревня: мажорная последовательность, светлее и теплее explore.
-void genVillageMusic(Sound& s, u32 sr) {
-    const f32 dur = 16.f;
-    const u32 n = (u32)(sr * dur);
-    s.samples.assign(n, 0.f);
-    s.frames = n;
-    s.sampleRate = sr;
-    s.looping = true;
-    s.defaultGain = 0.50f;
-
-    // C - G - Am - F, классический круг мажора.
-    addChordTo(s, sr, 0.0f,  4.0f, 130.81f, 196.00f, 261.63f, 0.32f);
-    addChordTo(s, sr, 4.0f,  4.0f,  98.00f, 146.83f, 196.00f, 0.32f);
-    addChordTo(s, sr, 8.0f,  4.0f, 110.00f, 164.81f, 220.00f, 0.32f);
-    addChordTo(s, sr, 12.0f, 4.0f,  87.31f, 130.81f, 174.61f, 0.32f);
-
-    // Мелодия бодрее: короткие ноты, ровный шаг.
-    const f32 scale[5] = { 392.00f, 440.00f, 523.25f, 587.33f, 659.25f };
-    Rng r(0xBEEFu);
-    for (int i = 0; i < 16; ++i) {
-        const f32 t0 = (f32)i * 0.95f;
-        if (t0 >= dur - 0.8f) break;
-        const f32 f = scale[r.next() % 5];
-        const u32 start = (u32)(t0 * sr);
-        const u32 nf = (u32)(0.7f * sr);
-        for (u32 j = 0; j < nf; ++j) {
-            const u32 idx = start + j;
-            if (idx >= n) break;
-            const f32 t = (f32)j / (f32)sr;
-            const f32 tt = t / 0.7f;
-            f32 env = std::sin(tt * 3.14159f);
-            env *= env;
             s.samples[idx] += std::sin(t * f * 6.2831853f) * env * 0.10f;
         }
     }
@@ -699,10 +899,25 @@ void SoundRegistry::init(u32 sampleRate) {
     genSweepTone(sounds_[SOUND_ENCHANT], sampleRate, 0.60f, 300.f, 1200.f, 0.32f, 6.f);
 
     // --- Музыка (ТЗ 7) ---
-    genExploreMusic(sounds_[SOUND_MUSIC_EXPLORE], sampleRate);
-    genCombatMusic (sounds_[SOUND_MUSIC_COMBAT],  sampleRate);
-    genDungeonMusic(sounds_[SOUND_MUSIC_DUNGEON], sampleRate);
-    genVillageMusic(sounds_[SOUND_MUSIC_VILLAGE], sampleRate);
+    // Музыка синтезируется на своей частоте, вчетверо ниже потока:
+    // у синусного пэда выше шести килогерц нет ничего, а
+    // шестнадцать дорожек на полной частоте — это полсотни
+    // мегабайт. Разницу доигрывает микшер.
+    genExploreMusic(sounds_[SOUND_MUSIC_EXPLORE], MUSIC_RATE);
+    genCombatMusic (sounds_[SOUND_MUSIC_COMBAT],  MUSIC_RATE);
+    genDungeonMusic(sounds_[SOUND_MUSIC_DUNGEON], MUSIC_RATE);
+
+    // По дорожке на биом и на уклад деревни.
+    {
+        const PlaceMusic* bt = biomeMusicTable();
+        for (u32 i = 0; i < MUSIC_BIOME_COUNT; ++i)
+            genPlaceMusic(sounds_[(u32)SOUND_MUSIC_BIOME_FIRST + i],
+                          MUSIC_RATE, bt[i]);
+        const PlaceMusic* vt = villageMusicTable();
+        for (u32 i = 0; i < MUSIC_VILLAGE_COUNT; ++i)
+            genPlaceMusic(sounds_[(u32)SOUND_MUSIC_VILLAGE_FIRST + i],
+                          MUSIC_RATE, vt[i]);
+    }
 
     initialized_ = true;
     LOGI("SoundRegistry: готово");
