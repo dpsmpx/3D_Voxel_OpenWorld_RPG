@@ -143,6 +143,10 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Notif_Died */        "You died",
     /* Notif_Respawned */   "Back at the well",
     /* Notif_WellBound */   "Well remembered",
+    /* Notif_LairWolves */    "A wolf den — only wolves roam here",
+    /* Notif_LairSkeletons */ "Bone fields — only skeletons roam here",
+    /* Notif_LairGoblins */   "A goblin camp — only goblins roam here",
+    /* Notif_LairSlimes */    "A slime bog — only slimes roam here",
 
     /* Hud_Use */           "USE",
     /* Ench_Altar */        "Enchant Altar",
@@ -283,6 +287,10 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Notif_Died */        "Вы погибли",
     /* Notif_Respawned */   "Снова у колодца",
     /* Notif_WellBound */   "Колодец запомнен",
+    /* Notif_LairWolves */    "Волчье логово — тут водятся одни волки",
+    /* Notif_LairSkeletons */ "Костяное поле — тут водятся одни скелеты",
+    /* Notif_LairGoblins */   "Гоблинская стоянка — тут одни гоблины",
+    /* Notif_LairSlimes */    "Слизневая топь — тут водятся одни слизни",
 
     /* Hud_Use */           "ИСПОЛЬЗОВАТЬ",
     /* Ench_Altar */        "Алтарь зачарования",

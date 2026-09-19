@@ -1075,6 +1075,21 @@ struct Engine {
                     if (player->newRespawnPoint)
                         ui->notify(cfg::T(cfg::StrKey::Notif_WellBound),
                                    ui::theme::NotifyPriority::Normal);
+                    // Логово: без слова об этом «вокруг одни волки»
+                    // читается как поломка спавна.
+                    if (player->enteredLair) {
+                        cfg::StrKey k = cfg::StrKey::Notif_LairWolves;
+                        switch (player->lairKind) {
+                            case world::LairKind::Skeletons:
+                                k = cfg::StrKey::Notif_LairSkeletons; break;
+                            case world::LairKind::Goblins:
+                                k = cfg::StrKey::Notif_LairGoblins;   break;
+                            case world::LairKind::Slimes:
+                                k = cfg::StrKey::Notif_LairSlimes;    break;
+                            default: break;
+                        }
+                        ui->notify(cfg::T(k), ui::theme::NotifyPriority::High);
+                    }
                 }
 
                 // Спасение из-под мира. Провалиться теперь неоткуда — ниже

@@ -65,6 +65,10 @@ enum class StrKey : u16 {
     Notif_LevelUp, Notif_Crafted, Notif_Saved, Notif_Loaded,
     Notif_Deleted, Notif_RepGained, Notif_Loading,
     Notif_Died, Notif_Respawned, Notif_WellBound,
+    // Логова: игрок должен понять, почему вокруг вдруг одни
+    // волки, — иначе это читается как поломка спавна.
+    Notif_LairWolves, Notif_LairSkeletons,
+    Notif_LairGoblins, Notif_LairSlimes,
 
     // --- Подсказка взаимодействия ---
     // Её не было вовсе, и это стоило игроку трёх экранов: близость

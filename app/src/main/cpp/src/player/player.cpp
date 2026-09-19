@@ -509,6 +509,10 @@ void Player::updateImpl(world::ChunkManager& world,
     wellTimer_ += dt;
     if (wellTimer_ >= 0.5f) { wellTimer_ = 0.f; noticeWell(world); }
 
+    enteredLair = false;
+    lairTimer_ += dt;
+    if (lairTimer_ >= 0.5f) { lairTimer_ = 0.f; noticeLair(world); }
+
     // ---- Уведомление о смене тира репутации ----
     noticeReputationChange();
     if (reputationFlashTimer > 0.f) {
@@ -641,6 +645,23 @@ void Player::noticeWell(world::ChunkManager& world) {
             audio::events().uiClick();
             return;
         }
+}
+
+void Player::noticeLair(world::ChunkManager& world) {
+    const glm::vec3 p = controller.state().position;
+    const world::LairSite l = world::lairCovering(
+        (i32)std::floor(p.x), (i32)std::floor(p.z),
+        world.seed(), &world.generator());
+
+    // Событие — это СМЕНА рода, а не нахождение внутри. Иначе
+    // сообщение повторялось бы каждые полсекунды всё время, что
+    // игрок стоит в логове.
+    if (l.kind == lairKind) return;
+    lairKind = l.kind;
+    if (l.kind == world::LairKind::None) return;
+
+    enteredLair = true;
+    audio::events().uiClick();
 }
 
 void Player::tickDeath(world::ChunkManager& world, f32 dt) {

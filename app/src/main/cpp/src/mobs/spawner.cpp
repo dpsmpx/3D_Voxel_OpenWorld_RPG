@@ -111,6 +111,17 @@ u16 Spawner::pickMobId(world::TerrainGenerator& gen,
     }
 }
 
+u16 Spawner::lairMobId(world::LairKind kind) {
+    switch (kind) {
+        case world::LairKind::Wolves:    return MOB_WOLF;
+        case world::LairKind::Skeletons: return MOB_SKELETON;
+        case world::LairKind::Goblins:   return MOB_GOBLIN;
+        case world::LairKind::Slimes:    return MOB_SLIME;
+        case world::LairKind::None:      break;
+    }
+    return MOB_NONE;
+}
+
 ecs::Entity Spawner::spawnMob(world::ChunkManager& /*world*/,
                               ecs::Registry& reg,
                               u16 mobId,
@@ -242,7 +253,9 @@ void Spawner::update(world::ChunkManager& world,
             const i32 cz = pcz + dz;
 
             world::ChunkCoord ck{ cx, cz };
-            if (perChunk_[ck] >= MAX_MOBS_PER_CHUNK) continue;
+            // Предел на чанк здесь общий; логово поднимает его ниже,
+            // когда уже известно, что точка в него попала.
+            if (perChunk_[ck] >= MAX_MOBS_PER_LAIR_CHUNK) continue;
 
             i32 sx = 0, sy = 0, sz = 0;
             if (!findSpawnSpot(world, cx, cz, sx, sy, sz)) continue;
@@ -257,15 +270,33 @@ void Spawner::update(world::ChunkManager& world,
             const f32 light = lightAt(world, day, sx, sy, sz);
             const bool dark = light < 0.35f;
 
+            // Логово: область, где таблица биома не действует вовсе.
+            //
+            // Обычный спавн ровен — волк и скелет встречаются везде
+            // поровну, и идти куда-то за кем-то конкретным незачем. В
+            // логове водится ровно один вид, и водится он днём тоже:
+            // иначе логово днём — это просто поле.
+            const world::LairSite lair = world::lairCovering(
+                sx, sz, worldSeed, &world.generator());
+
             const u32 rv = urand();
-            const u16 id = pickMobId(
-                const_cast<world::TerrainGenerator&>(world.generator()),
-                sx, sz, night || dark, rv);
+            const u16 id = lair.exists
+                ? lairMobId(lair.kind)
+                : pickMobId(
+                    const_cast<world::TerrainGenerator&>(world.generator()),
+                    sx, sz, night || dark, rv);
             if (id == MOB_NONE) continue;
 
             const MobDef& def = mobRegistry().get(id);
             if (def.isBoss) continue;   // боссов ставит только updateBosses
-            if (def.hostile && !dark && !night) continue;
+            if (def.hostile && !dark && !night && !lair.exists) continue;
+
+            // Густота: в логове зверья больше, чем в чистом поле, —
+            // иначе «область, где водится волк» ничем не отличается
+            // от поля, по которому изредка пробегает волк.
+            const u32 cap = lair.exists ? MAX_MOBS_PER_LAIR_CHUNK
+                                        : MAX_MOBS_PER_CHUNK;
+            if (perChunk_[ck] >= cap) continue;
 
             const glm::vec3 pos { (f32)sx + 0.5f, (f32)sy, (f32)sz + 0.5f };
             if (spawnMob(world, reg, id, pos).valid()) {

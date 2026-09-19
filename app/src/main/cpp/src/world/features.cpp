@@ -1263,6 +1263,71 @@ VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
 }
 
 // ============================================================
+// Логова: области, где водится один-единственный вид
+// ============================================================
+
+LairSite lairAt(i32 superX, i32 superZ, u64 worldSeed,
+                const TerrainGenerator* terrain)
+{
+    LairSite lair;
+    if (!terrain) return lair;
+
+    // Только пустые ячейки сетки. Логово на деревне означало бы, что
+    // деревня перестала быть местом, куда возвращаются.
+    if (structs::layoutFor(superX, superZ, worldSeed).kind != structs::None)
+        return lair;
+
+    // Свой хэш, не структурный: иначе «пусто» и «логово» решались бы
+    // одним числом, и всякая пустая ячейка стала бы логовом.
+    const u32 h = hashXZ(superX, superZ, worldSeed ^ 0x1A12);
+
+    // Логово — в каждой третьей пустой ячейке. Чаще — и мир станет
+    // сплошным логовом; реже — игрок не встретит ни одного.
+    if ((h & 0xFF) >= 85) return lair;
+
+    const i32 baseX = superX * structs::SUPER_BLOCKS;
+    const i32 baseZ = superZ * structs::SUPER_BLOCKS;
+    const i32 cx = baseX + 64 + (i32)((h >> 8)  & 0x7F);   // 64..191
+    const i32 cz = baseZ + 64 + (i32)((h >> 15) & 0x7F);
+
+    // Радиус 40..71. Меньше — логово проскакивается на бегу и не
+    // читается как место; больше — оно накрывает соседнюю ячейку, и
+    // два логова начинают спорить за одну точку.
+    const f32 radius = 40.f + (f32)((h >> 22) & 0x1F);
+
+    const i32 wy = terrain->surfaceHeight(cx, cz);
+    if (wy < TerrainGenerator::SEA_LEVEL + 2) return lair;
+
+    lair.exists = true;
+    lair.center = { cx, wy, cz };
+    lair.radius = radius;
+    switch ((h >> 27) & 0x3) {
+        case 0:  lair.kind = LairKind::Wolves;    break;
+        case 1:  lair.kind = LairKind::Skeletons; break;
+        case 2:  lair.kind = LairKind::Goblins;   break;
+        default: lair.kind = LairKind::Slimes;    break;
+    }
+    return lair;
+}
+
+LairSite lairCovering(i32 wx, i32 wz, u64 worldSeed,
+                      const TerrainGenerator* terrain)
+{
+    const i32 sc0x = (i32)std::floor((f32)wx / (f32)structs::SUPER_BLOCKS);
+    const i32 sc0z = (i32)std::floor((f32)wz / (f32)structs::SUPER_BLOCKS);
+
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            const LairSite l = lairAt(sc0x + dx, sc0z + dz, worldSeed, terrain);
+            if (!l.exists) continue;
+            const f32 ddx = (f32)(wx - l.center.x);
+            const f32 ddz = (f32)(wz - l.center.z);
+            if (ddx * ddx + ddz * ddz <= l.radius * l.radius) return l;
+        }
+    return LairSite{};
+}
+
+// ============================================================
 // Дороги между деревнями
 // ============================================================
 //

@@ -8,6 +8,7 @@
 #include "../physics/character_controller.h"
 #include "../physics/raycast.h"
 #include "../world/chunk_manager.h"
+#include "../world/features.h"
 #include "../combat/components.h"
 #include "../combat/weapon.h"
 #include "../combat/resonance.h"
@@ -156,6 +157,14 @@ public:
     /// Смерти в игре не было вовсе: здоровье уходило в ноль, звучал
     /// звук, и на этом всё — игрок оставался стоять с нулём.
     bool newRespawnPoint = false; ///< поднят, когда колодец запомнен
+
+    /// ---- Логова ----
+    ///
+    /// Игрок, вошедший в волчье логово, видит только волков. Без
+    /// слова об этом происходящее читается как поломка спавна, а не
+    /// как место со своим нравом.
+    bool enteredLair = false;             ///< поднят на кадре входа
+    world::LairKind lairKind = world::LairKind::None; ///< где стоим
     bool justDied      = false;   ///< поднят на кадре смерти
     bool justRespawned = false;   ///< поднят на кадре возвращения
     f32  deathTimer    = 0.f;     ///< сколько лежать осталось
@@ -192,12 +201,20 @@ private:
     /// Запомнить колодец под ногами как точку возвращения.
     void noticeWell(world::ChunkManager& world);
 
+    /// Заметить, что вошли в логово (или вышли из него).
+    void noticeLair(world::ChunkManager& world);
+
     /// Отсчитать смерть и вернуть игрока, когда время вышло.
     void tickDeath(world::ChunkManager& world, f32 dt);
 
     /// Как часто оглядываемся на колодцы: раз в кадр перебирать
     /// девять супер-чанков незачем, деревня на месте.
     f32 wellTimer_ = 0.f;
+
+    /// Логово спрашиваем по тому же таймеру и по той же причине:
+    /// девять супер-чанков каждый кадр — это девять запросов высоты
+    /// рельефа, а логово никуда не денется за полсекунды.
+    f32 lairTimer_ = 0.f;
 
     /// Тиры на прошлом кадре. Иначе заметить СМЕНУ нечем: сама
     /// Reputation хранит только текущее значение.

@@ -35,6 +35,7 @@
 #include "combat/damage.h"
 #include "mobs/mob_def.h"
 #include "mobs/mob_ai.h"
+#include "mobs/spawner.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
 #include "save/save_format.h"
@@ -8189,6 +8190,160 @@ void testCourierWalksTheRoad() {
 }
 
 // ------------------------------------------------------------
+void testLairHoldsOneBeast() {
+    group("логово: область, где водится один-единственный зверь");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    constexpr u64 SEED = 0x1A17;
+    jobs::gJobs.start(2);
+    world::ChunkManager world(SEED, 3);
+    const auto& gen = world.generator();
+
+    // ---- 1. Логова есть, и они редки ----
+    //
+    // Проверять одно найденное мало: и «логово в каждой ячейке», и
+    // «логово нигде» прошли бы такую проверку одинаково.
+    world::LairSite found;
+    int lairs = 0, cells = 0, onStructures = 0;
+    for (i32 sz = -12; sz <= 12; ++sz)
+        for (i32 sx = -12; sx <= 12; ++sx) {
+            ++cells;
+            const world::LairSite l = world::lairAt(sx, sz, SEED, &gen);
+            if (!l.exists) continue;
+            ++lairs;
+            // Логово НЕ ложится на структуру: стая волков на
+            // деревенской площади означала бы, что деревня перестала
+            // быть местом, куда возвращаются.
+            if (world::villageAt(sx, sz, SEED, &gen).exists ||
+                world::dungeonAt(sx, sz, SEED).exists ||
+                world::treeDungeonAt(sx, sz, SEED, &gen).exists)
+                ++onStructures;
+            if (!found.exists) found = l;
+        }
+    {
+        char m[140];
+        std::snprintf(m, sizeof(m), "ячеек %d, логов %d, поверх структур %d",
+                      cells, lairs, onStructures);
+        check(true, m);
+    }
+    check(lairs > 10, "логова в мире есть");
+    check(lairs * 3 < cells, "но не в каждой ячейке");
+    check(onStructures == 0, "и ни одно не легло поверх структуры");
+    check(found.exists, "логово для разбора найдено");
+    if (!found.exists) { jobs::gJobs.stop(); return; }
+    check(found.kind != world::LairKind::None, "у него есть род");
+    check(found.radius >= 40.f, "и радиус, который не проскочишь на бегу");
+    check(found.center.y >= world::TerrainGenerator::SEA_LEVEL + 2,
+          "логово стоит на суше, а не в море");
+
+    // ---- 2. Границы области ----
+    check(world::lairCovering(found.center.x, found.center.z, SEED, &gen).kind
+              == found.kind,
+          "в середине логова спрашивающему отвечают тем же родом");
+    {
+        // Точно за границей — либо пусто, либо СОСЕДНЕЕ логово, но не
+        // это же самое: иначе радиус ни на что не влияет.
+        const world::LairSite out = world::lairCovering(
+            found.center.x + (i32)found.radius + 8,
+            found.center.z, SEED, &gen);
+        check(!out.exists || out.center != found.center,
+              "сразу за радиусом это логово уже не отвечает");
+    }
+
+    // ---- 3. В логове водится только его зверь, и водится днём ----
+    const glm::vec3 playerPos{ (f32)found.center.x + 0.5f,
+                               (f32)found.center.y,
+                               (f32)found.center.z + 0.5f };
+    bool ready = false;
+    for (int i = 0; i < 1500 && !ready; ++i) {
+        world.update(playerPos);
+        ready = world.isReadyAt(found.center.x, found.center.z) &&
+                world.pendingJobs() == 0;
+        if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(ready, "земля логова построена");
+    if (!ready) { jobs::gJobs.stop(); return; }
+
+    world::DayCycle day;
+    day.reset(0.5f);          // полдень: светлее не бывает
+    check(!day.isNight(), "на дворе день");
+
+    ecs::Registry reg;
+    mobs::Spawner spawner;
+    for (int i = 0; i < 300; ++i)
+        spawner.update(world, reg, playerPos, day, SEED, 0.6f);
+
+    int inside = 0, wrongInside = 0, total = 0;
+    {
+        auto& pool = reg.pool<mobs::MobTag>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            const ecs::Entity e = pool.entityAt((u32)i);
+            auto* t  = pool.get(e);
+            auto* tf = reg.get<ecs::Transform>(e);
+            if (!t || !tf) continue;
+            ++total;
+            const world::LairSite l = world::lairCovering(
+                (i32)std::floor(tf->position.x),
+                (i32)std::floor(tf->position.z), SEED, &gen);
+            if (!l.exists || l.center != found.center) continue;
+            ++inside;
+            const u16 expect =
+                l.kind == world::LairKind::Wolves    ? mobs::MOB_WOLF
+              : l.kind == world::LairKind::Skeletons ? mobs::MOB_SKELETON
+              : l.kind == world::LairKind::Goblins   ? mobs::MOB_GOBLIN
+                                                     : mobs::MOB_SLIME;
+            if (t->id != expect) ++wrongInside;
+        }
+    }
+    {
+        char m[160];
+        std::snprintf(m, sizeof(m),
+                      "за полторы сотни секунд полудня мобов %d, "
+                      "в логове %d, чужих среди них %d",
+                      total, inside, wrongInside);
+        check(true, m);
+    }
+    check(inside > 5, "днём в логове появляются звери, а не пустота");
+    check(wrongInside == 0, "и все они одного рода — рода логова");
+
+    // ---- 4. Игрок узнаёт, куда попал ----
+    ecs::Registry preg;
+    player::Player pl;
+    // Начинаем ЗА логовом: событие — это вход, а не нахождение
+    // внутри.
+    const glm::vec3 outside{ (f32)found.center.x + found.radius + 100.f,
+                             (f32)found.center.y,
+                             (f32)found.center.z + found.radius + 100.f };
+    pl.init(preg, outside);
+    for (int i = 0; i < 90; ++i)
+        pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+    check(pl.lairKind == world::LairKind::None ||
+          pl.lairKind != found.kind,
+          "снаружи логова про него не сообщают");
+
+    pl.controller.setPosition(playerPos + glm::vec3(0.f, 2.f, 0.f));
+    bool told = false;
+    for (int i = 0; i < 90 && !told; ++i) {
+        pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+        if (pl.enteredLair) told = true;
+    }
+    check(told, "войдя в логово, игрок о нём узнаёт");
+    check(pl.lairKind == found.kind, "и узнаёт именно про этот род");
+
+    bool again = false;
+    for (int i = 0; i < 180; ++i) {
+        pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+        if (pl.enteredLair) again = true;
+    }
+    check(!again, "а стоя в нём, слышит об этом один раз, а не всякий миг");
+
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testTreeDungeonIsClimbable() {
     group("дерево-подземелье: по нему можно подняться");
 
@@ -12112,6 +12267,7 @@ int main() {
     testForestIsBigAndDense();
     testRoadConnectsVillages();
     testCourierWalksTheRoad();
+    testLairHoldsOneBeast();
     testTreeDungeonIsClimbable();
     testShurikenFliesAndHits();
     testDashMovesForward();

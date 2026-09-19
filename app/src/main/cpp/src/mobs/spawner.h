@@ -31,6 +31,9 @@ private:
     /// Лимиты
     static constexpr u32 MAX_MOBS_TOTAL    = 60;
     static constexpr u32 MAX_MOBS_PER_CHUNK = 3;
+    /// Предел в логове. Область, по которой изредка пробегает волк,
+    /// волчьим логовом не выглядит.
+    static constexpr u32 MAX_MOBS_PER_LAIR_CHUNK = 6;
     static constexpr f32 SPAWN_RADIUS       = 40.f;
     static constexpr f32 SPAWN_RADIUS_MIN   = 16.f;
     static constexpr f32 DESPAWN_RADIUS     = 64.f;
@@ -48,6 +51,13 @@ private:
 
     u16 pickMobId(world::TerrainGenerator& gen, i32 x, i32 z, bool night,
                   u32 rng) const;
+
+    /// Кто водится в логове такого рода.
+    ///
+    /// Соответствие живёт здесь, а не в world: генератор мира про
+    /// список мобов не знает и знать не должен — он отдаёт род
+    /// логова, а кто им соответствует, решает спавнер.
+    static u16 lairMobId(world::LairKind kind);
 
     /// Ставит боссов в подземельях рядом с игроком. Босс появляется
     /// один раз на подземелье и не участвует в обычном спавне —
