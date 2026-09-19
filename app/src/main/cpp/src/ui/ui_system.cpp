@@ -174,6 +174,7 @@ void UiSystem::buildFrame(player::Player& player,
         cachedHpPct = hr.hpPct();
         cachedMpPct = hr.mpPct();
         cachedSpPct = hr.spPct();
+        cachedSpCeil = hr.spCeilPct;
     }
 
     switch (screen) {
@@ -525,6 +526,13 @@ void UiSystem::drawHudResources(player::Player& player) {
                  hudTint(theme::Ink));
         ui_.rect(r.x, r.y, r.w, r.h, hudTint(bars[i].bed));
         ui_.rect(r.x, r.y, r.w * bars[i].pct, r.h, hudTint(bars[i].fill));
+        // Утомление: отрезанный хвост полоски выносливости. Без него
+        // полоска просто переставала бы наполняться доверху, и игрок
+        // читал бы это как поломку, а не как «ты вымотан».
+        if (i == 2 && cachedSpCeil < 0.999f) {
+            const f32 cx = r.x + r.w * cachedSpCeil;
+            ui_.rect(cx, r.y, r.x + r.w - cx, r.h, hudTint(theme::Ink));
+        }
         ui_.text(T(bars[i].label), r.x + layout_.dp(theme::SPACE_XS_DP),
                  r.y + (r.h - ui_.textHeight(theme::TEXT_CAPTION)) * 0.5f,
                  theme::TEXT_CAPTION, theme::TextPrimary);

@@ -42,6 +42,9 @@ bool tryConsumeAttackCost(ecs::Registry& reg,
     }
 
     if (manaCost > 0.f) progression::consumeMana(reg, e, manaCost);
+    // Долгая драка выматывает сама собой: consumeStamina копит
+    // утомление из потраченного, и отдельного правила для боя не
+    // нужно.
     if (stamCost > 0.f) progression::consumeStamina(reg, e, stamCost);
 
     return true;

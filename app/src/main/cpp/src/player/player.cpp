@@ -45,6 +45,10 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
     reg.add(entity_, ecs::Health{100.f, 100.f, 1.f, 0.f});
     reg.add(entity_, ecs::Mana{80.f, 80.f, 3.f});
     reg.add(entity_, ecs::Stamina{100.f, 100.f, 10.f});
+    // Утомление — только у игрока: мобы и жители не бегают марафонов
+    // и не держат осаду, а лишний компонент в каждом из шести
+    // десятков тел ничего не даёт.
+    reg.add(entity_, ecs::Fatigue{});
 
     ecs::Attributes attrs{};
     reg.add(entity_, attrs);
@@ -312,8 +316,29 @@ void Player::updateImpl(world::ChunkManager& world,
     mi.faceDir     = { fwd.x, fwd.z };
     mi.jumpPressed = input.jumpPressed && !dialogueOpen;
     mi.jumpHeld    = input.jumpHeld && !dialogueOpen;
-    mi.sprint      = input.sprint;
     mi.crouch      = input.crouch;
+
+    // ---- Бег ----
+    //
+    // Бег не стоил ничего: держи кнопку — и беги через весь мир.
+    // Теперь он тратит выносливость, и тратит её только когда бег
+    // ДЕЙСТВИТЕЛЬНО идёт: стоя на месте с зажатой кнопкой никто не
+    // устаёт, а плывущему она и так не помогает.
+    const bool wantsSprint = input.sprint && !dialogueOpen;
+    const bool reallyRunning = wantsSprint && !winded_ &&
+                               glm::length(mi.wishDir) > 0.1f &&
+                               controller.state().onGround &&
+                               !controller.state().inWater;
+    if (reallyRunning)
+        progression::consumeStamina(*reg_, entity_, SPRINT_STAMINA_PER_SEC * dt);
+    if (auto* st = reg_->get<ecs::Stamina>(entity_)) {
+        // Задохнулся — и не отдышится, пока не наберёт запас. Без
+        // этого порога бег превращался бы в дрожь: выносливость
+        // капает, кнопка снова срабатывает, и так каждый кадр.
+        if (st->current <= 0.01f)               winded_ = true;
+        else if (st->current >= SPRINT_RESUME)  winded_ = false;
+    }
+    mi.sprint = wantsSprint && !winded_;
 
     // ---- Рывок ----
     //
@@ -701,6 +726,11 @@ void Player::tickDeath(world::ChunkManager& world, f32 dt) {
     hp->current = hp->max;
     if (auto* m = reg_->get<ecs::Mana>(entity_))    m->current = m->max;
     if (auto* st = reg_->get<ecs::Stamina>(entity_)) st->current = st->max;
+    // Вернувшийся возвращается ОТДОХНУВШИМ. Иначе смерть в затяжном
+    // бою оставляла бы игрока вымотанным у колодца — наказание за
+    // наказание.
+    if (auto* fg = reg_->get<ecs::Fatigue>(entity_)) *fg = ecs::Fatigue{};
+    winded_ = false;
     if (auto* se = reg_->get<combat::StatusEffects>(entity_)) *se = {};
 
     dead          = false;

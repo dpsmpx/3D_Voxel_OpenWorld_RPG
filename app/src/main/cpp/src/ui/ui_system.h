@@ -429,6 +429,8 @@ private:
     f32 cachedHpPct = 1.f;
     f32 cachedMpPct = 1.f;
     f32 cachedSpPct = 1.f;
+    /// Потолок выносливости: утомление отрезает хвост полоски.
+    f32 cachedSpCeil = 1.f;
 };
 
 } // namespace ui

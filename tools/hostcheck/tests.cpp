@@ -24,6 +24,7 @@
 #include "save/save_npc.h"
 #include "progression/skill_tree.h"
 #include "progression/progression.h"
+#include "progression/resource_regen.h"
 #include "crafting/crafting.h"
 #include "crafting/recipe.h"
 #include "items/item_use.h"
@@ -8657,6 +8658,252 @@ void testDashMovesForward() {
 }
 
 // ------------------------------------------------------------
+void testRunningAndFightingTire() {
+    group("утомление: бег и долгий бой опускают потолок выносливости");
+
+    world::blocks();
+    items::items();
+
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager world(0xFA71, 2);
+        bool ready = false;
+        for (int i = 0; i < 600 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        // Ровная площадка: бежать надо по земле, а не скатываться со
+        // склона и не упираться в холм — иначе «бежит ли он» решал бы
+        // рельеф. Восемь блоков воздуха над ней: трёх не хватало, и
+        // на первом же пригорке бегун вставал.
+        const i32 surf = world.generator().surfaceHeight(8, 8) + 4;
+        for (i32 z = -8; z <= 56; ++z)
+            for (i32 x = -8; x <= 24; ++x) {
+                world.setVoxel(x, surf - 1, z, world::STONE);
+                for (i32 y = surf; y < surf + 9; ++y)
+                    world.setVoxel(x, y, z, world::AIR);
+            }
+        const glm::vec3 padStart{ 4.5f, (f32)surf, 4.5f };
+
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, padStart);
+
+        auto* st = reg.get<ecs::Stamina>(pl.entity());
+        auto* fg = reg.get<ecs::Fatigue>(pl.entity());
+        check(st && fg, "выносливость и утомление у игрока есть");
+        if (!st || !fg) { jobs::gJobs.stop(); return; }
+        check(fg->value < 0.001f, "свежий игрок не утомлён");
+
+        // Кадр игры — это и шаг игрока, и шаг прогрессии: реген и
+        // спад утомления живут в tickProgression, и без него игрок в
+        // проверке не отдыхал бы вовсе.
+        auto step = [&](const player::PlayerInput& in, int n) {
+            for (int i = 0; i < n; ++i) {
+                pl.update(world, in, 1.f / 60.f, 0.f, 0.f);
+                progression::tickProgression(reg, 1.f / 60.f);
+            }
+        };
+        // Долгий бег не умещается на площадке, а гонять его по
+        // настоящему рельефу нельзя: проверка мерила бы холмы.
+        // Поэтому каждые полсекунды возвращаем на начало.
+        auto runLong = [&](const player::PlayerInput& in, int n) {
+            for (int i = 0; i < n; ++i) {
+                if (i % 30 == 0) pl.controller.setPosition(padStart);
+                pl.update(world, in, 1.f / 60.f, 0.f, 0.f);
+                progression::tickProgression(reg, 1.f / 60.f);
+            }
+        };
+
+        player::PlayerInput run;
+        run.moveAxis = { 0.f, 1.f };
+        run.sprint   = true;
+
+        // ---- 1. Стоя на месте с зажатым бегом никто не устаёт ----
+        {
+            player::PlayerInput still;
+            still.sprint = true;           // кнопка есть, хода нет
+            const f32 s0 = st->current;
+            step(still, 120);
+            check(fg->value < 0.001f, "стоя на месте не устают");
+            check(st->current >= s0 - 0.01f,
+                  "и выносливость за это не берут");
+        }
+
+        // ---- 2. Бег тратит выносливость ----
+        const f32 sBefore = st->current;
+        const glm::vec3 p0 = pl.controller.state().position;
+        step(run, 180);                   // три секунды бега
+        const f32 ran = pl.controller.state().position.z - p0.z;
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "за три секунды пробежал %.1f блока, "
+                          "выносливость %.1f -> %.1f, утомление %.3f",
+                          (double)ran, (double)sBefore,
+                          (double)st->current, (double)fg->value);
+            check(true, m);
+        }
+        check(ran > 12.f, "бег и правда быстрее шага");
+        check(st->current < sBefore - 3.f, "бег тратит выносливость");
+        check(fg->value > 0.02f, "и копит утомление");
+
+        // ---- 3. Выдохшийся переходит на шаг ----
+        //
+        // На бегу запас не восстанавливается: реген ждёт секунду без
+        // трат, а бегущий тратит каждый кадр. Поэтому бежать без
+        // передышки дольше десятка секунд нельзя.
+        bool everWinded = false;
+        for (int i = 0; i < 60 * 12; ++i) {
+            if (i % 30 == 0) pl.controller.setPosition(padStart);
+            pl.update(world, run, 1.f / 60.f, 0.f, 0.f);
+            progression::tickProgression(reg, 1.f / 60.f);
+            if (pl.winded()) everWinded = true;
+        }
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "после двенадцати секунд бега осталось %.1f из %.1f",
+                          (double)st->current, (double)st->max);
+            check(true, m);
+        }
+        check(st->current < st->max * 0.4f,
+              "на бегу запас не восстанавливается");
+        check(everWinded, "и рано или поздно бегун выдыхается");
+
+        // Доводим до выдоха ровно сейчас: между выдохами он успевает
+        // отдышаться и снова побежать, и померить «шаг выдохшегося»
+        // наугад нельзя.
+        for (int i = 0; i < 60 * 20 && !pl.winded(); ++i) {
+            if (i % 30 == 0) pl.controller.setPosition(padStart);
+            pl.update(world, run, 1.f / 60.f, 0.f, 0.f);
+            progression::tickProgression(reg, 1.f / 60.f);
+        }
+        check(pl.winded(), "выдохся");
+
+        // Мерим с начала площадки: холм на пути сказал бы о рельефе,
+        // а не о беге. И сравниваем с ПРОСТЫМ ШАГОМ, а не с числом:
+        // утверждение здесь — «выдохшийся идёт ровно шагом».
+        auto travel = [&](const player::PlayerInput& in) {
+            pl.controller.setPosition(padStart);
+            const f32 z0 = pl.controller.state().position.z;
+            step(in, 40);
+            return pl.controller.state().position.z - z0;
+        };
+        const f32 wind = travel(run);
+        player::PlayerInput walk;
+        walk.moveAxis = { 0.f, 1.f };
+        const f32 plain = travel(walk);
+        {
+            char m[150];
+            std::snprintf(m, sizeof(m),
+                          "выдохшись, прошёл %.2f блока; просто шагом — %.2f",
+                          (double)wind, (double)plain);
+            check(true, m);
+        }
+        check(plain > 1.f, "шагом он идёт");
+        check(std::fabs(wind - plain) < 0.5f,
+              "выдохшись, игрок идёт ровно шагом, а не бежит");
+
+        // ---- 4. Отдышавшись, бежит снова ----
+        step(player::PlayerInput{}, 60 * 8);
+        check(st->current > player::SPRINT_RESUME,
+              "стоя, выносливость набирается обратно");
+        pl.controller.setPosition(padStart);
+        const glm::vec3 pr = pl.controller.state().position;
+        step(run, 60);
+        check(pl.controller.state().position.z - pr.z > 6.f,
+              "отдышавшись, бежит снова");
+
+        // ---- 5. Утомление опускает ПОТОЛОК ----
+        //
+        // Главное свойство: выносливость восстанавливается за десяток
+        // секунд, утомление — нет. Вымотанный отдыхает и всё равно не
+        // набирает полную шкалу.
+        fg->value = 1.f;
+        fg->restTimer = 0.f;
+        step(player::PlayerInput{}, 60 * 10);
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "вымотанный за десять секунд отдыха набрал %.1f из %.1f",
+                          (double)st->current, (double)st->max);
+            check(true, m);
+        }
+        const f32 ceil10 = progression::staminaCeiling(reg, pl.entity());
+        check(st->current <= ceil10 + 0.5f,
+              "вымотанному шкала доверху не наливается");
+        check(st->current < st->max - 5.f,
+              "и до полной ей заметно не хватает");
+        check(st->current > st->max * 0.3f,
+              "но половину он всё-таки набирает");
+        check(fg->value < 1.f, "и само утомление понемногу спадает");
+
+        // Зелье тоже не отменяет усталость.
+        progression::restoreStamina(reg, pl.entity(), 500.f);
+        check(st->current <= progression::staminaCeiling(reg, pl.entity()) + 0.5f,
+              "зельем поверх потолка не налить");
+        check(st->current < st->max - 5.f, "и полной шкалы зелье не даёт");
+
+        // ---- 6. Отдых возвращает потолок ----
+        fg->value = 1.f;
+        fg->restTimer = 0.f;
+        step(player::PlayerInput{}, 60 * 40);
+        check(fg->value < 0.05f, "долгий отдых снимает утомление");
+        check(st->current > st->max - 1.f, "и шкала снова наливается доверху");
+
+        // ---- 7. Долгий бой выматывает ----
+        {
+            ecs::Registry creg;
+            player::Player cp;
+            cp.init(creg, glm::vec3(4.5f, (f32)surf, 4.5f));
+            auto* cfg = creg.get<ecs::Fatigue>(cp.entity());
+            auto* cst = creg.get<ecs::Stamina>(cp.entity());
+            check(cfg && cst, "у бойца есть и то, и другое");
+            if (cfg && cst) {
+                const f32 f0 = cfg->value;
+                // Полминуты непрерывных взмахов — затяжная драка.
+                // Выносливость доливаем: мерим утомление, а не то,
+                // хватило ли сил на сороковой удар.
+                player::PlayerInput swing;
+                swing.attackPressed = true;
+                swing.attackHeld    = true;
+                for (int i = 0; i < 60 * 30; ++i) {
+                    cst->current = cst->max;
+                    cp.update(world, swing, 1.f / 60.f, 0.f, 0.f);
+                    progression::tickProgression(creg, 1.f / 60.f);
+                }
+                {
+                    char m[120];
+                    std::snprintf(m, sizeof(m),
+                                  "после получаса... то есть полминуты боя "
+                                  "утомление %.3f", (double)cfg->value);
+                    check(true, m);
+                }
+                check(cfg->value > f0 + 0.1f, "долгий бой выматывает");
+            }
+        }
+
+        // ---- 8. Смерть возвращает отдохнувшим ----
+        fg->value = 0.9f;
+        if (auto* hp = reg.get<ecs::Health>(pl.entity())) hp->current = 0.f;
+        bool back = false;
+        for (int i = 0; i < 60 * 6 && !back; ++i) {
+            pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+            progression::tickProgression(reg, 1.f / 60.f);
+            if (pl.justRespawned) back = true;
+        }
+        check(back, "игрок вернулся");
+        check(fg->value < 0.01f, "и вернулся отдохнувшим, а не вымотанным");
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testTrampolineThrowAndBounce() {
     group("батут: бросается, ложится и подбрасывает");
 
@@ -12271,6 +12518,7 @@ int main() {
     testTreeDungeonIsClimbable();
     testShurikenFliesAndHits();
     testDashMovesForward();
+    testRunningAndFightingTire();
     testTrampolineThrowAndBounce();
     testElixirsGrantTimedBuff();
     testInventoryDragMovesItems();
