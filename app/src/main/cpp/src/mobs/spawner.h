@@ -11,9 +11,17 @@
 #include "../world/features.h"
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #include <glm/glm.hpp>
 
 namespace mobs {
+
+/// Кто водится в биоме.
+///
+/// Свободная функция, а не метод спавнера: таблица «биом → зверь» —
+/// это факт о мире, и спросить её должно быть можно, не заводя
+/// спавнера с его таймерами и счётчиками.
+u16 mobIdForBiome(world::BiomeId biome, bool night, u32 rng);
 
 class Spawner {
 public:
@@ -27,13 +35,35 @@ public:
 
     u32 mobCount() const { return mobCount_; }
 
+    /// Сколько засад уже сработало. Спрашивают проверки: «сработала
+    /// ли» — это и есть всё поведение засады.
+    u32 sprungAmbushCount() const { return (u32)sprung_.size(); }
+
 private:
     /// Лимиты
     static constexpr u32 MAX_MOBS_TOTAL    = 60;
     static constexpr u32 MAX_MOBS_PER_CHUNK = 3;
+    /// Предел в логове. Область, по которой изредка пробегает волк,
+    /// волчьим логовом не выглядит.
+    static constexpr u32 MAX_MOBS_PER_LAIR_CHUNK = 6;
     static constexpr f32 SPAWN_RADIUS       = 40.f;
     static constexpr f32 SPAWN_RADIUS_MIN   = 16.f;
     static constexpr f32 DESPAWN_RADIUS     = 64.f;
+
+    /// ---- Засады ----
+    ///
+    /// Обычный спавн высыпает мобов по одному и подальше от игрока —
+    /// встретить их можно, нарваться нельзя. Засада — противоположное:
+    /// четверо разом и вплотную, в заранее известном месте, один раз.
+    ///
+    /// Места берутся на дорогах между деревнями: засада имеет смысл
+    /// там, где ходят.
+    void updateAmbushes(world::ChunkManager& world, ecs::Registry& reg,
+                        const glm::vec3& playerPos, u64 worldSeed);
+
+    f32 ambushTimer_ = 0.f;
+    /// Сработавшие: второй раз в том же месте засады не бывает.
+    std::vector<u64> sprung_;
 
     f32 spawnTimer_ = 0.f;
     f32 despawnTimer_ = 0.f;
@@ -46,8 +76,13 @@ private:
     /// Track per-chunk mob count (координаты чанка → счётчик)
     std::unordered_map<world::ChunkCoord, u8, world::ChunkCoordHash> perChunk_;
 
-    u16 pickMobId(world::TerrainGenerator& gen, i32 x, i32 z, bool night,
-                  u32 rng) const;
+
+    /// Кто водится в логове такого рода.
+    ///
+    /// Соответствие живёт здесь, а не в world: генератор мира про
+    /// список мобов не знает и знать не должен — он отдаёт род
+    /// логова, а кто им соответствует, решает спавнер.
+    static u16 lairMobId(world::LairKind kind);
 
     /// Ставит боссов в подземельях рядом с игроком. Босс появляется
     /// один раз на подземелье и не участвует в обычном спавне —

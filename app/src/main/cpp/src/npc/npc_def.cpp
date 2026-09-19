@@ -140,6 +140,31 @@ NpcRegistry::NpcRegistry() {
         defs_[NPC_HEALER] = d;
     }
 
+    // ---------------- COURIER ----------------
+    //
+    // Ходит по дороге из деревни в деревню и потому быстрее прочих:
+    // житель, бредущий со скоростью 1.8, преодолевал бы перегон в
+    // двести пятьдесят блоков две с половиной минуты.
+    {
+        NpcDef d{};
+        d.name = "Courier";
+        d.role = NpcRole::Courier;
+        d.faction = factions::FactionId::Traders;
+        d.maxHealth = 24.f;
+        d.moveSpeed = 3.2f;
+        d.attackDamage = 0.f;
+        d.attackRange = 0.f;
+        d.aggroRange = 0.f;
+        d.bodyRadius = 0.35f;
+        d.bodyHeight = 1.74f;
+        d.hostile = false;
+        d.bodyColor   = rgb(120, 90, 60);
+        d.headColor   = rgb(205, 165, 125);
+        d.accentColor = rgb(220, 190, 90);
+        d.dialogueRoot = "villager";
+        defs_[NPC_COURIER] = d;
+    }
+
     LOGI("NpcRegistry: %u NPC", (unsigned)NPC_COUNT - 1);
 }
 

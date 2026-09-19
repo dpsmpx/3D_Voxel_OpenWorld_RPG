@@ -174,6 +174,7 @@ void UiSystem::buildFrame(player::Player& player,
         cachedHpPct = hr.hpPct();
         cachedMpPct = hr.mpPct();
         cachedSpPct = hr.spPct();
+        cachedSpCeil = hr.spCeilPct;
     }
 
     switch (screen) {
@@ -525,6 +526,13 @@ void UiSystem::drawHudResources(player::Player& player) {
                  hudTint(theme::Ink));
         ui_.rect(r.x, r.y, r.w, r.h, hudTint(bars[i].bed));
         ui_.rect(r.x, r.y, r.w * bars[i].pct, r.h, hudTint(bars[i].fill));
+        // Утомление: отрезанный хвост полоски выносливости. Без него
+        // полоска просто переставала бы наполняться доверху, и игрок
+        // читал бы это как поломку, а не как «ты вымотан».
+        if (i == 2 && cachedSpCeil < 0.999f) {
+            const f32 cx = r.x + r.w * cachedSpCeil;
+            ui_.rect(cx, r.y, r.x + r.w - cx, r.h, hudTint(theme::Ink));
+        }
         ui_.text(T(bars[i].label), r.x + layout_.dp(theme::SPACE_XS_DP),
                  r.y + (r.h - ui_.textHeight(theme::TEXT_CAPTION)) * 0.5f,
                  theme::TEXT_CAPTION, theme::TextPrimary);
@@ -690,6 +698,27 @@ void UiSystem::drawHotbar(player::Player& player) {
 // ============================================================
 // Pause Menu
 // ============================================================
+// Разделы меню паузы.
+//
+// Крафт здесь появился не для симметрии: экран ремесла открывался
+// ровно одной кнопкой — подсказкой «использовать», которая выходит
+// рядом со станком. В поле станка нет, кнопки нет, и весь раздел
+// StationType::None был недостижим — рецепты «на ходу» существовали
+// только в перечислении.
+const std::vector<MenuEntry>& menuEntries() {
+    static const std::vector<MenuEntry> items = {
+        { config::StrKey::Menu_Inventory,  Screen::Inventory  },
+        { config::StrKey::Menu_Crafting,   Screen::Crafting   },
+        { config::StrKey::Menu_Attributes, Screen::Attributes },
+        { config::StrKey::Menu_Skills,     Screen::SkillTree  },
+        { config::StrKey::Menu_Quests,     Screen::QuestLog   },
+        { config::StrKey::Menu_Reputation, Screen::Reputation },
+        { config::StrKey::Menu_SaveLoad,   Screen::SaveLoad   },
+        { config::StrKey::Menu_Settings,   Screen::Settings   },
+    };
+    return items;
+}
+
 void UiSystem::drawPauseMenu(player::Player& player) {
     ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
              withAlpha(theme::Ink, theme::ALPHA_SCRIM));
@@ -707,30 +736,23 @@ void UiSystem::drawPauseMenu(player::Player& player) {
     //
     // Теперь: продолжить отдельно и крупно, остальное — сеткой по
     // смыслу, выход отдельно и в опасном виде.
-    struct Item {
-        const char* label;
-        Screen      target;
-        i32         badge;      ///< -1 — не показывать
-    };
-
     auto* tree = player.skillTree();
     auto* prog = player.progression();
 
-    const Item items[] = {
-        { T(StrKey::Menu_Inventory),  Screen::Inventory,  -1 },
-        { T(StrKey::Menu_Attributes), Screen::Attributes,
-          prog ? prog->availableAttrPoints : -1 },
-        { T(StrKey::Menu_Skills),     Screen::SkillTree,
-          tree ? tree->unspentPoints : -1 },
-        { T(StrKey::Menu_Quests),     Screen::QuestLog,   -1 },
-        { T(StrKey::Menu_Reputation), Screen::Reputation, -1 },
-        { T(StrKey::Menu_SaveLoad),   Screen::SaveLoad,   -1 },
-        { T(StrKey::Menu_Settings),   Screen::Settings,   -1 },
+    // Значок с нераспределёнными очками — то, ради чего в раздел
+    // заходят. Считается здесь, а не в списке разделов: список от
+    // игрока не зависит, а значок только от него и зависит.
+    auto badgeFor = [&](Screen sc) -> i32 {
+        if (sc == Screen::Attributes) return prog ? prog->availableAttrPoints : -1;
+        if (sc == Screen::SkillTree)  return tree ? tree->unspentPoints : -1;
+        return -1;
     };
-    constexpr u32 ITEM_COUNT = (u32)(sizeof(items) / sizeof(items[0]));
+
+    const auto& items = menuEntries();
+    const u32 ITEM_COUNT = (u32)items.size();
     constexpr u32 COLS = 3;
     // Первый ряд занят «Продолжить», последний — выходом.
-    constexpr u32 ROWS = 2 + (ITEM_COUNT + COLS - 1) / COLS;
+    const u32 ROWS = 2 + (ITEM_COUNT + COLS - 1) / COLS;
 
     auto cell = [&](u32 c, u32 r) { return layout_.menuCell(c, r, COLS, ROWS); };
 
@@ -759,6 +781,10 @@ void UiSystem::drawPauseMenu(player::Player& player) {
         const Rect r = cell(i % COLS, 1 + i / COLS);
         const Screen target = items[i].target;
         const int idx = ui_.pushInteractiveRect(r, [this, target]() {
+            // Крафт открывается с тем станком, который рядом СЕЙЧАС:
+            // nearbyStation обновляется каждый кадр, и None в нём
+            // значит «станка рядом нет», то есть крафт на ходу.
+            if (target == Screen::Crafting) { openCrafting(nearbyStation); return; }
             openScreen(target);
             if (target == Screen::Inventory) drag.clear();
         });
@@ -768,15 +794,16 @@ void UiSystem::drawPauseMenu(player::Player& player) {
         ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
                         pressed ? theme::AccentPressed : theme::Stroke);
 
-        const f32 tw = ui_.textWidth(items[i].label, theme::TEXT_BODY);
-        ui_.text(items[i].label, r.x + (r.w - tw) * 0.5f,
+        const char* label = T(items[i].label);
+        const f32 tw = ui_.textWidth(label, theme::TEXT_BODY);
+        ui_.text(label, r.x + (r.w - tw) * 0.5f,
                  r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
                  theme::TEXT_BODY, pressed ? theme::Ink : theme::TextPrimary);
 
-        // Нераспределённые очки — то, ради чего сюда заходят.
-        if (items[i].badge > 0) {
+        const i32 badge = badgeFor(target);
+        if (badge > 0) {
             char b[16];
-            std::snprintf(b, sizeof(b), "+%d", items[i].badge);
+            std::snprintf(b, sizeof(b), "+%d", badge);
             const f32 bw = ui_.textWidth(b, theme::TEXT_CAPTION);
             ui_.text(b, r.x + r.w - bw - layout_.dp(theme::SPACE_S_DP),
                      r.y + layout_.dp(theme::SPACE_S_DP),
@@ -2152,8 +2179,12 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
 void UiSystem::drawCraftingScreen(player::Player& player) {
     ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(20, 15, 10, 240));
 
-    const char* stName = crafting::stationName(nearbyStation);
-    char title[64];
+    // Без станка заголовок говорит «на ходу», а не прочерк: прочерк
+    // читается как ошибка, а не как «руками и на костре».
+    const char* stName = nearbyStation == crafting::StationType::None
+                       ? T(StrKey::Craft_ByHand)
+                       : crafting::stationName(nearbyStation);
+    char title[96];
     std::snprintf(title, sizeof(title), "%s — %s",
                   T(StrKey::Craft_Title), stName);
     ui_.text(title, (float)screenW_ * 0.28f, 24.f, 3.f, COL_WHITE);

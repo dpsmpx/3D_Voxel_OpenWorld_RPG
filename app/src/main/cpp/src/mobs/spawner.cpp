@@ -74,10 +74,7 @@ f32 Spawner::lightAt(world::ChunkManager& world, const world::DayCycle& day,
     return day.skyLight();
 }
 
-u16 Spawner::pickMobId(world::TerrainGenerator& gen,
-                       i32 x, i32 z, bool night, u32 rngVal) const
-{
-    world::BiomeId biome = gen.biomeAt(x, z);
+u16 mobIdForBiome(world::BiomeId biome, bool night, u32 rngVal) {
     f32 r = (f32)(rngVal & 0xFFFF) / 65536.f;
 
     switch (biome) {
@@ -106,9 +103,28 @@ u16 Spawner::pickMobId(world::TerrainGenerator& gen,
             return (r < 0.5f) ? MOB_SLIME : MOB_WOLF;
         case world::Volcanic:
             return MOB_SLIME;
+        // Чёрный лес: только чудовища, и никакой скотины. Овца,
+        // мирно пасущаяся среди сухостоя, зловещим это место быть
+        // перестаёт.
+        case world::Blight:
+            return (r < 0.35f) ? MOB_SKELETON
+                 : (r < 0.70f) ? MOB_GOBLIN
+                 : (r < 0.90f) ? MOB_WOLF
+                               : MOB_SLIME;
         default:
             return MOB_NONE;
     }
+}
+
+u16 Spawner::lairMobId(world::LairKind kind) {
+    switch (kind) {
+        case world::LairKind::Wolves:    return MOB_WOLF;
+        case world::LairKind::Skeletons: return MOB_SKELETON;
+        case world::LairKind::Goblins:   return MOB_GOBLIN;
+        case world::LairKind::Slimes:    return MOB_SLIME;
+        case world::LairKind::None:      break;
+    }
+    return MOB_NONE;
 }
 
 ecs::Entity Spawner::spawnMob(world::ChunkManager& /*world*/,
@@ -185,7 +201,11 @@ void Spawner::updateBosses(world::ChunkManager& world, ecs::Registry& reg,
             const u64 key = ((u64)(u32)cx << 32) | (u32)cz;
             if (bossPlaced_.count(key)) continue;
 
-            const world::DungeonSite site = world::dungeonAt(cx, cz, worldSeed);
+            // Подземелья двух видов, и обходятся они одним кодом:
+            // различаются только тем, где стоит зал.
+            world::DungeonSite site = world::dungeonAt(cx, cz, worldSeed);
+            if (!site.exists)
+                site = world::treeDungeonAt(cx, cz, worldSeed, &world.generator());
             if (!site.exists) continue;
 
             // Ждём, пока чанк с залом действительно загрузится:
@@ -210,6 +230,74 @@ void Spawner::updateBosses(world::ChunkManager& world, ecs::Registry& reg,
             }
         }
     }
+}
+
+void Spawner::updateAmbushes(world::ChunkManager& world, ecs::Registry& reg,
+                             const glm::vec3& playerPos, u64 worldSeed)
+{
+    // Четверо: трое — это стычка, шестеро — это уже бой, которого
+    // игрок первого уровня не переживёт нигде.
+    constexpr u32 AMBUSH_SIZE = 4;
+    constexpr f32 TRIGGER     = 14.f;
+
+    const i32 sc0x = (i32)std::floor(playerPos.x / 256.f);
+    const i32 sc0z = (i32)std::floor(playerPos.z / 256.f);
+
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            const i32 sx = sc0x + dx, sz = sc0z + dz;
+            const world::VillageSite a = world::villageAt(
+                sx, sz, worldSeed, &world.generator());
+            if (!a.exists) continue;
+
+            // Те же отрезки, что кладёт applyRoads: на восток и на юг.
+            const world::VillageSite ends[2] = {
+                world::villageAt(sx + 1, sz, worldSeed, &world.generator()),
+                world::villageAt(sx, sz + 1, worldSeed, &world.generator()),
+            };
+            for (u32 side = 0; side < 2; ++side) {
+                const world::VillageSite& b = ends[side];
+                if (!b.exists) continue;
+
+                const u64 key = ((u64)(u32)sx << 40) ^ ((u64)(u32)sz << 16) ^ side;
+                if (std::find(sprung_.begin(), sprung_.end(), key) != sprung_.end())
+                    continue;
+
+                // Место засады — не ровно середина: середину видно
+                // с обоих концов, а засаду ставят там, где дорога
+                // уже отошла от деревни.
+                const u32 h = (u32)(key * 0x9E3779B1u);
+                const f32 t = 0.35f + (f32)(h & 0xFF) / 255.f * 0.30f;
+                const glm::vec2 A{ (f32)a.center.x, (f32)a.center.z };
+                const glm::vec2 B{ (f32)b.center.x, (f32)b.center.z };
+                const glm::vec2 P = A + (B - A) * t;
+
+                const f32 ddx = P.x - playerPos.x, ddz = P.y - playerPos.z;
+                if (ddx * ddx + ddz * ddz > TRIGGER * TRIGGER) continue;
+
+                // Сработала — выставляем разом и вокруг.
+                u32 placed = 0;
+                for (u32 i = 0; i < AMBUSH_SIZE; ++i) {
+                    const f32 ang = (f32)i / (f32)AMBUSH_SIZE * 6.28318f;
+                    const i32 bx = (i32)(playerPos.x + std::cos(ang) * 7.f);
+                    const i32 bz = (i32)(playerPos.z + std::sin(ang) * 7.f);
+                    if (!world.findChunk(bx >> 5, bz >> 5)) continue;
+                    const i32 gy = world.generator().surfaceHeight(bx, bz);
+                    if (world.getVoxel(bx, gy - 1, bz) == world::AIR) continue;
+
+                    const u16 id = ((h >> (i * 2)) & 1) ? MOB_GOBLIN : MOB_SKELETON;
+                    const glm::vec3 at{ (f32)bx + 0.5f, (f32)gy, (f32)bz + 0.5f };
+                    if (spawnMob(world, reg, id, at).valid()) {
+                        ++mobCount_;
+                        ++placed;
+                    }
+                }
+                // Засада считается сработавшей, только если из неё
+                // кто-то вышел: иначе она сгорела бы впустую на
+                // незагруженных чанках.
+                if (placed > 0) sprung_.push_back(key);
+            }
+        }
 }
 
 void Spawner::update(world::ChunkManager& world,
@@ -238,7 +326,9 @@ void Spawner::update(world::ChunkManager& world,
             const i32 cz = pcz + dz;
 
             world::ChunkCoord ck{ cx, cz };
-            if (perChunk_[ck] >= MAX_MOBS_PER_CHUNK) continue;
+            // Предел на чанк здесь общий; логово поднимает его ниже,
+            // когда уже известно, что точка в него попала.
+            if (perChunk_[ck] >= MAX_MOBS_PER_LAIR_CHUNK) continue;
 
             i32 sx = 0, sy = 0, sz = 0;
             if (!findSpawnSpot(world, cx, cz, sx, sy, sz)) continue;
@@ -253,15 +343,37 @@ void Spawner::update(world::ChunkManager& world,
             const f32 light = lightAt(world, day, sx, sy, sz);
             const bool dark = light < 0.35f;
 
+            // Логово: область, где таблица биома не действует вовсе.
+            //
+            // Обычный спавн ровен — волк и скелет встречаются везде
+            // поровну, и идти куда-то за кем-то конкретным незачем. В
+            // логове водится ровно один вид, и водится он днём тоже:
+            // иначе логово днём — это просто поле.
+            const world::LairSite lair = world::lairCovering(
+                sx, sz, worldSeed, &world.generator());
+
+            // Чёрный лес — такая же земля без дневной передышки, как
+            // логово: нечисть там водится и при солнце.
+            const bool blight =
+                world.generator().biomeAt(sx, sz) == world::Blight;
+
             const u32 rv = urand();
-            const u16 id = pickMobId(
-                const_cast<world::TerrainGenerator&>(world.generator()),
-                sx, sz, night || dark, rv);
+            const u16 id = lair.exists
+                ? lairMobId(lair.kind)
+                : mobIdForBiome(world.generator().biomeAt(sx, sz),
+                                night || dark, rv);
             if (id == MOB_NONE) continue;
 
             const MobDef& def = mobRegistry().get(id);
             if (def.isBoss) continue;   // боссов ставит только updateBosses
-            if (def.hostile && !dark && !night) continue;
+            if (def.hostile && !dark && !night && !lair.exists && !blight) continue;
+
+            // Густота: в логове зверья больше, чем в чистом поле, —
+            // иначе «область, где водится волк» ничем не отличается
+            // от поля, по которому изредка пробегает волк.
+            const u32 cap = (lair.exists || blight) ? MAX_MOBS_PER_LAIR_CHUNK
+                                                    : MAX_MOBS_PER_CHUNK;
+            if (perChunk_[ck] >= cap) continue;
 
             const glm::vec3 pos { (f32)sx + 0.5f, (f32)sy, (f32)sz + 0.5f };
             if (spawnMob(world, reg, id, pos).valid()) {
@@ -270,6 +382,16 @@ void Spawner::update(world::ChunkManager& world,
                 break;
             }
         }
+    }
+
+    // ---- Засады ----
+    //
+    // Раз в полсекунды: чаще незачем, а реже — и игрок успеет
+    // пройти место засады насквозь.
+    ambushTimer_ += dt;
+    if (ambushTimer_ >= 0.5f) {
+        ambushTimer_ = 0.f;
+        updateAmbushes(world, reg, playerPos, worldSeed);
     }
 
     despawnTimer_ += dt;

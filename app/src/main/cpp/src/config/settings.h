@@ -25,9 +25,10 @@ enum ButtonSlot : u8 {
     Btn_Interact,
     Btn_UseItem,
     Btn_Camera,
+    Btn_Dash,
     Btn_SlotCount,
 };
-static_assert((u32)Btn_SlotCount == 8, "BUTTON_SLOTS должен совпадать с Btn_SlotCount");
+static_assert((u32)Btn_SlotCount == 9, "BUTTON_SLOTS должен совпадать с Btn_SlotCount");
 
 enum class Language : u8 {
     English = 0,
@@ -72,7 +73,7 @@ struct Settings {
 
     /// Пользовательские сдвиги кнопок в NDC. Индекс — ButtonSlot,
     /// см. ниже; позволяет свободно раскладывать кнопки по экрану.
-    static constexpr u32 BUTTON_SLOTS = 8;
+    static constexpr u32 BUTTON_SLOTS = 9;
     f32  buttonOffsetX[BUTTON_SLOTS] = {};
     f32  buttonOffsetY[BUTTON_SLOTS] = {};
 
@@ -113,8 +114,8 @@ struct Settings {
     bool unlimitedFps       = true;
 
     /// Какие проходы кадра рисовать. Бит на проход, по номерам
-    /// vk::Context::GpuPass: 1 ландшафт, 2 существа, 4 трава, 8 небо,
-    /// 16 вода, 32 контур, 64 интерфейс. По умолчанию все, 127.
+    /// vk::Context::GpuPass: 1 ландшафт, 2 существа, 4 небо,
+    /// 8 вода, 16 контур, 32 интерфейс. По умолчанию все, 63.
     ///
     /// Это измерительный инструмент, а не настройка качества.
     /// Мобильный GPU плиточный: метка времени ВНУТРИ прохода рендера
@@ -125,7 +126,7 @@ struct Settings {
     /// кадра по меткам GPU. Разность и есть цена.
     ///
     /// Ставится в settings.cfg ключом render_passes.
-    u32 renderPasses        = 0x7F;
+    u32 renderPasses        = 0x3F;
 
     /// Ставить ли метки времени GPU внутри прохода рендера.
     ///

@@ -35,6 +35,7 @@ enum class StrKey : u16 {
 
     // --- Крафт ---
     Craft_Title, Craft_Workbench, Craft_Anvil, Craft_Alchemy,
+    Craft_ByHand,
     Craft_Ingredients, Craft_Required, Craft_Button, Craft_Select,
 
     // --- Торговля ---
@@ -64,6 +65,12 @@ enum class StrKey : u16 {
     // --- Уведомления ---
     Notif_LevelUp, Notif_Crafted, Notif_Saved, Notif_Loaded,
     Notif_Deleted, Notif_RepGained, Notif_Loading,
+    Notif_Died, Notif_Respawned, Notif_WellBound,
+    // Логова: игрок должен понять, почему вокруг вдруг одни
+    // волки, — иначе это читается как поломка спавна.
+    Notif_LairWolves, Notif_LairSkeletons,
+    Notif_LairGoblins, Notif_LairSlimes,
+    Notif_Fall, Notif_Trap, Notif_Treasure,
 
     // --- Подсказка взаимодействия ---
     // Её не было вовсе, и это стоило игроку трёх экранов: близость

@@ -17,27 +17,34 @@ namespace world {
 // ============================================================
 static const std::array<BiomeDef, BIOME_COUNT> BIOMES = {{
     // Ocean
-    { "Ocean",    SAND,    DIRT,    STONE, WATER, 0.00f, TreeType::None,   0.0f, 0,  -0.3f },
+    { "Ocean",    SAND,    DIRT,    STONE, WATER, 0.00f, TreeType::None, 0,  -0.3f },
     // Beach
-    { "Beach",    SAND,    SAND,    STONE, WATER, 0.02f, TreeType::Palm,   2.0f, 0,   0.3f },
+    { "Beach",    SAND,    SAND,    STONE, WATER, 0.30f, TreeType::Palm, 0,   0.3f },
     // Plains
-    { "Plains",   GRASS,   DIRT,    STONE, WATER, 0.15f, TreeType::Oak,    8.0f, 2,   0.2f },
+    { "Plains",   GRASS,   DIRT,    STONE, WATER, 1.40f, TreeType::Oak, 2,   0.2f },
     // Forest
-    { "Forest",   GRASS,   DIRT,    STONE, WATER, 1.80f, TreeType::Oak,   12.0f, 3,   0.1f },
+    { "Forest",   GRASS,   DIRT,    STONE, WATER, 7.00f, TreeType::Oak, 3,   0.1f },
     // Taiga
-    { "Taiga",    GRASS,   DIRT,    STONE, WATER, 1.20f, TreeType::Pine,   6.0f, 4,  -0.5f },
+    { "Taiga",    GRASS,   DIRT,    STONE, WATER, 5.00f, TreeType::Pine, 4,  -0.5f },
     // Desert
-    { "Desert",   SAND,    SAND,    STONE, WATER, 0.05f, TreeType::Cactus, 0.3f, 0,   0.6f },
+    { "Desert",   SAND,    SAND,    STONE, WATER, 0.25f, TreeType::Cactus, 0,   0.6f },
     // Savanna
-    { "Savanna",  GRASS,   DIRT,    STONE, WATER, 0.25f, TreeType::Dead,   4.0f, 1,   0.5f },
+    { "Savanna",  GRASS,   DIRT,    STONE, WATER, 1.20f, TreeType::Dead, 1,   0.5f },
     // Tundra
-    { "Tundra",   SNOW,    DIRT,    STONE, ICE,   0.05f, TreeType::Pine,   0.5f, 3,  -0.8f },
+    { "Tundra",   SNOW,    DIRT,    STONE, ICE,   0.40f, TreeType::Pine, 3,  -0.8f },
     // Mountains
-    { "Mountains",STONE,   STONE,   STONE, WATER, 0.10f, TreeType::Pine,   0.5f, 20, -0.4f },
+    { "Mountains",STONE,   STONE,   STONE, WATER, 0.60f, TreeType::Pine, 20, -0.4f },
     // Swamp
-    { "Swamp",    GRASS,   DIRT,    STONE, WATER, 0.40f, TreeType::Dead,  10.0f, -2,  0.4f },
+    { "Swamp",    GRASS,   DIRT,    STONE, WATER, 2.50f, TreeType::Dead, -2,  0.4f },
     // Volcanic
-    { "Volcanic", STONE,   STONE,   STONE, LAVA,  0.00f, TreeType::None,   0.0f, 15,  0.8f },
+    { "Volcanic", STONE,   STONE,   STONE, LAVA,  0.00f, TreeType::None, 15,  0.8f },
+    // Blight — Чёрный лес.
+    //
+    // Плотность 14 — вдвое против обычного леса: сквозь такой лес не
+    // видно, и это главное, что делает место зловещим. Поверхность
+    // голая земля, а не трава: в Чёрном лесу ничего не растёт, кроме
+    // самого леса.
+    { "Blight",   DIRT,    DIRT,    STONE, WATER, 14.00f, TreeType::Dead, 1,  0.0f },
 }};
 
 struct BiomeField::Impl {
@@ -75,6 +82,10 @@ BiomeField::Sample BiomeField::fields(i32 x, i32 z) const {
     s.erosion = impl_->erosion.fbm3D(fx * 0.0020f, 0.f, fz * 0.0020f, 2) * 0.5f + 0.5f;
     // Пики
     s.peaks = std::max(0.f, impl_->peaks.fbm3D(fx * 0.0030f, 0.f, fz * 0.0030f, 3));
+    // Порча. Частота между континентами и температурой: пятна
+    // Чёрного леса должны быть больше деревни и меньше материка —
+    // иначе это либо рощица, либо полмира.
+    s.weird = impl_->weird.fbm3D(fx * 0.0008f, 0.f, fz * 0.0008f, 3);
 
     // Модификатор высоты: континент + горы, океаны глубже суши
     const f32 continentH = s.continent > 0.f ? s.continent * 45.f
@@ -94,6 +105,10 @@ void BiomeField::classify(Sample& s, i32 surfaceY) const {
     if (surfaceY < 24 && s.continent < -0.05f)            b = Ocean;
     else if (surfaceY < 28 && s.continent < 0.05f)        b = Beach;
     else if (surfaceY > 82)                               b = Mountains;
+    // Порча сильнее климата, но слабее моря и гор: Чёрный лес растёт
+    // на суше и не карабкается на скалы. Порог высокий — такие места
+    // должны попадаться, а не встречаться на каждом шагу.
+    else if (s.weird > 0.52f)                             b = Blight;
     else if (s.continent > 0.55f && tempAdjusted > 0.3f)  b = Volcanic;
     else if (s.humidity < -0.35f && tempAdjusted > 0.25f) b = Desert;
     else if (s.humidity < -0.10f && tempAdjusted > 0.15f) b = Savanna;

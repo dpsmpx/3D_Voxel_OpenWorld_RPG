@@ -42,6 +42,19 @@ enum class Screen {
     Enchant,
 };
 
+/// Разделы меню паузы.
+///
+/// Список вынесен из drawPauseMenu, потому что это факт об игре, а не
+/// деталь рисования: «достижим ли экран из меню» — единственный
+/// способ туда попасть, и проверить его иначе не к чему обратиться.
+/// Значок с очками считается на месте, при отрисовке: он зависит от
+/// игрока, а список — нет.
+struct MenuEntry {
+    config::StrKey label;
+    Screen      target;
+};
+const std::vector<MenuEntry>& menuEntries();
+
 enum class SaveLoadMode : u8 { Save = 0, Load };
 enum class SettingsTab : u8 { Input = 0, Ui, Audio, Game, Render, Count };
 
@@ -429,6 +442,8 @@ private:
     f32 cachedHpPct = 1.f;
     f32 cachedMpPct = 1.f;
     f32 cachedSpPct = 1.f;
+    /// Потолок выносливости: утомление отрезает хвост полоски.
+    f32 cachedSpCeil = 1.f;
 };
 
 } // namespace ui

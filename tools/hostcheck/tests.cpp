@@ -13,7 +13,9 @@
 #include "save/world_delta.h"
 #include "items/item_def.h"
 #include "items/item_pickup.h"
+#include "items/throwable.h"
 #include "combat/components.h"
+#include "combat/projectile.h"
 #include "trade/trade.h"
 #include "ecs/components.h"
 #include "npc/dialogue.h"
@@ -22,17 +24,21 @@
 #include "save/save_npc.h"
 #include "progression/skill_tree.h"
 #include "progression/progression.h"
+#include "progression/resource_regen.h"
 #include "crafting/crafting.h"
 #include "crafting/recipe.h"
 #include "items/item_use.h"
 #include "combat/resonance.h"
 #include "factions/faction.h"
 #include "quests/quest.h"
+#include "quests/quest_generator.h"
 #include "quests/quest_def.h"
 #include "combat/status_effects.h"
 #include "combat/damage.h"
 #include "mobs/mob_def.h"
 #include "mobs/mob_ai.h"
+#include "mobs/spawner.h"
+#include "world/hazards.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
 #include "save/save_format.h"
@@ -45,7 +51,6 @@
 #include "core/clipboard.h"
 #include "config/settings.h"
 #include "render/camera.h"
-#include "render/instanced_renderer.h"
 #include "render/mob_renderer.h"
 #include "physics/character_controller.h"
 #include "input/touch.h"
@@ -71,6 +76,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cctype>
+#include <map>
+#include <memory>
 #include <set>
 #include <dirent.h>
 #include "ui/hud_layout.h"
@@ -1635,7 +1642,6 @@ void testWorldSharesOneLightingModel() {
     struct Src { const char* name; std::string text; };
     Src shaders[] = {
         { "voxel.frag", stripComments(readSource("app/src/main/cpp/shaders/voxel.frag")) },
-        { "grass.frag", stripComments(readSource("app/src/main/cpp/shaders/grass.frag")) },
         { "mob.frag",   stripComments(readSource("app/src/main/cpp/shaders/mob.frag"))   },
         { "sky.frag",   stripComments(readSource("app/src/main/cpp/shaders/sky.frag"))   },
     };
@@ -1670,7 +1676,7 @@ void testWorldSharesOneLightingModel() {
     // байты. Компилятор такого не видит, слой проверки тоже —
     // размер набора дескрипторов сходится.
     const char* files[] = {
-        "voxel.vert", "voxel.frag", "sky.frag", "grass.vert", "grass.frag",
+        "voxel.vert", "voxel.frag", "sky.frag",
         "mob.vert", "mob.frag", "projectile.vert", "projectile.frag",
         "outline.vert",
     };
@@ -1774,43 +1780,6 @@ void testWorldSharesOneLightingModel() {
             }
         }
     }
-}
-
-
-void testDistantGrassIsNotSubPixel() {
-    group("трава: субпиксельных пучков не бывает");
-
-    // Порог считается по настоящему экранному размеру, поэтому верен
-    // при любом поле зрения и разрешении.
-    const f32 pxPerUnit = 1080.f * 0.5f / std::tan(glm::radians(70.f) * 0.5f);
-    check(pxPerUnit > 700.f && pxPerUnit < 800.f,
-          "пикселей на единицу посчитано разумно");
-
-    // Пучок высотой 0.6 на 40 блоках занимает меньше трёх пикселей?
-    // Тогда он обязан быть отброшен ещё до отправки на GPU.
-    const f32 farScale = 0.6f;
-    const f32 farDist  = 200.f;
-    check(farScale * pxPerUnit / farDist < render::GRASS_MIN_PIXELS,
-          "на двухстах блоках пучок мельче порога");
-    check(farScale * pxPerUnit / 10.f > render::GRASS_MIN_PIXELS,
-          "а на десяти — крупнее");
-
-    const std::string g = readSource("app/src/main/cpp/src/render/instanced_renderer.cpp");
-    if (g.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
-    check(g.find("GRASS_MIN_PIXELS") != std::string::npos,
-          "порог применяется при наборе инстансов");
-    check(g.find("continue") != std::string::npos, "и пучок именно отбрасывается");
-
-    // Отбрасывать надо ДО записи в буфер, а не в шейдере.
-    const usize thr = g.find("GRASS_MIN_PIXELS");
-    const usize push = g.find("cpuInstances_.push_back");
-    check(thr != std::string::npos && push != std::string::npos && thr < push,
-          "отсечка стоит раньше отправки инстанса");
-
-    const std::string fs = readSource("app/src/main/cpp/shaders/grass.frag");
-    if (!fs.empty())
-        check(fs.find("discard") == std::string::npos,
-              "и не подменяется discard'ом во фрагментном шейдере");
 }
 
 void testDiagnosticBuildWired() {
@@ -3395,8 +3364,8 @@ void testFrameGpuBreakdown() {
         check(m != NONE, "маска проходов есть в настройках");
         if (m != NONE) {
             const std::string line = cfg.substr(m, cfg.find(';', m) - m);
-            check(line.find("0x7F") != NONE,
-                  "и по умолчанию включены все семь");
+            check(line.find("0x3F") != NONE,
+                  "и по умолчанию включены все шесть");
         }
     }
 }
@@ -3481,7 +3450,6 @@ void testFramePassOrder() {
     const usize mob      = at("mobRenderer_.render");
     const usize proj     = at("projRenderer_.render");
     const usize item     = at("itemRenderer_.render");
-    const usize grass    = at("grass_.render");
     const usize sky      = at("skybox_.render");
     const usize blended  = at("chunkRenderer_.renderBlended");
     const usize outline  = at("blockOutline_.render");
@@ -3498,11 +3466,10 @@ void testFramePassOrder() {
     check(mob    < sky,  "мобы рисуются до неба");
     check(proj   < sky,  "снаряды рисуются до неба");
     check(item   < sky,  "предметы рисуются до неба");
-    check(grass  < sky,  "трава рисуется до неба");
 
     // Полупрозрачное — после неба, и после всего непрозрачного.
     check(sky < blended, "небо рисуется до воды");
-    check(grass < blended && mob < blended && npc < blended && item < blended,
+    check(mob < blended && npc < blended && item < blended,
           "вода рисуется после непрозрачных сущностей");
     check(blended < outline, "контур блока — после воды");
     check(outline < ui, "интерфейс рисуется последним");
@@ -3860,7 +3827,7 @@ namespace {
 std::vector<std::pair<std::string, std::string>> allShaders() {
     static const char* names[] = {
         "voxel.vert", "voxel.frag", "sky.vert", "sky.frag",
-        "grass.vert", "grass.frag", "mob.vert", "mob.frag",
+        "mob.vert", "mob.frag",
         "outline.vert", "outline.frag", "projectile.vert", "projectile.frag",
         "ui.vert", "ui.frag",
     };
@@ -4864,23 +4831,47 @@ void testPauseMenuIsGroupedAndComplete() {
     const usize end = src.find("\n}\n", pm);
     const std::string body = src.substr(pm, end - pm);
 
+    // Разделы спрашиваем у самого списка, а не ищем в тексте
+    // функции: список вынесен в menuEntries(), и поиск по исходнику
+    // рисования теперь проверял бы не то, где он есть, а то, где его
+    // печатают.
+    //
     // Инвентаря в списке не было, хотя выход из него вёл сюда.
-    check(body.find("Screen::Inventory") != NONE,
-          "в паузе есть инвентарь");
+    // Ремесла — тоже: экран открывался одной подсказкой у станка, и
+    // в поле был недостижим вовсе.
+    {
+        auto has = [](ui::Screen sc) {
+            for (const auto& e : ui::menuEntries())
+                if (e.target == sc) return true;
+            return false;
+        };
+        check(has(ui::Screen::Inventory), "в паузе есть инвентарь");
+        check(has(ui::Screen::Crafting),  "и ремесло: без станка иначе никак");
 
-    // Все прежние разделы остались достижимы.
-    const char* need[] = { "Screen::Attributes", "Screen::SkillTree",
-                           "Screen::QuestLog", "Screen::Reputation",
-                           "Screen::SaveLoad", "Screen::Settings" };
-    int missing = 0;
-    for (const char* n : need) {
-        if (body.find(n) != NONE) continue;
-        ++missing;
-        char msg[128];
-        std::snprintf(msg, sizeof(msg), "из паузы пропал раздел %s", n);
-        check(false, msg);
+        const ui::Screen need[] = {
+            ui::Screen::Attributes, ui::Screen::SkillTree,
+            ui::Screen::QuestLog,   ui::Screen::Reputation,
+            ui::Screen::SaveLoad,   ui::Screen::Settings,
+        };
+        int missing = 0;
+        for (ui::Screen sc : need) {
+            if (has(sc)) continue;
+            ++missing;
+            char msg[128];
+            std::snprintf(msg, sizeof(msg), "из паузы пропал раздел %d", (int)sc);
+            check(false, msg);
+        }
+        check(missing == 0, "ни один прежний раздел не потерян");
+
+        // И ни один раздел не назван дважды: дубль в списке — это
+        // две одинаковые кнопки на экране.
+        int dupes = 0;
+        const auto& all = ui::menuEntries();
+        for (usize i = 0; i < all.size(); ++i)
+            for (usize j = i + 1; j < all.size(); ++j)
+                if (all[i].target == all[j].target) ++dupes;
+        check(dupes == 0, "и ни один не назван дважды");
     }
-    check(missing == 0, "ни один прежний раздел не потерян");
 
     // Сетка, а не столбец: в альбомной ориентации столбец — худшая
     // из форм, по вертикали места меньше всего.
@@ -7441,7 +7432,6 @@ void testEveryPassSetsViewport() {
     // сказать об этом было некому.
     static const char* files[] = {
         "app/src/main/cpp/src/render/chunk_renderer.cpp",
-        "app/src/main/cpp/src/render/instanced_renderer.cpp",
         "app/src/main/cpp/src/render/mob_renderer.cpp",
         "app/src/main/cpp/src/render/npc_renderer.cpp",
         "app/src/main/cpp/src/render/item_renderer.cpp",
@@ -7484,7 +7474,7 @@ void testEveryPassSetsViewport() {
         }
     }
 
-    check(draws >= 10, "проходы, которые рисуют, найдены");
+    check(draws >= 9, "проходы, которые рисуют, найдены");
     if (draws < 9) std::printf("       найдено только %zu\n", draws);
     check(missing == 0, "каждый из них задаёт вьюпорт и ножницы сам");
     if (missing) std::printf("       первый без вьюпорта: %s\n", firstBad.c_str());
@@ -7670,6 +7660,2278 @@ void testEveryAudioEventIsFired() {
 // было заполнено, — не читал никто. applyConsumable возвращал
 // «эффекта нет», и предмет даже не тратился: четыре предмета в игре
 // не делали ровно ничего.
+// ------------------------------------------------------------
+// Батут летит, ложится и подбрасывает.
+//
+// Бросок идёт не по дуге, а лучом: место падения ищется взглядом и
+// опускается до земли. Дуга выглядела бы красивее, но батут кидают
+// ровно туда, куда собираются прыгнуть, — и промах на два блока
+// означал бы, что прыжок не состоялся.
+// ------------------------------------------------------------
+// Рывок уносит вперёд, стоит выносливости и не проходит сквозь стены.
+//
+// Рывок — это скорость на короткое время, а не перенос позиции.
+// Перенос пришлось бы проверять на проходимость самому, и по дороге
+// он протаскивал бы сквозь стены; скорость идёт через то же
+// разрешение коллизий, что и обычный шаг, и упирается сама.
+// ------------------------------------------------------------
+// Сюрикен летит и бьёт.
+//
+// Урон у него не зависит от того, что в руках: сюрикен — не оружие, а
+// расходник, и вкладывать в него ни ковку, ни зачарование некуда.
+// Летит настильно, без гравитации: на его дистанции дуга была бы
+// только помехой прицелу.
+// ------------------------------------------------------------
+// По дереву-подземелью и правда можно подняться.
+//
+// Отдельного блока-лестницы в игре нет: подъём делает контроллер, и
+// делает его на один блок за шаг. Значит лестница внутри ствола
+// обязана быть ступенчатой и соседней по стороне, а над каждой
+// ступенью должно оставаться место для тела.
+//
+// Проверка не знает, как именно лестница построена, и знать не
+// должна. Она берёт СВОЙСТВО: на каждой высоте есть клетка, где
+// блок твёрдый, а два над ним пустые, и такая клетка на следующей
+// высоте стоит рядом. Ровно это и значит «можно подняться».
+// ------------------------------------------------------------
+// Лес большой, густой и не обрезан по границам чанков.
+//
+// Раньше дерево жило строго в своём чанке: анкер выбирался в нём, и
+// крона резалась о границу. При кроне радиусом два это было «изредка
+// обрезанные ветви», при радиусе пять — половина дерева, срезанная по
+// линейке. Поэтому чанк доращивает и деревья соседей, и проверяется
+// это прямо: крона дерева с той стороны границы обязана быть здесь.
+// ------------------------------------------------------------
+// Колодец запоминается, смерть возвращает к нему.
+//
+// Смерти в игре не было вовсе: здоровье уходило в ноль, звучал звук,
+// и на этом всё — игрок оставался стоять с нулём и играть дальше.
+// ------------------------------------------------------------
+void testWellIsRespawnPoint() {
+    group("колодец: точка возвращения");
+
+    world::blocks();
+    items::items();
+
+    constexpr u64 SEED = 4242;
+    jobs::gJobs.start(2);
+    world::ChunkManager world(SEED, 2);
+
+    // Та же деревня, что и в остальных проверках, и найденная тем же
+    // способом — через общую раскладку.
+    world::VillageSite site;
+    for (i32 r = 0; r < 12 && !site.exists; ++r)
+        for (i32 a = -r; a <= r && !site.exists; ++a)
+            for (i32 b = -r; b <= r && !site.exists; ++b) {
+                if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                site = world::villageAt(a, b, SEED, &world.generator());
+            }
+    check(site.exists, "деревня с колодцем нашлась");
+    if (!site.exists) { jobs::gJobs.stop(); return; }
+    check(site.center.y > 0, "и высота колодца известна, а не нуль");
+
+    const glm::vec3 well{ (f32)site.center.x + 0.5f,
+                          (f32)site.center.y,
+                          (f32)site.center.z + 0.5f };
+
+    bool ready = false;
+    for (int i = 0; i < 900 && !ready; ++i) {
+        world.update(well);
+        ready = world.isReadyAt(site.center.x, site.center.z) &&
+                world.pendingJobs() == 0;
+        if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    check(ready, "чанк с колодцем построен");
+    if (!ready) { jobs::gJobs.stop(); return; }
+
+    ecs::Registry reg;
+    player::Player pl;
+    const glm::vec3 far = well + glm::vec3(300.f, 0.f, 300.f);
+    pl.init(reg, far);
+
+    auto* rp = reg.get<ecs::Respawn>(pl.entity());
+    check(rp != nullptr, "точка возвращения у игрока есть");
+    if (!rp) { jobs::gJobs.stop(); return; }
+    check(rp->set, "и она задана с самого начала");
+    check(glm::length(rp->point - far) < 0.01f,
+          "сперва это место появления на свет");
+
+    // ---- Подходим к колодцу ----
+    pl.controller.setPosition(well + glm::vec3(1.f, 1.f, 0.f));
+    bool bound = false;
+    for (int i = 0; i < 60 && !bound; ++i) {
+        pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+        if (pl.newRespawnPoint) bound = true;
+    }
+    check(bound, "колодец замечен и объявлен");
+    const glm::vec3 saved = rp->point;
+    check(glm::length(glm::vec2(saved.x - well.x, saved.z - well.z)) < 4.f,
+          "точка возвращения встала у колодца");
+    check(glm::length(glm::vec2(saved.x - well.x, saved.z - well.z)) > 1.f,
+          "но не в самой воде посреди него");
+
+    // ---- Второй раз тот же колодец не объявляется ----
+    bool again = false;
+    for (int i = 0; i < 120; ++i) {
+        pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+        if (pl.newRespawnPoint) again = true;
+    }
+    check(!again, "и повторно про тот же колодец не напоминает");
+
+    // ---- Смерть и возвращение ----
+    pl.controller.setPosition(well + glm::vec3(40.f, 6.f, 40.f));
+    auto* hp = reg.get<ecs::Health>(pl.entity());
+    check(hp != nullptr, "здоровье есть");
+    if (!hp) { jobs::gJobs.stop(); return; }
+    hp->current = 0.f;
+
+    bool died = false, back = false;
+    for (int i = 0; i < 60 * 6 && !back; ++i) {
+        pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+        if (pl.justDied)      died = true;
+        if (pl.justRespawned) back = true;
+    }
+    check(died, "смерть замечена");
+    check(back, "и игрок вернулся сам, а не остался лежать");
+    check(hp->current > hp->max - 0.01f, "вернулся целым");
+    const glm::vec3 now = pl.controller.state().position;
+    check(glm::length(glm::vec2(now.x - saved.x, now.z - saved.z)) < 1.f,
+          "и ровно к запомненному колодцу");
+
+    // ---- Точка переживает сохранение ----
+    {
+        save::ByteWriter w;
+        save::serializePlayer(w, reg, pl.entity());
+
+        ecs::Registry reg2;
+        player::Player pl2;
+        pl2.init(reg2, glm::vec3(0.f, 64.f, 0.f));
+        save::ByteReader r(w.data());
+        check(save::deserializePlayer(r, reg2, pl2.entity()),
+              "игрок прочитан обратно");
+        auto* rp2 = reg2.get<ecs::Respawn>(pl2.entity());
+        check(rp2 && rp2->set, "точка возвращения прочитана");
+        if (rp2) check(glm::length(rp2->point - saved) < 0.01f,
+                       "и это тот же колодец");
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+void testForestIsBigAndDense() {
+    group("лес: большие деревья, кусты и кроны через границу");
+
+    world::blocks();
+    constexpr u64 SEED = 0xF04E57;
+    world::ChunkManager mgr(SEED, 1);
+    const auto& gen = mgr.generator();
+
+    // Ищем лесной чанк — биом берётся по его середине, как и в
+    // applyTrees.
+    i32 fcx = 0, fcz = 0;
+    bool found = false;
+    for (i32 r = 0; r < 30 && !found; ++r)
+        for (i32 a = -r; a <= r && !found; ++a)
+            for (i32 b = -r; b <= r && !found; ++b) {
+                if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                if (gen.biomeAt(a * 32 + 16, b * 32 + 16) != world::Forest) continue;
+                fcx = a; fcz = b; found = true;
+            }
+    check(found, "лесной чанк нашёлся");
+    if (!found) return;
+
+    // Каждый чанк строится сам по себе — ровно как в игре.
+    std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> chunks;
+    std::vector<world::TerrainGenerator::Column> cols;
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            auto ch = std::make_unique<world::Chunk>();
+            ch->coord = { fcx + dx, 0, fcz + dz };
+            world::computeChunkColumns(gen, fcx + dx, fcz + dz, cols);
+            world::generateChunkVoxels(*ch, gen, cols.data(), SEED);
+            chunks.emplace(std::make_pair(fcx + dx, fcz + dz), std::move(ch));
+        }
+    auto at = [&](i32 wx, i32 wy, i32 wz) -> u16 {
+        if (wy < 0 || wy >= world::CHUNK_SIZE_Y) return world::AIR;
+        const i32 ccx = wx >> 5, ccz = wz >> 5;
+        auto it = chunks.find({ ccx, ccz });
+        if (it == chunks.end()) return world::UNKNOWN;
+        return it->second->voxels[world::chunkIndex(wx - ccx * 32, wy,
+                                                   wz - ccz * 32)];
+    };
+
+    // ---- Стволы: сколько их и какой высоты ----
+    struct Trunk { i32 x, z, top, height; };
+    std::vector<Trunk> trunks;
+    usize bushLeaves = 0, allLeaves = 0;
+
+    const i32 wx0 = fcx * 32, wz0 = fcz * 32;
+    for (i32 wz = wz0; wz < wz0 + 32; ++wz)
+        for (i32 wx = wx0; wx < wx0 + 32; ++wx) {
+            const i32 surf = gen.surfaceHeight(wx, wz);
+            for (i32 y = surf; y < surf + 24; ++y) {
+                const u16 b = at(wx, y, wz);
+                if (b == world::LEAVES) {
+                    ++allLeaves;
+                    if (y <= surf + 2) ++bushLeaves;
+                }
+            }
+            if (at(wx, surf, wz) != world::WOOD) continue;
+            i32 top = surf;
+            while (top < surf + 24 && at(wx, top, wz) == world::WOOD) ++top;
+            trunks.push_back({ wx, wz, top, top - surf });
+        }
+
+    std::printf("       стволов %zu, листвы %zu, кустовой листвы %zu\n",
+                trunks.size(), allLeaves, bushLeaves);
+
+    check(trunks.size() >= 4, "лес густой: стволов в чанке хватает");
+    check(bushLeaves > 0, "и подлесок есть");
+
+    i32 tallest = 0;
+    for (const auto& t : trunks) tallest = std::max(tallest, t.height);
+    check(tallest >= 7, "деревья высокие, а не в четыре блока");
+
+    // ---- Крона переходит границу ----
+    //
+    // Берём ствол у самого края и смотрим, дотянулась ли его крона в
+    // соседний чанк. Сосед строился отдельно и про этот ствол знать
+    // не обязан — вот это и проверяем.
+    bool crossed = false, tested = false;
+    for (const auto& t : trunks) {
+        const i32 lx = t.x - wx0, lz = t.z - wz0;
+        i32 ox = 0, oz = 0;
+        if (lx <= 2)       ox = -3;
+        else if (lx >= 29) ox =  3;
+        else if (lz <= 2)  oz = -3;
+        else if (lz >= 29) oz =  3;
+        else continue;
+        tested = true;
+        for (i32 dy = -3; dy <= 0 && !crossed; ++dy)
+            if (at(t.x + ox, t.top + dy, t.z + oz) == world::LEAVES)
+                crossed = true;
+        if (crossed) break;
+    }
+    check(tested, "ствол у края чанка нашёлся");
+    check(!tested || crossed,
+          "крона такого ствола видна и в соседнем чанке");
+}
+
+// ------------------------------------------------------------
+/// Две соседние по сетке super-chunk деревни, между которыми есть
+/// дорога. Обе проверки ниже начинают с одного и того же поиска.
+struct RoadPair {
+    bool found = false;
+    world::VillageSite a, b;
+};
+
+RoadPair findRoadPair(const world::TerrainGenerator& gen, u64 seed) {
+    RoadPair p;
+    for (i32 r = 0; r < 14 && !p.found; ++r)
+        for (i32 sa = -r; sa <= r && !p.found; ++sa)
+            for (i32 sb = -r; sb <= r && !p.found; ++sb) {
+                if (std::max(std::abs(sa), std::abs(sb)) != r) continue;
+                const auto a = world::villageAt(sa, sb, seed, &gen);
+                if (!a.exists) continue;
+                const auto east = world::villageAt(sa + 1, sb, seed, &gen);
+                if (east.exists) { p = { true, a, east }; break; }
+                const auto south = world::villageAt(sa, sb + 1, seed, &gen);
+                if (south.exists) { p = { true, a, south }; break; }
+            }
+    return p;
+}
+
+/// Проверка одного отрезка дороги в мире с данным зерном.
+///
+/// Считает, сколько точек середины пути вымощено и сколько заросло,
+/// и складывает в переданные счётчики. Одного зерна мало: дорога,
+/// прошедшая через равнину, не скажет ничего про дорогу через лес, а
+/// расчищает полотно как раз лес.
+void measureRoad(u64 SEED, int& sampledOut, int& pavedOut, int& woodedOut,
+                 int& midOut, int& wideOut)
+{
+    world::ChunkManager mgr(SEED, 1);
+    const RoadPair pair = findRoadPair(mgr.generator(), SEED);
+    if (!pair.found) return;
+
+    // Генерируем только те чанки, по которым идёт отрезок, с запасом
+    // в один чанк поперёк: класть дорогу целиком незачем, проверяем
+    // середину пути.
+    const glm::ivec3 A = pair.a.center, B = pair.b.center;
+    std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> gencache;
+    std::vector<world::TerrainGenerator::Column> cols;
+    auto chunkAt = [&](i32 cx, i32 cz) -> world::Chunk* {
+        auto key = std::make_pair(cx, cz);
+        auto it = gencache.find(key);
+        if (it != gencache.end()) return it->second.get();
+        auto ch = std::make_unique<world::Chunk>();
+        ch->coord = { cx, 0, cz };
+        world::computeChunkColumns(mgr.generator(), cx, cz, cols);
+        world::generateChunkVoxels(*ch, mgr.generator(), cols.data(), SEED);
+        world::Chunk* raw = ch.get();
+        gencache.emplace(key, std::move(ch));
+        return raw;
+    };
+    auto blockAt = [&](i32 wx, i32 wy, i32 wz) -> u16 {
+        const i32 cx = (i32)std::floor((f32)wx / world::CHUNK_SIZE);
+        const i32 cz = (i32)std::floor((f32)wz / world::CHUNK_SIZE);
+        world::Chunk* c = chunkAt(cx, cz);
+        const i32 lx = wx - cx * world::CHUNK_SIZE;
+        const i32 lz = wz - cz * world::CHUNK_SIZE;
+        if (!c->inBounds(lx, wy, lz)) return world::AIR;
+        return c->at(lx, wy, lz);
+    };
+    // Блок полотна — тот, на который putOnGround кладёт камень:
+    // surfaceHeight − 1. Искать «первый сверху» нельзя, над дорогой
+    // свисают кроны.
+    auto surfaceBlock = [&](i32 wx, i32 wz) -> u16 {
+        const i32 y = mgr.generator().surfaceHeight(wx, wz) - 1;
+        if (y < 1) return world::AIR;
+        return blockAt(wx, y, wz);
+    };
+
+    // ---- 1. Дорога идёт ----
+    //
+    // Смотрим середину пути: у самой деревни камень лежит и без
+    // дороги — там своя мостовая.
+    const i32 dxs = B.x - A.x, dzs = B.z - A.z;
+    const i32 steps = std::max(std::abs(dxs), std::abs(dzs));
+    if (steps < 100) return;
+
+    int sampled = 0, paved = 0, wooded = 0;
+    for (i32 i = steps * 15 / 100; i <= steps * 85 / 100; ++i) {
+        const i32 x = A.x + dxs * i / steps;
+        const i32 z = A.z + dzs * i / steps;
+        ++sampled;
+        // Высоту полотна спрашиваем у рельефа, а не ищем сверху:
+        // «первый блок сверху» над дорогой — это крона соседнего
+        // дуба, и по ней о дороге судить нельзя.
+        const i32 roadY = mgr.generator().surfaceHeight(x, z) - 1;
+        if (roadY < 1) continue;
+        if (blockAt(x, roadY, z) == world::STONE) ++paved;
+        // Дерево на полотне дорогу не украшает, а обрывает: по стволу
+        // не пройти. Смотрим ровно то, во что упрётся идущий, — три
+        // блока над камнем.
+        for (i32 y = roadY + 1; y <= roadY + 3; ++y) {
+            const u16 b = blockAt(x, y, z);
+            if (b == world::WOOD || b == world::LEAVES || b == world::CACTUS) {
+                ++wooded;
+                break;
+            }
+        }
+    }
+    sampledOut += sampled;
+    pavedOut   += paved;
+    woodedOut  += wooded;
+
+    // ---- 2. Полотно шириной в три блока ----
+    //
+    // Ширина — это не украшение: посыльный идёт по прямой между
+    // колодцами, а не по клетке, и на дорожке в один блок он бы с неё
+    // сходил.
+    const bool alongX = std::abs(dxs) >= std::abs(dzs);
+    for (i32 i = steps * 4 / 10; i <= steps * 6 / 10; ++i) {
+        const i32 x = A.x + dxs * i / steps;
+        const i32 z = A.z + dzs * i / steps;
+        if (surfaceBlock(x, z) != world::STONE) continue;
+        ++midOut;
+        int w = 0;
+        for (i32 k = -1; k <= 1; ++k)
+            if (surfaceBlock(alongX ? x : x + k, alongX ? z + k : z)
+                == world::STONE) ++w;
+        if (w == 3) ++wideOut;
+    }
+}
+
+void testRoadConnectsVillages() {
+    group("дороги: камень от деревни до деревни, и лес на неё не лезет");
+
+    world::blocks();
+
+    // Три зерна, а не одно: дорога через равнину о расчистке полотна
+    // не скажет ничего — зарастает она в лесу.
+    const u64 seeds[3] = { 0x2A0D, 0xF04E57, 4242 };
+    int sampled = 0, paved = 0, wooded = 0, midpoints = 0, wide = 0;
+    for (u64 sd : seeds)
+        measureRoad(sd, sampled, paved, wooded, midpoints, wide);
+
+    {
+        char m[180];
+        std::snprintf(m, sizeof(m),
+                      "три мира: точек %d, мощёных %d, заросших %d, "
+                      "замеров ширины %d из них полных %d",
+                      sampled, paved, wooded, midpoints, wide);
+        check(true, m);
+    }
+    check(sampled > 300, "есть что мерить");
+    check(paved * 10 >= sampled * 7,
+          "дорога вымощена почти на всём протяжении");
+    check(wooded == 0, "и ни одно дерево не выросло на ней");
+    check(midpoints > 30, "мощёных точек хватает для замера ширины");
+    check(wide * 10 >= midpoints * 8, "полотно шириной в три блока");
+
+    // ---- Дорога не строится дважды ----
+    //
+    // Отрезки кладутся только на восток и на юг. Обратного отрезка
+    // (с запада или с севера) быть не должно — иначе на перекрёстках
+    // дорог оказалось бы вдвое больше нужного.
+    {
+        constexpr u64 SEED = 0x2A0D;
+        world::ChunkManager mgr(SEED, 1);
+        const RoadPair pair = findRoadPair(mgr.generator(), SEED);
+        check(pair.found, "деревни-соседки нашлись");
+        if (!pair.found) return;
+        check(pair.a.center.y > 0 && pair.b.center.y > 0,
+              "у обеих известна высота колодца");
+        const i32 sxA = (i32)std::floor((f32)pair.a.center.x / 256.f);
+        const i32 szA = (i32)std::floor((f32)pair.a.center.z / 256.f);
+        int outgoing = 0;
+        if (world::villageAt(sxA + 1, szA, SEED, &mgr.generator()).exists) ++outgoing;
+        if (world::villageAt(sxA, szA + 1, SEED, &mgr.generator()).exists) ++outgoing;
+        check(outgoing >= 1, "из деревни выходит хотя бы одна дорога вперёд");
+    }
+}
+
+// ------------------------------------------------------------
+void testCourierWalksTheRoad() {
+    group("посыльный: выходит на дорогу и идёт из деревни в деревню");
+
+    world::blocks();
+    items::items();
+    npc::npcRegistry();
+
+    constexpr u64 SEED = 0x2A0D;
+    jobs::gJobs.start(2);
+    world::ChunkManager world(SEED, 3);
+
+    const RoadPair pair = findRoadPair(world.generator(), SEED);
+    check(pair.found, "деревни-соседки нашлись");
+    if (!pair.found) { jobs::gJobs.stop(); return; }
+
+    // Игрок стоит ровно посреди дороги: спавнер ищет ближайшую точку
+    // отрезка и требует, чтобы до неё было не дальше семидесяти
+    // метров.
+    const glm::ivec3 A = pair.a.center, B = pair.b.center;
+    const i32 mx = (A.x + B.x) / 2, mz = (A.z + B.z) / 2;
+    const glm::vec3 playerPos{ (f32)mx + 0.5f,
+                               (f32)world.generator().surfaceHeight(mx, mz),
+                               (f32)mz + 0.5f };
+
+    bool ready = false;
+    for (int i = 0; i < 1200 && !ready; ++i) {
+        world.update(playerPos);
+        ready = world.isReadyAt(mx, mz) && world.pendingJobs() == 0;
+        if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(ready, "дорога под ногами построена");
+    if (!ready) { jobs::gJobs.stop(); return; }
+
+    ecs::Registry reg;
+    npc::NpcSpawner spawner;
+
+    auto findCourier = [&]() -> ecs::Entity {
+        auto& pool = reg.pool<npc::NpcTag>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            ecs::Entity e = pool.entityAt((u32)i);
+            auto* t = pool.get(e);
+            if (t && t->id == npc::NPC_COURIER) return e;
+        }
+        return ecs::Entity{};
+    };
+
+    // Посыльные проверяются раз в четыре секунды — это 240 кадров.
+    ecs::Entity courier{};
+    for (int i = 0; i < 60 * 9 && !courier.valid(); ++i) {
+        spawner.update(world, reg, playerPos, SEED);
+        courier = findCourier();
+    }
+    check(courier.valid(), "посыльный вышел на дорогу");
+    if (!courier.valid()) { jobs::gJobs.stop(); return; }
+
+    auto* ai = reg.get<npc::NpcAI>(courier);
+    auto* tf = reg.get<ecs::Transform>(courier);
+    check(ai && tf, "у посыльного есть и рассудок, и место");
+    if (!ai || !tf) { jobs::gJobs.stop(); return; }
+    check(ai->state == npc::NpcAI::Travel, "и он именно в пути");
+
+    // Он стоит НА дороге, а не рядом с ней.
+    {
+        const glm::vec2 P{ tf->position.x, tf->position.z };
+        const glm::vec2 a2{ (f32)A.x, (f32)A.z }, b2{ (f32)B.x, (f32)B.z };
+        const glm::vec2 v = b2 - a2;
+        f32 t = glm::dot(P - a2, v) / glm::dot(v, v);
+        t = std::max(0.f, std::min(1.f, t));
+        check(glm::distance(a2 + v * t, P) < 4.f, "и стоит на полотне");
+    }
+
+    // ---- Идёт к цели ----
+    const glm::vec3 target = ai->travelTarget;
+    const f32 before = glm::distance(glm::vec2(tf->position.x, tf->position.z),
+                                     glm::vec2(target.x, target.z));
+    for (int i = 0; i < 60 * 3; ++i)
+        npc::updateNpcs(world, reg, ecs::Entity{}, playerPos, 1.f / 60.f);
+    const f32 after = glm::distance(glm::vec2(tf->position.x, tf->position.z),
+                                    glm::vec2(target.x, target.z));
+    {
+        char m[140];
+        std::snprintf(m, sizeof(m), "до цели было %.1f, стало %.1f",
+                      (double)before, (double)after);
+        check(true, m);
+    }
+    check(after < before - 5.f, "за три секунды он заметно приблизился к цели");
+
+    // ---- Дойдя, разворачивается ----
+    //
+    // Ставим его вплотную к цели: ждать, пока он пройдёт сотню
+    // метров, проверка не должна.
+    const glm::vec3 home = ai->homePos;
+    tf->position = glm::vec3(target.x, tf->position.y, target.z);
+    for (int i = 0; i < 12; ++i)
+        npc::updateNpcs(world, reg, ecs::Entity{}, playerPos, 1.f / 60.f);
+    check(glm::distance(glm::vec2(ai->travelTarget.x, ai->travelTarget.z),
+                        glm::vec2(home.x, home.z)) < 0.01f,
+          "дойдя, он повернул к тому концу, откуда вышел");
+    check(glm::distance(glm::vec2(ai->homePos.x, ai->homePos.z),
+                        glm::vec2(target.x, target.z)) < 0.01f,
+          "а прежняя цель стала домом");
+
+    // ---- Их не становится толпа ----
+    for (int i = 0; i < 60 * 30; ++i)
+        spawner.update(world, reg, playerPos, SEED);
+    int couriers = 0;
+    {
+        auto& pool = reg.pool<npc::NpcTag>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            auto* t = pool.get(pool.entityAt((u32)i));
+            if (t && t->id == npc::NPC_COURIER) ++couriers;
+        }
+    }
+    {
+        char m[120];
+        std::snprintf(m, sizeof(m), "за полминуты посыльных стало %d", couriers);
+        check(true, m);
+    }
+    check(couriers <= 2, "на дороге их двое, а не толпа");
+
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+void testSecretTreasureAndItsQuest() {
+    group("тайник: замурованный клад под руинами и подсказка к нему");
+
+    world::blocks();
+    items::items();
+
+    constexpr u64 SEED = 0x7EA5;
+    jobs::gJobs.start(2);
+    world::ChunkManager world(SEED, 2);
+    const auto& gen = world.generator();
+
+    // ---- 1. Тайники есть, и лежат они под руинами ----
+    world::TreasureSite site;
+    int found = 0, cells = 0, notRuin = 0;
+    for (i32 sz = -12; sz <= 12; ++sz)
+        for (i32 sx = -12; sx <= 12; ++sx) {
+            ++cells;
+            const auto t = world::treasureAt(sx, sz, SEED, &gen);
+            if (!t.exists) continue;
+            ++found;
+            // Под руинами, а не где попало: деревня, подземелье и
+            // замок — чужие места.
+            if (world::villageAt(sx, sz, SEED, &gen).exists ||
+                world::dungeonAt(sx, sz, SEED).exists ||
+                world::treeDungeonAt(sx, sz, SEED, &gen).exists)
+                ++notRuin;
+            if (!site.exists) site = t;
+        }
+    {
+        char m[140];
+        std::snprintf(m, sizeof(m), "ячеек %d, тайников %d, не под руинами %d",
+                      cells, found, notRuin);
+        check(true, m);
+    }
+    check(found > 10, "тайники в мире есть");
+    check(notRuin == 0, "и ни один не лёг под чужую постройку");
+    check(site.exists, "тайник для разбора найден");
+    if (!site.exists) { jobs::gJobs.stop(); return; }
+
+    // ---- 2. Камера замурована ----
+    //
+    // Ни хода, ни лестницы: добираются сверху, разобрав землю. Это и
+    // делает клад кладом, а не комнатой с сундуком.
+    {
+        const i32 cxc = (i32)std::floor((f32)site.center.x / world::CHUNK_SIZE);
+        const i32 czc = (i32)std::floor((f32)site.center.z / world::CHUNK_SIZE);
+        std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> cache;
+        std::vector<world::TerrainGenerator::Column> cols;
+        auto blockAt = [&](i32 wx, i32 wy, i32 wz) -> u16 {
+            const i32 cx = (i32)std::floor((f32)wx / world::CHUNK_SIZE);
+            const i32 cz = (i32)std::floor((f32)wz / world::CHUNK_SIZE);
+            auto key = std::make_pair(cx, cz);
+            auto it = cache.find(key);
+            if (it == cache.end()) {
+                auto ch = std::make_unique<world::Chunk>();
+                ch->coord = { cx, 0, cz };
+                world::computeChunkColumns(gen, cx, cz, cols);
+                world::generateChunkVoxels(*ch, gen, cols.data(), SEED);
+                it = cache.emplace(key, std::move(ch)).first;
+            }
+            const i32 lx = wx - cx * world::CHUNK_SIZE;
+            const i32 lz = wz - cz * world::CHUNK_SIZE;
+            if (!it->second->inBounds(lx, wy, lz)) return world::AIR;
+            return it->second->at(lx, wy, lz);
+        };
+        (void)cxc; (void)czc;
+
+        const i32 CX = site.center.x, CY = site.center.y, CZ = site.center.z;
+        check(blockAt(CX, CY + 1, CZ) == world::AIR, "внутри камеры пусто");
+
+        // Свод и стены — камень по всему обводу.
+        int shell = 0, holes = 0;
+        for (i32 dx = -3; dx <= 3; ++dx)
+            for (i32 dz = -3; dz <= 3; ++dz) {
+                if (std::abs(dx) == 3 || std::abs(dz) == 3) {
+                    // Стена
+                    for (i32 y = CY; y < CY + 3; ++y)
+                        (blockAt(CX + dx, y, CZ + dz) == world::STONE) ? ++shell
+                                                                       : ++holes;
+                } else {
+                    // Свод
+                    (blockAt(CX + dx, CY + 3, CZ + dz) == world::STONE) ? ++shell
+                                                                       : ++holes;
+                }
+            }
+        char m[140];
+        std::snprintf(m, sizeof(m), "обвод камеры: камня %d, дыр %d", shell, holes);
+        check(true, m);
+        check(shell > 40, "камера обнесена камнем");
+        check(holes == 0, "и замурована без единого лаза");
+
+        // Золотая жила и фонарь — то, ради чего копали.
+        int gold = 0;
+        for (i32 dx = -2; dx <= 2; ++dx)
+            for (i32 dz = -2; dz <= 2; ++dz)
+                if (blockAt(CX + dx, CY, CZ + dz) == world::GOLD_ORE) ++gold;
+        check(gold >= 4, "на полу камеры золотая жила");
+        check(blockAt(CX, CY + 2, CZ) == world::LANTERN,
+              "и фонарь, иначе камера — чёрный куб");
+
+        // Клад лежит ГЛУБОКО: сверху земля, а не воздух.
+        const i32 top = gen.surfaceHeight(CX, CZ);
+        char dm[120];
+        std::snprintf(dm, sizeof(dm), "поверхность на %d, камера на %d", top, CY);
+        check(true, dm);
+        check(top - (CY + 3) >= 2, "между сводом и травой есть что копать");
+    }
+
+    // ---- 3. Докопавшемуся высыпается добро ----
+    {
+        ecs::Registry reg;
+        hazards::TreasureKeeper keeper;
+        const glm::vec3 inside{ (f32)site.center.x + 0.5f,
+                                (f32)site.center.y,
+                                (f32)site.center.z + 0.5f };
+        const glm::vec3 far = inside + glm::vec3(60.f, 0.f, 60.f);
+
+        check(keeper.update(world, reg, far, SEED) == 0,
+              "издали клад не открывается");
+        const u32 spilled = keeper.update(world, reg, inside, SEED);
+        {
+            char m[120];
+            std::snprintf(m, sizeof(m), "в камере высыпалось стопок: %u", spilled);
+            check(true, m);
+        }
+        check(spilled >= 3, "дошедшему высыпается добро");
+        check(keeper.openedCount() == 1, "тайник помечен вскрытым");
+
+        // Второй раз тот же клад не наполняется: иначе это не клад,
+        // а бесконечный источник золота.
+        const u32 again = keeper.update(world, reg, inside, SEED);
+        check(again == 0, "вскрытый клад второй раз не наполняется");
+
+        // И переживает сохранение: докопался, вышел, загрузился —
+        // и копай то же место снова было бы то же самое.
+        {
+            save::ByteWriter w;
+            save::serializeTreasures(w, keeper);
+            hazards::TreasureKeeper k2;
+            save::ByteReader r(w.data());
+            check(save::deserializeTreasures(r, k2), "список вскрытых прочитан");
+            check(k2.openedCount() == 1, "и в нём тот же тайник");
+            ecs::Registry reg2;
+            check(k2.update(world, reg2, inside, SEED) == 0,
+                  "после загрузки вскрытый клад пуст");
+        }
+    }
+
+    // ---- 4. Подсказка ведёт к настоящему кладу ----
+    {
+        ecs::Registry reg;
+        const glm::ivec3 giver{ site.center.x + 120, site.center.y, site.center.z + 90 };
+
+        // Ближайший тайник — это он и есть.
+        const auto near = world::nearestTreasure(giver, SEED, &gen, 900);
+        check(near.exists, "по подсказке ближайший тайник находится");
+        if (near.exists) {
+            const i32 dd = std::abs(near.center.x - giver.x) +
+                           std::abs(near.center.z - giver.z);
+            check(dd <= 900, "и он в пределах, о которых спрашивали");
+        }
+
+        quests::QuestGenOptions opts{};
+        opts.giverPos      = giver;
+        opts.playerLevel   = 3;
+        opts.allowKill     = false;
+        opts.allowCollect  = false;
+        opts.allowExplore  = false;
+        opts.allowTreasure = true;
+        opts.seed          = 12345;
+
+        const ecs::Entity qe = quests::generateQuest(reg, world, opts);
+        auto* q = reg.get<quests::Quest>(qe);
+        check(q != nullptr, "задание выдано");
+        if (q) {
+            check(q->tmpl.type == quests::QuestType::Treasure,
+                  "и это именно подсказка к тайнику");
+            const auto real = world::treasureAt(
+                (i32)std::floor((f32)q->tmpl.targetLocation.x / 256.f),
+                (i32)std::floor((f32)q->tmpl.targetLocation.z / 256.f),
+                SEED, &gen);
+            check(real.exists, "цель задания — настоящий тайник, а не точка в поле");
+            if (real.exists)
+                check(real.center == q->tmpl.targetLocation,
+                      "и ровно тот, что лежит в мире");
+            check(q->tmpl.targetRadius <= 4,
+                  "радиус такой, что надо докопаться, а не пройти поверху");
+            check(q->description[0] != '\0', "подсказка не пустая");
+        }
+    }
+
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+void testFallsTrapsAndAmbushes() {
+    group("опасности: обрыв, ловушка и засада");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    jobs::gJobs.start(2);
+    {
+        constexpr u64 SEED = 0xDEAD11;
+        world::ChunkManager world(SEED, 2);
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        // ---- 1. Падать больно, но не с крыльца ----
+        //
+        // Урона от падения не было вовсе: с любой высоты игрок
+        // приземлялся целым, и пропасть работала лифтом вниз.
+        const i32 surf = world.generator().surfaceHeight(8, 8) + 4;
+        for (i32 z = -6; z <= 10; ++z)
+            for (i32 x = -6; x <= 10; ++x) {
+                world.setVoxel(x, surf - 1, z, world::STONE);
+                for (i32 y = surf; y < surf + 60; ++y)
+                    world.setVoxel(x, y, z, world::AIR);
+            }
+
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(4.5f, (f32)surf, 4.5f));
+        auto* hp = reg.get<ecs::Health>(pl.entity());
+        check(hp != nullptr, "здоровье есть");
+        if (!hp) { jobs::gJobs.stop(); return; }
+
+        auto drop = [&](f32 blocks) {
+            hp->current = hp->max;
+            hp->invulnTime = 0.f;
+            pl.controller.setPosition({ 4.5f, (f32)surf + blocks, 4.5f });
+            f32 taken = 0.f;
+            for (int i = 0; i < 60 * 8; ++i) {
+                pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+                if (pl.lastFallDamage > 0.f) taken = pl.lastFallDamage;
+                if (pl.controller.state().onGround && i > 4) break;
+            }
+            return taken;
+        };
+
+        const f32 small = drop(3.f);
+        const f32 big   = drop(14.f);
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "с трёх блоков снято %.0f, с четырнадцати — %.0f",
+                          (double)small, (double)big);
+            check(true, m);
+        }
+        check(small < 0.01f, "с трёх блоков спрыгивают безнаказанно");
+        check(big > 30.f, "а с четырнадцати — это уже обрыв");
+        check(big < hp->max, "но не смерть на месте с одной высоты");
+
+        // Вода ловит: прыжок в воду с обрыва — это спасение, а не
+        // тот же удар о землю.
+        //
+        // Глубокая вода и мелкая — разные случаи, и проверять надо
+        // оба. В глубокой игрок до дна не доходит вовсе, и высота
+        // полёта обнуляется сама. В мелкой он ДОСТАЁТ дна, приземление
+        // засчитывается — и без отдельной оговорки лужа в один блок
+        // ранила бы ровно как камень.
+        {
+            for (i32 z = -6; z <= 10; ++z)
+                for (i32 x = -6; x <= 10; ++x)
+                    for (i32 y = surf; y < surf + 4; ++y)
+                        world.setVoxel(x, y, z, world::WATER);
+            check(drop(14.f) < 0.01f, "падение в глубокую воду не ранит");
+
+            for (i32 z = -6; z <= 10; ++z)
+                for (i32 x = -6; x <= 10; ++x)
+                    for (i32 y = surf; y < surf + 4; ++y)
+                        world.setVoxel(x, y, z, y == surf ? world::WATER
+                                                          : world::AIR);
+            check(drop(14.f) < 0.01f, "и в лужу по колено — тоже");
+
+            // И главное: нырнувший ВЫХОДИТ НА БЕРЕГ, то есть
+            // приземляется. Без сброса высоты в воде ему засчитали
+            // бы падение, случившееся минуту назад.
+            // Берег: ровная плита подальше на восток, чтобы
+            // выплывший вышел на неё, а не на первый же природный
+            // уступ — уступ мерил бы себя, а не прежнее падение.
+            //
+            // Уровень берега — вровень с водой, а не на дне озера:
+            // иначе выход из воды сам по себе был бы шагом вниз на
+            // пять блоков, и мерили бы мы его.
+            for (i32 z = -6; z <= 10; ++z)
+                for (i32 x = 3; x <= 48; ++x) {
+                    for (i32 y = surf - 1; y <= surf + 3; ++y)
+                        world.setVoxel(x, y, z, world::STONE);
+                    for (i32 y = surf + 4; y < surf + 24; ++y)
+                        world.setVoxel(x, y, z, world::AIR);
+                }
+            for (i32 z = -6; z <= 10; ++z)
+                for (i32 x = -6; x <= 2; ++x)
+                    for (i32 y = surf; y < surf + 5; ++y)
+                        world.setVoxel(x, y, z, world::WATER);
+            hp->current = hp->max;
+            hp->invulnTime = 0.f;
+            pl.controller.setPosition({ 0.5f, (f32)surf + 20.f, 4.5f });
+            f32 ashore = 0.f;
+            {
+                player::PlayerInput swimOut;
+                // При нулевом рыскании «вправо» — это -X, поэтому к
+                // берегу на востоке гребут влево. Ось джойстика, а
+                // не сторона света.
+                swimOut.moveAxis = { -1.f, 0.f };
+                bool wasWet = false;
+                for (int i = 0; i < 60 * 12; ++i) {
+                    // Сперва просто падаем, потом гребём к берегу.
+                    pl.update(world, i < 120 ? player::PlayerInput{} : swimOut,
+                              1.f / 60.f, 0.f, 0.f);
+                    if (pl.lastFallDamage > 0.f) ashore = pl.lastFallDamage;
+                    const auto& st = pl.controller.state();
+                    if (st.inWater) wasWet = true;
+                    // Как только выбрался на сушу — довольно: дальше
+                    // начинается настоящий рельеф с настоящими
+                    // уступами, и мерить он будет уже их.
+                    if (wasWet && !st.inWater && st.onGround) break;
+                }
+                check(wasWet, "в воду он и правда попал");
+            }
+            {
+                char m[140];
+                std::snprintf(m, sizeof(m),
+                              "выйдя на берег после ныряния, получил %.0f (x=%.1f)",
+                              (double)ashore,
+                              (double)pl.controller.state().position.x);
+                check(true, m);
+            }
+            check(ashore < 0.01f,
+                  "вышедшему из воды не засчитывают прежнее падение");
+
+            for (i32 z = -6; z <= 10; ++z)
+                for (i32 x = -6; x <= 10; ++x)
+                    for (i32 y = surf; y < surf + 5; ++y)
+                        world.setVoxel(x, y, z, world::AIR);
+        }
+
+        // ---- 2. Ловушка бьёт того, кто наступил ----
+        {
+            ecs::Registry treg;
+            player::Player tp;
+            tp.init(treg, glm::vec3(100.5f, 64.f, 100.5f));
+            auto* thp = treg.get<ecs::Health>(tp.entity());
+            check(thp != nullptr, "здоровье у наступившего есть");
+            if (thp) {
+                const ecs::Entity t = treg.create();
+                ecs::Transform tf;
+                tf.position = { 100.5f, 64.f, 100.5f };
+                treg.add(t, tf);
+                treg.add(t, hazards::Trap{});
+                treg.add(t, hazards::TrapTag{ 7 });
+
+                const f32 before = thp->current;
+                const f32 hit = hazards::tickTraps(treg, tp.entity(),
+                                                   tf.position, 1.f / 60.f);
+                check(hit > 0.f, "ловушка сработала");
+                check(thp->current < before, "и сняла здоровье");
+
+                // Второй раз подряд — нет: она разряжена.
+                thp->invulnTime = 0.f;
+                const f32 again = hazards::tickTraps(treg, tp.entity(),
+                                                     tf.position, 1.f / 60.f);
+                check(again < 0.01f, "разряженная ловушка не бьёт");
+
+                // Мимо не бьёт даже взведённая.
+                if (auto* tr = treg.get<hazards::Trap>(t)) tr->armed = true;
+                thp->invulnTime = 0.f;
+                const f32 miss = hazards::tickTraps(
+                    treg, tp.entity(), tf.position + glm::vec3(6.f, 0.f, 0.f),
+                    1.f / 60.f);
+                check(miss < 0.01f, "а того, кто прошёл стороной, не задевает");
+            }
+        }
+
+        // ---- 3. Ловушки стоят там, где строят, а не где попало ----
+        {
+            std::vector<hazards::TrapPoint> pts;
+            // Ищем подземелье и смотрим, что у него есть ловушки.
+            world::DungeonSite d;
+            for (i32 sz = -6; sz <= 6 && !d.exists; ++sz)
+                for (i32 sx = -6; sx <= 6 && !d.exists; ++sx)
+                    d = world::dungeonAt(sx, sz, SEED);
+            check(d.exists, "подземелье для разбора найдено");
+            if (d.exists) {
+                hazards::trapPointsNear(
+                    { (f32)d.center.x, (f32)d.center.y, (f32)d.center.z },
+                    SEED, world.generator(), pts);
+                int mine = 0;
+                for (const auto& p : pts) {
+                    const i32 dd = std::abs(p.pos.x - d.center.x) +
+                                   std::abs(p.pos.z - d.center.z);
+                    if (dd < 40) ++mine;
+                }
+                char m[120];
+                std::snprintf(m, sizeof(m), "у подземелья ловушек %d из %d рядом",
+                              mine, (int)pts.size());
+                check(true, m);
+                check(mine >= 3, "в подземелье есть ловушки");
+            }
+
+            // А в чистом поле — ни одной.
+            hazards::trapPointsNear({ 4000.f, 64.f, 4000.f }, SEED,
+                                    world.generator(), pts);
+            bool bare = true;
+            for (i32 sz = 14; sz <= 16 && bare; ++sz)
+                for (i32 sx = 14; sx <= 16 && bare; ++sx)
+                    if (world::dungeonAt(sx, sz, SEED).exists ||
+                        world::castleAt(sx, sz, SEED, &world.generator()).exists)
+                        bare = false;
+            if (bare) check(pts.empty(), "в чистом поле ловушек нет");
+            else check(true, "рядом с той точкой есть постройка — проверка пропущена");
+        }
+
+        // ---- 4. Засада выходит разом ----
+        {
+            // Ищем пару соседних деревень — там же, где applyRoads
+            // кладёт дорогу.
+            world::VillageSite a, b;
+            for (i32 sz = -10; sz <= 10 && !b.exists; ++sz)
+                for (i32 sx = -10; sx <= 10 && !b.exists; ++sx) {
+                    const auto v = world::villageAt(sx, sz, SEED, &world.generator());
+                    if (!v.exists) continue;
+                    const auto e = world::villageAt(sx + 1, sz, SEED, &world.generator());
+                    if (e.exists) { a = v; b = e; }
+                }
+            check(b.exists, "дорога между деревнями найдена");
+            if (b.exists) {
+                // Засада стоит где-то на трети-двух третях пути.
+                // Идём по дороге и смотрим, нарвёмся ли.
+                world::ChunkManager w2(SEED, 3);
+                ecs::Registry areg;
+                mobs::Spawner sp;
+                world::DayCycle day;
+                day.reset(0.5f);
+
+                int sprung = 0;
+                for (int k = 30; k <= 70 && sprung == 0; k += 2) {
+                    const f32 t = (f32)k / 100.f;
+                    const glm::vec3 p{
+                        (f32)a.center.x + ((f32)b.center.x - (f32)a.center.x) * t,
+                        (f32)a.center.y,
+                        (f32)a.center.z + ((f32)b.center.z - (f32)a.center.z) * t };
+                    bool ok = false;
+                    for (int i = 0; i < 700 && !ok; ++i) {
+                        w2.update(p);
+                        ok = w2.isReadyAt((i32)p.x, (i32)p.z) && w2.pendingJobs() == 0;
+                        if (!ok) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    }
+                    if (!ok) continue;
+                    const u32 before = (u32)areg.pool<mobs::MobTag>().size();
+                    for (int i = 0; i < 60; ++i)
+                        sp.update(w2, areg, p, day, SEED, 1.f / 60.f);
+                    const u32 after = (u32)areg.pool<mobs::MobTag>().size();
+                    if (sp.sprungAmbushCount() > 0) {
+                        sprung = (int)(after - before);
+                        char m[140];
+                        std::snprintf(m, sizeof(m),
+                                      "на дороге нарвались: вышло разом %d", sprung);
+                        check(true, m);
+                    }
+                }
+                check(sprung >= 2, "засада выходит группой, а не по одному");
+
+                // Второй раз то же место не стреляет.
+                const u32 was = sp.sprungAmbushCount();
+                const glm::vec3 mid{
+                    (f32)(a.center.x + b.center.x) * 0.5f,
+                    (f32)a.center.y,
+                    (f32)(a.center.z + b.center.z) * 0.5f };
+                for (int i = 0; i < 300; ++i)
+                    sp.update(w2, areg, mid, day, SEED, 1.f / 60.f);
+                check(sp.sprungAmbushCount() == was,
+                      "и второй раз в том же месте не повторяется");
+            }
+        }
+
+        // ---- 5. Провал: дыра до самого низа ----
+        {
+            world::SinkholeSite s;
+            for (i32 sz = -10; sz <= 10 && !s.exists; ++sz)
+                for (i32 sx = -10; sx <= 10 && !s.exists; ++sx)
+                    s = world::sinkholeAt(sx, sz, SEED, &world.generator());
+            check(s.exists, "провал в мире найден");
+            if (s.exists) {
+                check(s.radius >= 5, "устье шириной с обрыв, а не с колодец");
+                const i32 cxc = (i32)std::floor((f32)s.center.x / world::CHUNK_SIZE);
+                const i32 czc = (i32)std::floor((f32)s.center.z / world::CHUNK_SIZE);
+                world::Chunk ch;
+                ch.coord = { cxc, 0, czc };
+                std::vector<world::TerrainGenerator::Column> cols;
+                world::computeChunkColumns(world.generator(), cxc, czc, cols);
+                world::generateChunkVoxels(ch, world.generator(), cols.data(), SEED);
+                const i32 lx = s.center.x - cxc * world::CHUNK_SIZE;
+                const i32 lz = s.center.z - czc * world::CHUNK_SIZE;
+                check(ch.inBounds(lx, s.center.y, lz), "середина провала в чанке");
+                if (ch.inBounds(lx, s.center.y, lz)) {
+                    int air = 0;
+                    for (i32 y = s.bottom; y <= s.center.y; ++y)
+                        if (ch.at(lx, y, lz) == world::AIR) ++air;
+                    const i32 depth = s.center.y - s.bottom + 1;
+                    char m[140];
+                    std::snprintf(m, sizeof(m), "в устье пусто на %d из %d блоков",
+                                  air, depth);
+                    check(true, m);
+                    check(air * 10 >= depth * 9, "провал пуст до самого дна");
+                    check(depth > (i32)player::FALL_SAFE_BLOCKS * 3,
+                          "и глубок настолько, что падение в него ранит");
+                    check(ch.at(lx, s.bottom - 1, lz) == world::STONE,
+                          "а дно каменное — сквозь него не проваливаются");
+                }
+            }
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+void testBlightForestAndCastles() {
+    group("Чёрный лес: густая нечистая земля и замок посреди неё");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    constexpr u64 SEED = 0xB1167;
+    world::ChunkManager mgr(SEED, 1);
+    const auto& gen = mgr.generator();
+
+    // ---- 1. Такая земля в мире есть, и её немного ----
+    i32 bx = 0, bz = 0;
+    int blight = 0, probes = 0;
+    for (i32 z = -2000; z <= 2000; z += 64)
+        for (i32 x = -2000; x <= 2000; x += 64) {
+            ++probes;
+            if (gen.biomeAt(x, z) != world::Blight) continue;
+            ++blight;
+            if (bx == 0 && bz == 0) { bx = x; bz = z; }
+        }
+    {
+        char m[140];
+        std::snprintf(m, sizeof(m), "замеров %d, из них Чёрный лес %d",
+                      probes, blight);
+        check(true, m);
+    }
+    check(blight > 20, "Чёрный лес в мире есть");
+    check(blight * 4 < probes, "но занимает он меньшей части суши");
+    check(bx != 0 || bz != 0, "точка Чёрного леса найдена");
+
+    // ---- 2. Лес там гуще обычного, и он мёртвый ----
+    {
+        const world::BiomeDef& bl = gen.field().def(world::Blight);
+        const world::BiomeDef& fo = gen.field().def(world::Forest);
+        check(bl.treeDensity > fo.treeDensity,
+              "в Чёрном лесу деревьев больше, чем в обычном");
+        check(bl.treeType == world::TreeType::Dead,
+              "и деревья в нём сухие");
+        check(bl.surfaceBlock != world::GRASS,
+              "трава там не растёт");
+    }
+
+    // Считаем настоящие стволы в чанке Чёрного леса против чанка
+    // обычного: таблица — это намерение, а проверять надо мир.
+    {
+        auto woodIn = [&](i32 wx, i32 wz) {
+            const i32 cx = (i32)std::floor((f32)wx / world::CHUNK_SIZE);
+            const i32 cz = (i32)std::floor((f32)wz / world::CHUNK_SIZE);
+            world::Chunk ch;
+            ch.coord = { cx, 0, cz };
+            std::vector<world::TerrainGenerator::Column> cols;
+            world::computeChunkColumns(gen, cx, cz, cols);
+            world::generateChunkVoxels(ch, gen, cols.data(), SEED);
+            int n = 0;
+            for (i32 y = 0; y < world::CHUNK_SIZE_Y; ++y)
+                for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+                    for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                        if (ch.at(x, y, z) == world::WOOD) ++n;
+            return n;
+        };
+        const int inBlight = woodIn(bx, bz);
+        char m[140];
+        std::snprintf(m, sizeof(m), "стволов в чанке Чёрного леса: %d", inBlight);
+        check(true, m);
+        // Четырнадцать деревьев на чанк — это сотня блоков ствола и
+        // больше. Пустой или редкий чанк означал бы, что плотность из
+        // таблицы до расстановки не дошла.
+        check(inBlight > 40, "Чёрный лес и правда густой");
+    }
+
+    // ---- 3. Там водятся только чудовища ----
+    {
+        int peaceful = 0, hostile = 0;
+        for (u32 rng = 0; rng < 400; ++rng) {
+            const u16 id = mobs::mobIdForBiome(world::Blight, false,
+                                               rng * 2654435761u);
+            if (id == mobs::MOB_NONE) continue;
+            if (mobs::mobRegistry().get(id).hostile) ++hostile; else ++peaceful;
+        }
+        char m[120];
+        std::snprintf(m, sizeof(m), "днём в Чёрном лесу: враждебных %d, мирных %d",
+                      hostile, peaceful);
+        check(true, m);
+        check(hostile > 0, "чудовища там водятся");
+        check(peaceful == 0, "а мирной скотины нет вовсе — даже днём");
+    }
+
+    // ---- 4. Замок стоит, и стоит он в Чёрном лесу ----
+    world::CastleSite castle;
+    i32 csx = 0, csz = 0;
+    int castles = 0, cells = 0, outsideBlight = 0;
+    for (i32 sz = -20; sz <= 20; ++sz)
+        for (i32 sx = -20; sx <= 20; ++sx) {
+            ++cells;
+            const world::CastleSite c = world::castleAt(sx, sz, SEED, &gen);
+            if (!c.exists) continue;
+            ++castles;
+            if (gen.biomeAt(c.center.x, c.center.z) != world::Blight)
+                ++outsideBlight;
+            if (!castle.exists) { castle = c; csx = sx; csz = sz; }
+        }
+    {
+        char m[150];
+        std::snprintf(m, sizeof(m),
+                      "ячеек %d, замков %d, из них вне Чёрного леса %d",
+                      cells, castles, outsideBlight);
+        check(true, m);
+    }
+    check(castles > 0, "замки в мире есть");
+    check(outsideBlight == 0, "и ни один не стоит вне Чёрного леса");
+    check(castles * 20 < cells, "замок — редкость, а не забор вдоль дороги");
+    check(castle.exists, "замок для разбора найден");
+    if (!castle.exists) return;
+    check(!world::villageAt(csx, csz, SEED, &gen).exists,
+          "и не делит ячейку с деревней");
+
+    // ---- 5. Замок построен, а не насыпан ----
+    std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> cache;
+    std::vector<world::TerrainGenerator::Column> cols;
+    auto blockAt = [&](i32 wx, i32 wy, i32 wz) -> u16 {
+        const i32 cx = (i32)std::floor((f32)wx / world::CHUNK_SIZE);
+        const i32 cz = (i32)std::floor((f32)wz / world::CHUNK_SIZE);
+        auto key = std::make_pair(cx, cz);
+        auto it = cache.find(key);
+        if (it == cache.end()) {
+            auto ch = std::make_unique<world::Chunk>();
+            ch->coord = { cx, 0, cz };
+            world::computeChunkColumns(gen, cx, cz, cols);
+            world::generateChunkVoxels(*ch, gen, cols.data(), SEED);
+            it = cache.emplace(key, std::move(ch)).first;
+        }
+        const i32 lx = wx - cx * world::CHUNK_SIZE;
+        const i32 lz = wz - cz * world::CHUNK_SIZE;
+        if (!it->second->inBounds(lx, wy, lz)) return world::AIR;
+        return it->second->at(lx, wy, lz);
+    };
+
+    const i32 CX = castle.center.x, CZ = castle.center.z, BY = castle.center.y;
+    const i32 H = world::CASTLE_HALF;
+
+    // Стена: по всему кольцу камень на высоте пояса. Проверяем
+    // четыре стороны, кроме самих ворот.
+    {
+        // Угол кольца занимает башня, а не стена: там перемычку
+        // держит её оболочка, и мерить в углу надо не стену.
+        const i32 T = world::CASTLE_HALF - 4;
+        auto inTower = [&](i32 wx, i32 wz) {
+            return std::abs(std::abs(wx - CX) - T) <= 5 &&
+                   std::abs(std::abs(wz - CZ) - T) <= 5;
+        };
+        int wall = 0, holes = 0;
+        for (i32 d = -H + 2; d <= H - 2; ++d) {
+            const i32 probe[4][2] = {
+                { CX + d, CZ - H }, { CX + d, CZ + H },
+                { CX - H, CZ + d }, { CX + H, CZ + d },
+            };
+            for (int i = 0; i < 4; ++i) {
+                // Ворота в южной стене — там дыра по замыслу.
+                if (i == 1 && std::abs(probe[i][0] - CX) <= 2) continue;
+                if (inTower(probe[i][0], probe[i][1])) continue;
+                if (blockAt(probe[i][0], BY + 3, probe[i][1]) == world::STONE) ++wall;
+                else ++holes;
+            }
+        }
+        char m[140];
+        std::snprintf(m, sizeof(m), "кольцо стены: камня %d, дыр %d", wall, holes);
+        check(true, m);
+        check(wall > 150, "стена стоит по всему кольцу");
+        check(holes == 0, "и без единой дыры");
+    }
+
+    // Ворота: сквозной проход в стене, а не глухая кладка.
+    {
+        bool open = true;
+        for (i32 y = BY; y < BY + 4; ++y)
+            if (blockAt(CX, y, CZ + H) != world::AIR ||
+                blockAt(CX, y, CZ + H - 1) != world::AIR) open = false;
+        check(open, "ворота прорезаны насквозь");
+    }
+
+    // Башни: выше стены, и стоят по углам.
+    {
+        int tall = 0;
+        const i32 T = world::CASTLE_HALF - 4;
+        const i32 corner[4][2] = { { CX - T, CZ - T }, { CX + T, CZ - T },
+                                   { CX - T, CZ + T }, { CX + T, CZ + T } };
+        for (const auto& c : corner) {
+            // Стена кончается на BY+10; башня обязана быть выше.
+            for (i32 dx = -5; dx <= 5; ++dx)
+                for (i32 dz = -5; dz <= 5; ++dz)
+                    if (blockAt(c[0] + dx, BY + 14, c[1] + dz) == world::STONE) {
+                        ++tall; dx = 6; break;
+                    }
+        }
+        check(tall == 4, "все четыре башни выше стены");
+    }
+
+    // Донжон: стены, перекрытия и дверь.
+    {
+        // Стену донжона меряем не одной точкой: через одну колонку в
+        // ней прорезаны бойницы, и попасть проверкой ровно в бойницу
+        // значило бы проверять случай, а не постройку.
+        int high = 0, gaps = 0;
+        for (i32 d = -8; d <= 8; ++d) {
+            if (blockAt(CX + d, BY + 20, CZ - 9) == world::STONE) ++high;
+            else ++gaps;
+        }
+        char km[120];
+        std::snprintf(km, sizeof(km), "стена донжона на высоте 20: камня %d, проёмов %d",
+                      high, gaps);
+        check(true, km);
+        check(high > gaps, "донжон поднимается выше башен");
+        check(gaps > 0, "и в нём прорезаны бойницы");
+        int floors = 0;
+        for (i32 y = BY + 1; y < BY + 22; ++y)
+            if (blockAt(CX, y, CZ) == world::PLANK) ++floors;
+        check(floors >= 2, "внутри донжона есть перекрытия");
+        bool door = true;
+        for (i32 y = BY; y < BY + 3; ++y)
+            if (blockAt(CX, y, CZ + 9) != world::AIR) door = false;
+        check(door, "и дверь, через которую входят");
+    }
+
+    // Двор ровный и пустой: башня, стена и донжон — постройки, а всё
+    // между ними должно быть проходимо.
+    {
+        int blocked = 0, open = 0;
+        for (i32 dx = -20; dx <= 20; ++dx)
+            for (i32 dz = 12; dz <= 20; ++dz) {
+                if (std::abs(dx) <= 9 && std::abs(dz) <= 9) continue;
+                if (blockAt(CX + dx, BY + 1, CZ + dz) == world::AIR) ++open;
+                else ++blocked;
+            }
+        char m[120];
+        std::snprintf(m, sizeof(m), "двор: свободно %d, занято %d", open, blocked);
+        check(true, m);
+        check(open > blocked * 4, "двор проходим, а не зарос");
+    }
+}
+
+// ------------------------------------------------------------
+void testLairHoldsOneBeast() {
+    group("логово: область, где водится один-единственный зверь");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    constexpr u64 SEED = 0x1A17;
+    jobs::gJobs.start(2);
+    world::ChunkManager world(SEED, 3);
+    const auto& gen = world.generator();
+
+    // ---- 1. Логова есть, и они редки ----
+    //
+    // Проверять одно найденное мало: и «логово в каждой ячейке», и
+    // «логово нигде» прошли бы такую проверку одинаково.
+    world::LairSite found;
+    int lairs = 0, cells = 0, onStructures = 0;
+    for (i32 sz = -12; sz <= 12; ++sz)
+        for (i32 sx = -12; sx <= 12; ++sx) {
+            ++cells;
+            const world::LairSite l = world::lairAt(sx, sz, SEED, &gen);
+            if (!l.exists) continue;
+            ++lairs;
+            // Логово НЕ ложится на структуру: стая волков на
+            // деревенской площади означала бы, что деревня перестала
+            // быть местом, куда возвращаются.
+            if (world::villageAt(sx, sz, SEED, &gen).exists ||
+                world::dungeonAt(sx, sz, SEED).exists ||
+                world::treeDungeonAt(sx, sz, SEED, &gen).exists)
+                ++onStructures;
+            if (!found.exists) found = l;
+        }
+    {
+        char m[140];
+        std::snprintf(m, sizeof(m), "ячеек %d, логов %d, поверх структур %d",
+                      cells, lairs, onStructures);
+        check(true, m);
+    }
+    check(lairs > 10, "логова в мире есть");
+    check(lairs * 3 < cells, "но не в каждой ячейке");
+    check(onStructures == 0, "и ни одно не легло поверх структуры");
+    check(found.exists, "логово для разбора найдено");
+    if (!found.exists) { jobs::gJobs.stop(); return; }
+    check(found.kind != world::LairKind::None, "у него есть род");
+    check(found.radius >= 40.f, "и радиус, который не проскочишь на бегу");
+    check(found.center.y >= world::TerrainGenerator::SEA_LEVEL + 2,
+          "логово стоит на суше, а не в море");
+
+    // ---- 2. Границы области ----
+    check(world::lairCovering(found.center.x, found.center.z, SEED, &gen).kind
+              == found.kind,
+          "в середине логова спрашивающему отвечают тем же родом");
+    {
+        // Точно за границей — либо пусто, либо СОСЕДНЕЕ логово, но не
+        // это же самое: иначе радиус ни на что не влияет.
+        const world::LairSite out = world::lairCovering(
+            found.center.x + (i32)found.radius + 8,
+            found.center.z, SEED, &gen);
+        check(!out.exists || out.center != found.center,
+              "сразу за радиусом это логово уже не отвечает");
+    }
+
+    // ---- 3. В логове водится только его зверь, и водится днём ----
+    const glm::vec3 playerPos{ (f32)found.center.x + 0.5f,
+                               (f32)found.center.y,
+                               (f32)found.center.z + 0.5f };
+    bool ready = false;
+    for (int i = 0; i < 1500 && !ready; ++i) {
+        world.update(playerPos);
+        ready = world.isReadyAt(found.center.x, found.center.z) &&
+                world.pendingJobs() == 0;
+        if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(ready, "земля логова построена");
+    if (!ready) { jobs::gJobs.stop(); return; }
+
+    world::DayCycle day;
+    day.reset(0.5f);          // полдень: светлее не бывает
+    check(!day.isNight(), "на дворе день");
+
+    ecs::Registry reg;
+    mobs::Spawner spawner;
+    for (int i = 0; i < 300; ++i)
+        spawner.update(world, reg, playerPos, day, SEED, 0.6f);
+
+    int inside = 0, wrongInside = 0, total = 0;
+    {
+        auto& pool = reg.pool<mobs::MobTag>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            const ecs::Entity e = pool.entityAt((u32)i);
+            auto* t  = pool.get(e);
+            auto* tf = reg.get<ecs::Transform>(e);
+            if (!t || !tf) continue;
+            ++total;
+            const world::LairSite l = world::lairCovering(
+                (i32)std::floor(tf->position.x),
+                (i32)std::floor(tf->position.z), SEED, &gen);
+            if (!l.exists || l.center != found.center) continue;
+            ++inside;
+            const u16 expect =
+                l.kind == world::LairKind::Wolves    ? mobs::MOB_WOLF
+              : l.kind == world::LairKind::Skeletons ? mobs::MOB_SKELETON
+              : l.kind == world::LairKind::Goblins   ? mobs::MOB_GOBLIN
+                                                     : mobs::MOB_SLIME;
+            if (t->id != expect) ++wrongInside;
+        }
+    }
+    {
+        char m[160];
+        std::snprintf(m, sizeof(m),
+                      "за полторы сотни секунд полудня мобов %d, "
+                      "в логове %d, чужих среди них %d",
+                      total, inside, wrongInside);
+        check(true, m);
+    }
+    check(inside > 5, "днём в логове появляются звери, а не пустота");
+    check(wrongInside == 0, "и все они одного рода — рода логова");
+
+    // ---- 4. Игрок узнаёт, куда попал ----
+    ecs::Registry preg;
+    player::Player pl;
+    // Начинаем ЗА логовом: событие — это вход, а не нахождение
+    // внутри.
+    const glm::vec3 outside{ (f32)found.center.x + found.radius + 100.f,
+                             (f32)found.center.y,
+                             (f32)found.center.z + found.radius + 100.f };
+    pl.init(preg, outside);
+    for (int i = 0; i < 90; ++i)
+        pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+    check(pl.lairKind == world::LairKind::None ||
+          pl.lairKind != found.kind,
+          "снаружи логова про него не сообщают");
+
+    pl.controller.setPosition(playerPos + glm::vec3(0.f, 2.f, 0.f));
+    bool told = false;
+    for (int i = 0; i < 90 && !told; ++i) {
+        pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+        if (pl.enteredLair) told = true;
+    }
+    check(told, "войдя в логово, игрок о нём узнаёт");
+    check(pl.lairKind == found.kind, "и узнаёт именно про этот род");
+
+    bool again = false;
+    for (int i = 0; i < 180; ++i) {
+        pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+        if (pl.enteredLair) again = true;
+    }
+    check(!again, "а стоя в нём, слышит об этом один раз, а не всякий миг");
+
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+void testTreeDungeonIsClimbable() {
+    group("дерево-подземелье: по нему можно подняться");
+
+    world::blocks();
+    constexpr u64 SEED = 0x7E4D;
+    world::ChunkManager mgr(SEED, 1);
+    const auto& gen = mgr.generator();
+
+    // Ищем дерево-подземелье там же, где его ищет спавнер боссов.
+    world::DungeonSite site;
+    for (i32 r = 0; r < 24 && !site.exists; ++r)
+        for (i32 a = -r; a <= r && !site.exists; ++a)
+            for (i32 b = -r; b <= r && !site.exists; ++b) {
+                if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                site = world::treeDungeonAt(a, b, SEED, &gen);
+            }
+    check(site.exists, "дерево-подземелье нашлось");
+    if (!site.exists) return;
+
+    const i32 cx = site.center.x, cz = site.center.z;
+    const i32 ground = gen.surfaceHeight(cx, cz);
+
+    // ---- Строим все задетые чанки ----
+    std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> chunks;
+    std::vector<world::TerrainGenerator::Column> cols;
+    const i32 c0x = (cx - 14) >> 5, c1x = (cx + 14) >> 5;
+    const i32 c0z = (cz - 14) >> 5, c1z = (cz + 14) >> 5;
+    for (i32 ccz = c0z; ccz <= c1z; ++ccz)
+        for (i32 ccx = c0x; ccx <= c1x; ++ccx) {
+            auto ch = std::make_unique<world::Chunk>();
+            ch->coord = { ccx, 0, ccz };
+            world::computeChunkColumns(gen, ccx, ccz, cols);
+            world::generateChunkVoxels(*ch, gen, cols.data(), SEED);
+            chunks.emplace(std::make_pair(ccx, ccz), std::move(ch));
+        }
+
+    auto at = [&](i32 wx, i32 wy, i32 wz) -> u16 {
+        if (wy < 0 || wy >= world::CHUNK_SIZE_Y) return world::AIR;
+        const i32 ccx = wx >> 5, ccz = wz >> 5;
+        auto it = chunks.find({ ccx, ccz });
+        if (it == chunks.end()) return world::UNKNOWN;
+        return it->second->voxels[world::chunkIndex(wx - ccx * 32, wy,
+                                                   wz - ccz * 32)];
+    };
+
+    // ---- Ствол есть, и он полый ----
+    check(at(cx + 6, ground + 10, cz) == world::WOOD, "стена ствола на месте");
+    check(at(cx, ground + 6, cz) == world::AIR ||
+          at(cx, ground + 6, cz) == world::LANTERN, "внутри пусто");
+
+    // ---- Вход ----
+    bool entrance = true;
+    for (i32 wx = cx + 1; wx <= cx + 7; ++wx)
+        for (i32 y = ground + 1; y <= ground + 2; ++y)
+            if (at(wx, y, cz) != world::AIR) entrance = false;
+    check(entrance, "вход прорезан насквозь через стену");
+
+    // ---- Подъём ----
+    //
+    // Клетка «на ней стоят»: блок твёрдый, два над ним пустые.
+    auto standable = [&](i32 dy) {
+        std::vector<std::pair<i32, i32>> out;
+        for (i32 dz = -6; dz <= 6; ++dz)
+            for (i32 dx = -6; dx <= 6; ++dx) {
+                const u16 b  = at(cx + dx, ground + dy,     cz + dz);
+                const u16 a1 = at(cx + dx, ground + dy + 1, cz + dz);
+                const u16 a2 = at(cx + dx, ground + dy + 2, cz + dz);
+                if (!world::blocks().isSolid(b)) continue;
+                if (a1 != world::AIR || a2 != world::AIR) continue;
+                out.push_back({ dx, dz });
+            }
+        return out;
+    };
+
+    const i32 topDy = site.center.y - 1 - ground;   // пол верхнего зала
+    check(topDy > 30, "зал наверху, а не у земли");
+
+    i32 broken = -1;
+    for (i32 dy = 1; dy + 1 < topDy && broken < 0; ++dy) {
+        const auto here = standable(dy);
+        const auto next = standable(dy + 1);
+        bool linked = false;
+        for (const auto& a : here) {
+            for (const auto& b : next) {
+                const i32 m = std::abs(a.first - b.first) +
+                              std::abs(a.second - b.second);
+                if (m <= 1) { linked = true; break; }
+            }
+            if (linked) break;
+        }
+        if (!linked) broken = dy;
+    }
+    if (broken >= 0)
+        std::printf("       подъём рвётся на высоте %d над землёй\n", broken);
+    check(broken < 0, "подъём непрерывен от земли до верхнего зала");
+
+    // ---- Верхний зал ----
+    check(at(cx, site.center.y, cz) == world::AIR ||
+          at(cx, site.center.y, cz) == world::LANTERN,
+          "в зале есть куда встать");
+    check(world::blocks().isSolid(at(cx, site.center.y - 1, cz)),
+          "и под ногами пол, а не пустота");
+    check(at(cx, site.center.y + 3, cz) == world::AIR,
+          "и потолок не на голове");
+}
+
+// ------------------------------------------------------------
+void testShurikenFliesAndHits() {
+    group("сюрикен: летит настильно и бьёт");
+
+    world::blocks();
+    items::items();
+
+    check(items::items().get(items::ITEM_SHURIKEN).category ==
+          items::ItemCategory::Throwable, "сюрикен — метательный предмет");
+    check(items::items().get(items::ITEM_SHURIKEN).maxStack >= 16,
+          "и носится большой стопкой");
+
+    // Мир настоящий: снаряд на каждом шаге проверяет вокселя, и в
+    // несгенерированных чанках он гибнет о «неизвестно» на первом же
+    // метре. Игрока с целью ставим высоко над рельефом — там воздух.
+    jobs::gJobs.start(2);
+    world::ChunkManager world(0x5417, 2);
+    bool ready = false;
+    for (int i = 0; i < 600 && !ready; ++i) {
+        world.update({ 8.f, 70.f, 8.f });
+        ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+        if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    check(ready, "мир построен");
+    if (!ready) { jobs::gJobs.stop(); return; }
+    const f32 air = (f32)world.generator().surfaceHeight(8, 8) + 20.f;
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(8.5f, air, 8.5f));
+    const ecs::Entity me = pl.entity();
+
+    auto* inv = pl.inventory();
+    check(inv != nullptr, "инвентарь есть");
+    if (!inv) { jobs::gJobs.stop(); return; }
+    auto& slot = inv->activeSlot();
+    slot.itemId = items::ITEM_SHURIKEN;
+    slot.count  = 5;
+
+    // ---- Бросок ----
+    const items::UseResult r = pl.useItem(
+        world, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+    check(r == items::UseResult::Consumed, "сюрикен брошен");
+    check(inv->activeSlot().count == 4, "и списан из стопки");
+    check(reg.pool<combat::Projectile>().size() == 1,
+          "в мире появился ровно один снаряд");
+
+    {
+        auto& pool = reg.pool<combat::Projectile>();
+        auto* p = pool.get(pool.entityAt(0));
+        check(p != nullptr, "снаряд настоящий");
+        if (p) {
+            check(!p->affectedByGravity, "летит настильно");
+            check(p->ownerEntity == (u32)me, "и помнит, кто бросил");
+            check(std::fabs(p->damage.amount - items::SHURIKEN_DAMAGE) < 0.01f,
+                  "урон — свой собственный, не от оружия в руках");
+        }
+    }
+
+    // ---- Долетает и бьёт ----
+    //
+    // Цель ставим по курсу: прицел по умолчанию смотрит на север.
+    const ecs::Entity target = reg.create();
+    {
+        ecs::Transform tf;
+        tf.position = pl.eyePosition() + glm::vec3(0.f, -0.9f, -6.f);
+        reg.add(target, tf);
+        reg.add(target, ecs::Health{ 100.f, 100.f, 0.f, 0.f });
+        reg.add(target, ecs::Collider{ glm::vec3(0.5f, 0.9f, 0.5f) });
+        // Враждебность снаряд определяет по МЕТКЕ, а не по полю
+        // Combatant::faction: Faction::of смотрит PlayerTag/EnemyTag
+        // /NPCTag и Kind, и цель без метки для него никто.
+        reg.add(target, ecs::EnemyTag{});
+        reg.add(target, combat::Combatant{});
+        reg.add(target, combat::StatusEffects{});
+    }
+
+    for (int i = 0; i < 60; ++i) combat::updateProjectiles(world, reg, 1.f / 60.f);
+
+    auto* hp = reg.get<ecs::Health>(target);
+    check(hp != nullptr, "цель на месте");
+    if (hp) {
+        std::printf("       здоровья у цели осталось %.1f\n", (double)hp->current);
+        check(hp->current < 100.f, "сюрикен долетел и ударил");
+    }
+    check(reg.pool<combat::Projectile>().size() == 0,
+          "и на этом снаряд кончился");
+
+    // ---- В того, кто бросил, не попадает ----
+    {
+        auto* mine = reg.get<ecs::Health>(me);
+        check(mine != nullptr, "здоровье игрока есть");
+        if (mine) {
+            const f32 before = mine->current;
+            pl.useItem(world, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+            for (int i = 0; i < 60; ++i)
+                combat::updateProjectiles(world, reg, 1.f / 60.f);
+            check(mine->current >= before, "бросивший себя не ранит");
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+void testDashMovesForward() {
+    group("рывок: уносит вперёд и упирается в стену");
+
+    world::blocks();
+    items::items();
+
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager world(0xDA54, 2);
+        bool ready = false;
+        for (int i = 0; i < 600 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        // Ровная площадка: рельеф не должен решать, докуда дорвёшь.
+        const i32 surf = world.generator().surfaceHeight(8, 8) + 4;
+        for (i32 z = -4; z <= 24; ++z)
+            for (i32 x = -4; x <= 12; ++x) {
+                world.setVoxel(x, surf - 1, z, world::STONE);
+                for (i32 y = surf; y < surf + 3; ++y)
+                    world.setVoxel(x, y, z, world::AIR);
+            }
+
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(4.5f, (f32)surf, 4.5f));
+
+        auto* st = reg.get<ecs::Stamina>(pl.entity());
+        check(st != nullptr, "выносливость есть");
+        if (!st) { jobs::gJobs.stop(); return; }
+
+        auto runFrames = [&](player::PlayerInput in, int n) {
+            for (int i = 0; i < n; ++i) {
+                pl.update(world, in, 1.f / 60.f, 0.f, 0.f);
+                in.dashPressed = false;   // нажатие, а не удержание
+            }
+        };
+
+        // ---- Рывок вперёд ----
+        // При нулевом рыскании «вперёд» — это +Z.
+        st->current = st->max;
+        const glm::vec3 before = pl.controller.state().position;
+        player::PlayerInput dash;
+        dash.dashPressed = true;
+        runFrames(dash, 20);
+        const glm::vec3 after = pl.controller.state().position;
+
+        const f32 gone = after.z - before.z;
+        std::printf("       унесло на %.2f блока\n", (double)gone);
+        check(gone > 3.f, "рывок уносит больше чем на три блока");
+        check(std::fabs(after.x - before.x) < 0.5f, "и ровно вперёд");
+        check(st->current < st->max - 1.f, "выносливость потрачена");
+
+        // ---- Откат ----
+        //
+        // Сперва даём инерции сойти: после рывка игрок ещё катится, и
+        // мерить «сдвинулся или нет» прямо сейчас значило бы мерить
+        // накат, а не второй рывок.
+        for (int i = 0; i < 20; ++i)
+            pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+        check(pl.controller.state().dashCooldown > 0.f, "откат ещё идёт");
+
+        const glm::vec3 p2 = pl.controller.state().position;
+        st->current = st->max;
+        const f32 stBefore = st->current;
+        runFrames(dash, 10);
+        const f32 again = pl.controller.state().position.z - p2.z;
+        check(again < 0.5f, "пока откат не вышел, рывка не происходит");
+        check(st->current >= stBefore - 0.5f,
+              "и выносливость за несостоявшийся рывок не берут");
+
+        // ---- Без выносливости рывка нет ----
+        for (int i = 0; i < 200; ++i) pl.update(world, player::PlayerInput{},
+                                                1.f / 60.f, 0.f, 0.f);
+        const glm::vec3 p3 = pl.controller.state().position;
+        st->current = 1.f;
+        runFrames(dash, 20);
+        check(pl.controller.state().position.z - p3.z < 1.f,
+              "без выносливости рывка нет");
+        check(st->current >= 1.f, "и она при этом не списана");
+
+        // ---- В стену не проходит ----
+        pl.controller.setPosition(glm::vec3(4.5f, (f32)surf, 4.5f));
+        for (i32 y = surf; y < surf + 3; ++y)
+            for (i32 x = 0; x <= 12; ++x)
+                world.setVoxel(x, y, 7, world::STONE);
+
+        for (int i = 0; i < 200; ++i) pl.update(world, player::PlayerInput{},
+                                                1.f / 60.f, 0.f, 0.f);
+        st->current = st->max;
+        runFrames(dash, 20);
+        const f32 z = pl.controller.state().position.z;
+        std::printf("       упёрся на z = %.2f\n", (double)z);
+        check(z < 7.f, "рывок упирается в стену, а не проходит сквозь");
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+void testHandcraftWorksAnywhere() {
+    group("крафт на ходу: еда и простые вещи без верстака");
+
+    items::items();
+    const auto& reg = crafting::recipes();
+
+    // ---- 1. Раздел «без станции» больше не пуст ----
+    //
+    // StationType::None был в перечислении с самого начала, и
+    // canCraft умел его пропускать — но НИ ОДИН рецепт им не
+    // пользовался. Весь крафт до единого требовал станции, а станции
+    // стоят только в деревнях.
+    const auto free = reg.findByStation(crafting::StationType::None);
+    {
+        char m[120];
+        std::snprintf(m, sizeof(m), "рецептов без станции %d из %d",
+                      (int)free.size(), (int)reg.count());
+        check(true, m);
+    }
+    check(free.size() >= 4, "рецепты без станции есть");
+    check(free.size() < reg.count() / 2,
+          "но большинство по-прежнему за станками — деревня нужна");
+
+    // Еда среди них обязательна: «простая еда на ходу» — это про
+    // жареное мясо у костра, а не про сюрикены.
+    bool hasFood = false;
+    for (const auto* r : free)
+        if (r->output.itemId == items::ITEM_MEAT_COOKED ||
+            r->output.itemId == items::ITEM_BREAD) hasFood = true;
+    check(hasFood, "еда готовится на ходу");
+
+    // А плавка, оружие и зелья — нет: иначе станки стали бы
+    // украшением.
+    for (const auto* r : free) {
+        const auto& def = items::items().get(r->output.itemId);
+        check(def.category != items::ItemCategory::Weapon,
+              "оружие на коленке не куётся");
+    }
+    {
+        bool smeltFree = false;
+        for (const auto* r : free)
+            if (r->output.itemId == items::ITEM_IRON_INGOT ||
+                r->output.itemId == items::ITEM_GOLD_INGOT) smeltFree = true;
+        check(!smeltFree, "и слитки в поле не плавятся");
+    }
+
+    // ---- 2. В чистом поле они и правда делаются ----
+    items::Inventory inv;
+    crafting::CraftContext ctx{};
+    ctx.inventory     = &inv;
+    ctx.playerLevel   = 1;
+    ctx.nearbyStation = crafting::StationType::None;   // станка рядом нет
+
+    const crafting::Recipe* meat = nullptr;
+    for (const auto* r : free)
+        if (r->output.itemId == items::ITEM_MEAT_COOKED) meat = r;
+    check(meat != nullptr, "рецепт жареного мяса найден");
+    if (!meat) return;
+
+    // Без ингредиентов — отказ по ингредиентам, а не по станции.
+    check(crafting::canCraft(ctx, *meat) ==
+              crafting::CraftStatus::MissingIngredients,
+          "без мяса не пожаришь, но станок при этом ни при чём");
+
+    for (const auto& in : meat->inputs) inv.addItem(in.itemId, in.count);
+    check(crafting::canCraft(ctx, *meat) == crafting::CraftStatus::Ok,
+          "с мясом и дровами — можно");
+    check(crafting::craft(ctx, *meat) == crafting::CraftStatus::Ok,
+          "и крафт проходит");
+    check(inv.countOf(items::ITEM_MEAT_COOKED) == meat->output.count,
+          "жаркое в сумке");
+    check(inv.countOf(items::ITEM_MEAT_RAW) == 0, "сырое ушло");
+
+    // ---- 3. Станочный рецепт в поле по-прежнему недоступен ----
+    const auto bench = reg.findByStation(crafting::StationType::Workbench);
+    check(!bench.empty(), "станочные рецепты остались");
+    if (!bench.empty()) {
+        const crafting::Recipe& b = *bench[0];
+        for (const auto& in : b.inputs) inv.addItem(in.itemId, in.count);
+        check(crafting::canCraft(ctx, b) ==
+                  crafting::CraftStatus::MissingStation,
+              "а верстачный рецепт в поле не сделать");
+        ctx.nearbyStation = crafting::StationType::Workbench;
+        check(crafting::canCraft(ctx, b) == crafting::CraftStatus::Ok,
+              "у верстака — можно");
+
+        // И наоборот: у верстака ручные рецепты не пропадают. Станок
+        // добавляет возможности, а не отбирает — иначе у наковальни
+        // нельзя было бы поджарить мясо.
+        for (const auto& in : meat->inputs) inv.addItem(in.itemId, in.count);
+        check(crafting::canCraft(ctx, *meat) == crafting::CraftStatus::Ok,
+              "а у верстака ручные рецепты никуда не деваются");
+    }
+
+    // ---- 4. Экран крафта открывается без станка ----
+    //
+    // Рецептов мало — открыть экран было нечем: он открывался одной
+    // подсказкой «использовать», которая появляется только рядом со
+    // станком.
+    {
+        ui::UiSystem sys;
+        sys.screen = ui::Screen::Hud;
+        sys.returnTo = ui::Screen::Hud;
+        sys.nearbyStation = crafting::StationType::None;
+
+        bool found = false;
+        for (const auto& e : ui::menuEntries())
+            if (e.target == ui::Screen::Crafting) found = true;
+        check(found, "в меню есть пункт ремесла");
+
+        sys.openCrafting(sys.nearbyStation);
+        check(sys.screen == ui::Screen::Crafting,
+              "экран открылся без станка рядом");
+        check(sys.nearbyStation == crafting::StationType::None,
+              "и открылся именно как крафт на ходу");
+    }
+}
+
+// ------------------------------------------------------------
+void testRunningAndFightingTire() {
+    group("утомление: бег и долгий бой опускают потолок выносливости");
+
+    world::blocks();
+    items::items();
+
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager world(0xFA71, 2);
+        bool ready = false;
+        for (int i = 0; i < 600 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        // Ровная площадка: бежать надо по земле, а не скатываться со
+        // склона и не упираться в холм — иначе «бежит ли он» решал бы
+        // рельеф. Восемь блоков воздуха над ней: трёх не хватало, и
+        // на первом же пригорке бегун вставал.
+        const i32 surf = world.generator().surfaceHeight(8, 8) + 4;
+        for (i32 z = -8; z <= 56; ++z)
+            for (i32 x = -8; x <= 24; ++x) {
+                world.setVoxel(x, surf - 1, z, world::STONE);
+                for (i32 y = surf; y < surf + 9; ++y)
+                    world.setVoxel(x, y, z, world::AIR);
+            }
+        const glm::vec3 padStart{ 4.5f, (f32)surf, 4.5f };
+
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, padStart);
+
+        auto* st = reg.get<ecs::Stamina>(pl.entity());
+        auto* fg = reg.get<ecs::Fatigue>(pl.entity());
+        check(st && fg, "выносливость и утомление у игрока есть");
+        if (!st || !fg) { jobs::gJobs.stop(); return; }
+        check(fg->value < 0.001f, "свежий игрок не утомлён");
+
+        // Кадр игры — это и шаг игрока, и шаг прогрессии: реген и
+        // спад утомления живут в tickProgression, и без него игрок в
+        // проверке не отдыхал бы вовсе.
+        auto step = [&](const player::PlayerInput& in, int n) {
+            for (int i = 0; i < n; ++i) {
+                pl.update(world, in, 1.f / 60.f, 0.f, 0.f);
+                progression::tickProgression(reg, 1.f / 60.f);
+            }
+        };
+        // Долгий бег не умещается на площадке, а гонять его по
+        // настоящему рельефу нельзя: проверка мерила бы холмы.
+        // Поэтому каждые полсекунды возвращаем на начало.
+        auto runLong = [&](const player::PlayerInput& in, int n) {
+            for (int i = 0; i < n; ++i) {
+                if (i % 30 == 0) pl.controller.setPosition(padStart);
+                pl.update(world, in, 1.f / 60.f, 0.f, 0.f);
+                progression::tickProgression(reg, 1.f / 60.f);
+            }
+        };
+
+        player::PlayerInput run;
+        run.moveAxis = { 0.f, 1.f };
+        run.sprint   = true;
+
+        // ---- 1. Стоя на месте с зажатым бегом никто не устаёт ----
+        {
+            player::PlayerInput still;
+            still.sprint = true;           // кнопка есть, хода нет
+            const f32 s0 = st->current;
+            step(still, 120);
+            check(fg->value < 0.001f, "стоя на месте не устают");
+            check(st->current >= s0 - 0.01f,
+                  "и выносливость за это не берут");
+        }
+
+        // ---- 2. Бег тратит выносливость ----
+        const f32 sBefore = st->current;
+        const glm::vec3 p0 = pl.controller.state().position;
+        step(run, 180);                   // три секунды бега
+        const f32 ran = pl.controller.state().position.z - p0.z;
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "за три секунды пробежал %.1f блока, "
+                          "выносливость %.1f -> %.1f, утомление %.3f",
+                          (double)ran, (double)sBefore,
+                          (double)st->current, (double)fg->value);
+            check(true, m);
+        }
+        check(ran > 12.f, "бег и правда быстрее шага");
+        check(st->current < sBefore - 3.f, "бег тратит выносливость");
+        check(fg->value > 0.02f, "и копит утомление");
+
+        // ---- 3. Выдохшийся переходит на шаг ----
+        //
+        // На бегу запас не восстанавливается: реген ждёт секунду без
+        // трат, а бегущий тратит каждый кадр. Поэтому бежать без
+        // передышки дольше десятка секунд нельзя.
+        bool everWinded = false;
+        for (int i = 0; i < 60 * 12; ++i) {
+            if (i % 30 == 0) pl.controller.setPosition(padStart);
+            pl.update(world, run, 1.f / 60.f, 0.f, 0.f);
+            progression::tickProgression(reg, 1.f / 60.f);
+            if (pl.winded()) everWinded = true;
+        }
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "после двенадцати секунд бега осталось %.1f из %.1f",
+                          (double)st->current, (double)st->max);
+            check(true, m);
+        }
+        check(st->current < st->max * 0.4f,
+              "на бегу запас не восстанавливается");
+        check(everWinded, "и рано или поздно бегун выдыхается");
+
+        // Доводим до выдоха ровно сейчас: между выдохами он успевает
+        // отдышаться и снова побежать, и померить «шаг выдохшегося»
+        // наугад нельзя.
+        for (int i = 0; i < 60 * 20 && !pl.winded(); ++i) {
+            if (i % 30 == 0) pl.controller.setPosition(padStart);
+            pl.update(world, run, 1.f / 60.f, 0.f, 0.f);
+            progression::tickProgression(reg, 1.f / 60.f);
+        }
+        check(pl.winded(), "выдохся");
+
+        // Мерим с начала площадки: холм на пути сказал бы о рельефе,
+        // а не о беге. И сравниваем с ПРОСТЫМ ШАГОМ, а не с числом:
+        // утверждение здесь — «выдохшийся идёт ровно шагом».
+        auto travel = [&](const player::PlayerInput& in) {
+            pl.controller.setPosition(padStart);
+            const f32 z0 = pl.controller.state().position.z;
+            step(in, 40);
+            return pl.controller.state().position.z - z0;
+        };
+        const f32 wind = travel(run);
+        player::PlayerInput walk;
+        walk.moveAxis = { 0.f, 1.f };
+        const f32 plain = travel(walk);
+        {
+            char m[150];
+            std::snprintf(m, sizeof(m),
+                          "выдохшись, прошёл %.2f блока; просто шагом — %.2f",
+                          (double)wind, (double)plain);
+            check(true, m);
+        }
+        check(plain > 1.f, "шагом он идёт");
+        check(std::fabs(wind - plain) < 0.5f,
+              "выдохшись, игрок идёт ровно шагом, а не бежит");
+
+        // ---- 4. Отдышавшись, бежит снова ----
+        step(player::PlayerInput{}, 60 * 8);
+        check(st->current > player::SPRINT_RESUME,
+              "стоя, выносливость набирается обратно");
+        pl.controller.setPosition(padStart);
+        const glm::vec3 pr = pl.controller.state().position;
+        step(run, 60);
+        check(pl.controller.state().position.z - pr.z > 6.f,
+              "отдышавшись, бежит снова");
+
+        // ---- 5. Утомление опускает ПОТОЛОК ----
+        //
+        // Главное свойство: выносливость восстанавливается за десяток
+        // секунд, утомление — нет. Вымотанный отдыхает и всё равно не
+        // набирает полную шкалу.
+        fg->value = 1.f;
+        fg->restTimer = 0.f;
+        step(player::PlayerInput{}, 60 * 10);
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "вымотанный за десять секунд отдыха набрал %.1f из %.1f",
+                          (double)st->current, (double)st->max);
+            check(true, m);
+        }
+        const f32 ceil10 = progression::staminaCeiling(reg, pl.entity());
+        check(st->current <= ceil10 + 0.5f,
+              "вымотанному шкала доверху не наливается");
+        check(st->current < st->max - 5.f,
+              "и до полной ей заметно не хватает");
+        check(st->current > st->max * 0.3f,
+              "но половину он всё-таки набирает");
+        check(fg->value < 1.f, "и само утомление понемногу спадает");
+
+        // Зелье тоже не отменяет усталость.
+        progression::restoreStamina(reg, pl.entity(), 500.f);
+        check(st->current <= progression::staminaCeiling(reg, pl.entity()) + 0.5f,
+              "зельем поверх потолка не налить");
+        check(st->current < st->max - 5.f, "и полной шкалы зелье не даёт");
+
+        // ---- 6. Отдых возвращает потолок ----
+        fg->value = 1.f;
+        fg->restTimer = 0.f;
+        step(player::PlayerInput{}, 60 * 40);
+        check(fg->value < 0.05f, "долгий отдых снимает утомление");
+        check(st->current > st->max - 1.f, "и шкала снова наливается доверху");
+
+        // ---- 7. Долгий бой выматывает ----
+        {
+            ecs::Registry creg;
+            player::Player cp;
+            cp.init(creg, glm::vec3(4.5f, (f32)surf, 4.5f));
+            auto* cfg = creg.get<ecs::Fatigue>(cp.entity());
+            auto* cst = creg.get<ecs::Stamina>(cp.entity());
+            check(cfg && cst, "у бойца есть и то, и другое");
+            if (cfg && cst) {
+                const f32 f0 = cfg->value;
+                // Полминуты непрерывных взмахов — затяжная драка.
+                // Выносливость доливаем: мерим утомление, а не то,
+                // хватило ли сил на сороковой удар.
+                player::PlayerInput swing;
+                swing.attackPressed = true;
+                swing.attackHeld    = true;
+                for (int i = 0; i < 60 * 30; ++i) {
+                    cst->current = cst->max;
+                    cp.update(world, swing, 1.f / 60.f, 0.f, 0.f);
+                    progression::tickProgression(creg, 1.f / 60.f);
+                }
+                {
+                    char m[120];
+                    std::snprintf(m, sizeof(m),
+                                  "после получаса... то есть полминуты боя "
+                                  "утомление %.3f", (double)cfg->value);
+                    check(true, m);
+                }
+                check(cfg->value > f0 + 0.1f, "долгий бой выматывает");
+            }
+        }
+
+        // ---- 8. Смерть возвращает отдохнувшим ----
+        fg->value = 0.9f;
+        if (auto* hp = reg.get<ecs::Health>(pl.entity())) hp->current = 0.f;
+        bool back = false;
+        for (int i = 0; i < 60 * 6 && !back; ++i) {
+            pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+            progression::tickProgression(reg, 1.f / 60.f);
+            if (pl.justRespawned) back = true;
+        }
+        check(back, "игрок вернулся");
+        check(fg->value < 0.01f, "и вернулся отдохнувшим, а не вымотанным");
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+void testTrampolineThrowAndBounce() {
+    group("батут: бросается, ложится и подбрасывает");
+
+    world::blocks();
+    items::items();
+
+    check(items::items().get(items::ITEM_TRAMPOLINE).category ==
+          items::ItemCategory::Throwable, "батут — метательный предмет");
+
+    // ---- Бросать некуда: земли под точкой падения нет ----
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager empty(0xE3, 1);   // чанки не строились
+
+        auto* inv = pl.inventory();
+        check(inv != nullptr, "инвентарь есть");
+        if (!inv) return;
+        auto& slot = inv->activeSlot();
+        slot.itemId = items::ITEM_TRAMPOLINE;
+        slot.count  = 2;
+
+        const items::UseResult r = pl.useItem(
+            empty, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+        check(r == items::UseResult::NoEffect, "в пустоту батут не кидается");
+        check(inv->activeSlot().count == 2,
+              "и из рук при этом не пропадает");
+    }
+
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager world(0x7A3B, 2);
+        bool ready = false;
+        for (int i = 0; i < 600 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир под ногами построен");
+
+        if (ready) {
+            const i32 surf = world.generator().surfaceHeight(8, 8);
+
+            ecs::Registry reg;
+            player::Player pl;
+            pl.init(reg, glm::vec3(8.5f, (f32)surf, 8.5f));
+            auto* inv = pl.inventory();
+            auto& slot = inv->activeSlot();
+            slot.itemId = items::ITEM_TRAMPOLINE;
+            slot.count  = 2;
+
+            // ---- Бросок ----
+            const items::UseResult r = pl.useItem(
+                world, items::INV_HOTBAR_OFFSET + inv->activeHotbar);
+            check(r == items::UseResult::Consumed, "батут брошен");
+            check(inv->activeSlot().count == 1, "и списан из пояса");
+
+            auto& pool = reg.pool<items::Trampoline>();
+            check(pool.size() == 1, "в мире появился ровно один батут");
+            if (pool.size() != 1) { jobs::gJobs.stop(); return; }
+
+            const ecs::Entity te = pool.entityAt(0);
+            auto* ttf = reg.get<ecs::Transform>(te);
+            check(ttf != nullptr, "у него есть место в мире");
+            if (!ttf) { jobs::gJobs.stop(); return; }
+
+            // Лёг на землю, а не завис и не утонул в камне.
+            world::VoxelReader rd(world);
+            const i32 bx = (i32)std::floor(ttf->position.x);
+            const i32 by = (i32)std::floor(ttf->position.y);
+            const i32 bz = (i32)std::floor(ttf->position.z);
+            check(rd.at(bx, by, bz) == world::AIR, "сам он в воздухе");
+            check(world::blocks().isSolid(rd.at(bx, by - 1, bz)),
+                  "а под ним твёрдый блок");
+
+            // И лёг ВПЕРЕДИ: прицел по умолчанию смотрит на север.
+            check(ttf->position.z < 8.5f - 1.f,
+                  "лёг перед игроком, а не под ноги");
+
+            // ---- Подброс ----
+            const f32 up = items::trampolineBounceAt(
+                reg, ttf->position, -6.f);
+            check(up > 5.f, "падающего он подбрасывает");
+
+            // Сразу второй раз — нет: иначе батут ловит игрока на
+            // первом же кадре подъёма.
+            check(items::trampolineBounceAt(reg, ttf->position, -6.f) == 0.f,
+                  "и не подбрасывает второй раз подряд");
+
+            // Летящего вверх не трогает вовсе.
+            items::updateTrampolines(reg, 1.f);
+            check(items::trampolineBounceAt(reg, ttf->position, 6.f) == 0.f,
+                  "летящего вверх не трогает");
+
+            // Мимо площадки — тоже нет.
+            check(items::trampolineBounceAt(
+                      reg, ttf->position + glm::vec3(3.f, 0.f, 0.f), -6.f) == 0.f,
+                  "и в стороне от площадки не срабатывает");
+
+            // ---- Через весь путь игрока ----
+            pl.controller.setPosition(ttf->position + glm::vec3(0.f, 0.2f, 0.f));
+            pl.controller.state().velocity.y = -4.f;
+            pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+            check(pl.controller.state().velocity.y > 5.f,
+                  "наступивший улетает вверх");
+
+            // ---- Не лежит вечно ----
+            for (int i = 0; i < 200; ++i) items::updateTrampolines(reg, 1.f);
+            check(reg.pool<items::Trampoline>().size() == 0,
+                  "со временем батут исчезает");
+        }
+    }
+    jobs::gJobs.stop();
+}
+
 // ------------------------------------------------------------
 void testElixirsGrantTimedBuff() {
     group("эликсиры: временная прибавка к атрибуту");
@@ -9743,8 +12005,9 @@ void testSaveFileRoundTrip() {
     reg.add(player, wal);
 
     npc::NpcSpawner spawner;
+    hazards::TreasureKeeper treasures;
     const save::SaveStatus ws = mgr.save(slot, world, reg, player, deltas,
-                                         SEED, 777, day, spawner);
+                                         SEED, 777, day, spawner, treasures);
     if (ws != save::SaveStatus::Ok)
         std::printf("    (статус записи: %d, путь: %s)\n",
                     (int)ws, slot.dataPath().c_str());
@@ -9772,8 +12035,10 @@ void testSaveFileRoundTrip() {
     world::DayCycle day2;
 
     npc::NpcSpawner spawner2;
+    hazards::TreasureKeeper treasures2;
     const save::SaveStatus rs = mgr.load(slot, world2, reg2, player2, deltas2,
-                                         &outSeed, &outPlay, &day2, spawner2);
+                                         &outSeed, &outPlay, &day2, spawner2,
+                                         treasures2);
     check(rs == save::SaveStatus::Ok, "сейв прочитан обратно");
     check(outSeed == SEED, "зерно мира дошло целым");
     check(outPlay == 777, "наигранное время дошло целым");
@@ -11117,7 +13382,6 @@ int main() {
     testBuildStampIsNotStale();
     testSkyPaysForMathNotBranches();
     testWorldSharesOneLightingModel();
-    testDistantGrassIsNotSubPixel();
     testShadersAvoidUndefinedMath();
     testJobsOutlivingTheirWorldAreSafe();
     testChunkStreamingIsBudgeted();
@@ -11161,6 +13425,20 @@ int main() {
     testBeastsHaveCharacter();
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
+    testWellIsRespawnPoint();
+    testForestIsBigAndDense();
+    testRoadConnectsVillages();
+    testCourierWalksTheRoad();
+    testLairHoldsOneBeast();
+    testBlightForestAndCastles();
+    testFallsTrapsAndAmbushes();
+    testSecretTreasureAndItsQuest();
+    testTreeDungeonIsClimbable();
+    testShurikenFliesAndHits();
+    testDashMovesForward();
+    testRunningAndFightingTire();
+    testHandcraftWorksAnywhere();
+    testTrampolineThrowAndBounce();
     testElixirsGrantTimedBuff();
     testInventoryDragMovesItems();
     testReputationCanBeLost();

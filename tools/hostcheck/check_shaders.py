@@ -4,7 +4,7 @@
 против того, что реально требует шейдер (layout(location=...) in).
 
 Раньше layout был зашит в GraphicsPipeline одним вариантом и
-совпадал только с воксельным шейдером — UI, мобы, трава и контур
+совпадал только с воксельным шейдером — UI, мобы и контур
 рисовались бы мусором. Компилятор такое не ловит, тесты логики
 тоже: ошибка видна только на устройстве. Поэтому проверка здесь.
 """
@@ -21,7 +21,6 @@ PAIRS = [
     ('src/render/voxel_pipeline.cpp',      'voxel.vert'),
     ('src/ui/ui_renderer.cpp',            'ui.vert'),
     ('src/render/block_outline.cpp',      'outline.vert'),
-    ('src/render/grass_pipeline.cpp', 'grass.vert'),
     ('src/render/mob_renderer.cpp',       'mob.vert'),
     ('src/render/npc_renderer.cpp',       'mob.vert'),
     ('src/render/projectile_renderer.cpp','projectile.vert'),

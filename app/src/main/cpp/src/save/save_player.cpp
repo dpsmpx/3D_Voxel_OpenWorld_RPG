@@ -192,6 +192,14 @@ void serializePlayer(ByteWriter& w, ecs::Registry& reg, ecs::Entity player) {
         }
     } else w.writeU8(0);
 
+    // Точка возвращения. Без неё смерть после загрузки уносила бы к
+    // месту первого появления, а не к последнему тронутому колодцу.
+    if (auto* rp = reg.get<ecs::Respawn>(player)) {
+        w.writeU8(1);
+        writeVec3(w, rp->point);
+        w.writeU8(rp->set ? 1 : 0);
+    } else w.writeU8(0);
+
     serializeInventory(w, reg, player);
 }
 
@@ -473,6 +481,23 @@ bool deserializePlayer(ByteReader& r, ecs::Registry& reg, ecs::Entity player) {
                     r.i32v(rep->values[i]);
                 }
             }
+        }
+    }
+
+    {
+        u8 has = 0;
+        if (!r.u8v(has)) return false;
+        if (has) {
+            glm::vec3 pt{0};
+            u8 set = 0;
+            readVec3(r, pt);
+            if (!r.u8v(set)) return false;
+            auto* rp = reg.get<ecs::Respawn>(player);
+            if (!rp) {
+                reg.add(player, ecs::Respawn{});
+                rp = reg.get<ecs::Respawn>(player);
+            }
+            if (rp) { rp->point = pt; rp->set = (set != 0); }
         }
     }
 

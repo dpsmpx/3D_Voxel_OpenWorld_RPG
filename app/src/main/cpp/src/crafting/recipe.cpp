@@ -44,14 +44,49 @@ RecipeRegistry::RecipeRegistry() {
         recipes_.push_back(std::move(r));
     };
 
-    // ============ None (ручной крафт) ============
+    // ============ None (крафт на ходу) ============
+    //
+    // Раздел был пуст, и StationType::None не значил ничего: весь
+    // крафт до единого рецепта требовал станции, а станции стоят
+    // только в деревнях. Игрок в поле не мог ни поджарить мясо, ни
+    // намотать бинт, ни сделать сюрикен из имевшегося слитка — хотя
+    // canCraft умел пропускать безстаночные рецепты с самого начала.
+    //
+    // Сюда идёт то, для чего довольно рук и костра: еда и простые
+    // вещи. Плавка, оружие и зелья остаются за станками — иначе
+    // деревня перестанет быть нужна.
 
-    // Доски из брёвен? У нас WOOD — и блок, и материал.
-    // Сделаем «Wood Plank» — но у нас нет отдельного ID. Пропустим.
+    // Мясо на костре. Первое, чего хочется в поле, и первое, чего
+    // было нельзя.
+    add("Cooked Meat", StationType::None, 1, false,
+        { { ITEM_MEAT_RAW, 1 }, { ITEM_WOOD, 1 } },
+        ITEM_MEAT_COOKED, 1);
 
-    // Факел — LAVA + WOOD? Или опустим.
+    // Лепёшка: мука тут условная, зато печётся на том же костре.
+    add("Bread", StationType::None, 1, false,
+        { { ITEM_WOOD, 1 }, { ITEM_LEAVES, 1 } },
+        ITEM_BREAD, 2);
 
-    // Базовые блоки-композиты — не нужно.
+    // Полосы ткани из кожи. Ткань нужна зельям, а выпадает она редко
+    // и не оттуда, откуда кожа.
+    add("Cloth Strips", StationType::None, 1, false,
+        { { ITEM_LEATHER, 1 } },
+        ITEM_CLOTH, 2);
+
+    // Сюрикены — четвёркой: поштучно их ковать столько же раз,
+    // сколько бросать, и крафт превратился бы в работу. Слиток ещё
+    // надо выплавить на верстаке, так что в поле их не наделать из
+    // ничего.
+    add("Shuriken", StationType::None, 1, false,
+        { { ITEM_IRON_INGOT, 1 } },
+        ITEM_SHURIKEN, 4);
+
+    // Батут: кожа на полотно, дерево на раму. Кидается под ноги и
+    // подбрасывает — им перепрыгивают монстра и разгоняются. Вещь
+    // расходная, и бегать за ней в деревню незачем.
+    add("Trampoline", StationType::None, 1, false,
+        { { ITEM_LEATHER, 2 }, { ITEM_WOOD, 3 } },
+        ITEM_TRAMPOLINE, 1);
 
     // ============ Workbench ============
 
@@ -167,16 +202,6 @@ RecipeRegistry::RecipeRegistry() {
     add("Elixir of Endurance", StationType::Alchemy, 5, false,
         { { ITEM_IRON_INGOT, 1 }, { ITEM_LEATHER, 2 }, { ITEM_BONE, 3 } },
         ITEM_ELIXIR_ENDURANCE, 1);
-
-    // ============ Food (Workbench) ============
-
-    add("Bread", StationType::Workbench, 1, false,
-        { { ITEM_WOOD, 1 }, { ITEM_LEAVES, 1 } },
-        ITEM_BREAD, 2);
-
-    add("Cooked Meat", StationType::Workbench, 1, false,
-        { { ITEM_MEAT_RAW, 1 }, { ITEM_WOOD, 1 } },
-        ITEM_MEAT_COOKED, 1);
 
     LOGI("RecipeRegistry: %zu рецептов", recipes_.size());
 }

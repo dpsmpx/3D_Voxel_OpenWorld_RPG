@@ -5,6 +5,7 @@
 #include "item_use.h"
 #include "inventory.h"
 #include "item_pickup.h"
+#include "throwable.h"
 #include "item_def.h"
 #include "../combat/components.h"
 #include "../combat/weapon.h"
@@ -179,8 +180,51 @@ UseResult useItemFromSlot(ecs::Registry& reg,
         return UseResult::Consumed;
     }
 
+    // ---- Метательное: бросают, а не «используют» ----
+    //
+    // Тап по предмету в поясе не должен швырять батут под ноги:
+    // бросок идёт по направлению взгляда и через throwItemFromSlot.
+    if (def.category == ItemCategory::Throwable) return UseResult::NotUsable;
+
     // ---- Материалы / Key / Currency — не используются ----
     return UseResult::NotUsable;
+}
+
+UseResult throwItemFromSlot(ecs::Registry& reg,
+                            world::ChunkManager& world,
+                            ecs::Entity playerEntity,
+                            u32 slotIndex,
+                            const glm::vec3& origin,
+                            const glm::vec3& dir)
+{
+    auto* inv = reg.get<Inventory>(playerEntity);
+    if (!inv) return UseResult::Failed;
+    if (slotIndex >= INV_TOTAL_SLOTS) return UseResult::Failed;
+
+    auto& s = inv->at(slotIndex);
+    if (s.empty()) return UseResult::Failed;
+
+    const ItemDef& def = items().get(s.itemId);
+    if (def.category != ItemCategory::Throwable) return UseResult::NotUsable;
+
+    bool thrown = false;
+    switch (def.throwKind) {
+        case ThrowKind::Trampoline:
+            thrown = throwTrampoline(reg, world, origin, dir).valid();
+            break;
+        case ThrowKind::Shuriken:
+            thrown = throwShuriken(reg, playerEntity, origin, dir).valid();
+            break;
+        default:
+            break;
+    }
+    // Бросать некуда — предмет остаётся в поясе. Иначе батут,
+    // кинутый в пропасть, просто исчезал бы из рук.
+    if (!thrown) return UseResult::NoEffect;
+
+    s.count -= 1;
+    if (s.count == 0) s.clear();
+    return UseResult::Consumed;
 }
 
 bool dropItemFromSlot(ecs::Registry& reg,

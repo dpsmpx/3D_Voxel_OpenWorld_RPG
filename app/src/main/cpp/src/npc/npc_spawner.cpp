@@ -134,6 +134,136 @@ void NpcSpawner::setDeadKeys(std::vector<u64> keys) {
     deadKeys_ = std::move(keys);
 }
 
+namespace {
+
+/// Посыльный на дороге.
+///
+/// Набор составных частей тот же, что у деревенского жителя: иначе он
+/// не будет ни рисоваться, ни двигаться, ни получать урон. Отличия
+/// ровно два — состояние Travel и цель пути.
+ecs::Entity spawnCourier(world::ChunkManager& world, ecs::Registry& reg,
+                         const glm::vec3& at, const glm::vec3& target)
+{
+    (void)world;
+    const NpcDef& def = npcRegistry().get(NPC_COURIER);
+    if (def.maxHealth <= 0.f) return {};
+
+    const ecs::Entity e = reg.create();
+
+    ecs::Transform tf;
+    tf.position = at;
+    reg.add(e, tf);
+    reg.add(e, ecs::Velocity{});
+    reg.add(e, ecs::Facing{ 0.f, 0.f, 5.f });
+
+    // Облик — от места, где он встретился: два посыльных на разных
+    // дорогах не должны быть близнецами.
+    const u32 look = (u32)((i32)at.x * 73856093) ^ (u32)((i32)at.z * 19349663);
+    reg.add(e, ecs::Appearance{ look });
+    reg.add(e, ecs::Gait{ 0.f, rigFor(NPC_COURIER, look).strideLength });
+    reg.add(e, ecs::Locomotion{});
+    reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
+
+    ecs::Collider col;
+    col.halfExtents = glm::vec3(def.bodyRadius, def.bodyHeight * 0.5f,
+                                def.bodyRadius);
+    reg.add(e, col);
+
+    reg.add(e, ecs::Kind{ ecs::EntityKind::NPC });
+    reg.add(e, ecs::NPCTag{});
+
+    combat::Combatant cmb;
+    cmb.faction = combat::Faction::NPC;
+    cmb.radius  = def.bodyRadius;
+    cmb.height  = def.bodyHeight;
+    reg.add(e, cmb);
+    reg.add(e, combat::StatusEffects{});
+
+    NpcTag tag;
+    tag.id = NPC_COURIER;
+    // Постоянного ключа у посыльного нет: он не принадлежит деревне,
+    // и «не появляться снова» к нему не относится — он и так уходит.
+    tag.persistKey = 0;
+    reg.add(e, tag);
+
+    NpcAI ai;
+    ai.homePos      = at;
+    ai.travelTarget = target;
+    ai.state        = NpcAI::Travel;
+    reg.add(e, ai);
+
+    return e;
+}
+
+} // namespace
+
+void NpcSpawner::updateCouriers(world::ChunkManager& world, ecs::Registry& reg,
+                                const glm::vec3& playerPos, u64 worldSeed)
+{
+    // Сколько их уже ходит. Двое — это «дорога живая», а не толпа.
+    constexpr u32 MAX_COURIERS = 2;
+    u32 alive = 0;
+    {
+        auto& pool = reg.pool<NpcTag>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            auto* t = pool.get(pool.entityAt((u32)i));
+            if (t && t->id == NPC_COURIER) ++alive;
+        }
+    }
+    if (alive >= MAX_COURIERS) return;
+
+    const i32 sc0x = (i32)std::floor(playerPos.x / (f32)SUPER_BLOCKS);
+    const i32 sc0z = (i32)std::floor(playerPos.z / (f32)SUPER_BLOCKS);
+
+    // Те же отрезки, что кладёт applyRoads: от деревни к соседней на
+    // восток и на юг. Правило одно, и списка дорог заводить не нужно.
+    for (i32 dz = -2; dz <= 2; ++dz)
+        for (i32 dx = -2; dx <= 2; ++dx) {
+            const world::VillageSite a = world::villageAt(
+                sc0x + dx, sc0z + dz, worldSeed, &world.generator());
+            if (!a.exists) continue;
+
+            const world::VillageSite ends[2] = {
+                world::villageAt(sc0x + dx + 1, sc0z + dz, worldSeed, &world.generator()),
+                world::villageAt(sc0x + dx, sc0z + dz + 1, worldSeed, &world.generator()),
+            };
+            for (const auto& b : ends) {
+                if (!b.exists) continue;
+
+                // Ближайшая точка отрезка к игроку: посыльного ставим
+                // на дорогу, а не рядом с ней.
+                const glm::vec2 A{ (f32)a.center.x, (f32)a.center.z };
+                const glm::vec2 B{ (f32)b.center.x, (f32)b.center.z };
+                const glm::vec2 P{ playerPos.x, playerPos.z };
+                const glm::vec2 v = B - A;
+                const f32 len2 = glm::dot(v, v);
+                if (len2 < 1.f) continue;
+                f32 t = glm::dot(P - A, v) / len2;
+                t = std::max(0.f, std::min(1.f, t));
+                const glm::vec2 near = A + v * t;
+                if (glm::distance(near, P) > 70.f) continue;
+
+                // Ставим впереди по дороге, а не под ноги: посыльный,
+                // возникший вплотную, выглядит как подброшенный.
+                const glm::vec2 dir = glm::normalize(v);
+                const glm::vec2 spotXZ = near + dir * 34.f;
+
+                const i32 bx = (i32)std::floor(spotXZ.x);
+                const i32 bz = (i32)std::floor(spotXZ.y);
+                if (!world.findChunk(bx >> 5, bz >> 5)) continue;
+                const i32 gy = world.generator().surfaceHeight(bx, bz);
+                if (world.getVoxel(bx, gy - 1, bz) == world::AIR) continue;
+
+                const glm::vec3 spot{ (f32)bx + 0.5f, (f32)gy, (f32)bz + 0.5f };
+                const ecs::Entity e = spawnCourier(world, reg, spot,
+                                                   { (f32)b.center.x + 0.5f,
+                                                     (f32)b.center.y,
+                                                     (f32)b.center.z + 0.5f });
+                if (e.valid()) { ++activeCount_; return; }
+            }
+        }
+}
+
 void NpcSpawner::update(world::ChunkManager& world,
                         ecs::Registry& reg,
                         const glm::vec3& playerPos,
@@ -308,6 +438,17 @@ void NpcSpawner::update(world::ChunkManager& world,
                 }
             }
         }
+    }
+
+    // ---- Посыльные ----
+    //
+    // Раз в четыре секунды, а не каждый кадр: проход перебирает
+    // двадцать пять super-chunk'ов и для каждого спрашивает раскладку
+    // деревни. Дорога не появляется и не исчезает, спешить некуда.
+    courierTimer_ += 1.f / 60.f;
+    if (courierTimer_ >= 4.0f) {
+        courierTimer_ = 0.f;
+        updateCouriers(world, reg, playerPos, worldSeed);
     }
 
     // ---- Деспавн ----

@@ -6,6 +6,8 @@
 #include "../core/types.h"
 #include "../ecs/registry.h"
 #include "item_stack.h"
+#include "../world/chunk_manager.h"
+#include <glm/glm.hpp>
 
 namespace items {
 
@@ -34,6 +36,21 @@ const char* useResultString(UseResult r);
 UseResult useItemFromSlot(ecs::Registry& reg,
                           ecs::Entity playerEntity,
                           u32 slotIndex);
+
+/// Бросить метательный предмет из слота.
+///
+/// Отдельно от useItemFromSlot: броску нужны мир и направление
+/// взгляда, а тому — только реестр. Тащить мир во все применения
+/// предметов ради одной категории значило бы связать съеденное
+/// яблоко с генерацией чанков.
+///
+/// @return Consumed при успехе, NoEffect если бросать некуда
+UseResult throwItemFromSlot(ecs::Registry& reg,
+                            world::ChunkManager& world,
+                            ecs::Entity playerEntity,
+                            u32 slotIndex,
+                            const glm::vec3& origin,
+                            const glm::vec3& dir);
 
 /// Выбросить предмет из слота в мир (по направлению dir).
 bool dropItemFromSlot(ecs::Registry& reg,

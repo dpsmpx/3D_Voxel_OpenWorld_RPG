@@ -51,6 +51,10 @@ inline constexpr PadDef PAD_BUTTONS[] = {
     { PadAnchor::BottomLeft,  150.f, 196.f, 52.f, "USE" },
     { PadAnchor::BottomLeft,  152.f, 116.f, 52.f, "ITM" },
     { PadAnchor::TopRight,     42.f, 212.f, 52.f, "CAM" },
+    // Рывок — на левой половине, у большого пальца, которым и
+    // держат направление: рвутся ТУДА, КУДА ИДУТ, и тянуться за
+    // этим через весь экран нечем.
+    { PadAnchor::BottomLeft,  246.f, 132.f, 56.f, "DSH" },
 };
 constexpr u32 PAD_BUTTON_COUNT =
     (u32)(sizeof(PAD_BUTTONS) / sizeof(PAD_BUTTONS[0]));

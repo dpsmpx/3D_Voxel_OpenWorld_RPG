@@ -103,13 +103,13 @@ add_library(native-lib SHARED
     src/world/debug_scene.cpp
     src/world/enchant_altar.cpp
     src/world/features.cpp
+    src/world/hazards.cpp
     src/world/noise.cpp
     src/world/terrain.cpp
 
     # Рендер
     src/render/block_outline.cpp
     src/render/chunk_renderer.cpp
-    src/render/instanced_renderer.cpp
     src/render/item_renderer.cpp
     src/render/mesh_builder.cpp
     src/render/pass_sweep.cpp
@@ -118,7 +118,6 @@ add_library(native-lib SHARED
     src/render/projectile_renderer.cpp
     src/render/render_system.cpp
     src/render/voxel_pipeline.cpp
-    src/render/grass_pipeline.cpp
     src/render/skybox.cpp
 
     # Физика
@@ -197,6 +196,7 @@ add_library(native-lib SHARED
     src/items/item_pickup.cpp
     src/items/item_stack.cpp
     src/items/item_use.cpp
+    src/items/throwable.cpp
     src/items/loot_table.cpp
 
     # Крафт

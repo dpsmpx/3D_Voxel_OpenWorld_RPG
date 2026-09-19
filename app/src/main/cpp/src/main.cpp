@@ -47,6 +47,7 @@
 #include "physics/collision.h"
 
 #include "mobs/spawner.h"
+#include "world/hazards.h"
 #include "mobs/mob_ai.h"
 
 #include "combat/projectile.h"
@@ -63,6 +64,7 @@
 #include "npc/dialogue.h"
 
 #include "items/item_pickup.h"
+#include "items/throwable.h"
 #include "items/item_use.h"
 #include "items/inventory.h"
 #include "items/currency.h"
@@ -108,6 +110,10 @@ struct Engine {
     std::unique_ptr<player::Player>        player;
     std::unique_ptr<ui::UiSystem>          ui;
     std::unique_ptr<mobs::Spawner>         spawner;
+    std::unique_ptr<hazards::TrapSpawner>  trapSpawner;
+    /// Вскрытые тайники живут рядом с сохранением, а не в спавнере:
+    /// это то, что в мире УЖЕ случилось.
+    hazards::TreasureKeeper                treasures;
     std::unique_ptr<npc::NpcSpawner>       npcSpawner;
     std::unique_ptr<crafting::StationSpawner>  stationSpawner;
     std::unique_ptr<world::EnchantAltarSpawner> altarSpawner;
@@ -148,6 +154,7 @@ struct Engine {
     glm::vec3 playerSpawn{ 4.5f, 60.f, 4.5f };
 
     u32 btnJump_    = 0;
+    u32 btnDash_    = 0;
     u32 btnBreak_   = 0;
     u32 btnPlace_   = 0;
     u32 btnCamera_  = 0;
@@ -166,6 +173,7 @@ struct Engine {
     bool evFinish_  = false;
     bool evInteract_= false;
     bool evUseItem_ = false;
+    bool evDash_    = false;
 
     bool running     = false;
     bool initialized = false;
@@ -336,7 +344,7 @@ struct Engine {
 
         ui->onUseItem = [this](u32 slotIndex) {
             if (!player) return;
-            auto res = player->useItem(slotIndex);
+            auto res = player->useItem(*world, slotIndex);
             if (res == items::UseResult::Equipped) {
                 audio::events().uiClick();
                 ui->setStatus("Equipped");
@@ -468,6 +476,7 @@ struct Engine {
         }
 
         spawner        = std::make_unique<mobs::Spawner>();
+        trapSpawner    = std::make_unique<hazards::TrapSpawner>();
         npcSpawner     = std::make_unique<npc::NpcSpawner>();
         stationSpawner = std::make_unique<crafting::StationSpawner>();
         altarSpawner   = std::make_unique<world::EnchantAltarSpawner>();
@@ -578,6 +587,7 @@ struct Engine {
         stationSpawner.reset();
         npcSpawner.reset();
         spawner.reset();
+        trapSpawner.reset();
         // У UiSystem нет деструктора, освобождающего ресурсы Vulkan:
         // атлас шрифта, его память и сэмплер, пул дескрипторов,
         // конвейер, модули шейдеров и вершинные буферы кадров жили до
@@ -598,7 +608,7 @@ struct Engine {
         auto st = saveMgr.save(sl, *world, registry,
                                player->entity(), worldDelta,
                                worldSeed, playtime.seconds(), dayCycle,
-                               *npcSpawner);
+                               *npcSpawner, treasures);
 
         if (st == save::SaveStatus::Ok) {
             lastSaveProfile = profile;
@@ -626,7 +636,7 @@ struct Engine {
 
         auto st = saveMgr.load(sl, *world, registry, player->entity(),
                                worldDelta, &loadedSeed, &loadedPlaytime,
-                               &dayCycle, *npcSpawner);
+                               &dayCycle, *npcSpawner, treasures);
 
         if (st == save::SaveStatus::Ok) {
             worldSeed = loadedSeed;
@@ -693,6 +703,7 @@ struct Engine {
         btnPlace_    = add(cfg::Btn_Place,    [this](u32) { evPlace_    = true; });
         btnInteract_ = add(cfg::Btn_Interact, [this](u32) { evInteract_ = true; });
         btnUseItem_  = add(cfg::Btn_UseItem,  [this](u32) { evUseItem_  = true; });
+        btnDash_     = add(cfg::Btn_Dash,     [this](u32) { evDash_ = true; });
         btnCamera_   = add(cfg::Btn_Camera,   [this](u32) {
                 if (!player) return;
                 player->cameraMode =
@@ -709,6 +720,7 @@ struct Engine {
         buttonIds_[cfg::Btn_Interact] = btnInteract_;
         buttonIds_[cfg::Btn_UseItem]  = btnUseItem_;
         buttonIds_[cfg::Btn_Camera]   = btnCamera_;
+        buttonIds_[cfg::Btn_Dash]     = btnDash_;
 
         // Перетаскивание кнопки сразу сохраняется в настройки.
         touch.setLayoutCallback([this](u32 buttonId, glm::vec2 off) {
@@ -848,7 +860,7 @@ struct Engine {
         // Касания принимаются, но никуда не идут: буферы всё равно
         // надо закрывать покадрово, иначе состояние пальцев копится.
         evJump_ = evBreak_ = evPlace_ = evAttack_ = evFinish_ =
-            evInteract_ = evUseItem_ = false;
+            evInteract_ = evUseItem_ = evDash_ = false;
         touch.endFrame();
 
         debugSceneLog();
@@ -1029,6 +1041,7 @@ struct Engine {
             pin.attackHeld    = touch.isButtonHeld(btnAttack_);
             pin.finisherInput = evFinish_;
             pin.interactPressed = evInteract_;
+            pin.dashPressed   = evDash_;
 
             // Записываем скорость до апдейта (для звука шагов).
             glm::vec3 prevPos = player->controller.state().position;
@@ -1056,6 +1069,40 @@ struct Engine {
 
                 player->updateWithHash(*world, &spatialHash, pin, dt,
                                        cameraYawPitch.x, cameraYawPitch.y);
+
+                // Смерть, возвращение и запомненный колодец — игрок
+                // должен узнать о каждом.
+                if (ui) {
+                    if (player->justDied)
+                        ui->notify(cfg::T(cfg::StrKey::Notif_Died),
+                                   ui::theme::NotifyPriority::High);
+                    if (player->justRespawned)
+                        ui->notify(cfg::T(cfg::StrKey::Notif_Respawned),
+                                   ui::theme::NotifyPriority::High);
+                    if (player->newRespawnPoint)
+                        ui->notify(cfg::T(cfg::StrKey::Notif_WellBound),
+                                   ui::theme::NotifyPriority::Normal);
+                    // Логово: без слова об этом «вокруг одни волки»
+                    // читается как поломка спавна.
+                    // Удар о землю: без слова игрок не поймёт, за
+                    // что у него убавилось здоровья.
+                    if (player->lastFallDamage > 0.f)
+                        ui->notify(cfg::T(cfg::StrKey::Notif_Fall),
+                                   ui::theme::NotifyPriority::High);
+                    if (player->enteredLair) {
+                        cfg::StrKey k = cfg::StrKey::Notif_LairWolves;
+                        switch (player->lairKind) {
+                            case world::LairKind::Skeletons:
+                                k = cfg::StrKey::Notif_LairSkeletons; break;
+                            case world::LairKind::Goblins:
+                                k = cfg::StrKey::Notif_LairGoblins;   break;
+                            case world::LairKind::Slimes:
+                                k = cfg::StrKey::Notif_LairSlimes;    break;
+                            default: break;
+                        }
+                        ui->notify(cfg::T(k), ui::theme::NotifyPriority::High);
+                    }
+                }
 
                 // Спасение из-под мира. Провалиться теперь неоткуда — ниже
                 // нулевой отметки мир отвечает камнем, — но сохранения,
@@ -1101,7 +1148,7 @@ struct Engine {
             if (evUseItem_) {
                 if (auto* inv = player->inventory()) {
                     u32 slot = items::INV_HOTBAR_OFFSET + inv->activeHotbar;
-                    player->useItem(slot);
+                    player->useItem(*world, slot);
                 }
             }
 
@@ -1140,6 +1187,7 @@ struct Engine {
             // Phase 15: обновление пикапов с raycast-коллизией.
             items::updatePickups(*world, registry, player->entity(),
                                  player->controller.state().position, dt);
+            items::updateTrampolines(registry, dt);
 
             if (ui) {
                 ui->nearbyStation = crafting::detectNearbyStation(
@@ -1221,7 +1269,7 @@ struct Engine {
         // прибиты к числам из world/debug_scene.h — тем самым, по
         // которым tools/vkcheck --scene minimal рисует свой кадр.
         // Подвижная камера, ходящее солнце и качающаяся от времени
-        // трава не дали бы сравнить два кадра никогда.
+        // не дали бы сравнить два кадра никогда.
         if (config::settingsConst().debugScene) {
             cam.setFirstPerson(true);
             cam.setHeadBob(0.f, 0.f);
@@ -1248,6 +1296,24 @@ struct Engine {
             const glm::vec3 ppos = player->controller.state().position;
             npcSpawner->update(*world, registry, ppos, worldSeed);
             npc::updateNpcs(*world, registry, player->entity(), ppos, dt);
+        }
+        // Ловушки: сперва заводим и перезаряжаем, потом смотрим,
+        // не наступил ли кто. В обратном порядке только что
+        // заведённая ловушка срабатывала бы в тот же кадр, ещё до
+        // того, как игрок её увидит.
+        if (trapSpawner && player) {
+            const glm::vec3 ppos = player->controller.state().position;
+            trapSpawner->update(*world, registry, ppos, worldSeed, dt);
+            const f32 hurt = hazards::tickTraps(registry, player->entity(),
+                                                ppos, dt);
+            if (hurt > 0.f && ui)
+                ui->notify(cfg::T(cfg::StrKey::Notif_Trap),
+                           ui::theme::NotifyPriority::High);
+
+            // Тайник: докопавшемуся высыпается всё разом.
+            if (treasures.update(*world, registry, ppos, worldSeed) > 0 && ui)
+                ui->notify(cfg::T(cfg::StrKey::Notif_Treasure),
+                           ui::theme::NotifyPriority::High);
         }
         if (stationSpawner && player) {
             const glm::vec3 ppos = player->controller.state().position;
@@ -1342,7 +1408,7 @@ struct Engine {
         if (ui) ui->tickUi(dt);
 
         evJump_ = evBreak_ = evPlace_ = evAttack_ = evFinish_ =
-            evInteract_ = evUseItem_ = false;
+            evInteract_ = evUseItem_ = evDash_ = false;
 
         touch.endFrame();
     }
@@ -1455,6 +1521,11 @@ static int32_t handleInput(android_app* app, AInputEvent* e) {
                 return 1;
             case AKEYCODE_BUTTON_THUMBL:
                 eng->touch.injectGamepadSprint(down);
+                return 1;
+            // Рывок на левом бампере: он под тем же пальцем, что и
+            // стик направления, а рвутся туда, куда идут.
+            case AKEYCODE_BUTTON_L2:
+                eng->touch.injectGamepadButton(eng->btnDash_, down);
                 return 1;
             case AKEYCODE_BUTTON_START:
                 if (down && eng->ui) eng->ui->togglePause();
@@ -1646,7 +1717,7 @@ extern "C" void android_main(android_app* app) {
             // эпохи (~1.75e9) во float дают шаг дискретизации ~128 с,
             // из-за чего ломался цикл дня и ночи и анимация в шейдерах.
             f32 timeSec = std::chrono::duration<f32>(now - startTime).count();
-            // И на постоянном времени: по нему качается трава в шейдере.
+            // И на постоянном времени.
             if (dbgScene) timeSec = world::SCENE_TIME_SEC;
 
             // Покадровая раскладка по этапам. Без неё «15 кадров в
@@ -1745,7 +1816,7 @@ extern "C" void android_main(android_app* app) {
                 LOGI("кадры: показано %llu (%.1f/с), показ=%d, цепочка %llu | камера %.1f %.1f %.1f "
                      "| чанки: загружено %zu, нарисовано %u, индексов %u, "
                      "дыр %u (ждут меша %u) "
-                     "| трава %u, мобы %u, NPC %u, предметы %u, снаряды %u "
+                     "| мобы %u, NPC %u, предметы %u, снаряды %u "
                      "| интерфейс: вершин %u, нарисовано %u, экран %d "
                      "| мс: логика %.1f, подготовка %.1f, рисование %.1f "
                      "(ожидание экрана %.1f, запись команд %.1f, "
@@ -1759,7 +1830,6 @@ extern "C" void android_main(android_app* app) {
                      eng.render ? eng.render->drawnIndices() : 0u,
                      eng.render ? eng.render->emptyChunks() : 0u,
                      eng.render ? eng.render->waitingChunks() : 0u,
-                     eng.render ? eng.render->grassCount() : 0u,
                      eng.render ? eng.render->mobInstances() : 0u,
                      eng.render ? eng.render->npcInstances() : 0u,
                      // Выпавшие предметы и снаряды в сводке не

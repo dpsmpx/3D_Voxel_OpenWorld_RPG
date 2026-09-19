@@ -184,12 +184,31 @@ void tickProgression(ecs::Registry& reg, f32 dt) {
                     m->current + d.manaRegen * dt);
             }
         }
+        // Утомление спадает само, но не сразу: отдыхом считается
+        // время БЕЗ нагрузки, и отсчёт его сбрасывает всякий рывок и
+        // всякий удар (см. addFatigue).
+        if (auto* f = reg.get<ecs::Fatigue>(e)) {
+            f->restTimer += dt;
+            if (f->restTimer >= FATIGUE_REST_DELAY && f->value > 0.f) {
+                f->value = std::max(0.f,
+                    f->value - dt / FATIGUE_RECOVER_SEC);
+            }
+        }
+
         if (auto* s = reg.get<ecs::Stamina>(e)) {
-            // Стamina регенерируется только когда не тратится —
-            // проверку делает боевая система, выставляя флаг занятости.
-            // Здесь — простой реген всегда.
-            if (s->current < s->max) {
-                s->current = std::min(s->max,
+            // Реген идёт не всегда: пока тратишь — не восстанавливается.
+            // Иначе бег не стоил бы ничего, реген его перекрывал бы.
+            // У кого нет утомления (мобы, жители) — реген как был.
+            const auto* fat = reg.get<ecs::Fatigue>(e);
+            const bool resting = !fat || fat->restTimer >= STAMINA_REGEN_DELAY;
+
+            // И упирается он в ПОТОЛОК, который опускает утомление.
+            // Прежде он упирался в max, и разницы между свежим героем
+            // и тем, кто третью минуту отбивается от стаи, не
+            // оставалось никакой.
+            const f32 cap = staminaCeiling(reg, e);
+            if (resting && s->current < cap) {
+                s->current = std::min(cap,
                     s->current + d.staminaRegen * dt);
             }
         }

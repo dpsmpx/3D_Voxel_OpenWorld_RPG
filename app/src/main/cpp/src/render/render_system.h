@@ -18,7 +18,6 @@
 #include "pass_sweep.h"
 #include "chunk_renderer.h"
 #include "skybox.h"
-#include "instanced_renderer.h"
 #include "block_outline.h"
 #include "mob_renderer.h"
 #include "projectile_renderer.h"
@@ -78,7 +77,6 @@ public:
     /// Чанки в кадре, которым нечем рисоваться, — это и есть дыры.
     u32 emptyChunks()   const { return chunkRenderer_.lastEmptyChunks(); }
     u32 waitingChunks() const { return chunkRenderer_.lastWaitingChunks(); }
-    u32 grassCount()    const { return grass_.instanceCount(); }
     u32 mobInstances()  const { return mobRenderer_.instanceCount(); }
     u32 projInstances() const { return projRenderer_.instanceCount(); }
     u32 npcInstances()  const { return npcRenderer_.instanceCount(); }
@@ -95,7 +93,6 @@ private:
 
     ChunkRenderer         chunkRenderer_;
     Skybox                skybox_;
-    InstancedRenderer     grass_;
     BlockOutline          blockOutline_;
     MobRenderer           mobRenderer_;
     ProjectileRenderer    projRenderer_;
@@ -106,9 +103,6 @@ private:
 
     ui::UiSystem*         ui_ = nullptr;
 
-    /// Когда и откуда в последний раз рассаживали траву.
-    f32       grassTimer_  = 0.f;
-    glm::vec3 grassOrigin_{ 0.f };
     player::Player*       currentPlayer_ = nullptr;
     world::ChunkManager*  currentWorld_ = nullptr;
     f32                   currentFps_ = 0.f;

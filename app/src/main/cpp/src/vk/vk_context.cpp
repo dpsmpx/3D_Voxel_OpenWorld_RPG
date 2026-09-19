@@ -810,7 +810,6 @@ const char* Context::passName(GpuPass p) {
     switch (p) {
         case GpuPass::Terrain:  return "ландшафт";
         case GpuPass::Entities: return "существа";
-        case GpuPass::Grass:    return "трава";
         case GpuPass::Sky:      return "небо";
         case GpuPass::Water:    return "вода";
         case GpuPass::Overlay:  return "контур";

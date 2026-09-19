@@ -318,6 +318,23 @@ void updateNpcs(world::ChunkManager& world,
             break;
         }
 
+        case NpcAI::Travel: {
+            // Посыльный идёт к цели и, дойдя, меняет её местами с
+            // домом: одного поля хватает на маршрут туда и обратно.
+            glm::vec3 d = ai->travelTarget - pos;
+            d.y = 0.f;
+            const f32 len = glm::length(d);
+            if (len < 2.5f) {
+                std::swap(ai->travelTarget, ai->homePos);
+                ai->stateTime = 0.f;
+                break;
+            }
+            d /= len;
+            vel->linear.x = d.x * def.moveSpeed;
+            vel->linear.z = d.z * def.moveSpeed;
+            break;
+        }
+
         case NpcAI::Talk:
         case NpcAI::Follow:
         case NpcAI::Dead:
