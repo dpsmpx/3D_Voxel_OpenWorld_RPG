@@ -6,6 +6,7 @@
 #include "hud_layout.h"
 #include "slider.h"
 #include "hud_resources.h"
+#include "font_data.h"
 #include "../combat/weapon.h"
 #include "../combat/resonance.h"
 #include "../combat/enchantment.h"
@@ -21,6 +22,7 @@
 #include "../items/item_use.h"
 #include "../trade/trade.h"
 #include "../world/enchant_altar.h"
+#include "../world/world_spec.h"
 #include "../config/settings.h"
 #include "../config/localization.h"
 #include "../audio/audio_events.h"
@@ -230,6 +232,12 @@ void UiSystem::buildFrame(player::Player& player,
         case Screen::Enchant:
             drawHud(player, world, fps);
             drawEnchantScreen(player);
+            break;
+        case Screen::Worlds:
+            drawWorldsScreen();
+            break;
+        case Screen::NewWorld:
+            drawNewWorldScreen();
             break;
     }
 
@@ -735,6 +743,7 @@ const std::vector<MenuEntry>& menuEntries() {
         { config::StrKey::Menu_Quests,     Screen::QuestLog   },
         { config::StrKey::Menu_Reputation, Screen::Reputation },
         { config::StrKey::Menu_SaveLoad,   Screen::SaveLoad   },
+        { config::StrKey::Menu_Worlds,     Screen::Worlds     },
         { config::StrKey::Menu_Settings,   Screen::Settings   },
     };
     return items;
@@ -2192,6 +2201,348 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
             }
         }
     }
+}
+
+// ============================================================
+// Миры: список, создание, удаление
+// ============================================================
+//
+// Мир был один и создавался молча при запуске. Выбрать другой,
+// назвать свой или расстаться со старым было нечем: девять слотов
+// сохранения показывали «World A1B2C3D4» и умели только «сохранить»
+// и «загрузить».
+//
+// Здесь мир становится вещью, о которой игрок знает: у него есть имя,
+// его открывают из списка, его удаляют с вопросом и его можно унести
+// файлом.
+
+namespace {
+
+/// Кнопка с подписью. Одна на весь раздел: три разных вида кнопок на
+/// одном экране читаются как три разных по важности действия.
+struct BtnStyle {
+    UiColor fill, fillPressed, stroke;
+};
+
+const BtnStyle BTN_NORMAL { theme::PanelRaised, theme::Accent, theme::Stroke };
+const BtnStyle BTN_PRIMARY{ theme::Accent, theme::AccentPressed, theme::Accent };
+const BtnStyle BTN_DANGER { theme::Danger, theme::AccentPressed, theme::Danger };
+
+} // namespace
+
+void UiSystem::drawWorldsScreen() {
+    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
+             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
+
+    const Rect title = layout_.menuTitle();
+    ui_.text(T(StrKey::World_Title), title.x,
+             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
+             theme::TEXT_TITLE, theme::TextPrimary);
+
+    drawCloseButton([this]() { screen = returnTo; returnTo = Screen::Hud; });
+
+    auto textButton = [&](Rect r, const char* label, const BtnStyle& st,
+                          f32 size, std::function<void()> onClick)
+    {
+        const int idx = ui_.pushInteractiveRect(r, std::move(onClick));
+        const bool pressed = ui_.isInteractivePressed(idx);
+        ui_.rect(r.x, r.y, r.w, r.h, pressed ? st.fillPressed : st.fill);
+        ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
+                        st.stroke);
+        const f32 tw = ui_.textWidth(label, size);
+        ui_.text(label, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(size)) * 0.5f, size,
+                 pressed ? theme::Ink : theme::TextPrimary);
+    };
+
+    constexpr u32 COLS = 3;
+    const u32 P = save::SaveSlotManager::NUM_PROFILES;
+    const u32 S = save::SaveSlotManager::NUM_SLOTS;
+    // Верхний ряд — «новый мир», под ним сетка миров.
+    const u32 ROWS = 1 + P;
+
+    // ---- Новый мир: во всю ширину, главное действие экрана ----
+    {
+        const Rect a = layout_.menuCell(0, 0, COLS, ROWS);
+        const Rect c2 = layout_.menuCell(COLS - 1, 0, COLS, ROWS);
+        const Rect r{ a.x, a.y, (c2.x + c2.w) - a.x, a.h };
+        textButton(r, T(StrKey::World_New), BTN_PRIMARY, theme::TEXT_BODY,
+                   [this]() { openNewWorld(); });
+    }
+
+    const f32 pad = layout_.dp(theme::SPACE_S_DP);
+    const f32 small = theme::TEXT_CAPTION;
+
+    for (u32 p = 0; p < P; ++p) {
+        for (u32 s = 0; s < S; ++s) {
+            const Rect cell = layout_.menuCell(s, p + 1, COLS, ROWS);
+            const auto& meta = slotMeta[p][s];
+
+            // Кнопки в углу ячейки, а сама ячейка — «открыть».
+            const f32 btnH = layout_.dp(theme::TOUCH_MIN_DP) * 0.7f;
+            const f32 btnW = (cell.w - pad * 3.f) * 0.5f;
+            const Rect bLeft { cell.x + pad, cell.y + cell.h - pad - btnH,
+                               btnW, btnH };
+            const Rect bRight{ bLeft.x + btnW + pad, bLeft.y, btnW, btnH };
+
+            const bool current = meta.exists && meta.seed == currentWorldSeed;
+
+            // Ссылку на meta в обработчик не кладём: он переживает
+            // кадр, а список слотов между кадрами перечитывается.
+            const bool exists = meta.exists;
+            const int idx = ui_.pushInteractiveRect(cell, [this, p, s, exists]() {
+                if (exists && onLoadRequested) onLoadRequested(p, s);
+            });
+            const bool pressed = ui_.isInteractivePressed(idx) && exists;
+
+            ui_.rect(cell.x, cell.y, cell.w, cell.h,
+                     pressed ? theme::Accent
+                             : (meta.exists ? theme::PanelRaised : theme::Panel));
+            ui_.rectOutline(cell.x, cell.y, cell.w, cell.h,
+                            layout_.dp(current ? theme::STROKE_SELECTED_DP
+                                               : theme::STROKE_DP),
+                            current ? theme::Accent : theme::Stroke);
+
+            f32 ty = cell.y + pad;
+            if (!meta.exists) {
+                ui_.text(T(StrKey::World_Empty), cell.x + pad, ty, small,
+                         theme::TextDisabled);
+                // В пустой мир можно ПРИНЕСТИ файл — это единственное,
+                // что с пустой ячейкой вообще можно сделать.
+                textButton(bRight, T(StrKey::World_Import), BTN_NORMAL, small,
+                           [this, p, s]() {
+                               if (onImportRequested) onImportRequested(p, s);
+                           });
+                continue;
+            }
+
+            ui_.text(meta.worldName, cell.x + pad, ty, theme::TEXT_LABEL,
+                     pressed ? theme::Ink : theme::TextPrimary);
+            ty += ui_.textHeight(theme::TEXT_LABEL) + layout_.dp(theme::SPACE_XS_DP);
+
+            char buf[96];
+            std::snprintf(buf, sizeof(buf), "%s %llu", T(StrKey::World_Seed),
+                          (unsigned long long)meta.seed);
+            ui_.text(buf, cell.x + pad, ty, small, theme::TextSecondary);
+            ty += ui_.textHeight(small) + layout_.dp(theme::SPACE_XS_DP);
+
+            std::snprintf(buf, sizeof(buf), "%s %u   %u:%02u",
+                          T(StrKey::Hud_Level), meta.playerLevel,
+                          meta.playtimeSec / 3600u,
+                          (meta.playtimeSec / 60u) % 60u);
+            ui_.text(buf, cell.x + pad, ty, small, theme::TextSecondary);
+            ty += ui_.textHeight(small) + layout_.dp(theme::SPACE_XS_DP);
+
+            if (current)
+                ui_.text(T(StrKey::World_Current), cell.x + pad, ty, small,
+                         theme::Accent);
+
+            textButton(bLeft, T(StrKey::World_Export), BTN_NORMAL, small,
+                       [this, p, s]() {
+                           if (onExportRequested) onExportRequested(p, s);
+                       });
+            // Удаление спрашивает: мир, которого не вернуть, не
+            // удаляют одним касанием по тесной кнопке.
+            textButton(bRight, T(StrKey::Delete), BTN_DANGER, small,
+                       [this, p, s]() {
+                           askConfirm(T(StrKey::World_DeleteAsk),
+                                      T(StrKey::Delete), [this, p, s]() {
+                                          if (onDeleteRequested)
+                                              onDeleteRequested(p, s);
+                                      });
+                       });
+        }
+    }
+}
+
+NewWorldLayout UiSystem::newWorldLayout() const {
+    NewWorldLayout out;
+    const Rect area = layout_.menuArea();
+    const f32 gap = layout_.dp(theme::SPACE_M_DP);
+    const f32 rowH = layout_.dp(theme::TOUCH_REGULAR_DP);
+
+    // Всё в один ряд, а не столбиком. Столбиком поля с кнопкой
+    // занимали столько, что клавиатуре оставалось меньше высоты
+    // одной клавиши: она вылезала за экран и накрывала «создать»,
+    // и нажать его было нельзя вовсе.
+    const f32 w = area.w - gap * 3.f;
+    const f32 nameW   = w * 0.34f;
+    const f32 seedW   = w * 0.34f;
+    const f32 randW   = w * 0.14f;
+    const f32 createW = w - nameW - seedW - randW;
+
+    out.name   = { area.x, area.y, nameW, rowH };
+    out.seed   = { out.name.x + nameW + gap, area.y, seedW, rowH };
+    out.random = { out.seed.x + seedW + gap, area.y, randW, rowH };
+    out.create = { out.random.x + randW + gap, area.y, createW, rowH };
+
+    // Клавиатуре — вся оставшаяся высота и вся ширина: ряд из
+    // одиннадцати клавиш узок и в полную ширину экрана.
+    const f32 kbTop = area.y + rowH + gap;
+    out.keyboard = { area.x, kbTop, area.w, area.y + area.h - kbTop };
+    return out;
+}
+
+void UiSystem::drawNewWorldScreen() {
+    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
+             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
+
+    const Rect title = layout_.menuTitle();
+    ui_.text(T(StrKey::World_New), title.x,
+             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
+             theme::TEXT_TITLE, theme::TextPrimary);
+
+    drawCloseButton([this]() { openScreen(Screen::Worlds); });
+
+    const NewWorldLayout NW = newWorldLayout();
+    const f32 pad = layout_.dp(theme::SPACE_M_DP);
+    const f32 small = theme::TEXT_CAPTION;
+
+    auto textButton = [&](Rect r, const char* label, const BtnStyle& st,
+                          f32 size, std::function<void()> onClick)
+    {
+        const int idx = ui_.pushInteractiveRect(r, std::move(onClick));
+        const bool pressed = ui_.isInteractivePressed(idx);
+        ui_.rect(r.x, r.y, r.w, r.h, pressed ? st.fillPressed : st.fill);
+        ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
+                        st.stroke);
+        const f32 tw = ui_.textWidth(label, size);
+        ui_.text(label, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(size)) * 0.5f, size,
+                 pressed ? theme::Ink : theme::TextPrimary);
+    };
+
+    // ---- Поле: подпись слева, набранное внутри рамки ----
+    auto field = [&](Rect r, const char* label, TextEntry& te, WorldField which,
+                     const char* hint)
+    {
+        const bool focused = (newWorldField == which);
+        const int idx = ui_.pushInteractiveRect(r, [this, which]() {
+            newWorldField = which;
+        });
+        (void)idx;
+        ui_.rect(r.x, r.y, r.w, r.h, theme::Panel);
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(focused ? theme::STROKE_SELECTED_DP
+                                           : theme::STROKE_DP),
+                        focused ? theme::Accent : theme::Stroke);
+
+        ui_.text(label, r.x + pad, r.y + layout_.dp(theme::SPACE_XS_DP),
+                 small, theme::TextSecondary);
+
+        const f32 ty = r.y + r.h - pad - ui_.textHeight(theme::TEXT_BODY);
+        if (te.empty()) {
+            // Подсказка серым: пустое поле без неё не объясняет, что
+            // будет, если ничего не набирать.
+            ui_.text(hint, r.x + pad, ty, theme::TEXT_BODY, theme::TextDisabled);
+        } else {
+            ui_.text(te.text(), r.x + pad, ty, theme::TEXT_BODY,
+                     theme::TextPrimary);
+        }
+        // Курсор виден только у того поля, которое набирают.
+        if (focused) {
+            const f32 tw = te.empty() ? 0.f : ui_.textWidth(te.text(), theme::TEXT_BODY);
+            ui_.rect(r.x + pad + tw + layout_.dp(theme::SPACE_XS_DP), ty,
+                     layout_.dp(theme::STROKE_SELECTED_DP),
+                     ui_.textHeight(theme::TEXT_BODY), theme::Accent);
+        }
+    };
+
+    // Подсказка в пустом поле имени — не «пусто», а то, КАК мир
+    // будет называться, если имя не набирать. Пока зерно не задано,
+    // сказать нечего: оно будет случайным.
+    char nameHint[world::WORLD_NAME_CAP];
+    if (newWorldSeed.empty()) {
+        std::snprintf(nameHint, sizeof(nameHint), "%s",
+                      T(StrKey::World_RandomSeed));
+    } else {
+        world::defaultWorldName(nameHint, sizeof(nameHint),
+                                world::seedFromText(newWorldSeed.text()));
+    }
+
+    field(NW.name, T(StrKey::World_Name), newWorldName, WorldField::Name,
+          nameHint);
+    field(NW.seed, T(StrKey::World_Seed), newWorldSeed, WorldField::Seed,
+          T(StrKey::World_RandomSeed));
+
+    // Кнопка «случайно» рядом с полем зерна: она именно про него.
+    textButton(NW.random,
+               T(StrKey::World_RandomSeed), BTN_NORMAL, small, [this]() {
+                   char buf[24];
+                   std::snprintf(buf, sizeof(buf), "%llu",
+                                 (unsigned long long)
+                                 (world::randomWorldSeed() % 1000000000ull));
+                   newWorldSeed.setText(buf);
+                   newWorldField = WorldField::Seed;
+               });
+
+    // ---- Создать ----
+    textButton(NW.create, T(StrKey::World_Create), BTN_PRIMARY,
+               theme::TEXT_BODY, [this]() {
+                   if (onCreateWorld)
+                       onCreateWorld(newWorldName.text(), newWorldSeed.text());
+               });
+
+    // ---- Клавиатура: всё, что осталось между полями и кнопкой ----
+    drawKeyboard(NW.keyboard);
+}
+
+// ============================================================
+// Экранная клавиатура
+// ============================================================
+//
+// Своя, а не системная: системную поднимают через JNI и InputMethod,
+// а её ответ приходит в другом потоке и другим событием. Здесь же
+// набирают два коротких поля, и ради них тащить половину Android в
+// игровой цикл незачем.
+void UiSystem::drawKeyboard(Rect area) {
+    if (area.h <= 0.f || area.w <= 0.f) return;
+
+    // Раскладка берётся у общей функции, а не считается здесь: по ней
+    // же проверка и нажимает клавиши. Две копии одних правил
+    // расходятся молча — палец попадает мимо, и ввода просто нет.
+    const KeyboardLayout L = keyboardLayout(
+        keyPage, area, layout_.dp(theme::SPACE_XS_DP),
+        layout_.dp(theme::TOUCH_MIN_DP));
+
+    auto keyCap = [&](Rect r, const char* label, bool service,
+                      std::function<void()> onClick)
+    {
+        const int idx = ui_.pushInteractiveRect(r, std::move(onClick));
+        const bool pressed = ui_.isInteractivePressed(idx);
+        ui_.rect(r.x, r.y, r.w, r.h,
+                 pressed ? theme::Accent
+                         : (service ? theme::Panel : theme::PanelRaised));
+        ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
+                        theme::Stroke);
+        const f32 tw = ui_.textWidth(label, theme::TEXT_LABEL);
+        ui_.text(label, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f,
+                 theme::TEXT_LABEL, pressed ? theme::Ink : theme::TextPrimary);
+    };
+
+    for (u32 row = 0; row < keyRowCount(keyPage); ++row) {
+        const u32 count = keysInRow(keyPage, row);
+        for (u32 col = 0; col < count; ++col) {
+            const u32 cp = keyAt(keyPage, row, col);
+            char label[4] = {};
+            if (cp < 0x80) {
+                label[0] = (char)cp;
+            } else {
+                label[0] = (char)(0xC0 | (cp >> 6));
+                label[1] = (char)(0x80 | (cp & 0x3F));
+            }
+            keyCap(L.keyRect(row, col), label, false,
+                   [this, cp]() { activeField().insert(cp); });
+        }
+    }
+
+    keyCap(L.pageRect(), keyPageName(nextKeyPage(keyPage)), true,
+           [this]() { keyPage = nextKeyPage(keyPage); });
+    keyCap(L.spaceRect(), "___", true,
+           [this]() { activeField().insert((u32)' '); });
+    keyCap(L.backspaceRect(), "<-", true,
+           [this]() { activeField().backspace(); });
 }
 
 // ============================================================

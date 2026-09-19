@@ -120,6 +120,24 @@ public:
         return Entity::fromEntt(actual);
     }
 
+    /// Уничтожает всё, кроме одной сущности.
+    ///
+    /// Спрашивает смена мира: мобы, жители, лут и снаряды принадлежат
+    /// ТОМУ миру, а игрок переходит в новый вместе со всем, что у
+    /// него в карманах. Удалять по одному типу компонента нельзя:
+    /// сущность без Transform (а такие есть) осталась бы жить.
+    void destroyAllExcept(Entity keep) {
+        const EnttEntity k = keep.toEntt();
+
+        // Сначала собрать, потом рушить: разрушение сущности правит
+        // то самое хранилище, по которому идёт обход.
+        auto& storage = reg_.template storage<EnttEntity>();
+        std::vector<EnttEntity> doomed;
+        doomed.reserve(storage.free_list());
+        for (auto h : storage) if (h != k) doomed.push_back(h);
+        for (auto h : doomed) if (reg_.valid(h)) reg_.destroy(h);
+    }
+
     usize aliveCount() const {
         const auto* storage = reg_.storage<EnttEntity>();
         return storage ? storage->free_list() : 0;

@@ -9,6 +9,7 @@
 #include "ui_context.h"
 #include "drag_drop.h"
 #include "scroll.h"
+#include "text_entry.h"
 #include "hud_layout.h"
 #include "../player/player.h"
 #include "../world/chunk_manager.h"
@@ -40,6 +41,10 @@ enum class Screen {
     Crafting,
     Trade,
     Enchant,
+    /// Список миров: открыть, выгрузить файлом, удалить.
+    Worlds,
+    /// Создание мира: название, зерно, и что из этого выйдет.
+    NewWorld,
 };
 
 /// Разделы меню паузы.
@@ -56,6 +61,22 @@ struct MenuEntry {
 const std::vector<MenuEntry>& menuEntries();
 
 enum class SaveLoadMode : u8 { Save = 0, Load };
+
+/// Какое из двух полей на экране создания мира сейчас набирают.
+enum class WorldField : u8 { Name = 0, Seed };
+
+/// Раскладка экрана создания мира.
+///
+/// Отдельно от рисования по той же причине, что и раскладка
+/// клавиатуры: проверке нужна ровно та геометрия, по которой экран
+/// ловит касания, а не её копия.
+struct NewWorldLayout {
+    Rect name{0.f, 0.f, 0.f, 0.f};
+    Rect seed{0.f, 0.f, 0.f, 0.f};
+    Rect random{0.f, 0.f, 0.f, 0.f};
+    Rect create{0.f, 0.f, 0.f, 0.f};
+    Rect keyboard{0.f, 0.f, 0.f, 0.f};
+};
 enum class SettingsTab : u8 { Input = 0, Ui, Audio, Game, Render, Count };
 
 struct TradeContext {
@@ -178,6 +199,35 @@ public:
     /// ---- Настройки ----
     SettingsTab settingsTab = SettingsTab::Input;
 
+    /// ---- Создание мира ----
+    ///
+    /// Два поля и клавиатура живут в интерфейсе, а не в движке:
+    /// набор — это про экран. Наружу уходит один раз и уже готовым:
+    /// имя и то, что игрок набрал в поле зерна.
+    WorldField newWorldField = WorldField::Name;
+    KeyPage    keyPage       = KeyPage::Cyrillic;
+    TextEntry  newWorldName;
+    TextEntry  newWorldSeed;
+
+    /// Зерно мира, в котором игрок сейчас: в списке он помечен.
+    u64 currentWorldSeed = 0;
+
+    /// Геометрия экрана создания мира — та же, по которой он рисует.
+    NewWorldLayout newWorldLayout() const;
+
+    /// Поле, которое сейчас набирают.
+    TextEntry& activeField() {
+        return newWorldField == WorldField::Name ? newWorldName : newWorldSeed;
+    }
+
+    /// Подготовить экран создания: пустое имя и пустое зерно.
+    void openNewWorld() {
+        newWorldName.clear();
+        newWorldSeed.clear();
+        newWorldField = WorldField::Name;
+        openScreen(Screen::NewWorld);
+    }
+
     /// ---- Коллбэки ----
     std::function<void(u32 profile, u32 slot)> onSaveRequested;
     std::function<void(u32 profile, u32 slot)> onLoadRequested;
@@ -191,6 +241,13 @@ public:
     std::function<void(u32 recipeId)>          onEnchant;
     std::function<void(u32 slotIndex)>         onEquipHotbar;
     std::function<void()>                      onSettingsChanged;
+    /// Создать мир. seedText — то, что игрок НАБРАЛ, а не число:
+    /// «12345» и «Долина» разбираются одинаково и в одном месте,
+    /// а интерфейсу знать это правило незачем.
+    std::function<void(const char* name, const char* seedText)> onCreateWorld;
+    /// Выгрузить мир одним файлом наружу и забрать такой файл обратно.
+    std::function<void(u32 profile, u32 slot)> onExportRequested;
+    std::function<void(u32 profile, u32 slot)> onImportRequested;
 
     /// Подтверждение необратимого действия.
     ///
@@ -255,7 +312,9 @@ public:
                screen == Screen::SaveLoad ||
                screen == Screen::Crafting ||
                screen == Screen::Trade ||
-               screen == Screen::Enchant;
+               screen == Screen::Enchant ||
+               screen == Screen::Worlds ||
+               screen == Screen::NewWorld;
     }
 
     bool dialogueOpen() const { return screen == Screen::Dialogue; }
@@ -386,6 +445,10 @@ private:
     void drawReputationScreen(player::Player& player);
 
     void drawSaveLoadScreen(player::Player& player);
+    void drawWorldsScreen();
+    void drawNewWorldScreen();
+    /// Экранная клавиатура. Область — то, что от экрана осталось.
+    void drawKeyboard(Rect area);
     void drawCraftingScreen(player::Player& player);
     void drawTradeScreen(player::Player& player);
     void drawEnchantScreen(player::Player& player);

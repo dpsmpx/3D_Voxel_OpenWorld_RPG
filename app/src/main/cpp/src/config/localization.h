@@ -23,7 +23,14 @@ enum class StrKey : u16 {
     Menu_NewGame, Menu_Continue, Menu_Settings, Menu_Quit,
     Menu_Pause, Menu_Resume, Menu_Inventory, Menu_Skills,
     Menu_Attributes, Menu_Quests, Menu_Reputation, Menu_SaveLoad,
-    Menu_Crafting, Menu_Trade,
+    Menu_Crafting, Menu_Trade, Menu_Worlds,
+
+    // --- Миры ---
+    // Мир перестал быть один: его создают, выбирают из списка,
+    // удаляют и уносят файлом в другую программу.
+    World_Title, World_New, World_Create, World_Open, World_Empty,
+    World_Name, World_Seed, World_RandomSeed, World_Current,
+    World_Export, World_Import, World_DeleteAsk,
 
     // --- HUD ---
     Hud_Health, Hud_Mana, Hud_Stamina, Hud_Gold, Hud_Xp, Hud_Level,
@@ -82,6 +89,11 @@ enum class StrKey : u16 {
     // Её не было вовсе, и это стоило игроку трёх экранов: близость
     // станка и алтаря считалась каждый кадр, а показать было нечем.
     Hud_Use, Ench_Altar,
+
+    // --- Уведомления про миры ---
+    Notif_WorldCreated, Notif_WorldDeleted,
+    Notif_Exported, Notif_ExportFailed,
+    Notif_Imported, Notif_ImportFailed,
 
     Count
 };

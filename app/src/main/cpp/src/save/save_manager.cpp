@@ -3,6 +3,7 @@
  * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
  */
 #include "save_manager.h"
+#include "../world/world_spec.h"
 #include "zlib_util.h"
 #include "save_player.h"
 #include "save_npc.h"
@@ -46,7 +47,8 @@ SaveStatus SaveManager::save(const SaveSlot& slot,
                              u32 playtimeSec,
                              const world::DayCycle& day,
                              const npc::NpcSpawner& npcSpawner,
-                             const hazards::TreasureKeeper& treasures)
+                             const hazards::TreasureKeeper& treasures,
+                             const char* worldName)
 {
     if (!initialized_) return SaveStatus::WriteError;
     // Воксели не сохраняются: мир восстанавливается из зерна, а
@@ -125,8 +127,13 @@ SaveStatus SaveManager::save(const SaveSlot& slot,
     if (auto* prog = registry.get<progression::Progression>(playerEntity)) {
         meta.playerLevel = prog->level;
     }
-    std::snprintf(meta.worldName,  sizeof(meta.worldName),  "World %08llX",
-                  (unsigned long long)(worldSeed & 0xFFFFFFFFULL));
+    // Имя мира даёт игрок. Своего здесь нет и быть не может: до
+    // списка миров имя было одно на всех — «World» и хвост зерна, —
+    // и девять слотов в меню различались только этим хвостом.
+    if (worldName && worldName[0] != '\0')
+        std::snprintf(meta.worldName, sizeof(meta.worldName), "%s", worldName);
+    else
+        world::defaultWorldName(meta.worldName, sizeof(meta.worldName), worldSeed);
     std::snprintf(meta.playerName, sizeof(meta.playerName), "Adventurer");
 
     slot.writeMeta(meta);

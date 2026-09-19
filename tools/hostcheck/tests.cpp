@@ -40,6 +40,13 @@
 #include "mobs/mob_ai.h"
 #include "mobs/spawner.h"
 #include "world/hazards.h"
+#include "world/spawn.h"
+#include "world/world_spec.h"
+#include "save/save_export.h"
+#include "core/shared_dir.h"
+#include "ui/text_entry.h"
+#include "ui/font_data.h"
+#include "world/features.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
 #include "save/save_format.h"
@@ -81,6 +88,7 @@
 #include <memory>
 #include <set>
 #include <dirent.h>
+#include <sys/stat.h>
 #include "ui/hud_layout.h"
 #include "config/localization.h"
 #include "core/orientation.h"
@@ -9210,6 +9218,920 @@ void testSwampsAndWitches() {
 }
 
 // ------------------------------------------------------------
+void testSpawnSearchFindsGoodGround() {
+    group("точка появления: перебор области и проверка каждой точки");
+
+    world::blocks();
+
+    // ---- 1. В обычных мирах точка находится, и она пригодна ----
+    //
+    // Прежде игрок ставился в (4,4) без единой проверки: в половине
+    // миров это море, в четверти — склон горы.
+    {
+        const u64 seeds[6] = { 0x5A4E0u, 1u, 0xC0FFEEu, 0x1234567u, 99u, 0xDEADBEEFu };
+        i32 ok = 0;
+        for (u64 sd : seeds) {
+            world::TerrainGenerator gen(sd);
+            const world::SpawnSearch s = world::findSpawn(gen, sd, 0, 0);
+            char m[160];
+            if (!s.found) {
+                std::snprintf(m, sizeof(m),
+                              "сид %llu: не нашлось за %d точек",
+                              (unsigned long long)sd, s.tried);
+                check(false, m);
+                continue;
+            }
+            ++ok;
+
+            // Точка обязана лежать в заявленной области.
+            check(std::abs(s.point.x) <= world::SPAWN_HALF_EXTENT &&
+                  std::abs(s.point.z) <= world::SPAWN_HALF_EXTENT,
+                  "найденная точка внутри области 100x100");
+
+            // И обязана быть годной по тем же правилам, по которым
+            // её выбрали: иначе перебор нашёл что-то своё.
+            i32 y = 0;
+            const world::SpawnReject why =
+                world::spawnPointCheck(gen, sd, s.point.x, s.point.z, y);
+            std::snprintf(m, sizeof(m), "сид %llu: точка (%d,%d,%d) годна (%s)",
+                          (unsigned long long)sd, s.point.x, s.point.y, s.point.z,
+                          world::spawnRejectName(why));
+            check(why == world::SpawnReject::Ok, m);
+            check(y == s.point.y, "и высота та же, что вернул перебор");
+
+            // Суша, а не море, и не под потолком мира.
+            check(s.point.y > world::TerrainGenerator::SEA_LEVEL + 1,
+                  "ноги выше уровня моря");
+
+            // Ровно: игрок не появляется в стене.
+            for (i32 i = 0; i < 4; ++i) {
+                static const i32 dx[4] = { 4, -4, 0, 0 };
+                static const i32 dz[4] = { 0, 0, 4, -4 };
+                const i32 h = gen.surfaceHeight(s.point.x + dx[i], s.point.z + dz[i]);
+                check(std::abs(h - s.point.y) <= 4, "вокруг не обрыв");
+            }
+
+            const world::BiomeId b = gen.biomeAt(s.point.x, s.point.z);
+            check(b != world::Ocean && b != world::Volcanic && b != world::Blight,
+                  "биом пригоден для жизни");
+        }
+        check(ok == 6, "точка нашлась во всех шести мирах");
+    }
+
+    // ---- 2. Перебор идёт кольцами: ближняя точка раньше дальней ----
+    //
+    // Порядок обхода — не мелочь: строчный обход находит точку в углу
+    // области и уводит игрока за пятьдесят блоков от того места, куда
+    // целились.
+    {
+        const u64 sd = 0xC0FFEEu;
+        world::TerrainGenerator gen(sd);
+        const world::SpawnSearch s = world::findSpawn(gen, sd, 0, 0);
+        check(s.found, "точка нашлась");
+        if (s.found) {
+            // Всё, что ближе к центру по кольцевой метрике, обязано
+            // быть отвергнутым — иначе перебор прошёл мимо.
+            const i32 ring = std::max(std::abs(s.point.x), std::abs(s.point.z))
+                             / world::SPAWN_STEP;
+            i32 closerGood = 0;
+            for (i32 j = -ring; j <= ring; ++j)
+                for (i32 i = -ring; i <= ring; ++i) {
+                    if (std::max(std::abs(i), std::abs(j)) >= ring) continue;
+                    i32 y = 0;
+                    if (world::spawnPointCheck(gen, sd, i * world::SPAWN_STEP,
+                                               j * world::SPAWN_STEP, y)
+                        == world::SpawnReject::Ok) ++closerGood;
+                }
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "внутри кольца %d годных точек не осталось (%d)",
+                          ring, closerGood);
+            check(closerGood == 0, m);
+        }
+    }
+
+    // ---- 3. Отказы объяснены, а не просто посчитаны ----
+    //
+    // Разбивка по причинам — единственный способ понять, отчего в
+    // мире не нашлось места: «нигде» без причины это тупик.
+    {
+        const u64 sd = 0x51A3Fu;
+        world::TerrainGenerator gen(sd);
+        // Середина океана: там перебор обязан пройти всю область и
+        // отвергнуть каждую точку как воду.
+        i32 ox = 0, oz = 0;
+        bool sea = false;
+        world::SpawnSearch s;
+        for (i32 z = -4000; z <= 4000 && !sea; z += 128)
+            for (i32 x = -4000; x <= 4000 && !sea; x += 128) {
+                // Дешёвое сито: где и в середине суша, перебирать
+                // нечего. Океан признаётся океаном только самим
+                // перебором — «на глаз, через каждые тридцать два
+                // блока» оставляет между пробами островок.
+                if (gen.surfaceHeight(x, z) > world::TerrainGenerator::SEA_LEVEL)
+                    continue;
+                const world::SpawnSearch t = world::findSpawn(gen, sd, x, z);
+                if (t.found) continue;
+                ox = x; oz = z; s = t; sea = true;
+            }
+        check(sea, "нашлась открытая вода шире области перебора");
+        if (sea) {
+            check(!s.found, "посреди океана точка не находится");
+            check(s.tried > 600, "и перебраны все точки области, а не первая");
+            check(s.rejected[(u32)world::SpawnReject::UnderWater] > 0,
+                  "причина названа: вода");
+            check(s.rejected[(u32)world::SpawnReject::Ok] == 0,
+                  "и ни одна точка не засчитана годной");
+
+            // Запасной вариант всё равно обязан дать место: игрок
+            // должен куда-то встать даже в мире из одной воды.
+            const glm::vec3 p = world::spawnPositionOrFallback(gen, sd, ox, oz);
+            check(p.y >= (f32)world::TerrainGenerator::SEA_LEVEL,
+                  "запасная точка на уровне моря, а не на дне");
+            check(std::abs(p.x - ((f32)ox + 0.5f)) < 0.01f &&
+                  std::abs(p.z - ((f32)oz + 0.5f)) < 0.01f,
+                  "и ровно в середине области");
+        }
+    }
+
+    // ---- 4. Проверка и вправду отсеивает плохие точки ----
+    //
+    // Без этого перебор мог бы возвращать первую попавшуюся: раз
+    // отказов не бывает, то и проверки как будто нет.
+    {
+        i32 counts[(u32)world::SpawnReject::Count] = {};
+        i32 total = 0;
+        // Два мира, а не один: редкие причины — провал, логово —
+        // в одном отдельно взятом мире могут не встретиться вовсе,
+        // и проверка «причина работает» выродилась бы в «повезло».
+        for (u64 sd : { 0x5EED1ull, 0xC0FFEEull }) {
+            world::TerrainGenerator gen(sd);
+            for (i32 z = -512; z <= 512; z += 16)
+                for (i32 x = -512; x <= 512; x += 16) {
+                    i32 y = 0;
+                    counts[(u32)world::spawnPointCheck(gen, sd, x, z, y)] += 1;
+                    ++total;
+                }
+        }
+        check(counts[(u32)world::SpawnReject::Ok] > 0, "годные точки есть");
+        check(counts[(u32)world::SpawnReject::Ok] < total,
+              "но годна не каждая — проверка что-то да отсеивает");
+
+        char m[260];
+        std::snprintf(m, sizeof(m),
+                      "из %d точек: годных %d, вода %d, круто %d, биом %d, "
+                      "пещера %d, постройка %d, провал %d, логово %d",
+                      total,
+                      counts[(u32)world::SpawnReject::Ok],
+                      counts[(u32)world::SpawnReject::UnderWater],
+                      counts[(u32)world::SpawnReject::Steep],
+                      counts[(u32)world::SpawnReject::BadBiome],
+                      counts[(u32)world::SpawnReject::Cave],
+                      counts[(u32)world::SpawnReject::Structure],
+                      counts[(u32)world::SpawnReject::Sinkhole],
+                      counts[(u32)world::SpawnReject::Lair]);
+        check(true, m);
+
+        // Каждая причина обязана СРАБАТЫВАТЬ. Причина, которая не
+        // встречается никогда, — это ветка, которой нет: её удалят
+        // при первой же уборке, и никто не заметит разницы.
+        check(counts[(u32)world::SpawnReject::UnderWater] > 0, "вода отсеивается");
+        check(counts[(u32)world::SpawnReject::Steep] > 0, "обрывы отсеиваются");
+        check(counts[(u32)world::SpawnReject::BadBiome] > 0, "дурные биомы отсеиваются");
+        check(counts[(u32)world::SpawnReject::Cave] > 0, "пустота под ногами отсеивается");
+        check(counts[(u32)world::SpawnReject::Structure] > 0, "постройки отсеиваются");
+        check(counts[(u32)world::SpawnReject::Sinkhole] > 0, "провалы отсеиваются");
+        check(counts[(u32)world::SpawnReject::Lair] > 0, "логова отсеиваются");
+    }
+
+    // ---- 4б. Про потолок мира спрашивать незачем ----
+    //
+    // Проверки «не под самым потолком» здесь нет намеренно: генератор
+    // не строит гор выше сотни, а мир высотой в сто двадцать восемь.
+    // Ветка, которая не срабатывает ни разу, — это не страховка, а
+    // непроверенный код. Если рельеф когда-нибудь подрастёт, упадёт
+    // эта проверка — и тогда страховку придётся писать по-настоящему.
+    {
+        i32 highest = 0;
+        for (u64 sd : { 1ull, 0xC0FFEEull, 42ull }) {
+            world::TerrainGenerator gen(sd);
+            for (i32 z = -2000; z <= 2000; z += 64)
+                for (i32 x = -2000; x <= 2000; x += 64)
+                    highest = std::max(highest, gen.surfaceHeight(x, z));
+        }
+        char m[140];
+        std::snprintf(m, sizeof(m),
+                      "самая высокая гора — %d, потолок мира — %d",
+                      highest, (i32)world::CHUNK_SIZE_Y);
+        check(true, m);
+        check(highest + 2 < world::CHUNK_SIZE_Y,
+              "голова игрока помещается на любой вершине");
+    }
+
+    // ---- 5. Точка не висит в воздухе и не утоплена в земле ----
+    //
+    // Самое обидное: точка «годная», а игрок появляется по пояс в
+    // камне или падает с высоты. Проверяем по настоящим вокселям
+    // чанка, а не по высоте из генератора.
+    {
+        const u64 sd = 0xC0FFEEu;
+        world::ChunkManager mgr(sd, 1);
+        const glm::vec3 p = world::spawnPositionOrFallback(mgr.generator(), sd, 0, 0);
+
+        const i32 bx = (i32)std::floor(p.x), bz = (i32)std::floor(p.z);
+        const i32 by = (i32)std::floor(p.y);
+
+        world::Chunk ch;
+        ch.coord = { bx >> 5, 0, bz >> 5 };
+        std::vector<world::TerrainGenerator::Column> cols;
+        world::computeChunkColumns(mgr.generator(), ch.coord.x, ch.coord.z, cols);
+        world::generateChunkVoxels(ch, mgr.generator(), cols.data(), sd);
+
+        const i32 lx = bx & 31, lz = bz & 31;
+        check(world::blocks().get(ch.at(lx, by - 1, lz)).isSolid,
+              "под ногами твёрдый блок — не провалится");
+        for (i32 dy = 0; dy < 2; ++dy) {
+            const u16 b = ch.at(lx, by + dy, lz);
+            char m[120];
+            std::snprintf(m, sizeof(m), "на высоте ног+%d пусто (%s)", dy,
+                          world::blocks().get(b).name);
+            check(!world::blocks().get(b).isSolid, m);
+        }
+    }
+}
+
+// ------------------------------------------------------------
+void testNewWorldEveryLaunch() {
+    group("новый мир при каждом запуске: зерно, смена мира, сейвы");
+
+    items::items();
+    world::blocks();
+
+    // ---- 1. Зерно и вправду случайное ----
+    //
+    // Постоянная 0xC0FFEE означала, что все игроки всех запусков
+    // просыпались на одном и том же берегу.
+    {
+        u64 seen[32] = {};
+        i32 dup = 0;
+        for (i32 i = 0; i < 32; ++i) {
+            seen[i] = world::randomWorldSeed();
+            for (i32 j = 0; j < i; ++j) if (seen[j] == seen[i]) ++dup;
+        }
+        check(dup == 0, "тридцать два зерна подряд — и все разные");
+
+        // Зёрна, идущие подряд, обязаны РАЗОЙТИСЬ, а не отличаться
+        // на единицу: у соседних зёрен рельеф похож, и «случайный
+        // мир» получился бы тем же миром со сдвинутым берегом.
+        i32 close = 0;
+        for (i32 i = 1; i < 32; ++i) {
+            const u64 a = seen[i - 1], b = seen[i];
+            if ((a > b ? a - b : b - a) < 0x100000ull) ++close;
+        }
+        check(close == 0, "и соседние зёрна не жмутся друг к другу");
+
+        // Биты обязаны быть заполнены оба конца: зерно из одних
+        // младших битов — это зерно из часов, а не из случайности.
+        u64 orAll = 0, andAll = ~0ull;
+        for (u64 s : seen) { orAll |= s; andAll &= s; }
+        check(orAll >> 60 != 0, "старшие биты зерна не пустуют");
+        check(andAll == 0, "и ни один бит не залип единицей");
+    }
+
+    // ---- 2. Смена мира уносит из него всех, кроме игрока ----
+    //
+    // Мобы, жители и лут принадлежат ТОМУ миру. Игрок переходит в
+    // новый со всем, что у него в карманах.
+    {
+        ecs::Registry reg;
+        const ecs::Entity player = reg.create();
+        reg.add(player, ecs::Transform{});
+        items::Wallet wal; wal.gold = 1234;
+        reg.add(player, wal);
+
+        // Сущность без Transform — такие есть, и удаление «по пулу
+        // Transform» оставило бы её жить.
+        const ecs::Entity bodiless = reg.create();
+        reg.add(bodiless, items::Wallet{});
+
+        for (i32 i = 0; i < 20; ++i) {
+            const ecs::Entity mob = reg.create();
+            reg.add(mob, ecs::Transform{});
+            reg.add(mob, ecs::EnemyTag{});
+        }
+        check(reg.aliveCount() == 22, "в старом мире 22 сущности");
+        check(reg.alive(bodiless), "и одна из них без Transform");
+
+        reg.destroyAllExcept(player);
+
+        check(reg.aliveCount() == 1, "после смены мира осталась одна");
+        check(reg.alive(player), "и это игрок");
+        check(!reg.alive(bodiless), "бестелесная сущность тоже ушла");
+        auto* w = reg.get<items::Wallet>(player);
+        check(w != nullptr && w->gold == 1234,
+              "кошелёк игрока перешёл в новый мир целым");
+
+        // Реестр обязан остаться рабочим: новый мир будет создавать
+        // в нём своих.
+        const ecs::Entity fresh = reg.create();
+        reg.add(fresh, ecs::Transform{});
+        check(reg.alive(fresh) && reg.aliveCount() == 2,
+              "и в новом мире заводятся новые сущности");
+    }
+
+    // ---- 3. Загруженные чанки перечислимы поимённо ----
+    //
+    // Их меши лежат в видеопамяти, и при смене мира рендер обязан
+    // забыть каждый: иначе по тем же координатам покажется прежняя
+    // земля.
+    {
+        if (!jobs::gJobs.running()) jobs::gJobs.start(2);
+        world::ChunkManager mgr(0x7E5Du, 1);
+        const glm::vec3 here{ 8.f, 40.f, 8.f };
+        for (i32 i = 0; i < 400; ++i) {
+            mgr.update(here);
+            if (mgr.isReadyAt(8, 8) && mgr.pendingJobs() == 0) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        const auto coords = mgr.loadedCoords();
+        check(!coords.empty(), "загруженные чанки перечислены");
+        check(coords.size() == mgr.loadedChunks(),
+              "и перечислены ВСЕ, а не часть");
+        i32 missing = 0;
+        for (const auto& c : coords) if (!mgr.findChunk(c.x, c.z)) ++missing;
+        check(missing == 0, "каждый названный чанк и правда есть");
+        jobs::gJobs.stop();
+    }
+
+    // ---- 4. Сейв помнит своё зерно и в чужой мир не открывается ----
+    //
+    // На этом держится смена мира при загрузке: перед чтением сейва
+    // мир перестраивается под зерно из его метаданных. Пока зерно
+    // было константой, проверка совпадения не срабатывала никогда;
+    // со случайным зерном при запуске не открылся бы ни один сейв.
+    {
+        constexpr u64 MINE  = 0x11115EEDull;
+        constexpr u64 OTHER = 0x22225EEDull;
+
+        save::SaveManager mgr;
+        mgr.init("build/hostcheck");
+        const save::SaveSlot slot = mgr.slots().slot(1, 2);
+        std::remove(slot.dataPath().c_str());
+        std::remove(slot.metaPath().c_str());
+
+        world::ChunkManager mine(MINE, 2);
+        world::DayCycle day;
+        save::WorldDeltaStore deltas;
+        ecs::Registry reg;
+        const ecs::Entity player = reg.create();
+        reg.add(player, ecs::Transform{});
+        reg.add(player, items::Wallet{});
+        npc::NpcSpawner spawner;
+        hazards::TreasureKeeper treasures;
+
+        check(mgr.save(slot, mine, reg, player, deltas, MINE, 5, day,
+                       spawner, treasures) == save::SaveStatus::Ok,
+              "сейв записан");
+
+        // Метаданные читаются БЕЗ мира — именно так загрузка и
+        // узнаёт, какой мир ей понадобится.
+        save::SlotMeta meta;
+        check(mgr.peekMeta(slot, meta) == save::SaveStatus::Ok,
+              "метаданные слота прочитаны");
+        check(meta.seed == MINE, "и зерно в них — то самое");
+
+        ecs::Registry reg2;
+        const ecs::Entity p2 = reg2.create();
+        reg2.add(p2, ecs::Transform{});
+        reg2.add(p2, items::Wallet{});
+        save::WorldDeltaStore d2;
+        npc::NpcSpawner sp2;
+        hazards::TreasureKeeper tr2;
+        world::DayCycle day2;
+        u64 outSeed = 0; u32 outPlay = 0;
+
+        {
+            world::ChunkManager stranger(OTHER, 2);
+            const save::SaveStatus st =
+                mgr.load(slot, stranger, reg2, p2, d2, &outSeed, &outPlay,
+                         &day2, sp2, tr2);
+            check(st != save::SaveStatus::Ok,
+                  "в чужой мир сейв не открывается");
+        }
+        {
+            world::ChunkManager same(meta.seed, 2);
+            const save::SaveStatus st =
+                mgr.load(slot, same, reg2, p2, d2, &outSeed, &outPlay,
+                         &day2, sp2, tr2);
+            check(st == save::SaveStatus::Ok,
+                  "а в мир, построенный по зерну из метаданных, — открывается");
+            check(outSeed == MINE, "и зерно из файла то же");
+        }
+        std::remove(slot.dataPath().c_str());
+        std::remove(slot.metaPath().c_str());
+    }
+}
+
+// ------------------------------------------------------------
+void testWorldsMenuCreateAndTransfer() {
+    group("миры: создание с клавиатуры, список, выгрузка и загрузка");
+
+    items::items();
+    world::blocks();
+
+    // ---- 1. Поле ввода: буфер не портится ----
+    //
+    // Кириллица в UTF-8 двухбайтовая, и забой «на байт» оставлял бы
+    // за собой половину буквы, а переполнение обрезало бы строку
+    // посреди символа. И то и другое превращает имя в мусор.
+    {
+        ui::TextEntry te;
+        check(te.empty(), "поле начинается пустым");
+        check(!te.backspace(), "забой на пустом поле ничего не делает");
+
+        check(te.insert((u32)'A'), "латинская буква набирается");
+        check(te.insert(0x414u),   "кириллическая тоже");   // Д
+        check(te.insert((u32)' '), "и пробел");
+        check(std::strcmp(te.text(), "AД ") == 0, "строка ровно та, что набрали");
+        check(te.glyphs() == 3, "символов три, а не четыре байта");
+        check(te.bytes() == 4,  "а байтов четыре: Д двухбайтовая");
+
+        te.backspace();
+        te.backspace();
+        check(std::strcmp(te.text(), "A") == 0,
+              "забой снимает символ целиком, а не байт");
+        check(te.bytes() == 1, "и хвоста от него не остаётся");
+
+        // Символ, которого нет в шрифте, не берём: имя, показанное
+        // рядом пустых клеток, хуже безымянного.
+        check(!te.insert(0x4E2Du), "иероглиф не принимается");
+        check(!te.insert(0x1F600u), "и картинка тоже");
+        check(std::strcmp(te.text(), "A") == 0, "поле от этого не изменилось");
+
+        // Переполнение: буква, влезшая наполовину, портит строку с
+        // середины, поэтому не влезает она целиком.
+        ui::TextEntry full;
+        for (u32 i = 0; i < ui::TextEntry::CAP + 10; ++i) full.insert(0x414u);
+        check(full.bytes() <= ui::TextEntry::CAP, "буфер не переполнился");
+        check(full.bytes() % 2 == 0, "и обрезан по границе символа");
+        i32 lead = 0;
+        for (u32 i = 0; i < full.bytes(); ++i)
+            if (((u8)full.text()[i] & 0xC0) != 0x80) ++lead;
+        check((u32)lead == full.glyphs(), "каждый символ цел");
+
+        ui::TextEntry st;
+        st.setText("МИР ОДИН");
+        check(std::strcmp(st.text(), "МИР ОДИН") == 0, "setText кладёт как есть");
+        st.setText("");
+        check(st.empty(), "и пустую строку тоже");
+    }
+
+    // ---- 2. Раскладка: каждая клавиша рисуется ----
+    //
+    // Клавиша, которой нет в шрифте, — пустая клетка: нажать её
+    // можно, а понять, что нажал, нельзя.
+    {
+        i32 keys = 0, unprintable = 0, dupes = 0;
+        for (u8 pi = 0; pi < (u8)ui::KeyPage::Count; ++pi) {
+            const auto page = (ui::KeyPage)pi;
+            std::vector<u32> seen;
+            for (u32 r = 0; r < ui::keyRowCount(page); ++r)
+                for (u32 c = 0; c < ui::keysInRow(page, r); ++c) {
+                    const u32 cp = ui::keyAt(page, r, c);
+                    ++keys;
+                    if (ui::glyphIndex(cp) < 0) ++unprintable;
+                    for (u32 s : seen) if (s == cp) ++dupes;
+                    seen.push_back(cp);
+                }
+        }
+        char m[120];
+        std::snprintf(m, sizeof(m), "клавиш на трёх страницах: %d", keys);
+        check(keys > 60, m);
+        check(unprintable == 0, "и каждая из них рисуется шрифтом");
+        check(dupes == 0, "и ни одна не повторяется на своей странице");
+
+        // Страницы переключаются по кругу и возвращаются к началу.
+        ui::KeyPage p = ui::KeyPage::Latin;
+        for (u8 i = 0; i < (u8)ui::KeyPage::Count; ++i) p = ui::nextKeyPage(p);
+        check(p == ui::KeyPage::Latin, "круг страниц замыкается");
+    }
+
+    // ---- 3. Зерно по набранному ----
+    //
+    // Игрок, вводящий 12345, ждёт тот самый мир, который ему назвали,
+    // а не хэш от строки «12345».
+    {
+        check(world::seedFromText("12345") == 12345ull, "число — это число");
+        check(world::seedFromText("  770  ") == 770ull, "пробелы по краям не мешают");
+        check(world::seedFromText("0") == 0ull, "ноль читается нулём");
+        check(world::seedFromText("") == 0ull, "пустая строка — ноль");
+
+        const u64 a = world::seedFromText("ДОЛИНА");
+        const u64 b = world::seedFromText("ДОЛИНЫ");
+        check(a != 0ull, "слово даёт зерно, а не отказ");
+        check(a != b, "разные слова — разные зёрна");
+        check(world::seedFromText("ДОЛИНА") == a, "и одно и то же слово — то же");
+        check(world::seedFromText("12 34") != 1234ull,
+              "число с дыркой посередине числом не считается");
+
+        char name[world::WORLD_NAME_CAP];
+        world::defaultWorldName(name, sizeof(name), 0xABCD1234ull);
+        check(name[0] != '\0', "имя по умолчанию не пустое");
+        check(std::strlen(name) < sizeof(save::SlotMeta::worldName),
+              "и влезает в метаданные слота целиком");
+        char other[world::WORLD_NAME_CAP];
+        world::defaultWorldName(other, sizeof(other), 0x1111ull);
+        check(std::strcmp(name, other) != 0, "у разных миров имена разные");
+    }
+
+    // ---- 4. Экран создания: клавиатура вправду набирает ----
+    //
+    // Раскладка берётся у той же функции, по которой экран ловит
+    // касания: копия её правил проверяла бы копию, а расходятся они
+    // молча — палец попадает мимо клавиши, и ввода нет.
+    {
+        constexpr i32 W = 1920, H = 1080, DPI = 420;
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, { 0.f, 40.f, 0.f });
+        world::ChunkManager wd(0xD2A6, 1);
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(DPI);
+        sys.setScreenSize(W, H);
+        sys.openNewWorld();
+        check(sys.screen == ui::Screen::NewWorld, "экран создания открылся");
+        check(sys.newWorldName.empty() && sys.newWorldSeed.empty(),
+              "и оба поля пусты");
+
+        auto frame = [&]() {
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+        };
+        auto tap = [&](ui::Rect r) {
+            const f32 cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
+            frame();
+            sys.routeTouch(1, cx, cy, 0);
+            frame();
+            sys.routeTouch(1, cx, cy, 1);
+            frame();
+        };
+
+        const ui::NewWorldLayout NW = sys.newWorldLayout();
+        check(NW.keyboard.h > 0.f && NW.keyboard.w > 0.f,
+              "клавиатуре досталось место на экране");
+
+        sys.keyPage = ui::KeyPage::Latin;
+        const ui::KeyboardLayout KB = ui::keyboardLayout(
+            sys.keyPage, NW.keyboard,
+            sys.layout().dp(ui::theme::SPACE_XS_DP),
+            sys.layout().dp(ui::theme::TOUCH_MIN_DP));
+
+        // Клавиатура ОБЯЗАНА помещаться в отведённое ей место.
+        // Пока поля стояли столбиком, ей оставалось меньше высоты
+        // одной клавиши: она вылезала за экран и накрывала «создать»,
+        // и нажать его было нельзя вовсе.
+        {
+            const ui::Rect last = KB.backspaceRect();
+            char m[160];
+            std::snprintf(m, sizeof(m),
+                          "клавиатура занимает %.0f из %.0f точек по высоте",
+                          (double)(last.y + last.h - NW.keyboard.y),
+                          (double)NW.keyboard.h);
+            check(true, m);
+            check(last.y + last.h <= NW.keyboard.y + NW.keyboard.h + 1.f,
+                  "и не вылезает за отведённую область");
+            check(last.h >= sys.layout().dp(ui::theme::TOUCH_MIN_DP) - 0.5f,
+                  "а клавиши не мельче цели касания");
+            check(KB.keyRect(0, 0).w >= 24.f, "и не уже, чем можно попасть");
+        }
+
+        // Ни одна клавиша не накрывает «создать» и поля.
+        {
+            i32 overlap = 0;
+            const ui::Rect guarded[4] = { NW.name, NW.seed, NW.random, NW.create };
+            for (u32 r = 0; r < ui::keyRowCount(sys.keyPage); ++r)
+                for (u32 c = 0; c < ui::keysInRow(sys.keyPage, r); ++c) {
+                    const ui::Rect k = KB.keyRect(r, c);
+                    for (const ui::Rect& g : guarded)
+                        if (k.x < g.x + g.w && g.x < k.x + k.w &&
+                            k.y < g.y + g.h && g.y < k.y + k.h) ++overlap;
+                }
+            check(overlap == 0, "и не накрывает ни поля, ни кнопку «создать»");
+        }
+
+        // Набираем первые три клавиши верхнего ряда.
+        std::string expect;
+        for (u32 c = 0; c < 3; ++c) {
+            const u32 cp = ui::keyAt(sys.keyPage, 0, c);
+            expect.push_back((char)cp);
+            tap(KB.keyRect(0, c));
+        }
+        check(sys.newWorldName.text() == expect,
+              "нажатия по клавишам набрали имя");
+
+        tap(KB.backspaceRect());
+        expect.pop_back();
+        check(sys.newWorldName.text() == expect, "забой стёр последний символ");
+
+        tap(KB.spaceRect());
+        check(sys.newWorldName.bytes() == expect.size() + 1,
+              "пробел набирается тоже");
+
+        // Переключение поля: то же нажатие теперь уходит в зерно.
+        const u32 nameBytes = sys.newWorldName.bytes();
+        tap(NW.seed);
+        check(sys.newWorldField == ui::WorldField::Seed,
+              "тап по полю зерна переводит набор в него");
+        tap(KB.keyRect(0, 0));
+        check(sys.newWorldName.bytes() == nameBytes, "имя больше не меняется");
+        check(!sys.newWorldSeed.empty(), "а зерно набирается");
+
+        // «Случайно» заполняет поле зерна числом.
+        tap(NW.random);
+        check(!sys.newWorldSeed.empty(), "кнопка «случайно» заполнила поле");
+        bool allDigits = true;
+        for (const char* p = sys.newWorldSeed.text(); *p; ++p)
+            if (*p < '0' || *p > '9') allDigits = false;
+        check(allDigits, "и заполнила его числом, а не словом");
+
+        // Смена страницы клавиатуры.
+        tap(KB.pageRect());
+        check(sys.keyPage != ui::KeyPage::Latin, "страница клавиатуры сменилась");
+
+        // «Создать» зовёт обработчик и отдаёт ему НАБРАННОЕ.
+        std::string gotName, gotSeed;
+        i32 calls = 0;
+        sys.onCreateWorld = [&](const char* n, const char* s) {
+            gotName = n ? n : ""; gotSeed = s ? s : ""; ++calls;
+        };
+        const std::string wantName = sys.newWorldName.text();
+        const std::string wantSeed = sys.newWorldSeed.text();
+        tap(NW.create);
+        check(calls == 1, "кнопка «создать» позвала обработчик");
+        check(gotName == wantName, "и передала набранное имя");
+        check(gotSeed == wantSeed, "и набранное зерно");
+    }
+
+    // ---- 4б. И помещается не только на одном экране ----
+    //
+    // Телефон держат и стоя, и лёжа, и плотность у всех разная. Ряд
+    // из одиннадцати клавиш — самое тесное, что есть в игре, и если
+    // он где-то не помещается, то не помещается молча.
+    {
+        struct Screen { i32 w, h, dpi; const char* what; };
+        const Screen screens[] = {
+            { 1080, 1920, 420, "телефон стоя" },
+            { 1920, 1080, 420, "телефон лёжа" },
+            { 1440, 3200, 560, "плотный экран стоя" },
+            {  720, 1280, 320, "мелкий экран стоя" },
+            { 2560, 1600, 280, "планшет лёжа" },
+        };
+        for (const Screen& sc : screens) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(sc.dpi);
+            sys.setScreenSize(sc.w, sc.h);
+            sys.openNewWorld();
+
+            const ui::NewWorldLayout NW = sys.newWorldLayout();
+            const f32 minTouch = sys.layout().dp(ui::theme::TOUCH_MIN_DP);
+
+            bool fits = true, wide = true, tall = true, clear = true;
+            for (u8 pi = 0; pi < (u8)ui::KeyPage::Count; ++pi) {
+                const auto page = (ui::KeyPage)pi;
+                const ui::KeyboardLayout KB = ui::keyboardLayout(
+                    page, NW.keyboard, sys.layout().dp(ui::theme::SPACE_XS_DP),
+                    minTouch);
+                const ui::Rect last = KB.backspaceRect();
+                if (last.y + last.h > NW.keyboard.y + NW.keyboard.h + 1.f) fits = false;
+                if (last.h < minTouch - 0.5f) tall = false;
+                for (u32 r = 0; r < ui::keyRowCount(page); ++r) {
+                    for (u32 c = 0; c < ui::keysInRow(page, r); ++c) {
+                        const ui::Rect k = KB.keyRect(r, c);
+                        // Двадцать четыре точки — примерно полпальца:
+                        // уже этого промахиваются даже по букве.
+                        if (k.w < 24.f) wide = false;
+                        const ui::Rect g[4] = { NW.name, NW.seed, NW.random,
+                                                NW.create };
+                        for (const ui::Rect& q : g)
+                            if (k.x < q.x + q.w && q.x < k.x + k.w &&
+                                k.y < q.y + q.h && q.y < k.y + k.h) clear = false;
+                    }
+                }
+            }
+            char m[160];
+            std::snprintf(m, sizeof(m), "%s: клавиатура помещается", sc.what);
+            check(fits, m);
+            std::snprintf(m, sizeof(m), "%s: клавиши не мельче пальца", sc.what);
+            check(tall && wide, m);
+            std::snprintf(m, sizeof(m), "%s: поля и «создать» не накрыты", sc.what);
+            check(clear, m);
+        }
+    }
+
+    // ---- 5. Мир достижим из меню и помечен как текущий ----
+    {
+        bool found = false;
+        for (const auto& e : ui::menuEntries())
+            if (e.target == ui::Screen::Worlds) found = true;
+        check(found, "в меню паузы есть раздел миров");
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(420);
+        sys.setScreenSize(1920, 1080);
+        sys.screen = ui::Screen::Worlds;
+        check(sys.paused(), "пока список открыт, игра стоит");
+        sys.onBackPressed();
+        check(sys.screen != ui::Screen::Worlds, "«назад» закрывает список");
+    }
+
+    // ---- 6. Выгрузка и загрузка: мир уезжает файлом и возвращается ----
+    {
+        save::SaveManager mgr;
+        mgr.init("build/hostcheck");
+        const save::SaveSlot from = mgr.slots().slot(0, 1);
+        const save::SaveSlot to   = mgr.slots().slot(1, 1);
+        std::remove(from.dataPath().c_str());
+        std::remove(from.metaPath().c_str());
+        std::remove(to.dataPath().c_str());
+        std::remove(to.metaPath().c_str());
+
+        constexpr u64 SEED = 0x2B0AD5ull;
+        world::ChunkManager wd(SEED, 2);
+        world::DayCycle day;
+        save::WorldDeltaStore deltas;
+        ecs::Registry reg;
+        const ecs::Entity player = reg.create();
+        ecs::Transform tf; tf.position = { 3.5f, 42.f, -9.25f };
+        reg.add(player, tf);
+        items::Wallet wal; wal.gold = 999;
+        reg.add(player, wal);
+        npc::NpcSpawner spawner;
+        hazards::TreasureKeeper treasures;
+
+        check(mgr.save(from, wd, reg, player, deltas, SEED, 61, day,
+                       spawner, treasures, "Долина Ветров")
+              == save::SaveStatus::Ok, "мир сохранён под своим именем");
+
+        save::SlotMeta meta;
+        check(mgr.peekMeta(from, meta) == save::SaveStatus::Ok &&
+              std::strcmp(meta.worldName, "Долина Ветров") == 0,
+              "имя, которое дал игрок, попало в метаданные");
+
+        // Имя файла — латиница: кириллица и пробелы на чужих файловых
+        // системах кончаются по-разному, а настоящее имя едет внутри.
+        const std::string fname = save::exportFileName(meta);
+        check(!fname.empty(), "имя файла не пустое");
+        bool safe = true;
+        for (char c : fname) {
+            const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                            (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+                            c == '.';
+            if (!ok) safe = false;
+        }
+        check(safe, "и состоит только из безопасных символов");
+        check(fname.find(save::EXPORT_EXT) != std::string::npos,
+              "и оканчивается расширением мира");
+
+        const std::string dir = "build/hostcheck/exporttest";
+        std::remove((dir + "/" + fname).c_str());
+        ::mkdir("build/hostcheck", 0775);
+        ::mkdir(dir.c_str(), 0775);
+
+        std::string outPath;
+        check(save::exportSlot(from, dir, outPath) == save::TransferStatus::Ok,
+              "мир выгружен одним файлом");
+        check(!outPath.empty(), "и путь к нему назван");
+
+        const auto files = save::listExports(dir);
+        check(files.size() == 1, "и виден в списке выгруженных");
+
+        // Забираем в ДРУГОЙ слот — тот, где ничего не было.
+        check(!to.dataExists(), "целевой слот пуст");
+        check(save::importSlot(outPath, to) == save::TransferStatus::Ok,
+              "файл загружен обратно");
+        check(to.dataExists() && to.metaExists(),
+              "и в слоте появились оба файла");
+
+        save::SlotMeta back;
+        check(mgr.peekMeta(to, back) == save::SaveStatus::Ok, "метаданные читаются");
+        check(back.seed == SEED, "зерно то же");
+        check(std::strcmp(back.worldName, "Долина Ветров") == 0,
+              "и имя мира пережило дорогу");
+
+        // И мир из файла действительно открывается.
+        ecs::Registry reg2;
+        const ecs::Entity p2 = reg2.create();
+        reg2.add(p2, ecs::Transform{});
+        reg2.add(p2, items::Wallet{});
+        world::ChunkManager wd2(SEED, 2);
+        save::WorldDeltaStore d2;
+        npc::NpcSpawner sp2;
+        hazards::TreasureKeeper tr2;
+        world::DayCycle day2;
+        u64 outSeed = 0; u32 outPlay = 0;
+        check(mgr.load(to, wd2, reg2, p2, d2, &outSeed, &outPlay, &day2,
+                       sp2, tr2) == save::SaveStatus::Ok,
+              "загруженный из файла мир открывается");
+        check(outPlay == 61, "и помнит, сколько в нём играли");
+        auto* t2 = reg2.get<ecs::Transform>(p2);
+        check(t2 && std::fabs(t2->position.y - 42.f) < 0.01f,
+              "и где стоял игрок");
+
+        // Чужой файл не принимается молча: слот бы испортился.
+        const std::string junk = dir + "/junk" + save::EXPORT_EXT;
+        {
+            std::FILE* jf = std::fopen(junk.c_str(), "wb");
+            check(jf != nullptr, "мусорный файл создан");
+            if (jf) { std::fputs("this is not a world at all", jf); std::fclose(jf); }
+        }
+        check(save::importSlot(junk, mgr.slots().slot(2, 1))
+              == save::TransferStatus::BadFile,
+              "мусор вместо мира отвергается");
+        check(!mgr.slots().slot(2, 1).dataExists(),
+              "и слот от этого не испортился");
+
+        // И чужой файл, устроенный ПРАВИЛЬНО, но не наш: длины сходятся,
+        // версия та же, а метка в начале чужая. Без метки такой файл
+        // разобрался бы как свой и лёг бы в слот мусором.
+        const std::string alien = dir + "/alien" + save::EXPORT_EXT;
+        {
+            std::FILE* af = std::fopen(alien.c_str(), "wb");
+            check(af != nullptr, "чужой файл создан");
+            if (af) {
+                const u8 head[16] = {
+                    'N','O','P','E',            // не наша метка
+                    1, 0, 0, 0,                 // версия та же
+                    2, 0, 0, 0,                 // метаданных 2 байта
+                    2, 0, 0, 0,                 // тела 2 байта
+                };
+                std::fwrite(head, 1, sizeof(head), af);
+                std::fwrite("abcd", 1, 4, af);
+                std::fclose(af);
+            }
+        }
+        check(save::importSlot(alien, mgr.slots().slot(2, 1))
+              == save::TransferStatus::BadFile,
+              "и правильно устроенный чужой файл — тоже");
+        check(!mgr.slots().slot(2, 1).dataExists(),
+              "слот по-прежнему пуст");
+        std::remove(alien.c_str());
+
+        std::remove(junk.c_str());
+        std::remove(outPath.c_str());
+        std::remove(from.dataPath().c_str());
+        std::remove(from.metaPath().c_str());
+        std::remove(to.dataPath().c_str());
+        std::remove(to.metaPath().c_str());
+    }
+
+    // ---- 7. Общий каталог: туда, где файл увидят другие программы ----
+    //
+    // Android/data с одиннадцатой версии закрыт для чужих приложений,
+    // а Android/media — нет. Выгрузка в закрытый каталог бессмысленна.
+    {
+        char pkg[64];
+        sys::packageFromPath("/data/data/com.example.game/files", pkg, sizeof(pkg));
+        check(std::strcmp(pkg, "com.example.game") == 0,
+              "имя пакета читается из внутреннего пути");
+        sys::packageFromPath("/data/user/0/com.other.app/files", pkg, sizeof(pkg));
+        check(std::strcmp(pkg, "com.other.app") == 0, "и из пути с номером пользователя");
+        sys::packageFromPath("/storage/emulated/0/Android/data/com.x.y/files",
+                             pkg, sizeof(pkg));
+        check(std::strcmp(pkg, "com.x.y") == 0, "и из внешнего");
+        sys::packageFromPath("/tmp/nothing", pkg, sizeof(pkg));
+        check(pkg[0] == '\0', "а из постороннего пути — ничего");
+
+        char dirs[8][sys::SHARED_PATH_CAP];
+        const u32 n = sys::sharedDirCandidates(
+            "/data/data/com.example.game/files",
+            "/storage/emulated/0/Android/data/com.example.game/files",
+            dirs, 8);
+        check(n > 0, "каталоги для выгрузки подобраны");
+        bool media = false, dataDir = false, dupe = false;
+        for (u32 i = 0; i < n; ++i) {
+            if (std::strstr(dirs[i], "/Android/media/com.example.game")) media = true;
+            if (std::strstr(dirs[i], "/Android/data/")) dataDir = true;
+            for (u32 j = i + 1; j < n; ++j)
+                if (std::strcmp(dirs[i], dirs[j]) == 0) dupe = true;
+        }
+        check(media, "и среди них есть Android/media — он открыт для других");
+        check(!dupe, "и ни один не назван дважды");
+        char m[160];
+        std::snprintf(m, sizeof(m), "каталогов подобрано: %u, первый: %s",
+                      n, dirs[0]);
+        check(true, m);
+        check(std::strstr(dirs[0], "/Android/media/") != nullptr,
+              "первым пробуется именно открытый каталог");
+        (void)dataDir;
+
+        // Без единого пути подбирать нечего — и это не падение.
+        check(sys::sharedDirCandidates(nullptr, nullptr, dirs, 8) == 0,
+              "без путей каталогов не находится");
+    }
+}
+
+// ------------------------------------------------------------
 void testBlightForestAndCastles() {
     group("Чёрный лес: густая нечистая земля и замок посреди неё");
 
@@ -14314,6 +15236,9 @@ int main() {
     testLairHoldsOneBeast();
     testBlightForestAndCastles();
     testSwampsAndWitches();
+    testSpawnSearchFindsGoodGround();
+    testNewWorldEveryLaunch();
+    testWorldsMenuCreateAndTransfer();
     testFallsTrapsAndAmbushes();
     testSecretTreasureAndItsQuest();
     testStoryChainRunsInOrder();

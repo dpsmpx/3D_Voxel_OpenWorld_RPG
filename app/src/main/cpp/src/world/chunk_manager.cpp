@@ -631,4 +631,12 @@ usize ChunkManager::loadedChunks() const {
     return chunks_.size();
 }
 
+std::vector<ChunkCoord> ChunkManager::loadedCoords() const {
+    std::shared_lock lk(chunksMtx_);
+    std::vector<ChunkCoord> out;
+    out.reserve(chunks_.size());
+    for (const auto& kv : chunks_) out.push_back(kv.first);
+    return out;
+}
+
 } // namespace world

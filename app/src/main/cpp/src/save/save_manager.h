@@ -55,7 +55,8 @@ public:
                     u32 playtimeSec,
                     const world::DayCycle& day,
                     const npc::NpcSpawner& npcSpawner,
-                    const hazards::TreasureKeeper& treasures);
+                    const hazards::TreasureKeeper& treasures,
+                    const char* worldName = nullptr);
 
     /// Загрузить состояние. world должен быть уже создан с тем же seed.
     SaveStatus load(const SaveSlot& slot,
