@@ -79,6 +79,40 @@ struct NewWorldLayout {
 };
 enum class SettingsTab : u8 { Input = 0, Ui, Audio, Game, Render, Count };
 
+/// Раскладка экрана настроек.
+///
+/// Вынесена из рисования по той же причине, что и раскладка создания
+/// мира: проверке нужна ровно та геометрия, по которой экран ловит
+/// касания. Копия правил проверяла бы копию, а расходятся они молча —
+/// палец попадает мимо тумблера, и настройка не переключается.
+struct SettingsLayout {
+    Rect panel{0.f, 0.f, 0.f, 0.f};
+    f32  rowH   = 0.f;
+    f32  rowGap = 0.f;
+    f32  pad    = 0.f;
+    f32  colW   = 0.f;
+    f32  colGap = 0.f;
+    u32  perCol = 1;
+    Rect resetAll{0.f, 0.f, 0.f, 0.f};
+
+    /// Строки укладываются по колонкам, а не одним столбцом: вкладка
+    /// «Управление» в один столбец не помещается на экран, а прокрутки
+    /// у настроек нет.
+    Rect row(u32 i) const {
+        const u32 col = perCol ? (i / perCol) : 0u;
+        const u32 r   = perCol ? (i % perCol) : i;
+        return { panel.x + pad + (f32)col * (colW + colGap),
+                 panel.y + pad + (f32)r * (rowH + rowGap), colW, rowH };
+    }
+};
+
+/// Прямоугольник вкладки настроек.
+Rect settingsTabRect(u32 index);
+/// Сколько строк рисует вкладка. buttonLayout — включён ли режим
+/// перемещения кнопок: он добавляет к «Управлению» подсказку и кнопку
+/// сброса раскладки.
+u32 settingsRowCount(SettingsTab tab, bool buttonLayout);
+
 struct TradeContext {
     u32 traderEntity = 0;
     u8  tab          = 0;
@@ -214,6 +248,7 @@ public:
 
     /// Геометрия экрана создания мира — та же, по которой он рисует.
     NewWorldLayout newWorldLayout() const;
+    SettingsLayout settingsLayout() const;
 
     /// Поле, которое сейчас набирают.
     TextEntry& activeField() {
@@ -453,8 +488,20 @@ private:
     void drawTradeScreen(player::Player& player);
     void drawEnchantScreen(player::Player& player);
     void drawSettingsScreen(player::Player& player);
+    /// Сказать игре, что настройки поменялись.
+    ///
+    /// Раньше это был лямбда-объект на стеке drawSettingsScreen, и
+    /// обработчики тумблеров захватывали его ПО ССЫЛКЕ. Но обработчик
+    /// живёт дольше кадра: UiContext копирует его при нажатии и
+    /// вызывает при отпускании — через пять-семь кадров, когда кадр,
+    /// создавший лямбду, давно свёрнут. Нажатие на любой тумблер
+    /// читало мёртвый стек и роняло игру. Метод класса живёт столько
+    /// же, сколько сам UiSystem, и захватывать его не нужно вовсе.
+    void notifySettingsChanged() { if (onSettingsChanged) onSettingsChanged(); }
 
     void drawStatusToast();
+    /// Служебная строка HUD: частота кадров, координаты.
+    void drawDebugLine(u32 line, const char* text, f32 scale, UiColor c);
     /// Кнопка закрытия одного вида на всю игру.
     void drawCloseButton(std::function<void()> onClose);
     /// Модальное подтверждение поверх всего.

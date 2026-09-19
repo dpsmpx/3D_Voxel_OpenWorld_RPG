@@ -142,12 +142,49 @@ public:
     }
 
     // ---- полосы ресурсов: слева под опытом ----
+    static constexpr u32 RES_BARS = 3;   ///< здоровье, мана, выносливость
     Rect resourceBar(u32 i) const {
         const f32 h = dp(RES_BAR_H_DP), gap = dp(theme::SPACE_XS_DP);
         const Rect xb = xpBar();
         return flip({ left() + dp(theme::SPACE_L_DP),
                       xb.y + xb.h + dp(theme::SPACE_M_DP) + (f32)i * (h + gap),
                       dp(RES_BAR_W_DP), h });
+    }
+
+    // ---- кошелёк: сразу под полосами ----
+    Rect goldLine() const {
+        const Rect last = resourceBar(RES_BARS - 1);
+        return { last.x, last.y + last.h + dp(theme::SPACE_S_DP),
+                 dp(RES_BAR_W_DP), dp(GOLD_LINE_H_DP) };
+    }
+
+    // ---- воздух: показывается только под водой ----
+    Rect airBar() const {
+        const Rect last = resourceBar(RES_BARS - 1);
+        return { last.x, last.y + last.h + dp(22.f),
+                 dp(RES_BAR_W_DP), dp(RES_BAR_H_DP) * 0.6f };
+    }
+
+    /// Служебные показания: частота кадров и координаты.
+    ///
+    /// Стояли по постоянным 180 и 204 точкам от верха экрана — а
+    /// полосы ресурсов считаются от плотности: на 420 dpi они кончают
+    /// ся на 194-й точке, на 480 — на 222-й. Счётчик кадров лежал
+    /// прямо на полосе выносливости, а на плотном экране накрывал все
+    /// три полосы разом.
+    ///
+    /// Левый столбец занят целиком — от полос до круглых кнопок, — и
+    /// двух строк в нём нет ни на одном из размеров. Зато свободна
+    /// верхняя середина: слева полосы, справа столбец навигации, а
+    /// между ними только плашка подгрузки, и та на время генерации.
+    /// Поэтому показания уходят под неё: ниже прежнего и ничего не
+    /// закрывают.
+    static constexpr u32 DEBUG_LINES = 2;   ///< кадры, координаты
+    Rect debugLine(u32 i) const {
+        const Rect lp = loadingPanel();
+        const f32 h = dp(DEBUG_LINE_H_DP);
+        return { lp.x, lp.y + lp.h + dp(theme::SPACE_M_DP) + (f32)i * h,
+                 lp.w, h };
     }
 
     // ---- две кнопки навигации справа вверху ----
@@ -361,7 +398,7 @@ public:
     /// Её не было: чтобы узнать, что делать, приходилось открывать
     /// журнал, а журнал показывал только ЧИСЛО активных заданий.
     Rect questTracker() const {
-        const Rect last = resourceBar(2);
+        const Rect last = resourceBar(RES_BARS - 1);
         return { last.x, last.y + last.h + dp(theme::SPACE_XL_DP),
                  dp(TRACKER_W_DP), dp(TRACKER_H_DP) };
     }
@@ -597,6 +634,8 @@ public:
     static constexpr f32 LOADING_H_DP =  44.f;
     static constexpr f32 RES_BAR_H_DP =  14.f;
     static constexpr f32 RES_BAR_W_DP = 160.f;
+    static constexpr f32 GOLD_LINE_H_DP  = 12.f;
+    static constexpr f32 DEBUG_LINE_H_DP = 12.f;
     static constexpr f32 HOTBAR_GAP_DP =  6.f;
     static constexpr f32 PROMPT_W_DP  = 260.f;
     /// Полоса заголовка вмещает цель касания: в ней стоит кнопка

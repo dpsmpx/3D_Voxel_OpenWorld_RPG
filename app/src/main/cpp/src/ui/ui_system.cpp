@@ -335,6 +335,14 @@ void UiSystem::drawLoadingOverlay() {
         ui_.rect(r.x + pad, barY, barW * p, barH, hudTint(theme::Success));
 }
 
+// Служебная строка: по центру отведённого раскладкой места.
+void UiSystem::drawDebugLine(u32 line, const char* text, f32 scale, UiColor c) {
+    const Rect r = layout_.debugLine(line);
+    const f32 tw = ui_.textWidth(text, scale);
+    ui_.text(text, r.x + (r.w - tw) * 0.5f,
+             r.y + (r.h - ui_.textHeight(scale)) * 0.5f, scale, c);
+}
+
 void UiSystem::drawHud(player::Player& player,
                        world::ChunkManager& /*world*/,
                        f32 fps)
@@ -371,10 +379,14 @@ void UiSystem::drawHud(player::Player& player,
     drawStatusIcons(player);
     drawHotbar(player);
 
+    // Счётчик кадров и координаты — по месту из раскладки, а не по
+    // постоянным 180 и 204 точкам от верха: полосы ресурсов считаются
+    // от плотности экрана и кончаются кто где, а эти два числа не
+    // считались ни от чего и лежали прямо на полосе выносливости.
     if (showFps) {
         char buf[64];
         std::snprintf(buf, sizeof(buf), "FPS %d", (int)fps);
-        ui_.text(buf, 12.f, 180.f, 2.f, COL_YELLOW);
+        drawDebugLine(0, buf, theme::TEXT_LABEL, COL_YELLOW);
     }
 
     if (player.cameraMode == player::CameraMode::FirstPerson) {
@@ -394,7 +406,7 @@ void UiSystem::drawHud(player::Player& player,
         char dbg[96];
         std::snprintf(dbg, sizeof(dbg), "POS %.1f %.1f %.1f",
                       st.position.x, st.position.y, st.position.z);
-        ui_.text(dbg, 12.f, 204.f, 1.5f, COL_WHITE);
+        drawDebugLine(1, dbg, theme::TEXT_CAPTION, COL_WHITE);
     }
 }
 
@@ -553,9 +565,7 @@ void UiSystem::drawHudResources(player::Player& player) {
     // нечего, а пустеющая — единственное, что скажет игроку, зачем
     // всплывать.
     if (cachedAirPct < 0.999f) {
-        const Rect base = layout_.resourceBar(2);
-        const Rect r{ base.x, base.y + base.h + layout_.dp(22.f),
-                      base.w, base.h * 0.6f };
+        const Rect r = layout_.airBar();
         const f32 o = layout_.dp(2.f);
         ui_.rect(r.x - o, r.y - o, r.w + o * 2.f, r.h + o * 2.f,
                  hudTint(theme::Ink));
@@ -570,9 +580,9 @@ void UiSystem::drawHudResources(player::Player& player) {
     if (auto* wal = player.wallet()) {
         char goldBuf[32];
         wal->format(goldBuf, sizeof(goldBuf));
-        const Rect last = layout_.resourceBar(2);
-        ui_.text(goldBuf, last.x,
-                 last.y + last.h + layout_.dp(theme::SPACE_S_DP),
+        const Rect g = layout_.goldLine();
+        ui_.text(goldBuf, g.x,
+                 g.y + (g.h - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f,
                  theme::TEXT_LABEL, theme::Accent);
     }
 }
@@ -1224,6 +1234,51 @@ void UiSystem::drawItemDetails(player::Player& player) {
     }
 }
 
+Rect settingsTabRect(u32 index) {
+    const f32 tabW = 180.f;
+    return { 40.f + (f32)index * (tabW + 6.f), 84.f, tabW, 48.f };
+}
+
+u32 settingsRowCount(SettingsTab tab, bool buttonLayout) {
+    switch (tab) {
+        // Чувствительность, две инверсии, левша, радиус, мёртвая зона,
+        // прозрачность стика, размер и прозрачность кнопок, режим
+        // перемещения. Включённый режим добавляет подсказку и сброс.
+        case SettingsTab::Input:  return buttonLayout ? 12u : 10u;
+        case SettingsTab::Ui:     return 4u;
+        case SettingsTab::Audio:  return 3u;
+        case SettingsTab::Game:   return 3u;
+        case SettingsTab::Render: return 2u;
+        default:                  return 0u;
+    }
+}
+
+SettingsLayout UiSystem::settingsLayout() const {
+    SettingsLayout L;
+    L.panel  = layout_.menuArea();
+    L.rowH   = layout_.dp(theme::TOUCH_REGULAR_DP);
+    L.rowGap = layout_.dp(theme::SPACE_S_DP);
+    L.pad    = layout_.dp(theme::PANEL_PAD_DP);
+    L.colGap = layout_.dp(theme::SPACE_L_DP);
+
+    // Вкладка «Управление» содержит двенадцать строк: в один столбец
+    // это 938 точек, а дно панели на экране 1280x720 — 680. Последние
+    // четыре настройки были недостижимы, прокрутки у настроек нет.
+    // Колонок столько, сколько нужно, чтобы всё поместилось.
+    const f32 availH = L.panel.h - L.pad * 2.f;
+    L.perCol = (u32)((availH + L.rowGap) / (L.rowH + L.rowGap));
+
+    // Ширина колонки зависит от их числа, а оно — от вкладки; берём
+    // худший случай, чтобы колонки не прыгали между вкладками.
+    const u32 maxRows  = settingsRowCount(SettingsTab::Input, true);
+    const u32 colCount = L.perCol ? ((maxRows + L.perCol - 1) / L.perCol) : 1;
+    L.colW = (L.panel.w - L.pad * 2.f - L.colGap * (f32)(colCount - 1))
+           / (f32)(colCount ? colCount : 1);
+
+    L.resetAll = { L.panel.x + L.pad, (f32)screenH_ - 90.f, 260.f, 50.f };
+    return L;
+}
+
 void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
     ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(10, 15, 25, 240));
 
@@ -1240,11 +1295,8 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
         T(StrKey::Settings_Render),
     };
 
-    const float tabW = 180.f;
-    const float tabY = 84.f;
     for (u32 i = 0; i < (u32)SettingsTab::Count; ++i) {
-        float x = 40.f + (f32)i * (tabW + 6.f);
-        Rect r{ x, tabY, tabW, 48.f };
+        const Rect r = settingsTabRect(i);
         bool active = ((u32)settingsTab == i);
         int idx = ui_.pushInteractiveRect(r, [this, i]() {
             settingsTab = (SettingsTab)i;
@@ -1260,73 +1312,46 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
 
     auto& s = cfg::settings();
 
-    const Rect panel = layout_.menuArea();
-    const f32 rowH   = layout_.dp(theme::TOUCH_REGULAR_DP);
-    const f32 rowGap = layout_.dp(theme::SPACE_S_DP);
-    const f32 pad    = layout_.dp(theme::PANEL_PAD_DP);
+    const SettingsLayout L = settingsLayout();
+    const Rect panel = L.panel;
 
     ui_.rect(panel.x, panel.y, panel.w, panel.h, theme::Panel);
     ui_.rectOutline(panel.x, panel.y, panel.w, panel.h,
                     layout_.dp(theme::STROKE_DP), theme::Stroke);
 
-    // Строки укладываются по колонкам, а не одним столбцом.
-    //
-    // Вкладка «Управление» содержит двенадцать строк: в один столбец
-    // это 938 точек, а дно панели на экране 1280x720 — 680. Последние
-    // четыре настройки были недостижимы, прокрутки у настроек нет.
-    // Колонок столько, сколько нужно, чтобы всё поместилось.
-    const f32 colGap   = layout_.dp(theme::SPACE_L_DP);
-    const f32 availH   = panel.h - pad * 2.f;
-    const u32 perCol   = (u32)((availH + rowGap) / (rowH + rowGap));
     u32 rowIdx = 0;
-    // Ширина колонки зависит от их числа, а оно — от вкладки; берём
-    // худший случай, чтобы колонки не прыгали между вкладками.
-    const u32 maxRows  = 12;
-    const u32 colCount = perCol ? ((maxRows + perCol - 1) / perCol) : 1;
-    const f32 colW     = (panel.w - pad * 2.f - colGap * (f32)(colCount - 1))
-                       / (f32)(colCount ? colCount : 1);
-
-    auto nextRow = [&]() -> Rect {
-        const u32 col = perCol ? (rowIdx / perCol) : 0;
-        const u32 row = perCol ? (rowIdx % perCol) : rowIdx;
-        ++rowIdx;
-        return { panel.x + pad + (f32)col * (colW + colGap),
-                 panel.y + pad + (f32)row * (rowH + rowGap), colW, rowH };
-    };
-    const f32 innerX = panel.x + pad;
-
-    auto changeCb = [this]() { if (onSettingsChanged) onSettingsChanged(); };
+    auto nextRow = [&L, &rowIdx]() -> Rect { return L.row(rowIdx++); };
 
     switch (settingsTab) {
         case SettingsTab::Input: {
             // Sensitivity
             {
                 Rect r = nextRow();
-                sliderWidget(ui_, r, &s.cameraSensitivity,
+                sliderWidget(ui_, r, &cfg::settings().cameraSensitivity,
                              0.1f, 5.0f, T(StrKey::Settings_CameraSens),
-                             0.05f, [&changeCb](float){ changeCb(); });
+                             0.05f, [this](float){ notifySettingsChanged(); });
             }
             // Invert X
             {
                 Rect r = nextRow();
-                const int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
-                    s.invertX = !s.invertX; changeCb();
+                const int idx = ui_.pushInteractiveRect(r, [this]() {
+                    cfg::settings().invertX = !cfg::settings().invertX; if (onSettingsChanged) onSettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.invertX, T(StrKey::Settings_InvertX));
             }
             // Invert Y
             {
                 Rect r = nextRow();
-                const int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
-                    s.invertY = !s.invertY; changeCb();
+                const int idx = ui_.pushInteractiveRect(r, [this]() {
+                    cfg::settings().invertY = !cfg::settings().invertY; if (onSettingsChanged) onSettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.invertY, T(StrKey::Settings_InvertY));
             }
             // Joystick left
             {
                 Rect r = nextRow();
-                int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
-                    s.joystickLeftHanded = !s.joystickLeftHanded; changeCb();
+                int idx = ui_.pushInteractiveRect(r, [this]() {
+                    cfg::settings().joystickLeftHanded = !cfg::settings().joystickLeftHanded; if (onSettingsChanged) onSettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.joystickLeftHanded,
                              T(StrKey::Settings_JoystickLeft));
@@ -1336,35 +1361,35 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 Rect r = nextRow();
                 sliderWidget(ui_, r, &s.joystickRadius,
                              80.f, 220.f, T(StrKey::Settings_JoystickRadius),
-                             5.f, [&changeCb](float){ changeCb(); });
+                             5.f, [this](float){ notifySettingsChanged(); });
             }
             // Deadzone
             {
                 Rect r = nextRow();
                 sliderWidget(ui_, r, &s.joystickDeadzone,
                              0.05f, 0.40f, T(StrKey::Settings_JoystickDeadzone),
-                             0.01f, [&changeCb](float){ changeCb(); });
+                             0.01f, [this](float){ notifySettingsChanged(); });
             }
             // Прозрачность джойстика
             {
                 Rect r = nextRow();
                 sliderWidget(ui_, r, &s.joystickOpacity,
                              0.2f, 1.0f, T(StrKey::Settings_JoystickOpacity),
-                             0.05f, [&changeCb](float){ changeCb(); });
+                             0.05f, [this](float){ notifySettingsChanged(); });
             }
             // Размер кнопок
             {
                 Rect r = nextRow();
                 sliderWidget(ui_, r, &s.buttonScale,
                              0.6f, 1.6f, T(StrKey::Settings_ButtonScale),
-                             0.05f, [&changeCb](float){ changeCb(); });
+                             0.05f, [this](float){ notifySettingsChanged(); });
             }
             // Прозрачность кнопок
             {
                 Rect r = nextRow();
                 sliderWidget(ui_, r, &s.buttonOpacity,
                              0.2f, 1.0f, T(StrKey::Settings_ButtonOpacity),
-                             0.05f, [&changeCb](float){ changeCb(); });
+                             0.05f, [this](float){ notifySettingsChanged(); });
             }
             // Режим перемещения кнопок (ТЗ 5.2)
             {
@@ -1383,21 +1408,15 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                          theme::TEXT_CAPTION, theme::TextSecondary);
 
                 Rect r = nextRow();
-                int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
+                int idx = ui_.pushInteractiveRect(r, [this]() {
                     for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i) {
-                        s.buttonOffsetX[i] = 0.f;
-                        s.buttonOffsetY[i] = 0.f;
+                        cfg::settings().buttonOffsetX[i] = 0.f;
+                        cfg::settings().buttonOffsetY[i] = 0.f;
                     }
-                    changeCb();
+                    if (onSettingsChanged) onSettingsChanged();
                 });
-                if (ui_.button(T(StrKey::Settings_ResetLayout), r, idx,
-                               rgba(90, 90, 110, 255), COL_WHITE)) {
-                    for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i) {
-                        s.buttonOffsetX[i] = 0.f;
-                        s.buttonOffsetY[i] = 0.f;
-                    }
-                    changeCb();
-                }
+                ui_.button(T(StrKey::Settings_ResetLayout), r, idx,
+                           rgba(90, 90, 110, 255), COL_WHITE);
             }
             break;
         }
@@ -1407,25 +1426,25 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 Rect r = nextRow();
                 sliderWidget(ui_, r, &s.uiScale, 0.75f, 1.5f,
                              T(StrKey::Settings_UiScale), 0.05f,
-                             [&changeCb](float){ changeCb(); });
+                             [this](float){ notifySettingsChanged(); });
             }
             {
                 Rect r = nextRow();
                 sliderWidget(ui_, r, &s.uiOpacity, 0.4f, 1.0f,
                              T(StrKey::Settings_UiOpacity), 0.05f,
-                             [&changeCb](float){ changeCb(); });
+                             [this](float){ notifySettingsChanged(); });
             }
             {
                 Rect r = nextRow();
-                int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
-                    s.showFps = !s.showFps; changeCb();
+                int idx = ui_.pushInteractiveRect(r, [this]() {
+                    cfg::settings().showFps = !cfg::settings().showFps; if (onSettingsChanged) onSettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.showFps, T(StrKey::Settings_ShowFps));
             }
             {
                 Rect r = nextRow();
-                int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
-                    s.showDebugPos = !s.showDebugPos; changeCb();
+                int idx = ui_.pushInteractiveRect(r, [this]() {
+                    cfg::settings().showDebugPos = !cfg::settings().showDebugPos; if (onSettingsChanged) onSettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.showDebugPos, T(StrKey::Settings_ShowDebug));
             }
@@ -1437,19 +1456,19 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 Rect r = nextRow();
                 sliderWidget(ui_, r, &s.masterVolume, 0.f, 1.f,
                              T(StrKey::Settings_Master), 0.05f,
-                             [&changeCb](float){ changeCb(); });
+                             [this](float){ notifySettingsChanged(); });
             }
             {
                 Rect r = nextRow();
                 sliderWidget(ui_, r, &s.musicVolume, 0.f, 1.f,
                              T(StrKey::Settings_Music), 0.05f,
-                             [&changeCb](float){ changeCb(); });
+                             [this](float){ notifySettingsChanged(); });
             }
             {
                 Rect r = nextRow();
                 sliderWidget(ui_, r, &s.sfxVolume, 0.f, 1.f,
                              T(StrKey::Settings_Sfx), 0.05f,
-                             [&changeCb](float){ changeCb(); });
+                             [this](float){ notifySettingsChanged(); });
             }
             break;
         }
@@ -1463,20 +1482,20 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                     cfg::languageName(cfg::Language::Russian),
                 };
                 u32 cur = (u32)s.language;
-                int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
-                    u32 n = (u32)s.language + 1;
+                int idx = ui_.pushInteractiveRect(r, [this]() {
+                    u32 n = (u32)cfg::settings().language + 1;
                     if (n >= (u32)cfg::Language::Count) n = 0;
-                    s.language = (cfg::Language)n;
-                    cfg::L().setLanguage(s.language);
-                    changeCb();
+                    cfg::settings().language = (cfg::Language)n;
+                    cfg::L().setLanguage(cfg::settings().language);
+                    if (onSettingsChanged) onSettingsChanged();
                 });
                 cycleWidget(ui_, r, idx, T(StrKey::Settings_Language), opts,
                             (u32)cfg::Language::Count, &cur);
             }
             {
                 Rect r = nextRow();
-                int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
-                    s.autosaveEnabled = !s.autosaveEnabled; changeCb();
+                int idx = ui_.pushInteractiveRect(r, [this]() {
+                    cfg::settings().autosaveEnabled = !cfg::settings().autosaveEnabled; if (onSettingsChanged) onSettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.autosaveEnabled,
                              T(StrKey::Settings_Autosave));
@@ -1485,7 +1504,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 Rect r = nextRow();
                 sliderWidget(ui_, r, &s.autosaveInterval, 60.f, 900.f,
                              T(StrKey::Settings_AutosaveInterval), 30.f,
-                             [&changeCb](float){ changeCb(); });
+                             [this](float){ notifySettingsChanged(); });
             }
             break;
         }
@@ -1496,15 +1515,15 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 f32 vd = (f32)s.viewDistance;
                 sliderWidget(ui_, r, &vd, 4.f, 12.f,
                              T(StrKey::Settings_ViewDistance), 1.f,
-                             [&s, &changeCb](float v) {
-                                 s.viewDistance = (i32)(v + 0.5f);
-                                 changeCb();
+                             [this](float v) {
+                                 cfg::settings().viewDistance = (i32)(v + 0.5f);
+                                 notifySettingsChanged();
                              });
             }
             {
                 Rect r = nextRow();
-                int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
-                    s.unlimitedFps = !s.unlimitedFps; changeCb();
+                int idx = ui_.pushInteractiveRect(r, [this]() {
+                    cfg::settings().unlimitedFps = !cfg::settings().unlimitedFps; if (onSettingsChanged) onSettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.unlimitedFps,
                              T(StrKey::Settings_UnlimitedFps));
@@ -1517,20 +1536,15 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
 
     // Кнопка "Reset to defaults"
     {
-        Rect r{ innerX, (float)screenH_ - 90.f, 260.f, 50.f };
-        int idx = ui_.pushInteractiveRect(r, [&s, &changeCb]() {
+        const Rect r = L.resetAll;
+        int idx = ui_.pushInteractiveRect(r, [this]() {
             cfg::Settings def{};
-            s = def;
-            cfg::L().setLanguage(s.language);
-            changeCb();
+            cfg::settings() = def;
+            cfg::L().setLanguage(cfg::settings().language);
+            if (onSettingsChanged) onSettingsChanged();
         });
-        if (ui_.button(T(StrKey::Settings_ResetAll), r, idx,
-                       rgba(140, 60, 60, 255), COL_WHITE)) {
-            cfg::Settings def{};
-            s = def;
-            cfg::L().setLanguage(s.language);
-            changeCb();
-        }
+        ui_.button(T(StrKey::Settings_ResetAll), r, idx,
+                   rgba(140, 60, 60, 255), COL_WHITE);
     }
 }
 
@@ -1799,9 +1813,11 @@ void UiSystem::drawDialogueScreen(player::Player& player) {
         const Rect cr = layout_.dialogueChoice(y, (u32)i);
         if (cr.y + cr.h > panel.y + panel.h - pad) break;   // не влезло
 
-        const int idx = ui_.pushInteractiveRect(cr, [this, &player, i]() {
-            auto* d = player.activeDialogue();
-            auto* reg = player.registryHandle();
+        // Игрока берём указателем, а не ссылкой на ссылку: обработчик
+        // переживает кадр, а ссылочная переменная — нет.
+        const int idx = ui_.pushInteractiveRect(cr, [this, pl = &player, i]() {
+            auto* d = pl->activeDialogue();
+            auto* reg = pl->registryHandle();
             if (!d || !d->active || !reg) return;
             npc::DialogueNode* n = d->findNode(d->currentNodeId);
             if (!n || i >= n->choices.size()) return;
