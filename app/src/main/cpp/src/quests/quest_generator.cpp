@@ -41,11 +41,27 @@ struct GenRng {
     f32 f01() { return (f32)(next() & 0xFFFFFF) / (f32)0x1000000; }
 };
 
-void hashStr(char* out, usize outSize, const char* fmt,
-             const char* a, i32 n, const char* b)
+/// Подстановка в шаблон квеста.
+///
+/// Шаблонов ровно две формы, и путать их нельзя:
+///   заголовок — один «%s» (что именно: «Cull the Wolf»),
+///   описание  — «%d», а следом «%s» («Slay 5 Wolf near…»).
+///
+/// Раньше подстановка была одна на обе формы и передавала аргументы в
+/// порядке (строка, число, строка) — тогда как описание ждёт (число,
+/// строка). То есть «%d» получал указатель, а «%s» — число, и printf
+/// шёл читать строку по адресу 5. Падал на этом КАЖДЫЙ квест «убить»
+/// и «собрать», то есть большинство заданий в игре; не всплывало это
+/// потому, что ни одна проверка до сих пор не доводила генератор до
+/// готового текста.
+void fmtTitle(char* out, usize outSize, const char* fmt, const char* name) {
+    std::snprintf(out, outSize, fmt, name ? name : "");
+}
+
+void fmtDesc(char* out, usize outSize, const char* fmt,
+             i32 count, const char* name)
 {
-    std::snprintf(out, outSize, fmt,
-                  a ? a : "", n, b ? b : "");
+    std::snprintf(out, outSize, fmt, count, name ? name : "");
 }
 
 } // namespace
@@ -82,7 +98,10 @@ QuestDifficulty pickDifficulty(u32 playerLevel, u64 seed) {
 QuestType pickType(const QuestGenOptions& o, u64 seed) {
     // Собираем список допустимых типов и выбираем взвешенно.
     struct Opt { QuestType t; u32 weight; };
-    Opt list[5];
+    // Размер — по числу типов, а не число вручную: с добавлением
+    // шестого типа список из пяти переполнялся бы молча, затирая
+    // стек, и заметили бы это далеко от места.
+    Opt list[(u8)QuestType::Count];
     u32 n = 0;
 
     // Kill — самый частый в деревнях (стражники)
@@ -343,10 +362,9 @@ void finalizeQuest(Quest& q,
     switch (q.tmpl.type) {
         case QuestType::Kill: {
             const auto& mob = mobs::mobRegistry().get(q.tmpl.targetMobId);
-            hashStr(q.title, sizeof(q.title),
-                    tmplDef.titlePattern, mob.name, 0, "");
-            hashStr(q.description, sizeof(q.description),
-                    tmplDef.descPattern, mob.name, count, "");
+            fmtTitle(q.title, sizeof(q.title), tmplDef.titlePattern, mob.name);
+            fmtDesc(q.description, sizeof(q.description),
+                    tmplDef.descPattern, count, mob.name);
             break;
         }
         case QuestType::Collect: {
@@ -358,10 +376,9 @@ void finalizeQuest(Quest& q,
                 "leaves","snow","ice","lava","iron ore","gold ore","bedrock"
             };
             if (q.tmpl.targetBlockId < 14) blockName = names[q.tmpl.targetBlockId];
-            hashStr(q.title, sizeof(q.title),
-                    tmplDef.titlePattern, "", count, blockName);
-            hashStr(q.description, sizeof(q.description),
-                    tmplDef.descPattern, "", count, blockName);
+            fmtTitle(q.title, sizeof(q.title), tmplDef.titlePattern, blockName);
+            fmtDesc(q.description, sizeof(q.description),
+                    tmplDef.descPattern, count, blockName);
             break;
         }
         case QuestType::Explore: {

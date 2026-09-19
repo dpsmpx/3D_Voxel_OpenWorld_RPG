@@ -32,6 +32,7 @@
 #include "factions/faction.h"
 #include "quests/quest.h"
 #include "quests/quest_generator.h"
+#include "quests/story.h"
 #include "quests/quest_def.h"
 #include "combat/status_effects.h"
 #include "combat/damage.h"
@@ -8217,6 +8218,238 @@ void testCourierWalksTheRoad() {
 }
 
 // ------------------------------------------------------------
+// Форма шаблонов заданий.
+//
+// Шаблон — это строка формата, и подставляют в неё через printf.
+// Порядок и типы аргументов там не проверяет никто: перепутанные,
+// они дают не кривой текст, а чтение строки по адресу 5.
+//
+// Ровно так и было: подстановка передавала (строка, число, строка),
+// а описания написаны как «Slay %d %s» — то есть (число, строка).
+// Падал КАЖДЫЙ квест «убить» и «собрать», то есть большинство
+// заданий в игре. Не всплывало это потому, что ни одна проверка не
+// доводила генератор до готового текста.
+// ------------------------------------------------------------
+void testQuestTemplatesHaveOneShape() {
+    group("квесты: у шаблонов одна форма, и подстановка ей отвечает");
+
+    mobs::mobRegistry();
+
+    auto count = [](const char* s, const char* what) {
+        int n = 0;
+        for (const char* p = s; *p; ++p)
+            if (p[0] == '%' && p[1] == what[0]) ++n;
+        return n;
+    };
+
+    int titlesBad = 0, descsBad = 0, checked = 0;
+    for (u8 t = 0; t < (u8)quests::QuestType::Count; ++t)
+        for (u8 d = 0; d < (u8)quests::QuestDifficulty::Count; ++d) {
+            const auto& def = quests::questTemplates().get(
+                (quests::QuestType)t, (quests::QuestDifficulty)d);
+            if (!def.titlePattern || !def.descPattern) continue;
+            ++checked;
+            // Заголовок: не больше одного «%s» и ни одного «%d».
+            if (count(def.titlePattern, "s") > 1 ||
+                count(def.titlePattern, "d") > 0) ++titlesBad;
+            // Описание: «%d» и «%s» — по одному, и «%d» раньше.
+            const int ds = count(def.descPattern, "s");
+            const int dd = count(def.descPattern, "d");
+            if (ds > 1 || dd > 1) { ++descsBad; continue; }
+            if (ds == 1 && dd == 1) {
+                const char* ps = std::strstr(def.descPattern, "%s");
+                const char* pd = std::strstr(def.descPattern, "%d");
+                if (pd > ps) ++descsBad;
+            }
+        }
+    {
+        char m[140];
+        std::snprintf(m, sizeof(m),
+                      "шаблонов проверено %d, кривых заголовков %d, описаний %d",
+                      checked, titlesBad, descsBad);
+        check(true, m);
+    }
+    check(checked >= 20, "шаблоны есть, и их много");
+    check(titlesBad == 0, "в заголовке — только имя, без числа");
+    check(descsBad == 0, "в описании — сперва число, потом имя");
+
+    // И у всякого моба есть имя: его подставляют в текст, а нулевой
+    // указатель там валит игру в printf, далеко от места ошибки.
+    int nameless = 0;
+    for (u16 id = 0; id < mobs::MOB_COUNT; ++id)
+        if (mobs::mobRegistry().get(id).name == nullptr) ++nameless;
+    check(nameless == 0, "у всякого моба есть имя, включая «никого»");
+}
+
+// ------------------------------------------------------------
+void testStoryChainRunsInOrder() {
+    group("сюжет: цепочка глав, идущих одна за другой");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    constexpr u64 SEED = 0x5707;
+    world::ChunkManager world(SEED, 1);
+    const auto& gen = world.generator();
+
+    // Место, вокруг которого есть всё, что требуют главы: деревня,
+    // Чёрный лес, замок, руины и логово. Ищем его честно — цепочка
+    // иначе просто не выдастся, и проверка ничего не скажет.
+    glm::ivec3 home{ 0, 64, 0 };
+    bool rich = false;
+    for (i32 sz = -10; sz <= 10 && !rich; ++sz)
+        for (i32 sx = -10; sx <= 10 && !rich; ++sx) {
+            const auto v = world::villageAt(sx, sz, SEED, &gen);
+            if (!v.exists) continue;
+            home = v.center;
+            rich = true;
+        }
+    check(rich, "деревня, от которой начинается путь, найдена");
+    if (!rich) return;
+
+    ecs::Registry reg;
+    const ecs::Entity player = reg.create();
+    reg.add(player, ecs::Transform{});
+    reg.add(player, quests::QuestLog{});
+
+    // ---- 1. Глава выдаётся одна и та же, пока не сдана ----
+    const ecs::Entity q1 = quests::offerStoryChapter(reg, world, player, home);
+    check(q1.valid(), "первая глава выдана");
+    if (!q1.valid()) return;
+
+    auto* sp = reg.get<quests::StoryProgress>(player);
+    check(sp != nullptr, "продвижение по цепочке записано на игрока");
+    if (!sp) return;
+    check(sp->chapter == 0, "пройденных глав пока нет");
+    check(sp->activeId != 0, "но одна уже на руках");
+
+    const ecs::Entity again = quests::offerStoryChapter(reg, world, player, home);
+    check(!again.valid(),
+          "пока глава на руках, вторую не выдают");
+
+    auto* qq = reg.get<quests::Quest>(q1);
+    check(qq != nullptr, "задание первой главы существует");
+    if (!qq) return;
+    check(qq->isStory, "и оно помечено сюжетным");
+    check(qq->storyChapter == 0, "это первая глава");
+    check(qq->title[0] != '\0' && qq->description[0] != '\0',
+          "у главы есть и название, и текст");
+    check(qq->rewards.xp > 0, "и награда");
+
+    // Цель первой главы — НАСТОЯЩАЯ деревня, а не точка в поле.
+    {
+        const i32 sx = (i32)std::floor((f32)qq->tmpl.targetLocation.x / 256.f);
+        const i32 sz = (i32)std::floor((f32)qq->tmpl.targetLocation.z / 256.f);
+        const auto v = world::villageAt(sx, sz, SEED, &gen);
+        check(v.exists, "первая глава ведёт в настоящую деревню");
+        if (v.exists)
+            check(v.center == qq->tmpl.targetLocation, "и ровно в ту, что там стоит");
+        const i32 dd = std::abs(qq->tmpl.targetLocation.x - home.x) +
+                       std::abs(qq->tmpl.targetLocation.z - home.z);
+        check(dd > 80, "и не в ту, из которой вышли");
+    }
+
+    // ---- 2. Сдача двигает цепочку ----
+    //
+    // Двигает именно СДАЧА: дойти до места мало, надо вернуться и
+    // рассказать. Иначе следующая глава выдавалась бы посреди леса.
+    check(!quests::completeStoryChapter(reg, player, 999999u),
+          "чужой квест цепочку не двигает");
+    check(sp->chapter == 0, "и глава не сменилась");
+
+    check(quests::completeStoryChapter(reg, player, qq->id),
+          "сдача главы принята");
+    check(sp->chapter == 1, "цепочка сдвинулась");
+    check(sp->activeId == 0, "и рук снова свободны");
+
+    // ---- 3. Дальше идут следующие главы, а не та же ----
+    int handed = 1;
+    u8 seen[quests::STORY_CHAPTERS] = { 1, 0, 0, 0, 0 };
+    for (u8 i = 1; i < quests::STORY_CHAPTERS; ++i) {
+        const ecs::Entity qe = quests::offerStoryChapter(reg, world, player, home);
+        if (!qe.valid()) break;   // нужного места рядом нет — честно
+        auto* q = reg.get<quests::Quest>(qe);
+        if (!q) break;
+        check(q->storyChapter == i, "выдаётся следующая глава, а не прежняя");
+        if (q->storyChapter < quests::STORY_CHAPTERS) seen[q->storyChapter] = 1;
+        quests::completeStoryChapter(reg, player, q->id);
+        ++handed;
+    }
+    {
+        char m[140];
+        std::snprintf(m, sizeof(m), "глав выдано и сдано %d из %d",
+                      handed, (int)quests::STORY_CHAPTERS);
+        check(true, m);
+    }
+    check(handed >= 3, "цепочка идёт дальше первой главы");
+
+    // ---- 4. Пройденная цепочка не начинается заново ----
+    if (handed == (int)quests::STORY_CHAPTERS) {
+        check(quests::storyFinished(reg, player), "цепочка пройдена");
+        check(!quests::offerStoryChapter(reg, world, player, home).valid(),
+              "и по второму разу её не выдают");
+    }
+
+    // ---- 5. Главы разные, и текст у них свой ----
+    {
+        const char* prev = quests::storyChapter(0).title;
+        int distinct = 1;
+        for (u8 i = 1; i < quests::STORY_CHAPTERS; ++i) {
+            const auto& c = quests::storyChapter(i);
+            check(c.title[0] != '\0', "у главы есть название");
+            check(c.text[0] != '\0', "и текст");
+            if (std::strcmp(c.title, prev) != 0) ++distinct;
+            prev = c.title;
+        }
+        check(distinct == (int)quests::STORY_CHAPTERS,
+              "все главы названы по-разному");
+        // Запрос за пределы цепочки не падает, а отдаёт последнюю.
+        check(std::strcmp(quests::storyChapter(200).title,
+                          quests::storyChapter(quests::STORY_CHAPTERS - 1).title) == 0,
+              "за концом цепочки отдают последнюю главу, а не мусор");
+    }
+
+    // ---- 6. Глава переживает сохранение ----
+    {
+        ecs::Registry reg2;
+        const ecs::Entity p2 = reg2.create();
+        reg2.add(p2, ecs::Transform{});
+        reg2.add(p2, quests::QuestLog{});
+
+        save::ByteWriter w;
+        save::serializePlayer(w, reg, player);
+        save::ByteReader r(w.data());
+        check(save::deserializePlayer(r, reg2, p2), "игрок прочитан обратно");
+        auto* sp2 = reg2.get<quests::StoryProgress>(p2);
+        check(sp2 != nullptr, "продвижение по цепочке прочитано");
+        if (sp2) check(sp2->chapter == sp->chapter,
+                       "и глава та же, что была");
+    }
+
+    // ---- 7. Побочные квесты никуда не делись ----
+    //
+    // Цепочка не должна вытеснять обычные поручения: «доп. квесты»
+    // — половина задания.
+    {
+        ecs::Registry sreg;
+        const ecs::Entity sp3 = sreg.create();
+        sreg.add(sp3, ecs::Transform{});
+        quests::QuestGenOptions opts{};
+        opts.giverPos     = home;
+        opts.playerLevel  = 2;
+        opts.allowKill    = true;
+        opts.allowCollect = true;
+        opts.allowExplore = true;
+        opts.seed         = 4242;
+        const ecs::Entity se = quests::generateQuest(sreg, world, opts);
+        auto* sq = sreg.get<quests::Quest>(se);
+        check(sq != nullptr, "побочное поручение выдаётся по-прежнему");
+        if (sq) check(!sq->isStory, "и сюжетным оно не притворяется");
+    }
+}
+
+// ------------------------------------------------------------
 void testSecretTreasureAndItsQuest() {
     group("тайник: замурованный клад под руинами и подсказка к нему");
 
@@ -13433,6 +13666,8 @@ int main() {
     testBlightForestAndCastles();
     testFallsTrapsAndAmbushes();
     testSecretTreasureAndItsQuest();
+    testStoryChainRunsInOrder();
+    testQuestTemplatesHaveOneShape();
     testTreeDungeonIsClimbable();
     testShurikenFliesAndHits();
     testDashMovesForward();
