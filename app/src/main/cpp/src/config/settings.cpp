@@ -139,6 +139,15 @@ void Settings::clamp() {
     viewDistance       = std::clamp(viewDistance, 4, 12);
     debugShading       = std::clamp(debugShading, 0, 6);
     renderPasses      &= 0x3Fu;
+
+    // Слот прошлого мира: либо оба числа в своих границах, либо
+    // «ничего». Полупустая пара (профиль есть, слота нет) означала бы
+    // загрузку из слота -1.
+    if (lastProfile < 0 || lastSlot < 0 ||
+        lastProfile >= 3 || lastSlot >= 3) {
+        lastProfile = -1;
+        lastSlot    = -1;
+    }
     // Диагностическую сборку не выключить настройкой: файл с
     // debug_scene = false мог остаться от обычной сборки, а APK с
     // флагом обязан запускаться диагностическим всегда.
@@ -212,6 +221,8 @@ bool Settings::save(const std::string& path) const {
     std::fprintf(f, "\n[Game]\n");
     w("language",            languageCode(language));
     wb("autosave_enabled",   autosaveEnabled);
+    wi("last_profile",       lastProfile);
+    wi("last_slot",          lastSlot);
     wf("autosave_interval",  autosaveInterval);
 
     std::fprintf(f, "\n[Render]\n");
@@ -293,6 +304,10 @@ bool Settings::load(const std::string& path) {
             if (std::strcmp(kv.value, "ru") == 0) language = Language::Russian;
             else if (std::strcmp(kv.value, "en") == 0) language = Language::English;
         }
+        else if (std::strcmp(kv.key, "last_profile") == 0)
+            lastProfile = readI32(kv.value, lastProfile);
+        else if (std::strcmp(kv.key, "last_slot") == 0)
+            lastSlot = readI32(kv.value, lastSlot);
         else if (std::strcmp(kv.key, "autosave_enabled") == 0)
             autosaveEnabled = readBool(kv.value, autosaveEnabled);
         else if (std::strcmp(kv.key, "autosave_interval") == 0)

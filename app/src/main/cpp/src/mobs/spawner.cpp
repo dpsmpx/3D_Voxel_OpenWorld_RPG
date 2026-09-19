@@ -42,16 +42,32 @@ bool findSpawnSpot(world::ChunkManager& world,
         i32 x = cx * world::CHUNK_SIZE + (i32)(urand() % world::CHUNK_SIZE);
         i32 z = cz * world::CHUNK_SIZE + (i32)(urand() % world::CHUNK_SIZE);
 
+        // Все годные места колонки, а не первое сверху.
+        //
+        // Первое сверху — это всегда крыша: земля, кровля дома,
+        // пол исполинского дерева, взятый снаружи. Внутри построек и
+        // в пещерах из-за этого не появлялось НИКОГО: данж в дереве
+        // стоял с одним боссом наверху и пустыми этажами под ним.
+        constexpr i32 MAX_SPOTS = 8;
+        i32 spotY[MAX_SPOTS];
+        i32 spots = 0;
         for (i32 y = world::CHUNK_SIZE_Y - 2; y > 1; --y) {
             const u16 b   = rd.at(x, y, z);
             const u16 bel = rd.at(x, y - 1, z);
             const u16 abv = rd.at(x, y + 1, z);
-            if (reg.isSolid(bel) && b == world::AIR && abv == world::AIR) {
-                if (bel == world::WATER || bel == world::LAVA) break;
-                outX = x; outY = y; outZ = z;
-                return true;
-            }
+            if (!reg.isSolid(bel) || b != world::AIR || abv != world::AIR) continue;
+            if (bel == world::WATER || bel == world::LAVA) continue;
+            if (spots < MAX_SPOTS) spotY[spots++] = y;
         }
+        if (spots == 0) continue;
+
+        // Чаще всего — поверхность: мир живёт наверху, и внутренности
+        // не должны отнимать у него тварей. Но не всегда.
+        const i32 pick = ((urand() & 3u) == 0u && spots > 1)
+                       ? (i32)(urand() % (u32)spots)
+                       : 0;
+        outX = x; outY = spotY[pick]; outZ = z;
+        return true;
     }
     return false;
 }
@@ -80,25 +96,45 @@ u16 mobIdForBiome(world::BiomeId biome, bool night, u32 rngVal) {
     switch (biome) {
         case world::Ocean:      return MOB_NONE;
         case world::Beach:      return (r < 0.5f) ? MOB_CHICKEN : MOB_SHEEP;
+        // Днём мир не обязан быть пустым. Овца и корова остаются
+        // самыми частыми, но между ними теперь попадается и то, от
+        // чего приходится доставать оружие при солнце.
         case world::Plains:
             return night ? ((r < 0.6f) ? MOB_SKELETON : MOB_GOBLIN)
-                         : ((r < 0.5f) ? MOB_SHEEP    : MOB_COW);
+                         : ((r < 0.35f) ? MOB_SHEEP
+                         :  (r < 0.65f) ? MOB_COW
+                         :  (r < 0.85f) ? MOB_BOAR
+                                        : MOB_BANDIT);
         case world::Forest:
             return night ? ((r < 0.4f) ? MOB_WOLF
                          : (r < 0.75f) ? MOB_SKELETON
                                        : MOB_GOBLIN)
-                         : ((r < 0.6f) ? MOB_SHEEP : MOB_COW);
+                         : ((r < 0.35f) ? MOB_SHEEP
+                         :  (r < 0.60f) ? MOB_COW
+                         :  (r < 0.85f) ? MOB_BOAR
+                                        : MOB_WOLF);
         case world::Taiga:
             return night ? ((r < 0.5f) ? MOB_WOLF : MOB_SKELETON)
-                         : ((r < 0.7f) ? MOB_SHEEP : MOB_COW);
+                         : ((r < 0.40f) ? MOB_SHEEP
+                         :  (r < 0.65f) ? MOB_COW
+                                        : MOB_WOLF);
         case world::Desert:
-            return night ? MOB_SKELETON : ((r < 0.6f) ? MOB_CHICKEN : MOB_NONE);
+            return night ? MOB_SKELETON
+                         : ((r < 0.5f) ? MOB_CHICKEN
+                         :  (r < 0.8f) ? MOB_NONE
+                                       : MOB_BANDIT);
         case world::Savanna:
-            return night ? MOB_GOBLIN : MOB_COW;
+            return night ? MOB_GOBLIN
+                         : ((r < 0.45f) ? MOB_COW
+                         :  (r < 0.75f) ? MOB_BOAR
+                                        : MOB_BANDIT);
         case world::Tundra:
             return (r < 0.6f) ? MOB_SHEEP : MOB_WOLF;
+        // В горах пусто не бывает: разбойники держат перевалы, а ночью
+        // к ним добавляются гоблины.
         case world::Mountains:
-            return night ? MOB_GOBLIN : MOB_NONE;
+            return night ? MOB_GOBLIN
+                         : ((r < 0.6f) ? MOB_NONE : MOB_BANDIT);
         // Болото: слизни, волки и ведьмы. Ведьма — не «ещё один
         // моб», а причина ходить на болото с опаской: травит ударом
         // и залечивается.
@@ -188,6 +224,89 @@ ecs::Entity Spawner::spawnMob(world::ChunkManager& /*world*/,
     return e;
 }
 
+void Spawner::updateGarrison(world::ChunkManager& world, ecs::Registry& reg,
+                             const glm::vec3& playerPos, u64 worldSeed, f32 dt)
+{
+    garrisonTimer_ += dt;
+    if (garrisonTimer_ < 2.0f) return;
+    garrisonTimer_ = 0.f;
+
+    const i32 sx = (i32)std::floor(playerPos.x / (f32)world::SUPER_CHUNK_BLOCKS);
+    const i32 sz = (i32)std::floor(playerPos.z / (f32)world::SUPER_CHUNK_BLOCKS);
+
+    auto& blocks = world::blocks();
+    world::VoxelReader rd(world);
+
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            const i32 cx = sx + dx, cz = sz + dz;
+            const u64 key = ((u64)(u32)cx << 32) | (u32)cz;
+            if (garrisonPlaced_.count(key)) continue;
+
+            // Где стоит постройка и как высоко её внутренность.
+            glm::ivec3 at{0};
+            i32 top = 0;
+            const world::DungeonSite tree =
+                world::treeDungeonAt(cx, cz, worldSeed, &world.generator());
+            if (tree.exists) {
+                at = tree.center;
+                top = tree.center.y;
+            } else {
+                const world::CastleSite castle =
+                    world::castleAt(cx, cz, worldSeed, &world.generator());
+                if (!castle.exists) continue;
+                at = castle.center;
+                top = castle.center.y + 30;
+            }
+
+            const f32 ddx = (f32)at.x - playerPos.x;
+            const f32 ddz = (f32)at.z - playerPos.z;
+            if (ddx * ddx + ddz * ddz > 150.f * 150.f) continue;
+            if (!world.findChunk(at.x >> 5, at.z >> 5)) continue;
+
+            const i32 ground = world.generator().surfaceHeight(at.x, at.z);
+
+            // Места ищем ПО ВОКСЕЛЯМ, а не по числам постройки:
+            // этажи дерева и залы замка — это и есть «воздух над
+            // твёрдым», и второй раз выписывать их раскладку значило
+            // бы завести копию, которая однажды разойдётся.
+            u32 placed = 0;
+            for (i32 k = 0; k < 40 && placed < GARRISON_PER_SITE; ++k) {
+                const u32 h = world::feat_util::hashXZ(cx * 61 + k, cz * 37 + k,
+                                                       worldSeed ^ 0x9A881u);
+                const i32 ox = (i32)(h % 9u) - 4;
+                const i32 oz = (i32)((h >> 8) % 9u) - 4;
+                const i32 y  = ground + 2 + (i32)((h >> 16) %
+                                                 (u32)std::max(4, top - ground));
+
+                const i32 wx = at.x + ox, wz = at.z + oz;
+                if (!blocks.isSolid(rd.at(wx, y - 1, wz))) continue;
+                if (rd.at(wx, y, wz)     != world::AIR) continue;
+                if (rd.at(wx, y + 1, wz) != world::AIR) continue;
+
+                // Внутри — значит под крышей: если прямо над головой
+                // открытое небо, это двор, а не зал.
+                bool roofed = false;
+                for (i32 up = y + 2; up < world::CHUNK_SIZE_Y && !roofed; ++up)
+                    if (blocks.isSolid(rd.at(wx, up, wz))) roofed = true;
+                if (!roofed) continue;
+
+                static const u16 KIND[3] = { MOB_SKELETON, MOB_GOBLIN, MOB_BANDIT };
+                const u16 id = KIND[(h >> 24) % 3u];
+                const glm::vec3 pos{ (f32)wx + 0.5f, (f32)y, (f32)wz + 0.5f };
+                if (spawnMob(world, reg, id, pos).valid()) {
+                    ++placed;
+                    ++mobCount_;
+                }
+            }
+
+            if (placed > 0) {
+                garrisonPlaced_.insert(key);
+                LOGI("Гарнизон подземелья (%d, %d): %u тварей", at.x, at.z, placed);
+            }
+        }
+}
+
 void Spawner::updateBosses(world::ChunkManager& world, ecs::Registry& reg,
                            const glm::vec3& playerPos, u64 worldSeed, f32 dt)
 {
@@ -206,11 +325,26 @@ void Spawner::updateBosses(world::ChunkManager& world, ecs::Registry& reg,
             const u64 key = ((u64)(u32)cx << 32) | (u32)cz;
             if (bossPlaced_.count(key)) continue;
 
-            // Подземелья двух видов, и обходятся они одним кодом:
+            // Подземелья трёх видов, и обходятся они одним кодом:
             // различаются только тем, где стоит зал.
+            //
+            // Замок до сих пор в этот список не входил: донжон в
+            // семьдесят блоков по стороне стоял пустым, и самое
+            // заметное строение в мире было единственным, где никого
+            // не было.
             world::DungeonSite site = world::dungeonAt(cx, cz, worldSeed);
             if (!site.exists)
                 site = world::treeDungeonAt(cx, cz, worldSeed, &world.generator());
+            if (!site.exists) {
+                const world::CastleSite castle =
+                    world::castleAt(cx, cz, worldSeed, &world.generator());
+                if (castle.exists) {
+                    site.exists = true;
+                    // На уровне двора: донжон строится от него вверх.
+                    site.center = castle.center;
+                    site.seed = world::feat_util::hashXZ(cx, cz, worldSeed ^ 0xCA57u);
+                }
+            }
             if (!site.exists) continue;
 
             // Ждём, пока чанк с залом действительно загрузится:
@@ -313,6 +447,7 @@ void Spawner::update(world::ChunkManager& world,
                      f32 dt)
 {
     updateBosses(world, reg, playerPos, worldSeed, dt);
+    updateGarrison(world, reg, playerPos, worldSeed, dt);
 
     mobCount_ = (u32)reg.pool<MobTag>().size();
 
@@ -371,7 +506,10 @@ void Spawner::update(world::ChunkManager& world,
 
             const MobDef& def = mobRegistry().get(id);
             if (def.isBoss) continue;   // боссов ставит только updateBosses
-            if (def.hostile && !dark && !night && !lair.exists && !blight) continue;
+            // Дневные твари ставятся и при солнце: они не нежить,
+            // и прятаться от света им незачем.
+            if (def.hostile && !def.dayActive &&
+                !dark && !night && !lair.exists && !blight) continue;
 
             // Густота: в логове зверья больше, чем в чистом поле, —
             // иначе «область, где водится волк» ничем не отличается

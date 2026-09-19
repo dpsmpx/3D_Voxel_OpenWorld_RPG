@@ -35,12 +35,36 @@ TerrainGenerator::Column TerrainGenerator::column(i32 x, i32 z) const {
         h += ridge * col.climate.peaks * 12.f;
     }
 
+    // Мягкий потолок вместо жёсткого обрезания.
+    //
+    // Хребты доходят до полутора сотен, а мир высотой сто двадцать
+    // восемь: обрезание по линейке делало из вершин столовые горы —
+    // ровные площадки ровно по потолку. Здесь верх сжимается и к
+    // потолку только стремится, поэтому вершины разной высоты.
+    if (h > 100.f) h = 100.f + (h - 100.f) / (1.f + (h - 100.f) * 0.06f);
+
     if (h < 1.f)   h = 1.f;
-    if (h > 127.f) h = 127.f;
+    if (h > 124.f) h = 124.f;
     col.surface = (i32)h;
 
     // Биом уточняется уже по фактической высоте.
     biome_.classify(col.climate, col.surface);
+
+    // Кратер: у вулкана срезана верхушка, и в ней стоит лава.
+    // Именно по нему вулкан и отличают от горы — не цветом камня.
+    if (col.climate.biome == Volcanic && col.climate.uplift > 0.80f) {
+        const f32 k = (col.climate.uplift - 0.80f) / 0.20f;
+        const i32 depth = (i32)(k * 15.f);
+        if (depth >= 3) {
+            const i32 rim = col.surface;
+            col.surface -= depth;
+            if (col.surface < 2) col.surface = 2;
+            // Лава не вровень с краем: полный до краёв кратер
+            // читается как лужа, а не как жерло.
+            col.lavaTop = rim - 3;
+            if (col.lavaTop <= col.surface) col.lavaTop = 0;
+        }
+    }
     return col;
 }
 

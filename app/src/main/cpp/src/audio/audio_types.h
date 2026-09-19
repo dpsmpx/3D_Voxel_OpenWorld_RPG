@@ -68,6 +68,9 @@ enum SoundId : u16 {
     SOUND_ENCHANT,
 
     // --- Музыка (ТЗ 7: 3-4 трека с плавными переходами) ---
+    /// Шум дождя: зацикленный, громкость идёт за силой осадков.
+    SOUND_RAIN,
+
     SOUND_MUSIC_EXPLORE,   ///< мирное исследование
     SOUND_MUSIC_COMBAT,    ///< бой
     SOUND_MUSIC_DUNGEON,   ///< подземелье

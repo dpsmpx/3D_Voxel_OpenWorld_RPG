@@ -74,6 +74,7 @@ add_library(native-lib SHARED
     # Ядро: планировщик задач, память, журнал падений
     src/core/clipboard.cpp
     src/core/crashlog.cpp
+    src/core/file_picker.cpp
     src/core/job_system.cpp
     src/core/shared_dir.cpp
 

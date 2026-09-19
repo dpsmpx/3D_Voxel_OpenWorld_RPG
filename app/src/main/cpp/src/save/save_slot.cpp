@@ -149,4 +149,28 @@ void SaveSlotManager::scanAll(SlotMeta outMeta[NUM_PROFILES][NUM_SLOTS]) const {
     }
 }
 
+bool continueWorld(const SaveSlotManager& slots,
+                   i32 lastProfile, i32 lastSlot, u64& outSeed)
+{
+    outSeed = 0;
+    if (lastProfile < 0 || lastSlot < 0) return false;
+    if ((u32)lastProfile >= SaveSlotManager::NUM_PROFILES) return false;
+    if ((u32)lastSlot    >= SaveSlotManager::NUM_SLOTS)    return false;
+
+    const SaveSlot slot = slots.slot((u32)lastProfile, (u32)lastSlot);
+    // И сейв, и метаданные: по одним метаданным мир не открыть, а
+    // сейв без них не назвать.
+    if (!slot.dataExists() || !slot.metaExists()) return false;
+
+    SlotMeta meta{};
+    if (!slot.readMeta(meta)) return false;
+
+    // Зерно ноль — это не мир, это пустая запись: у настоящего мира
+    // зерно берётся у системы и нулём не бывает.
+    if (meta.seed == 0) return false;
+
+    outSeed = meta.seed;
+    return true;
+}
+
 } // namespace save

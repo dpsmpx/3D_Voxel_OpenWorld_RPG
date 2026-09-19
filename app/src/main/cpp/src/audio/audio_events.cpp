@@ -168,6 +168,40 @@ void AudioEvents::mobAttack(const glm::vec3& worldPos) {
     engine_->play3D(SOUND_MOB_ATTACK, worldPos, 0.7f);
 }
 
+void AudioEvents::setRain(f32 intensity) {
+    if (!engine_) return;
+
+    const f32 want = intensity < 0.f ? 0.f : (intensity > 1.f ? 1.f : intensity);
+
+    // Петля заводится при первой же капле и глушится, когда дождь
+    // кончился совсем. Держать её включённой в ясную погоду с нулевой
+    // громкостью — значит занимать голос из шестидесяти четырёх
+    // ничем.
+    if (want <= 0.01f) {
+        if (rainVoice_.valid()) {
+            // С затуханием: дождь не обрывается, он стихает.
+            engine_->stop(rainVoice_, 1.5f);
+            rainVoice_ = VoiceHandle{};
+        }
+        rainGain_ = 0.f;
+        return;
+    }
+
+    if (!rainVoice_.valid()) {
+        rainVoice_ = engine_->play(SOUND_RAIN, 0.f, true);
+        rainGain_ = 0.f;
+    }
+    if (!rainVoice_.valid()) return;
+
+    // Громкость растёт не линейно: вдвое более сильный дождь звучит
+    // далеко не вдвое громче.
+    const f32 target = std::sqrt(want) * 0.85f;
+    if (std::fabs(target - rainGain_) > 0.01f) {
+        rainGain_ = target;
+        engine_->setVoiceGain(rainVoice_, rainGain_);
+    }
+}
+
 void AudioEvents::blockBreak(u16 blockId, const glm::vec3& worldPos) {
     if (!engine_) return;
     SoundId id = (blockId == world::STONE || blockId == world::IRON_ORE ||

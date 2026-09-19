@@ -183,6 +183,10 @@ u32 WeatherField::cyclonesNear(f64 timeSec, i32 wx, i32 wz,
 
 bool WeatherField::snowsAt(const TerrainGenerator& terrain, i32 wx, i32 wz) {
     const TerrainGenerator::Column col = terrain.column(wx, wz);
+
+    // На вулкане снега не бывает. Вершина его высока, и поправка на
+    // высоту делает её холодной по расчёту — а она раскалена.
+    if (col.climate.biome == Volcanic) return false;
     // Ровно то же число, по которому биом решает, тайга он или лес:
     // температура с поправкой на высоту. Второе правило разошлось бы
     // с первым, и снег пошёл бы над зелёной травой.

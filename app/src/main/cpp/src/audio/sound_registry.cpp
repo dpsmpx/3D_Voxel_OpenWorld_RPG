@@ -32,6 +32,9 @@ struct Rng {
 // ============================================================
 // Огибающая. Затухание — экспоненциальное, rate в 1/с.
 // ============================================================
+/// Линейная смесь. Своя, чтобы не тащить glm в генератор звука.
+inline f32 glm_mix(f32 a, f32 b, f32 k) { return a + (b - a) * k; }
+
 inline f32 expoDecay(f32 t, f32 rate) {
     return std::exp(-t * rate);
 }
@@ -215,26 +218,142 @@ void addKick(Sound& s, u32 sr, f32 startTime, f32 amp)
 // Генерация каждой звуковой дорожки.
 // ============================================================
 
-void genFootstepSet(Sound& s, u32 sr, f32 lowpass, u32 seed, f32 amp) {
-    // 4 варианта шагов, слегка отличающихся
-    f32 dur = 0.08f;
-    u32 oneN = (u32)(sr * dur);
-    u32 totalN = oneN * 4;
+/// Из чего сложен шаг.
+///
+/// Прежний шаг был одной вспышкой отфильтрованного шума в
+/// восемьдесят миллисекунд — то есть ЩЕЛЧКОМ. Щелчок и слышался:
+/// «тук-тук-тук» одинаковой высоты, по камню и по траве почти
+/// одинаково.
+///
+/// Настоящий шаг состоит из двух частей, и слышно именно их: удар
+/// пятки — короткий низкий толчок, и следом шорох, с каким нога
+/// доезжает по поверхности. По соотношению этих двух и узнают, по
+/// чему идут: по камню удар резкий и шороха почти нет, по траве
+/// удара нет вовсе, а шорох длинный.
+struct StepVoice {
+    f32 dur;          ///< длительность, с
+    f32 thumpFreq;    ///< частота удара пятки, Гц
+    f32 thumpDecay;   ///< как быстро он гаснет
+    f32 thumpAmp;     ///< и насколько он слышен
+    f32 crunchLP;     ///< яркость шороха, 0..1
+    f32 crunchDecay;
+    f32 crunchAmp;
+    f32 crunchDelay;  ///< на сколько шорох отстаёт от удара, с
+    f32 grain;        ///< зернистость: 0 — ровное шипение, 1 — крупинки
+    f32 ring;         ///< призвук: доска гудит, камень звенит
+};
+
+void genFootstepSet(Sound& s, u32 sr, const StepVoice& v, u32 seed, f32 amp) {
+    // Четыре варианта: одинаковый шаг подряд слышен как запись.
+    const u32 oneN = (u32)((f32)sr * v.dur);
+    const u32 totalN = oneN * 4;
     s.samples.assign(totalN, 0.f);
     s.frames = totalN;
     s.sampleRate = sr;
 
     Rng r(seed);
-    for (int v = 0; v < 4; ++v) {
-        f32 prev = 0.f;
-        f32 decay = 45.f + (f32)(r.next() % 30);
-        f32 gain = amp * (0.85f + 0.15f * ((r.next() % 100) / 100.f));
+    for (i32 k = 0; k < 4; ++k) {
+        // Каждый шаг чуть иной: высота удара, скорость затухания и
+        // громкость гуляют. Ровно повторённый звук ухо ловит сразу.
+        const f32 pitch = 0.88f + 0.24f * ((f32)(r.next() % 100) / 100.f);
+        const f32 gain  = amp * (0.82f + 0.18f * ((f32)(r.next() % 100) / 100.f));
+        const f32 delay = v.crunchDelay *
+                          (0.7f + 0.6f * ((f32)(r.next() % 100) / 100.f));
+
+        f32 lp = 0.f;
+        f32 grainHold = 0.f;
+        i32 grainLeft = 0;
+
         for (u32 i = 0; i < oneN; ++i) {
-            f32 t = (f32)i / (f32)sr;
-            prev = prev + lowpass * (r.noise() - prev);
-            f32 env = expoDecay(t, decay);
-            s.samples[v * oneN + i] = prev * env * gain;
+            const f32 t = (f32)i / (f32)sr;
+
+            // ---- Удар пятки ----
+            f32 thump = 0.f;
+            if (v.thumpAmp > 0.f) {
+                const f32 f = v.thumpFreq * pitch;
+                thump = std::sin(6.2831853f * f * t) *
+                        expoDecay(t, v.thumpDecay) * v.thumpAmp;
+                // Призвук: доска отзывается октавой выше и дольше.
+                if (v.ring > 0.f)
+                    thump += std::sin(6.2831853f * f * 2.02f * t) *
+                             expoDecay(t, v.thumpDecay * 0.45f) *
+                             v.thumpAmp * v.ring;
+            }
+
+            // ---- Шорох ----
+            f32 crunch = 0.f;
+            if (t >= delay) {
+                f32 raw = r.noise();
+                // Зернистость: шум не ровный, а рассыпанный на
+                // крупинки. Трава и песок отличаются от камня именно
+                // этим — не тембром, а тем, что шорох дробный.
+                if (v.grain > 0.f) {
+                    if (grainLeft <= 0) {
+                        grainLeft = 1 + (i32)(r.next() % 6u);
+                        grainHold = raw;
+                    }
+                    --grainLeft;
+                    raw = glm_mix(raw, grainHold, v.grain);
+                }
+                lp += v.crunchLP * (raw - lp);
+                crunch = lp * expoDecay(t - delay, v.crunchDecay) * v.crunchAmp;
+            }
+
+            s.samples[(u32)k * oneN + i] = (thump + crunch) * gain;
         }
+    }
+}
+
+/// Шум дождя: сплошной, ровный, зацикленный.
+///
+/// Не набор капель, а именно ШУМ: отдельные капли на слух
+/// складываются в треск, а дождь слышится как широкая полоса с
+/// медленно гуляющей плотностью. Гуляет она оттого, что ветер
+/// приносит заряды.
+void genRain(Sound& s, u32 sr) {
+    // Четыре секунды: короче — и петля слышна как повтор.
+    const f32 dur = 4.f;
+    const u32 n = (u32)((f32)sr * dur);
+    s.samples.assign(n, 0.f);
+    s.frames = n;
+    s.sampleRate = sr;
+    s.looping = true;
+    s.defaultGain = 0.6f;
+
+    Rng r(0x2A19u);
+    f32 hi = 0.f, lo = 0.f;
+    for (u32 i = 0; i < n; ++i) {
+        const f32 t = (f32)i / (f32)sr;
+        const f32 raw = r.noise();
+
+        // Два слоя: шипение струй и гул ливня. Один только верх
+        // звучит как радиопомеха, один низ — как ветер в трубе.
+        hi += 0.45f * (raw - hi);
+        lo += 0.06f * (raw - lo);
+
+        // Плотность гуляет: заряд налетел, заряд ушёл.
+        const f32 swell = 0.78f + 0.22f * std::sin(6.2831853f * 0.21f * t)
+                                * std::sin(6.2831853f * 0.07f * t);
+
+        f32 v = (hi * 0.75f + lo * 1.8f) * swell;
+
+        // Стык петли сшивается: разрыв волны в точке склейки
+        // слышится щелчком раз в четыре секунды.
+        const f32 edge = 0.08f;
+        if (t < edge)            v *= t / edge;
+        if (t > dur - edge)      v *= (dur - t) / edge;
+
+        s.samples[i] = v;
+    }
+
+    // Нормировка. Два слоя, сложенные с разным весом, дают пик выше
+    // единицы — и это не «громко», это клиппинг: всё, что выше,
+    // срезается в квадрат и хрипит.
+    f32 peak = 0.f;
+    for (f32 v : s.samples) peak = std::max(peak, std::fabs(v));
+    if (peak > 0.f) {
+        const f32 k = 0.70f / peak;
+        for (f32& v : s.samples) v *= k;
     }
 }
 
@@ -464,13 +583,37 @@ void SoundRegistry::init(u32 sampleRate) {
     LOGI("SoundRegistry: генерация %u звуков при %u Hz",
          (unsigned)SOUND_COUNT - 1, sampleRate);
 
-    // ---- Footsteps ----
-    genFootstepSet(sounds_[SOUND_FOOTSTEP_DIRT],  sampleRate, 0.25f, 0x1001, 0.6f);
-    genFootstepSet(sounds_[SOUND_FOOTSTEP_GRASS], sampleRate, 0.15f, 0x1002, 0.5f);
-    genFootstepSet(sounds_[SOUND_FOOTSTEP_STONE], sampleRate, 0.55f, 0x1003, 0.7f);
-    genFootstepSet(sounds_[SOUND_FOOTSTEP_WOOD],  sampleRate, 0.35f, 0x1004, 0.6f);
-    genFootstepSet(sounds_[SOUND_FOOTSTEP_SAND],  sampleRate, 0.10f, 0x1005, 0.4f);
-    genFootstepSet(sounds_[SOUND_FOOTSTEP_WATER], sampleRate, 0.20f, 0x1006, 0.55f);
+    // ---- Шаги ----
+    //
+    // У каждой поверхности своё соотношение удара и шороха, и
+    // слышно именно его. Земля — глухой толчок и короткий шорох;
+    // трава — почти один шорох, дробный; камень — резкий удар со
+    // звоном; доска — гулкий удар с призвуком; песок — сыпучий
+    // шорох без удара; вода — плеск с длинным мокрым хвостом.
+    //
+    // Числа мерились, а не подбирались на слух: доля высоких частот
+    // и отношение головы к хвосту считаются проверкой, и она же не
+    // даёт двум поверхностям сойтись в одно.
+    //                            длит  Гц   спад  удар  ярк  спад  шор  задр зерн звон
+    const StepVoice DIRT_V  { 0.20f,  95.f, 42.f, 0.50f, 0.30f, 14.f, 0.50f, 0.012f, 0.35f, 0.f  };
+    const StepVoice GRASS_V { 0.24f, 110.f, 60.f, 0.14f, 0.52f, 15.f, 0.62f, 0.004f, 0.70f, 0.f  };
+    // Камень — самый ЗВОНКИЙ, а не самый низкий. Пока удар глушил
+    // собой шорох, камень по спектру выходил глуше травы: подошва по
+    // камню щёлкает, а щелчок — это верх, а не бас.
+    const StepVoice STONE_V { 0.17f, 165.f, 70.f, 0.34f, 0.88f, 26.f, 0.72f, 0.001f, 0.08f, 0.40f };
+    const StepVoice WOOD_V  { 0.22f, 128.f, 34.f, 0.68f, 0.40f, 22.f, 0.34f, 0.006f, 0.15f, 0.55f };
+    const StepVoice SAND_V  { 0.26f,  80.f, 55.f, 0.10f, 0.34f, 12.f, 0.66f, 0.003f, 0.85f, 0.f  };
+    const StepVoice WATER_V { 0.30f,  70.f, 30.f, 0.42f, 0.62f,  9.f, 0.72f, 0.010f, 0.45f, 0.f  };
+
+    genFootstepSet(sounds_[SOUND_FOOTSTEP_DIRT],  sampleRate, DIRT_V,  0x1001, 0.60f);
+    genFootstepSet(sounds_[SOUND_FOOTSTEP_GRASS], sampleRate, GRASS_V, 0x1002, 0.52f);
+    genFootstepSet(sounds_[SOUND_FOOTSTEP_STONE], sampleRate, STONE_V, 0x1003, 0.70f);
+    genFootstepSet(sounds_[SOUND_FOOTSTEP_WOOD],  sampleRate, WOOD_V,  0x1004, 0.62f);
+    genFootstepSet(sounds_[SOUND_FOOTSTEP_SAND],  sampleRate, SAND_V,  0x1005, 0.46f);
+    genFootstepSet(sounds_[SOUND_FOOTSTEP_WATER], sampleRate, WATER_V, 0x1006, 0.58f);
+
+    // ---- Дождь ----
+    genRain(sounds_[SOUND_RAIN], sampleRate);
 
     // ---- Jump / Land ----
     genSweepTone(sounds_[SOUND_JUMP], sampleRate, 0.12f, 240.f, 400.f, 0.35f, 25.f);

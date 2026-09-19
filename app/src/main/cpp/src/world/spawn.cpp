@@ -4,6 +4,9 @@
  */
 #include "spawn.h"
 #include "features.h"
+#include "block.h"
+#include <memory>
+#include <vector>
 #include <cstdlib>
 
 namespace world {
@@ -46,6 +49,7 @@ const char* spawnRejectName(SpawnReject r) {
         case SpawnReject::Structure:  return "structure";
         case SpawnReject::Sinkhole:   return "sinkhole";
         case SpawnReject::Lair:       return "lair";
+        case SpawnReject::Blocked:    return "blocked";
         default:                      return "?";
     }
 }
@@ -102,8 +106,40 @@ SpawnReject spawnPointCheck(const TerrainGenerator& terrain, u64 worldSeed,
     return SpawnReject::Ok;
 }
 
+const Chunk* SpawnVoxelProbe::chunkAt(i32 cx, i32 cz) {
+    if (have_ && haveX_ == cx && haveZ_ == cz) return chunk_.get();
+
+    if (!chunk_) chunk_ = std::make_unique<Chunk>();
+    chunk_->coord = { cx, 0, cz };
+
+    std::vector<TerrainGenerator::Column> cols;
+    computeChunkColumns(*terrain_, cx, cz, cols);
+    generateChunkVoxels(*chunk_, *terrain_, cols.data(), seed_);
+
+    haveX_ = cx; haveZ_ = cz; have_ = true;
+    ++built_;
+    return chunk_.get();
+}
+
+bool SpawnVoxelProbe::standable(i32 wx, i32 wy, i32 wz) {
+    if (wy < 1 || wy + 1 >= CHUNK_SIZE_Y) return false;
+
+    const Chunk* c = chunkAt(wx >> 5, wz >> 5);
+    if (!c) return false;
+    const i32 lx = wx & 31, lz = wz & 31;
+
+    const BlockRegistry& reg = blocks();
+    // Ноги и голова — в пустоте. Листва твёрдая: игрок, очнувшийся
+    // внутри кроны, без кирки из неё не выйдет.
+    if (reg.isSolid(c->at(lx, wy,     lz))) return false;
+    if (reg.isSolid(c->at(lx, wy + 1, lz))) return false;
+    // А под ногами — твёрдое: иначе это не земля, а дыра.
+    return reg.isSolid(c->at(lx, wy - 1, lz));
+}
+
 SpawnSearch findSpawn(const TerrainGenerator& terrain, u64 worldSeed,
-                      i32 centerX, i32 centerZ, i32 halfExtent)
+                      i32 centerX, i32 centerZ, i32 halfExtent,
+                      const SpawnVoxelTest& voxels)
 {
     SpawnSearch out;
     if (halfExtent < 0) halfExtent = 0;
@@ -124,8 +160,16 @@ SpawnSearch findSpawn(const TerrainGenerator& terrain, u64 worldSeed,
                 i32 y = 0;
                 const SpawnReject why = spawnPointCheck(terrain, worldSeed, wx, wz, y);
                 ++out.tried;
-                out.rejected[(u32)why] += 1;
-                if (why != SpawnReject::Ok) continue;
+
+                // Воксели спрашиваются ПОСЛЕДНИМИ и только у тех
+                // точек, что прошли всё остальное: один такой вопрос
+                // стоит целого сгенерированного чанка.
+                SpawnReject verdict = why;
+                if (verdict == SpawnReject::Ok && voxels && !voxels(wx, y, wz))
+                    verdict = SpawnReject::Blocked;
+
+                out.rejected[(u32)verdict] += 1;
+                if (verdict != SpawnReject::Ok) continue;
 
                 out.found = true;
                 out.point = { wx, y, wz };
@@ -136,9 +180,11 @@ SpawnSearch findSpawn(const TerrainGenerator& terrain, u64 worldSeed,
 }
 
 glm::vec3 spawnPositionOrFallback(const TerrainGenerator& terrain,
-                                  u64 worldSeed, i32 centerX, i32 centerZ)
+                                  u64 worldSeed, i32 centerX, i32 centerZ,
+                                  const SpawnVoxelTest& voxels)
 {
-    const SpawnSearch s = findSpawn(terrain, worldSeed, centerX, centerZ);
+    const SpawnSearch s = findSpawn(terrain, worldSeed, centerX, centerZ,
+                                    SPAWN_HALF_EXTENT, voxels);
 
     // Середина блока по X и Z: игрок шириной в шестьдесят сантиметров,
     // поставленный на угол, наполовину в соседнем блоке.

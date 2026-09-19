@@ -212,7 +212,8 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
-    // Java-кода в проекте нет, полный lint только шумит.
+    // Java в проекте ровно один класс — активность с системным
+    // выбором файла. Полный lint на нём только шумит.
     lint {
         abortOnError false
         checkReleaseBuilds false
