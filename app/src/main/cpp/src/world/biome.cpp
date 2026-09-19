@@ -54,6 +54,7 @@ struct BiomeField::Impl {
     SimplexNoise erosion;
     SimplexNoise peaks;
     SimplexNoise weird;
+    SimplexNoise uplift;
 
     explicit Impl(u64 seed)
         : continent(seed ^ 0x1111),
@@ -61,7 +62,8 @@ struct BiomeField::Impl {
           humidity(seed ^ 0x3333),
           erosion(seed ^ 0x4444),
           peaks(seed ^ 0x5555),
-          weird(seed ^ 0x6666) {}
+          weird(seed ^ 0x6666),
+          uplift(seed ^ 0x7777) {}
 };
 
 BiomeField::BiomeField(u64 seed) : impl_(new Impl(seed)) {}
@@ -87,11 +89,36 @@ BiomeField::Sample BiomeField::fields(i32 x, i32 z) const {
     // иначе это либо рощица, либо полмира.
     s.weird = impl_->weird.fbm3D(fx * 0.0008f, 0.f, fz * 0.0008f, 3);
 
+    // Хребты. Частота ниже температуры и выше континентов: горная
+    // цепь должна быть длиннее области, и короче материка.
+    //
+    // Гребень, а не купол: |шум| даёт ноль по линии смены знака, и
+    // 1 - |шум| поднимает как раз эту линию — получается ХРЕБЕТ, а
+    // не круглый холм. Тем же приёмом рисует скалы terrain.cpp.
+    {
+        const f32 raw = impl_->uplift.fbm3D(fx * 0.00055f, 0.f, fz * 0.00055f, 3);
+
+        // Узкая полоса вокруг НУЛЯ шума, а не «единица минус модуль».
+        // Второе кажется тем же самым, но у fBm значения жмутся к
+        // нулю: модуль в среднем 0.23, и «чуть выше нуля» — это
+        // больше половины карты. Мир вышел горами на пятьдесят три
+        // процента. Полоса в полсотых — четырнадцать процентов
+        // площади, и это уже хребты, а не нагорье.
+        constexpr f32 RIDGE_HALF = 0.055f;
+        s.uplift = std::clamp((RIDGE_HALF - std::fabs(raw)) / RIDGE_HALF,
+                              0.f, 1.f);
+    }
+
     // Модификатор высоты: континент + горы, океаны глубже суши
     const f32 continentH = s.continent > 0.f ? s.continent * 45.f
                                              : s.continent * 70.f;
     const f32 mountainH  = s.peaks * (1.f - s.erosion) * 55.f;
-    s.heightMod = continentH + mountainH;
+
+    // Хребет поднимает сам по себе, а пики делают его рваным: ровное
+    // поднятие дало бы плато, а не горы.
+    const f32 upliftH = s.uplift * s.uplift * (46.f + s.peaks * 48.f);
+
+    s.heightMod = continentH + mountainH + upliftH;
 
     s.biome = Plains;   // уточняется в classify()
     return s;
@@ -104,7 +131,13 @@ void BiomeField::classify(Sample& s, i32 surfaceY) const {
     BiomeId b;
     if (surfaceY < 24 && s.continent < -0.05f)            b = Ocean;
     else if (surfaceY < 28 && s.continent < 0.05f)        b = Beach;
-    else if (surfaceY > 82)                               b = Mountains;
+    // Вулкан — это ГОРА в жарком краю, поэтому спрашивается раньше
+    // гор: иначе всякая огненная вершина оказывалась бы просто
+    // вершиной. Температура берётся сырая, без поправки на высоту:
+    // вулкан горяч не от климата, а изнутри, и на трёхстах метрах
+    // поправка съедала бы ровно то, по чему его и узнают.
+    else if (s.uplift > 0.60f && s.temperature > 0.34f)   b = Volcanic;
+    else if (surfaceY > 76 || s.uplift > 0.45f)           b = Mountains;
     // Порча сильнее климата, но слабее моря и гор: Чёрный лес растёт
     // на суше и не карабкается на скалы. Порог высокий — такие места
     // должны попадаться, а не встречаться на каждом шагу.

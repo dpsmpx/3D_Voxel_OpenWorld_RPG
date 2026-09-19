@@ -71,7 +71,18 @@ private:
     u32 mobCount_ = 0;
 
     /// Подземелья, в которых босс уже поставлен: второй раз не спавним.
+    /// Сколько тварей стоит в одной постройке.
+    ///
+    /// Шесть: меньше — и подземелье проходится насквозь без
+    /// единой встречи, больше — и в колодце дерева не
+    /// развернуться.
+    static constexpr u32 GARRISON_PER_SITE = 6;
+
     std::unordered_set<u64> bossPlaced_;
+    /// Ячейки, чей гарнизон уже поставлен: второй раз он
+    /// набивал бы дерево тварями до отказа.
+    std::unordered_set<u64> garrisonPlaced_;
+    f32 garrisonTimer_ = 0.f;
 
     /// Track per-chunk mob count (координаты чанка → счётчик)
     std::unordered_map<world::ChunkCoord, u8, world::ChunkCoordHash> perChunk_;
@@ -87,6 +98,15 @@ private:
     /// Ставит боссов в подземельях рядом с игроком. Босс появляется
     /// один раз на подземелье и не участвует в обычном спавне —
     /// требование ТЗ 4.5.
+    /// Гарнизон подземелья: обычные твари внутри построек.
+    ///
+    /// Обычный спавн до них не добирается и не доберётся: он выбирает
+    /// колонку наугад по чанку, а внутренность исполинского дерева —
+    /// это сотня колонок на полсотни тысяч. Подземелье из-за этого
+    /// стояло пустым колодцем с одним боссом наверху.
+    void updateGarrison(world::ChunkManager& world, ecs::Registry& reg,
+                        const glm::vec3& playerPos, u64 worldSeed, f32 dt);
+
     void updateBosses(world::ChunkManager& world, ecs::Registry& reg,
                       const glm::vec3& playerPos, u64 worldSeed, f32 dt);
 

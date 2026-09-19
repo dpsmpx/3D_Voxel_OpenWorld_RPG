@@ -9437,29 +9437,66 @@ void testSpawnSearchFindsGoodGround() {
     // камне или падает с высоты. Проверяем по настоящим вокселям
     // чанка, а не по высоте из генератора.
     {
-        const u64 sd = 0xC0FFEEu;
-        world::ChunkManager mgr(sd, 1);
-        const glm::vec3 p = world::spawnPositionOrFallback(mgr.generator(), sd, 0, 0);
+        // Шесть миров, а не один: дерево на месте появления —
+        // случайность, и на одном мире её можно не застать.
+        i32 clean = 0, blockedSeen = 0, built = 0;
+        for (u64 sd : { 0xC0FFEEull, 1ull, 42ull, 7ull, 0x5EED1ull, 99ull }) {
+            world::TerrainGenerator gen(sd);
+            world::SpawnVoxelProbe probe(gen, sd);
+            const glm::vec3 p = world::spawnPositionOrFallback(
+                gen, sd, 0, 0,
+                [&probe](i32 wx, i32 wy, i32 wz) {
+                    return probe.standable(wx, wy, wz);
+                });
+            built += (i32)probe.chunksBuilt();
 
-        const i32 bx = (i32)std::floor(p.x), bz = (i32)std::floor(p.z);
-        const i32 by = (i32)std::floor(p.y);
+            const i32 bx = (i32)std::floor(p.x), bz = (i32)std::floor(p.z);
+            const i32 by = (i32)std::floor(p.y);
 
-        world::Chunk ch;
-        ch.coord = { bx >> 5, 0, bz >> 5 };
-        std::vector<world::TerrainGenerator::Column> cols;
-        world::computeChunkColumns(mgr.generator(), ch.coord.x, ch.coord.z, cols);
-        world::generateChunkVoxels(ch, mgr.generator(), cols.data(), sd);
+            world::Chunk ch;
+            ch.coord = { bx >> 5, 0, bz >> 5 };
+            std::vector<world::TerrainGenerator::Column> cols;
+            world::computeChunkColumns(gen, ch.coord.x, ch.coord.z, cols);
+            world::generateChunkVoxels(ch, gen, cols.data(), sd);
 
-        const i32 lx = bx & 31, lz = bz & 31;
-        check(world::blocks().get(ch.at(lx, by - 1, lz)).isSolid,
-              "под ногами твёрдый блок — не провалится");
-        for (i32 dy = 0; dy < 2; ++dy) {
-            const u16 b = ch.at(lx, by + dy, lz);
-            char m[120];
-            std::snprintf(m, sizeof(m), "на высоте ног+%d пусто (%s)", dy,
-                          world::blocks().get(b).name);
-            check(!world::blocks().get(b).isSolid, m);
+            const i32 lx = bx & 31, lz = bz & 31;
+            const bool floor  = world::blocks().get(ch.at(lx, by - 1, lz)).isSolid;
+            const bool feet   = !world::blocks().get(ch.at(lx, by,     lz)).isSolid;
+            const bool head   = !world::blocks().get(ch.at(lx, by + 1, lz)).isSolid;
+            if (floor && feet && head) ++clean;
+            else {
+                char m[160];
+                std::snprintf(m, sizeof(m),
+                              "сид %llu: пол %d, ноги %s, голова %s",
+                              (unsigned long long)sd, (int)floor,
+                              world::blocks().get(ch.at(lx, by, lz)).name,
+                              world::blocks().get(ch.at(lx, by + 1, lz)).name);
+                check(false, m);
+            }
+
+            // Сколько точек отвергла именно проверка вокселями.
+            world::SpawnVoxelProbe p2(gen, sd);
+            const world::SpawnSearch s2 = world::findSpawn(
+                gen, sd, 0, 0, world::SPAWN_HALF_EXTENT,
+                [&p2](i32 wx, i32 wy, i32 wz) { return p2.standable(wx, wy, wz); });
+            blockedSeen += s2.rejected[(u32)world::SpawnReject::Blocked];
         }
+        char m[180];
+        std::snprintf(m, sizeof(m),
+                      "чистых мест %d из 6; точек отвергнуто по вокселям %d; "
+                      "чанков построено %d",
+                      clean, blockedSeen, built);
+        check(true, m);
+        check(clean == 6, "во всех шести мирах на месте появления пусто");
+
+        // Проверка обязана СРАБАТЫВАТЬ: если она не отвергла ни
+        // одной точки, то её как будто и нет.
+        check(blockedSeen > 0, "и деревья на пути она отсеивает");
+
+        // И стоить она обязана недорого: чанк весит четверть
+        // мегабайта, и строить их десятками ради одного места было бы
+        // хуже, чем появиться в кроне.
+        check(built <= 24, "а чанков на это уходят единицы");
     }
 }
 
@@ -10776,6 +10813,748 @@ void testRainAndSnowParticles() {
                       "снежинка крупнее капли");
                 check(snowInst[0].size.z < snowInst[0].size.x * 2.f,
                       "и не вытянута: она не летит, а кружит");
+            }
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+void testMountainsAndVolcanoes() {
+    group("горы и вулканы: хребты, снеговая линия, жерло");
+
+    world::blocks();
+    constexpr u64 SEED = 0xC0FFEEull;
+    world::TerrainGenerator gen(SEED);
+
+    // ---- 1. Горы и вулканы вообще есть ----
+    //
+    // Их не было. Гора требовала СОВПАДЕНИЯ трёх хвостов сразу —
+    // высокого пика, низкой эрозии и высокого континента, — а три
+    // колокола в своих хвостах не сходятся: на семидесяти тысячах
+    // колонок не нашлось ни одной выше восьмидесяти двух.
+    {
+        long hist[world::BIOME_COUNT] = {};
+        long n = 0;
+        // Шаг не круглый: на кратном периоду решётки шума весь
+        // климат выходит нулевым (см. проверку погоды).
+        for (i32 x = -400000; x <= 400000; x += 2111)
+            for (i32 z = -200000; z <= 200000; z += 2111) {
+                hist[(u32)gen.biomeAt(x, z)]++;
+                ++n;
+            }
+        char m[220];
+        std::snprintf(m, sizeof(m),
+                      "из %ld колонок: горы %.1f%%, вулканы %.2f%%, "
+                      "океан %.0f%%, равнины %.0f%%, лес %.0f%%",
+                      n,
+                      100.0 * hist[world::Mountains] / n,
+                      100.0 * hist[world::Volcanic] / n,
+                      100.0 * hist[world::Ocean] / n,
+                      100.0 * hist[world::Plains] / n,
+                      100.0 * hist[world::Forest] / n);
+        check(true, m);
+
+        check(hist[world::Mountains] * 100 > n * 2,  "горы в мире есть");
+        check(hist[world::Mountains] * 100 < n * 20, "но мир не из одних гор");
+        check(hist[world::Volcanic] * 1000 > n,      "вулканы тоже есть");
+        check(hist[world::Volcanic] * 100 < n * 4,   "и они редки");
+
+        // Ни один биом не пропал: пустыня и тундра были на грани и
+        // раньше, и поднять горы за их счёт было бы плохой сделкой.
+        for (u32 i = 0; i < world::BIOME_COUNT; ++i) {
+            char w[120];
+            std::snprintf(w, sizeof(w), "биом %s в мире встречается",
+                          gen.field().def((world::BiomeId)i).name);
+            check(hist[i] > 0, w);
+        }
+    }
+
+    // ---- 2. Горы высокие ----
+    {
+        i32 highest = 0, aboveSnow = 0, mountains = 0;
+        for (i32 x = -60000; x <= 60000; x += 97)
+            for (i32 z = -30000; z <= 30000; z += 97) {
+                const auto c = gen.column(x, z);
+                if (c.climate.biome != world::Mountains) continue;
+                ++mountains;
+                highest = std::max(highest, c.surface);
+                if (c.surface > world::TerrainGenerator::SNOW_LINE) ++aboveSnow;
+            }
+        char m[180];
+        std::snprintf(m, sizeof(m),
+                      "горных колонок %d, самая высокая %d, выше снеговой "
+                      "линии %d", mountains, highest, aboveSnow);
+        check(true, m);
+        check(highest > 100, "вершины поднимаются выше сотни");
+        check(aboveSnow * 100 > mountains, "и снеговой линии достигает не одна");
+    }
+
+    // ---- 3. Вершины разной высоты, а не столовые горы ----
+    //
+    // Жёсткое обрезание по потолку мира срезало бы все вершины в
+    // одну ровную площадку: гора, упёршаяся в потолок, — это уже не
+    // гора, а плато.
+    {
+        i32 atCeiling = 0, peaks = 0;
+        std::map<i32, i32> tops;
+        for (i32 x = -60000; x <= 60000; x += 89)
+            for (i32 z = -30000; z <= 30000; z += 89) {
+                const i32 h = gen.surfaceHeight(x, z);
+                if (h < 95) continue;
+                ++peaks;
+                tops[h]++;
+                if (h >= world::CHUNK_SIZE_Y - 4) ++atCeiling;
+            }
+        char m[160];
+        std::snprintf(m, sizeof(m),
+                      "вершин выше 95: %d, разных высот среди них %zu, "
+                      "упёршихся в потолок %d",
+                      peaks, tops.size(), atCeiling);
+        check(true, m);
+        check(peaks > 20, "высокие вершины есть");
+        check(tops.size() > 8, "и они разной высоты");
+        check(atCeiling == 0, "и ни одна не срезана потолком мира");
+    }
+
+    // ---- 4. Хребет, а не купол ----
+    //
+    // Горы должны идти ЦЕПЬЮ: вдоль хребта высоко, поперёк — обрыв.
+    // Круглый холм посреди равнины читается как курган.
+    {
+        i32 found = 0, ridgeLike = 0;
+        for (i32 x = -60000; x <= 60000 && found < 40; x += 311)
+            for (i32 z = -30000; z <= 30000 && found < 40; z += 311) {
+                const auto c = gen.column(x, z);
+                if (c.climate.biome != world::Mountains) continue;
+                if (c.surface < 80) continue;
+                ++found;
+
+                // Ищем направление, вдоль которого высоко держится
+                // дольше всего, и поперечное ему.
+                i32 best = 0, worst = 9999;
+                for (i32 a = 0; a < 4; ++a) {
+                    static const i32 dx[4] = { 1, 1, 0, -1 };
+                    static const i32 dz[4] = { 0, 1, 1,  1 };
+                    i32 run = 0;
+                    for (i32 k = 1; k <= 12; ++k) {
+                        const i32 h = gen.surfaceHeight(x + dx[a] * k * 20,
+                                                        z + dz[a] * k * 20);
+                        if (h < c.surface - 25) break;
+                        ++run;
+                    }
+                    best  = std::max(best, run);
+                    worst = std::min(worst, run);
+                }
+                if (best >= worst + 3) ++ridgeLike;
+            }
+        char m[160];
+        std::snprintf(m, sizeof(m),
+                      "высоких точек осмотрено %d, вытянутых в хребет %d",
+                      found, ridgeLike);
+        check(true, m);
+        check(found > 10, "высокие горы нашлись");
+        check(ridgeLike * 2 > found, "и большинство из них — хребты, а не купола");
+    }
+
+    // ---- 5. Снег на вершинах, лава в жерле ----
+    //
+    // По настоящим вокселям: высота и биом — это ещё не картинка.
+    {
+        // Ищем вулкан с жерлом.
+        i32 vx = 0, vz = 0; bool haveV = false;
+        for (i32 x = -200000; x <= 200000 && !haveV; x += 211)
+            for (i32 z = -100000; z <= 100000 && !haveV; z += 211) {
+                const auto c = gen.column(x, z);
+                if (c.climate.biome == world::Volcanic && c.lavaTop > 0) {
+                    vx = x; vz = z; haveV = true;
+                }
+            }
+        check(haveV, "вулкан с жерлом нашёлся");
+        if (haveV) {
+            world::Chunk ch;
+            ch.coord = { vx >> 5, 0, vz >> 5 };
+            std::vector<world::TerrainGenerator::Column> cols;
+            world::computeChunkColumns(gen, ch.coord.x, ch.coord.z, cols);
+            world::generateChunkVoxels(ch, gen, cols.data(), SEED);
+
+            const auto c = gen.column(vx, vz);
+            const i32 lx = vx & 31, lz = vz & 31;
+            i32 lava = 0;
+            for (i32 y = c.surface; y <= c.lavaTop; ++y)
+                if (ch.at(lx, y, lz) == world::LAVA) ++lava;
+            char m[160];
+            std::snprintf(m, sizeof(m),
+                          "жерло на высоте %d..%d, лавы в колонке %d блоков",
+                          c.surface, c.lavaTop, lava);
+            check(true, m);
+            check(lava > 0, "в жерле стоит лава");
+            check(c.surface > 60, "и стоит она высоко, а не в низине");
+        }
+
+        // Ищем заснеженную вершину.
+        i32 sx = 0, sz = 0; bool haveS = false;
+        for (i32 x = -200000; x <= 200000 && !haveS; x += 211)
+            for (i32 z = -100000; z <= 100000 && !haveS; z += 211) {
+                const auto c = gen.column(x, z);
+                if (c.climate.biome == world::Mountains &&
+                    c.surface > world::TerrainGenerator::SNOW_LINE + 2) {
+                    sx = x; sz = z; haveS = true;
+                }
+            }
+        check(haveS, "заснеженная вершина нашлась");
+        if (haveS) {
+            world::Chunk ch;
+            ch.coord = { sx >> 5, 0, sz >> 5 };
+            std::vector<world::TerrainGenerator::Column> cols;
+            world::computeChunkColumns(gen, ch.coord.x, ch.coord.z, cols);
+            world::generateChunkVoxels(ch, gen, cols.data(), SEED);
+
+            const auto c = gen.column(sx, sz);
+            const i32 lx = sx & 31, lz = sz & 31;
+            const u16 top = ch.at(lx, c.surface - 1, lz);
+            char m[160];
+            std::snprintf(m, sizeof(m), "на вершине %d лежит %s",
+                          c.surface, world::blocks().get(top).name);
+            check(true, m);
+            check(top == world::SNOW, "вершина под снегом, а не голый камень");
+
+            // А у подножия снега быть не должно — иначе это не
+            // снеговая линия, а покраска всей горы.
+            i32 lowStone = 0, checked = 0;
+            for (i32 d = -14; d <= 14; ++d) {
+                const auto n = gen.column(sx + d, sz);
+                if (n.climate.biome != world::Mountains) continue;
+                if (n.surface > world::TerrainGenerator::SNOW_LINE) continue;
+                ++checked;
+                const i32 nx = (sx + d) & 31;
+                if (ch.coord.x != ((sx + d) >> 5)) continue;
+                if (ch.at(nx, n.surface - 1, lz) != world::SNOW) ++lowStone;
+            }
+            if (checked > 0)
+                check(lowStone > 0, "а ниже линии — камень, а не снег");
+            else
+                check(true, "подножия в этом чанке не оказалось");
+        }
+    }
+}
+
+// ------------------------------------------------------------
+void testTreesHaveBranchesAndCrowns() {
+    group("деревья: ветви, крона и ни одного голого столба");
+
+    world::blocks();
+    constexpr u64 SEED = 0xC0FFEEull;
+    world::TerrainGenerator gen(SEED);
+
+    /// Что выросло в чанке выше земли.
+    struct Grove {
+        i32 wood = 0;        ///< блоков древесины и кактуса
+        i32 leaves = 0;
+        i32 branchStarts = 0;///< древесина, под которой ПУСТО — это ветвь
+        i32 reach = 0;       ///< дальше всего от своего ствола по горизонтали
+        i32 trees = 0;       ///< стволов, стоящих на земле
+        /// Столбцов, где листва идёт ЯРУСАМИ: листва, пустота, снова
+        /// листва. У сплошного конуса таких нет ни одного.
+        i32 tiered = 0;
+    };
+
+    auto survey = [&](i32 wx, i32 wz) {
+        Grove g{};
+        world::Chunk ch;
+        ch.coord = { wx >> 5, 0, wz >> 5 };
+        std::vector<world::TerrainGenerator::Column> cols;
+        world::computeChunkColumns(gen, ch.coord.x, ch.coord.z, cols);
+        world::generateChunkVoxels(ch, gen, cols.data(), SEED);
+
+        // Стволы: древесина, стоящая прямо на поверхности.
+        std::vector<std::pair<i32, i32>> trunks;
+        for (i32 lx = 0; lx < world::CHUNK_SIZE; ++lx)
+            for (i32 lz = 0; lz < world::CHUNK_SIZE; ++lz) {
+                const i32 surf = cols[(usize)lx * world::CHUNK_SIZE + lz].surface;
+                if (surf < 2 || surf >= world::CHUNK_SIZE_Y - 2) continue;
+                const u16 b = ch.at(lx, surf, lz);
+                if (b == world::WOOD || b == world::CACTUS) {
+                    trunks.emplace_back(lx, lz);
+                    ++g.trees;
+                }
+                for (i32 y = surf; y < world::CHUNK_SIZE_Y; ++y) {
+                    const u16 v = ch.at(lx, y, lz);
+                    if (v == world::WOOD || v == world::CACTUS) {
+                        ++g.wood;
+                        // Ветвь узнаётся по опоре: у столба каждый
+                        // блок стоит на своём же столбе, у ветви под
+                        // ним пусто.
+                        if (ch.at(lx, y - 1, lz) == world::AIR) ++g.branchStarts;
+                    } else if (v == world::LEAVES) {
+                        ++g.leaves;
+                    }
+                }
+            }
+
+        // Ярусность считается ВОЗЛЕ СТВОЛА, а не по всему чанку.
+        //
+        // «Где-то в столбце листва, пустота, снова листва» бывает и
+        // просто оттого, что два дерева стоят рядом: одно закрывает
+        // другое. Смотреть надо в двух шагах от ствола — там у
+        // яруса и виден просвет между лапами.
+        for (const auto& t : trunks) {
+            for (i32 d = 0; d < 4; ++d) {
+                static const i32 ox[4] = { 2, -2, 0, 0 };
+                static const i32 oz[4] = { 0, 0, 2, -2 };
+                const i32 lx = t.first + ox[d], lz = t.second + oz[d];
+                if (lx < 0 || lz < 0 || lx >= world::CHUNK_SIZE ||
+                    lz >= world::CHUNK_SIZE) continue;
+                const i32 surf = cols[(usize)lx * world::CHUNK_SIZE + lz].surface;
+                if (surf < 2) continue;
+                // Считаем ВЫШЕ подлеска: куст рядом со стволом сам по
+                // себе даёт листву у земли, просвет и крону — три
+                // слоя, к ярусам лапника отношения не имеющие.
+                i32 runs = 0;
+                bool inLeaves = false;
+                for (i32 y = surf + 4; y < world::CHUNK_SIZE_Y; ++y) {
+                    const bool leaf = ch.at(lx, y, lz) == world::LEAVES;
+                    if (leaf && !inLeaves) ++runs;
+                    inLeaves = leaf;
+                }
+                if (runs >= 2) { ++g.tiered; break; }
+            }
+        }
+
+        // Размах: дальше всего отнесённая древесина от ближайшего ствола.
+        for (i32 lx = 0; lx < world::CHUNK_SIZE; ++lx)
+            for (i32 lz = 0; lz < world::CHUNK_SIZE; ++lz) {
+                const i32 surf = cols[(usize)lx * world::CHUNK_SIZE + lz].surface;
+                if (surf < 2) continue;
+                bool anyWood = false;
+                for (i32 y = surf; y < world::CHUNK_SIZE_Y && !anyWood; ++y) {
+                    const u16 v = ch.at(lx, y, lz);
+                    anyWood = (v == world::WOOD || v == world::CACTUS);
+                }
+                if (!anyWood) continue;
+                i32 best = 999;
+                for (const auto& t : trunks)
+                    best = std::min(best, std::abs(t.first - lx) +
+                                          std::abs(t.second - lz));
+                if (best < 999) g.reach = std::max(g.reach, best);
+            }
+        return g;
+    };
+
+    // Найти чанк, у которого середина — нужный биом.
+    auto findBiome = [&](world::BiomeId want, i32& ox, i32& oz) {
+        for (i32 x = -300000; x <= 300000; x += 1013)
+            for (i32 z = -150000; z <= 150000; z += 1013) {
+                if (gen.biomeAt(x, z) != want) continue;
+                // Нужен не берег и не скала: дерево должно вырасти.
+                const i32 s = gen.surfaceHeight(x, z);
+                if (s <= world::TerrainGenerator::SEA_LEVEL + 2) continue;
+                if (s >= world::CHUNK_SIZE_Y - 24) continue;
+                ox = x; oz = z;
+                return true;
+            }
+        return false;
+    };
+
+    struct Case {
+        world::BiomeId biome;
+        const char*    what;
+        bool           wantsLeaves;   ///< живое дерево или сухое
+        /// Чего ждём от силуэта: сучьев в стороны (дуб, сухостой,
+        /// кактус) или ярусов лапника (ель). У ели сучьев нет и быть
+        /// не должно — у неё лапы.
+        bool           wantsBranches;
+        bool           wantsTiers;
+    };
+    const Case cases[] = {
+        { world::Forest,  "лес",        true,  true,  false },
+        { world::Taiga,   "тайга",      true,  false, true  },
+        { world::Plains,  "равнина",    true,  true,  false },
+        { world::Savanna, "саванна",    false, true,  false },
+        { world::Desert,  "пустыня",    false, true,  false },
+        { world::Blight,  "Чёрный лес", false, true,  false },
+    };
+
+    i32 bare = 0;
+    for (const Case& c : cases) {
+        i32 bx = 0, bz = 0;
+        if (!findBiome(c.biome, bx, bz)) {
+            char m[120];
+            std::snprintf(m, sizeof(m), "%s: не нашёлся в мире", c.what);
+            check(false, m);
+            continue;
+        }
+
+        // Квадрат чанков вокруг точки, а не полоса на восток: полоса
+        // в три сотни блоков уходит из биома, и «в саванне не растёт
+        // ни одного дерева» означало бы, что мы смотрим уже не в
+        // саванне.
+        Grove sum{};
+        for (i32 kx = -1; kx <= 1; ++kx)
+            for (i32 kz = -1; kz <= 1; ++kz) {
+                const Grove g = survey(bx + kx * 32, bz + kz * 32);
+                sum.wood += g.wood;
+                sum.leaves += g.leaves;
+                sum.branchStarts += g.branchStarts;
+                sum.trees += g.trees;
+                sum.tiered += g.tiered;
+                sum.reach = std::max(sum.reach, g.reach);
+            }
+
+        char m[240];
+        std::snprintf(m, sizeof(m),
+                      "%s (%d,%d): стволов %d, древесины %d, листвы %d, "
+                      "сучьев %d, ярусных столбцов %d, размах %d",
+                      c.what, bx, bz, sum.trees, sum.wood, sum.leaves,
+                      sum.branchStarts, sum.tiered, sum.reach);
+        check(true, m);
+
+        check(sum.trees > 0, "деревья в биоме растут");
+        if (sum.trees == 0) continue;
+
+        // Главное: НИ ОДНОГО голого столба. Сухое дерево без листвы —
+        // это дерево, если у него есть сучья; без них это забор.
+        if (c.wantsBranches && sum.branchStarts == 0) {
+            ++bare;
+            char w[140];
+            std::snprintf(w, sizeof(w), "%s: деревья без единого сука", c.what);
+            check(false, w);
+        }
+        // У ели смотрим ДОЛЮ, а не ноль. Ели в тайге стоят плотно и
+        // перекрывают друг друга: просвет в чужой кроне даёт те же
+        // два слоя и при сплошном конусе. По замеру: ярусный
+        // лапник — восемь деревьев из десяти, сплошной конус —
+        // три с половиной.
+        if (c.wantsTiers && sum.tiered * 2 <= sum.trees) {
+            ++bare;
+            char w[160];
+            std::snprintf(w, sizeof(w),
+                          "%s: лапник сплошным конусом (ярусных %d из %d)",
+                          c.what, sum.tiered, sum.trees);
+            check(false, w);
+        }
+        check(sum.reach >= 2, "крона и ветви уходят вбок от ствола");
+
+        if (c.wantsLeaves)
+            check(sum.leaves > sum.trees * 20, "и листвы на них вдоволь");
+    }
+    check(bare == 0, "ни в одном биоме силуэт не выродился в столб");
+
+    // ---- Деревья отличаются друг от друга ----
+    //
+    // Все дубы одной формы — это обои, а не лес. Форму задаёт зерно
+    // дерева, и оно у каждого своё.
+    {
+        i32 fx = 0, fz = 0;
+        check(findBiome(world::Forest, fx, fz), "лес для сравнения нашёлся");
+        std::map<i32, i32> heights;
+        i32 counted = 0;
+        for (i32 k = 0; k < 10; ++k) {
+            world::Chunk ch;
+            ch.coord = { (fx + k * 32) >> 5, 0, fz >> 5 };
+            std::vector<world::TerrainGenerator::Column> cols;
+            world::computeChunkColumns(gen, ch.coord.x, ch.coord.z, cols);
+            world::generateChunkVoxels(ch, gen, cols.data(), SEED);
+            for (i32 lx = 0; lx < world::CHUNK_SIZE; ++lx)
+                for (i32 lz = 0; lz < world::CHUNK_SIZE; ++lz) {
+                    const i32 surf = cols[(usize)lx * world::CHUNK_SIZE + lz].surface;
+                    if (surf < 2 || ch.at(lx, surf, lz) != world::WOOD) continue;
+                    i32 h = 0;
+                    while (surf + h < world::CHUNK_SIZE_Y &&
+                           ch.at(lx, surf + h, lz) == world::WOOD) ++h;
+                    heights[h]++;
+                    ++counted;
+                }
+        }
+        char m[140];
+        std::snprintf(m, sizeof(m), "стволов осмотрено %d, разной высоты %zu",
+                      counted, heights.size());
+        check(true, m);
+        check(counted > 10, "стволов для сравнения хватило");
+        check(heights.size() >= 3, "и высота у них разная");
+    }
+}
+
+// ------------------------------------------------------------
+void testBossesAndDaylightMonsters() {
+    group("боссы в залах, твари при солнце");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    // ---- 1. Днём мир не пустеет ----
+    //
+    // Враждебные твари ставились только в темноте, и до заката
+    // вокруг паслись одни овцы. Ночь от дня отличаться обязана — но
+    // не тем, что днём опасности нет вовсе.
+    {
+        i32 dayHostile = 0, nightHostile = 0, dayTotal = 0;
+        std::map<u16, i32> byId;
+        for (u32 k = 0; k < 4000; ++k) {
+            const world::BiomeId b[] = {
+                world::Plains, world::Forest, world::Taiga,
+                world::Savanna, world::Desert, world::Mountains,
+            };
+            const world::BiomeId biome = b[k % 6];
+            const u32 rng = k * 2654435761u + 12345u;
+
+            const u16 dayId = mobs::mobIdForBiome(biome, false, rng);
+            if (dayId != mobs::MOB_NONE) {
+                ++dayTotal;
+                const auto& def = mobs::mobRegistry().get(dayId);
+                if (def.hostile) { ++dayHostile; byId[dayId]++; }
+            }
+            const u16 nightId = mobs::mobIdForBiome(biome, true, rng);
+            if (nightId != mobs::MOB_NONE &&
+                mobs::mobRegistry().get(nightId).hostile) ++nightHostile;
+        }
+        char m[200];
+        std::snprintf(m, sizeof(m),
+                      "днём тварей %d из %d выпавших, ночью %d",
+                      dayHostile, dayTotal, nightHostile);
+        check(true, m);
+        check(dayHostile > 0, "днём враждебные твари в таблице есть");
+        check(dayHostile * 3 < nightHostile * 2 || dayHostile < nightHostile,
+              "но ночью их всё равно больше");
+
+        // И все они действительно ходят при свете: тварь без этого
+        // признака спавнер днём отсеет, и таблица соврёт.
+        i32 nocturnal = 0;
+        for (const auto& kv : byId)
+            if (!mobs::mobRegistry().get(kv.first).dayActive) ++nocturnal;
+        check(nocturnal == 0,
+              "и каждая из дневных помечена как дневная");
+
+        std::snprintf(m, sizeof(m), "дневных видов в таблице: %zu", byId.size());
+        check(true, m);
+        check(byId.size() >= 3, "и видов их не один");
+    }
+
+    // ---- 1б. И спавнер вправду ставит их при солнце ----
+    //
+    // Таблица может сколько угодно возвращать кабана в полдень:
+    // решает всё равно спавнер, а он до сих пор отсекал всё
+    // враждебное при свете.
+    {
+        if (!jobs::gJobs.running()) jobs::gJobs.start(2);
+        constexpr u64 SEED = 0xDA7Eu;
+        world::ChunkManager mgr(SEED, 2);
+
+        // Ровное место: тварей ставят вокруг игрока, и стоять он
+        // должен на земле, а не в скале.
+        const world::SpawnSearch flat =
+            world::findSpawn(mgr.generator(), SEED, 0, 0);
+        check(flat.found, "место для замера нашлось");
+        if (flat.found) {
+            const glm::vec3 at{ (f32)flat.point.x + 0.5f, (f32)flat.point.y,
+                                (f32)flat.point.z + 0.5f };
+            bool ready = false;
+            for (i32 i = 0; i < 900 && !ready; ++i) {
+                mgr.update(at);
+                ready = mgr.isReadyAt(flat.point.x, flat.point.z) &&
+                        mgr.pendingJobs() == 0;
+                if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            check(ready, "мир построен");
+
+            if (ready) {
+                ecs::Registry reg;
+                mobs::Spawner sp;
+                world::DayCycle day;
+                day.reset(0.5f, 0);        // ровно полдень
+
+                for (i32 i = 0; i < 400; ++i)
+                    sp.update(mgr, reg, at, day, SEED, 0.5f);
+
+                i32 hostile = 0, peaceful = 0;
+                std::map<u16, i32> seen;
+                auto& pool = reg.pool<mobs::MobTag>();
+                for (usize i = 0; i < pool.size(); ++i) {
+                    auto* tag = pool.get(pool.entityAt((u32)i));
+                    if (!tag) continue;
+                    const auto& def = mobs::mobRegistry().get(tag->id);
+                    if (def.isBoss) continue;
+                    seen[tag->id]++;
+                    if (def.hostile) ++hostile; else ++peaceful;
+                }
+                char m[200];
+                std::snprintf(m, sizeof(m),
+                              "в полдень поставлено: враждебных %d, мирных %d, "
+                              "видов %zu", hostile, peaceful, seen.size());
+                check(true, m);
+                check(hostile > 0, "днём спавнер ставит враждебных тварей");
+                check(peaceful > 0, "и мирных при этом не забывает");
+            }
+        }
+        jobs::gJobs.stop();
+    }
+
+    // ---- 2. Новые твари собраны целиком ----
+    //
+    // Моб без оснастки — это невидимка: он ходит, бьёт и умирает, а
+    // на экране его нет.
+    {
+        for (u16 id : { (u16)mobs::MOB_BOAR, (u16)mobs::MOB_BANDIT }) {
+            const auto& def = mobs::mobRegistry().get(id);
+            char m[140];
+            std::snprintf(m, sizeof(m), "%s: здоровье %.0f, урон %.0f, опыт %llu",
+                          def.name, (double)def.maxHealth,
+                          (double)def.attackDamage,
+                          (unsigned long long)def.xpReward);
+            check(true, m);
+            check(def.maxHealth > 0.f && def.attackDamage > 0.f,
+                  "новая тварь дерётся и её можно убить");
+            check(def.dayActive, "и водится при свете");
+
+            const entity::Rig& rig = mobs::rigFor(id);
+            check(rig.count > 1, "и у неё есть тело, а не пустая оснастка");
+        }
+    }
+
+    // ---- 3. Босс стоит в зале, а не в чистом поле ----
+    if (!jobs::gJobs.running()) jobs::gJobs.start(2);
+    {
+        constexpr u64 SEED = 0x30551u;
+        world::ChunkManager mgr(SEED, 2);
+
+        // Ищем замок: до сих пор он был единственным строением, где
+        // не стояло никого.
+        world::CastleSite castle;
+        for (i32 r = 0; r < 24 && !castle.exists; ++r)
+            for (i32 a = -r; a <= r && !castle.exists; ++a)
+                for (i32 b = -r; b <= r && !castle.exists; ++b) {
+                    if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                    castle = world::castleAt(a, b, SEED, &mgr.generator());
+                }
+        check(castle.exists, "замок в мире нашёлся");
+
+        // И дерево-подземелье.
+        world::DungeonSite tree;
+        for (i32 r = 0; r < 24 && !tree.exists; ++r)
+            for (i32 a = -r; a <= r && !tree.exists; ++a)
+                for (i32 b = -r; b <= r && !tree.exists; ++b) {
+                    if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                    tree = world::treeDungeonAt(a, b, SEED, &mgr.generator());
+                }
+        check(tree.exists, "исполинское дерево с залом нашлось");
+
+        // Босс ставится там, где игрок оказался рядом. Проверяем оба
+        // места одним спавнером.
+        struct Place { const char* what; glm::ivec3 at; bool have; };
+        const Place places[] = {
+            { "замок", castle.center, castle.exists },
+            { "дерево", tree.center,  tree.exists   },
+        };
+
+        for (const Place& p : places) {
+            if (!p.have) continue;
+
+            const glm::vec3 near{ (f32)p.at.x + 0.5f, (f32)p.at.y + 2.f,
+                                  (f32)p.at.z + 0.5f };
+            bool ready = false;
+            for (i32 i = 0; i < 900 && !ready; ++i) {
+                mgr.update(near);
+                ready = mgr.isReadyAt(p.at.x, p.at.z) && mgr.pendingJobs() == 0;
+                if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            char m[160];
+            std::snprintf(m, sizeof(m), "%s: мир вокруг построен", p.what);
+            check(ready, m);
+            if (!ready) continue;
+
+            ecs::Registry reg;
+            mobs::Spawner sp;
+            world::DayCycle day;
+            day.reset(0.5f, 0);          // полдень: босса это не касается
+
+            for (i32 i = 0; i < 12; ++i)
+                sp.update(mgr, reg, near, day, SEED, 0.5f);
+
+            // Ищем боссов рядом с залом.
+            i32 bosses = 0, inside = 0;
+            auto& pool = reg.pool<mobs::MobTag>();
+            for (usize i = 0; i < pool.size(); ++i) {
+                const ecs::Entity e = pool.entityAt((u32)i);
+                auto* tag = pool.get(e);
+                auto* tf  = reg.get<ecs::Transform>(e);
+                if (!tag || !tf) continue;
+                if (!mobs::mobRegistry().get(tag->id).isBoss) continue;
+                ++bosses;
+                const f32 dx = tf->position.x - (f32)p.at.x;
+                const f32 dz = tf->position.z - (f32)p.at.z;
+                if (dx * dx + dz * dz < 40.f * 40.f) ++inside;
+            }
+            std::snprintf(m, sizeof(m), "%s: боссов рядом %d, из них в зале %d",
+                          p.what, bosses, inside);
+            check(true, m);
+            check(bosses > 0, "босс в этом месте появился");
+            check(inside == bosses, "и стоит он в зале, а не в поле");
+        }
+    }
+
+    // ---- 4. Твари ставятся и ВНУТРИ построек ----
+    //
+    // Точка спавна бралась первой сверху по колонке, то есть всегда
+    // на крыше: внутри исполинского дерева не появлялось никого, и
+    // подземелье в нём было пустым колодцем с боссом наверху.
+    {
+        constexpr u64 SEED = 0x1B51Du;
+        world::ChunkManager mgr(SEED, 2);
+        world::DungeonSite tree;
+        for (i32 r = 0; r < 24 && !tree.exists; ++r)
+            for (i32 a = -r; a <= r && !tree.exists; ++a)
+                for (i32 b = -r; b <= r && !tree.exists; ++b) {
+                    if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                    tree = world::treeDungeonAt(a, b, SEED, &mgr.generator());
+                }
+        check(tree.exists, "дерево с подземельем нашлось");
+        if (tree.exists) {
+            const i32 ground = mgr.generator().surfaceHeight(tree.center.x,
+                                                             tree.center.z);
+            const glm::vec3 at{ (f32)tree.center.x + 0.5f, (f32)ground + 2.f,
+                                (f32)tree.center.z + 0.5f };
+            bool ready = false;
+            for (i32 i = 0; i < 900 && !ready; ++i) {
+                mgr.update(at);
+                ready = mgr.isReadyAt(tree.center.x, tree.center.z) &&
+                        mgr.pendingJobs() == 0;
+                if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            check(ready, "мир вокруг дерева построен");
+
+            if (ready) {
+                ecs::Registry reg;
+                mobs::Spawner sp;
+                world::DayCycle day;
+                day.reset(0.02f, 0);     // ночь: обычным тварям нужен мрак
+
+                for (i32 i = 0; i < 200; ++i)
+                    sp.update(mgr, reg, at, day, SEED, 0.5f);
+
+                // Сколько тварей оказалось ВЫШЕ земли, но внутри
+                // ствола, — то есть на этажах дерева.
+                i32 onFloors = 0, total = 0;
+                auto& pool = reg.pool<mobs::MobTag>();
+                for (usize i = 0; i < pool.size(); ++i) {
+                    const ecs::Entity e = pool.entityAt((u32)i);
+                    auto* tag = pool.get(e);
+                    auto* tf  = reg.get<ecs::Transform>(e);
+                    if (!tag || !tf) continue;
+                    if (mobs::mobRegistry().get(tag->id).isBoss) continue;
+                    ++total;
+                    const f32 dx = tf->position.x - (f32)tree.center.x;
+                    const f32 dz = tf->position.z - (f32)tree.center.z;
+                    if (dx * dx + dz * dz < 10.f * 10.f &&
+                        tf->position.y > (f32)ground + 3.f) ++onFloors;
+                }
+                char m[160];
+                std::snprintf(m, sizeof(m),
+                              "тварей вокруг %d, из них на этажах дерева %d",
+                              total, onFloors);
+                check(true, m);
+                check(total > 0, "твари вокруг дерева водятся");
+                check(onFloors > 0, "и внутрь ствола они тоже попадают");
             }
         }
     }
@@ -12102,20 +12881,33 @@ void testTrampolineThrowAndBounce() {
     jobs::gJobs.start(2);
     {
         world::ChunkManager world(0x7A3B, 2);
+
+        // Ровное место ищем тем же перебором, каким игра выбирает
+        // место появления: прибитая точка (8, 8) однажды оказалась
+        // на склоне горы, и брошенный вперёд батут утыкался в этот
+        // склон в двух шагах.
+        const world::SpawnSearch flat =
+            world::findSpawn(world.generator(), 0x7A3B, 0, 0);
+        check(flat.found, "ровное место для броска нашлось");
+        if (!flat.found) { jobs::gJobs.stop(); return; }
+        const f32 SX = (f32)flat.point.x + 0.5f;
+        const f32 SZ = (f32)flat.point.z + 0.5f;
+
         bool ready = false;
         for (int i = 0; i < 600 && !ready; ++i) {
-            world.update({ 8.f, 70.f, 8.f });
-            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            world.update({ SX, 70.f, SZ });
+            ready = world.isReadyAt(flat.point.x, flat.point.z) &&
+                    world.pendingJobs() == 0;
             if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         check(ready, "мир под ногами построен");
 
         if (ready) {
-            const i32 surf = world.generator().surfaceHeight(8, 8);
+            const i32 surf = flat.point.y;
 
             ecs::Registry reg;
             player::Player pl;
-            pl.init(reg, glm::vec3(8.5f, (f32)surf, 8.5f));
+            pl.init(reg, glm::vec3(SX, (f32)surf, SZ));
             auto* inv = pl.inventory();
             auto& slot = inv->activeSlot();
             slot.itemId = items::ITEM_TRAMPOLINE;
@@ -12146,7 +12938,7 @@ void testTrampolineThrowAndBounce() {
                   "а под ним твёрдый блок");
 
             // И лёг ВПЕРЕДИ: прицел по умолчанию смотрит на север.
-            check(ttf->position.z < 8.5f - 1.f,
+            check(ttf->position.z < SZ - 1.f,
                   "лёг перед игроком, а не под ноги");
 
             // ---- Подброс ----
@@ -15892,6 +16684,9 @@ int main() {
     testWorldsMenuCreateAndTransfer();
     testWeatherCyclonesAndSeasons();
     testRainAndSnowParticles();
+    testMountainsAndVolcanoes();
+    testTreesHaveBranchesAndCrowns();
+    testBossesAndDaylightMonsters();
     testFallsTrapsAndAmbushes();
     testSecretTreasureAndItsQuest();
     testStoryChainRunsInOrder();

@@ -746,7 +746,14 @@ struct Engine {
         // море, обрыв или чужая стена. Перебор области сто на сто
         // блоков вокруг начала координат отвечает на этот вопрос
         // один раз и за всех, кто спрашивает.
-        playerSpawn = world::spawnPositionOrFallback(world->generator(), seed, 0, 0);
+        // Воксели спрашиваются по-настоящему: перебор по рельефу не
+        // знает про деревья, и игрок просыпался внутри кроны.
+        world::SpawnVoxelProbe probe(world->generator(), seed);
+        playerSpawn = world::spawnPositionOrFallback(
+            world->generator(), seed, 0, 0,
+            [&probe](i32 wx, i32 wy, i32 wz) {
+                return probe.standable(wx, wy, wz);
+            });
         if (player) player->controller.setPosition(playerSpawn);
 
         // Погода у нового мира своя, и догоняется она сразу: плавный
@@ -760,9 +767,11 @@ struct Engine {
         world::defaultWorldName(worldName, sizeof(worldName), seed);
         if (ui) ui->currentWorldSeed = seed;
 
-        LOGI("мир: зерно %llu, появление (%.1f, %.1f, %.1f)",
+        LOGI("мир: зерно %llu, появление (%.1f, %.1f, %.1f), "
+             "построено чанков для проверки места: %u",
              (unsigned long long)seed, (double)playerSpawn.x,
-             (double)playerSpawn.y, (double)playerSpawn.z);
+             (double)playerSpawn.y, (double)playerSpawn.z,
+             probe.chunksBuilt());
     }
 
     void doSave(u32 profile, u32 slot) {

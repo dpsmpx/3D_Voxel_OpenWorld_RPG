@@ -86,6 +86,9 @@ MobRegistry::MobRegistry() {
         d.hostile = true;
         d.canSwim = true;
         d.xpReward = 40;
+        // Волк охотится и днём. Он зверь, а не нежить: прятаться от
+        // солнца ему незачем.
+        d.dayActive = true;
         defs_[MOB_WOLF] = d;
     }
 
@@ -180,6 +183,56 @@ MobRegistry::MobRegistry() {
         d.healPeriod = 6.f;
         d.healBelow  = 0.6f;
         defs_[MOB_WITCH] = d;
+    }
+
+    // -------------------- КАБАН --------------------
+    //
+    // Первый зверь, который опасен при свете. Медленнее волка на
+    // разгоне, но здоровее и бьёт сильнее: волка переживают бегом,
+    // кабана — только дракой или деревом.
+    {
+        MobDef d{};
+        d.name = "Boar";
+        d.category = MobCategory::Hostile;
+        d.maxHealth = 26.f;
+        d.walkSpeed = 1.9f;
+        d.chaseSpeed = 4.6f;
+        d.attackDamage = 7.f;
+        d.attackRange = 1.8f;
+        d.aggroRange = 11.f;
+        d.bodyRadius = 0.55f;
+        d.bodyHeight = 1.1f;
+        d.eyeHeight = 0.9f;
+        d.hostile = true;
+        d.canSwim = true;
+        d.dayActive = true;
+        d.xpReward = 60;
+        defs_[MOB_BOAR] = d;
+    }
+
+    // -------------------- РАЗБОЙНИК --------------------
+    //
+    // Двуногий и с оружием: бьёт дальше зверя и быстрее его думает.
+    // Водится у дорог — из-за него дорога и перестаёт быть простой
+    // дорогой.
+    {
+        MobDef d{};
+        d.name = "Bandit";
+        d.category = MobCategory::Hostile;
+        d.maxHealth = 30.f;
+        d.walkSpeed = 2.2f;
+        d.chaseSpeed = 4.4f;
+        d.attackDamage = 8.f;
+        d.attackRange = 2.1f;
+        d.aggroRange = 16.f;
+        d.bodyRadius = 0.35f;
+        d.bodyHeight = 1.8f;
+        d.eyeHeight = 1.62f;
+        d.hostile = true;
+        d.canSwim = true;
+        d.dayActive = true;
+        d.xpReward = 90;
+        defs_[MOB_BANDIT] = d;
     }
 
     // -------------------- БОСС: КАМЕННЫЙ СТРАЖ --------------------

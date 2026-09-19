@@ -5,7 +5,10 @@
 #pragma once
 #include "../core/types.h"
 #include "terrain.h"
+#include "chunk.h"
+#include <memory>
 #include <glm/glm.hpp>
+#include <functional>
 
 namespace world {
 
@@ -23,6 +26,7 @@ enum class SpawnReject : u8 {
     Structure,    ///< на этой земле уже стоит постройка
     Sinkhole,     ///< провал: появиться в нём значит очнуться в падении
     Lair,         ///< логово: появиться в стае значит сразу умереть
+    Blocked,      ///< на месте что-то стоит: дерево, куст, валун
     Count
 };
 
@@ -61,6 +65,21 @@ constexpr i32 SPAWN_STEP = 4;
 /// хватает — в ней 625 точек с шагом в четыре.
 constexpr i32 SPAWN_HALF_EXTENT = 50;
 
+/// Последнее слово: годится ли точка по НАСТОЯЩИМ вокселям.
+///
+/// Перебор по рельефу знает про высоту, биом и постройки, но НЕ про
+/// деревья: их ставит не генератор высоты, а фичи — уже поверх
+/// готовой колонки. Игрок из-за этого просыпался внутри кроны:
+/// листва твёрдая, и выбраться из неё без кирки нельзя.
+///
+/// Проверка отдельная и необязательная, потому что стоит она дорого:
+/// чтобы ответить, нужен по-настоящему сгенерированный чанк.
+/// Вызывается только для тех точек, которые прошли всё остальное, —
+/// то есть считанные разы за поиск.
+///
+/// Аргументы: место ног. Возвращает true, если там можно стоять.
+using SpawnVoxelTest = std::function<bool(i32 wx, i32 wy, i32 wz)>;
+
 /// Перебрать область вокруг центра и вернуть ПЕРВУЮ годную точку.
 ///
 /// Обход идёт кольцами от середины наружу, а не строками: ближняя к
@@ -68,7 +87,40 @@ constexpr i32 SPAWN_HALF_EXTENT = 50;
 /// там, куда целились, а не в углу области.
 SpawnSearch findSpawn(const TerrainGenerator& terrain, u64 worldSeed,
                       i32 centerX, i32 centerZ,
-                      i32 halfExtent = SPAWN_HALF_EXTENT);
+                      i32 halfExtent = SPAWN_HALF_EXTENT,
+                      const SpawnVoxelTest& voxels = {});
+
+/// Проверка по настоящим вокселям, которая строит чанки сама.
+///
+/// Готового мира при выборе места появления ещё нет: чанки грузятся
+/// вокруг игрока, а игрока некуда поставить, пока место не выбрано.
+/// Поэтому чанк-кандидат строится здесь и сразу выбрасывается.
+///
+/// Хранится ОДИН последний чанк, а не все: перебор идёт кольцами, и
+/// соседние кандидаты почти всегда лежат в одном чанке. Чанк весит
+/// четверть мегабайта — держать их пачкой ради редкого попадания
+/// было бы дорого.
+class SpawnVoxelProbe {
+public:
+    SpawnVoxelProbe(const TerrainGenerator& terrain, u64 seed)
+        : terrain_(&terrain), seed_(seed) {}
+
+    /// Можно ли встать: под ногами твёрдое, а ноги и голова в пустоте.
+    bool standable(i32 wx, i32 wy, i32 wz);
+
+    /// Сколько чанков пришлось построить. Нужно, чтобы видеть цену.
+    u32 chunksBuilt() const { return built_; }
+
+private:
+    const Chunk* chunkAt(i32 cx, i32 cz);
+
+    const TerrainGenerator* terrain_;
+    u64 seed_;
+    std::unique_ptr<Chunk> chunk_;
+    i32 haveX_ = 0, haveZ_ = 0;
+    bool have_ = false;
+    u32  built_ = 0;
+};
 
 /// Точка появления с запасным вариантом.
 ///
@@ -77,6 +129,7 @@ SpawnSearch findSpawn(const TerrainGenerator& terrain, u64 worldSeed,
 /// уровень моря в середине области. Утонуть он там не утонет —
 /// поплывёт.
 glm::vec3 spawnPositionOrFallback(const TerrainGenerator& terrain,
-                                  u64 worldSeed, i32 centerX, i32 centerZ);
+                                  u64 worldSeed, i32 centerX, i32 centerZ,
+                                  const SpawnVoxelTest& voxels = {});
 
 } // namespace world

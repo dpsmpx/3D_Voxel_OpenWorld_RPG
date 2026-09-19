@@ -195,6 +195,10 @@ Rig buildRig(u16 id, const MobDef& def) {
         case MOB_CHICKEN: return chickenRig(def);
         case MOB_WOLF:    return wolfRig(def);
         case MOB_SLIME:   return blobRig(def);
+        // Кабан сложён как зверь — той же оснасткой, что и волк:
+        // четыре ноги, туловище, голова. Отличается мастью и тем,
+        // что ниже и шире.
+        case MOB_BOAR:    return wolfRig(def);
 
         case MOB_SKELETON:
             return humanoidMob(def, rgba(226, 226, 214), rgba(238, 238, 228),
@@ -202,6 +206,11 @@ Rig buildRig(u16 id, const MobDef& def) {
         case MOB_GOBLIN:
             return humanoidMob(def, rgba(92, 132, 70), rgba(116, 156, 88),
                                rgba(74, 106, 56), 0.34f, 0.40f);
+        case MOB_BANDIT:
+            // Бурое с кожей: разбойник узнаётся тем, что он ОДЕТ, а
+            // не голый костяк и не зелёная шкура.
+            return humanoidMob(def, rgba(96, 72, 48), rgba(198, 164, 128),
+                               rgba(72, 54, 36), 0.32f, 0.46f);
         case MOB_WITCH:
             // Тёмное платье и бледное лицо: фигура узнаётся силуэтом
             // раньше, чем цветом, поэтому она узкая и высокая.
