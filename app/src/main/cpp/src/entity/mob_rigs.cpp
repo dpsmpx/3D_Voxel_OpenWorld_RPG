@@ -202,6 +202,11 @@ Rig buildRig(u16 id, const MobDef& def) {
         case MOB_GOBLIN:
             return humanoidMob(def, rgba(92, 132, 70), rgba(116, 156, 88),
                                rgba(74, 106, 56), 0.34f, 0.40f);
+        case MOB_WITCH:
+            // Тёмное платье и бледное лицо: фигура узнаётся силуэтом
+            // раньше, чем цветом, поэтому она узкая и высокая.
+            return humanoidMob(def, rgba(58, 44, 78), rgba(206, 196, 178),
+                               rgba(44, 34, 60), 0.26f, 0.52f);
         case MOB_BOSS_WARDEN:
             // Приземистый и широкий: угроза читается пропорциями, а
             // не одним лишь размером.

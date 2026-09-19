@@ -193,6 +193,7 @@ u16 pickMobId(world::ChunkManager& world,
         case world::Swamp:
             addPool(MOB_SLIME);
             addPool(MOB_WOLF);
+            addPool(MOB_WITCH);
             break;
         case world::Volcanic:
             addPool(MOB_SLIME);

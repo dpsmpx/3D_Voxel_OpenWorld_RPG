@@ -49,6 +49,7 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
     // и не держат осаду, а лишний компонент в каждом из шести
     // десятков тел ничего не даёт.
     reg.add(entity_, ecs::Fatigue{});
+    reg.add(entity_, ecs::Breath{ BREATH_SECONDS, BREATH_SECONDS, 0.f });
 
     ecs::Attributes attrs{};
     reg.add(entity_, attrs);
@@ -571,6 +572,7 @@ void Player::updateImpl(world::ChunkManager& world,
 
     enteredLair = false;
     enteredVillage = false;
+    tickBreath(dt);
     lairTimer_ += dt;
     if (lairTimer_ >= 0.5f) {
         lairTimer_ = 0.f;
@@ -729,6 +731,43 @@ void Player::noticeLair(world::ChunkManager& world) {
     audio::events().uiClick();
 }
 
+void Player::tickBreath(f32 dt) {
+    justDrowned = false;
+    if (!reg_) return;
+    auto* br = reg_->get<ecs::Breath>(entity_);
+    if (!br) return;
+
+    // Под водой — голова, а не ноги. По пояс в реке не задыхаются.
+    if (!controller.state().submerged) {
+        br->current = std::min(br->max,
+            br->current + br->max * dt / BREATH_REFILL_SECONDS);
+        br->chokeTimer = 0.f;
+        return;
+    }
+
+    if (br->current > 0.f) {
+        br->current = std::max(0.f, br->current - dt);
+        return;
+    }
+
+    // Воздух кончился. Урон глотками, а не потоком: тонущий должен
+    // успеть всплыть, а не умереть за полсекунды.
+    br->chokeTimer += dt;
+    if (br->chokeTimer < DROWN_INTERVAL) return;
+    br->chokeTimer = 0.f;
+
+    combat::DamageInstance dmg;
+    dmg.amount       = DROWN_DAMAGE;
+    dmg.type         = combat::DamageType::Physical;
+    dmg.targetEntity = (u32)entity_;
+    dmg.sourceName   = "drown";
+    // Захлёб бьёт мимо неуязвимости после удара: иначе получивший по
+    // голове тонул бы бесплатно.
+    if (auto* hp = reg_->get<ecs::Health>(entity_)) hp->invulnTime = 0.f;
+    combat::applyDamage(*reg_, entity_, dmg);
+    justDrowned = true;
+}
+
 void Player::noticeVillage(world::ChunkManager& world) {
     const glm::vec3 p = controller.state().position;
     const i32 sx = (i32)std::floor(p.x / (f32)world::SUPER_CHUNK_BLOCKS);
@@ -801,6 +840,10 @@ void Player::tickDeath(world::ChunkManager& world, f32 dt) {
     // бою оставляла бы игрока вымотанным у колодца — наказание за
     // наказание.
     if (auto* fg = reg_->get<ecs::Fatigue>(entity_)) *fg = ecs::Fatigue{};
+    if (auto* br = reg_->get<ecs::Breath>(entity_)) {
+        br->current = br->max;
+        br->chokeTimer = 0.f;
+    }
     winded_ = false;
     if (auto* se = reg_->get<combat::StatusEffects>(entity_)) *se = {};
 

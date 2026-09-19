@@ -175,6 +175,7 @@ void UiSystem::buildFrame(player::Player& player,
         cachedMpPct = hr.mpPct();
         cachedSpPct = hr.spPct();
         cachedSpCeil = hr.spCeilPct;
+        cachedAirPct = hr.airPct;
     }
 
     switch (screen) {
@@ -534,6 +535,26 @@ void UiSystem::drawHudResources(player::Player& player) {
             ui_.rect(cx, r.y, r.x + r.w - cx, r.h, hudTint(theme::Ink));
         }
         ui_.text(T(bars[i].label), r.x + layout_.dp(theme::SPACE_XS_DP),
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_CAPTION)) * 0.5f,
+                 theme::TEXT_CAPTION, theme::TextPrimary);
+    }
+
+    // ---- Воздух ----
+    //
+    // Показывается только под водой: полной полоске на экране делать
+    // нечего, а пустеющая — единственное, что скажет игроку, зачем
+    // всплывать.
+    if (cachedAirPct < 0.999f) {
+        const Rect base = layout_.resourceBar(2);
+        const Rect r{ base.x, base.y + base.h + layout_.dp(22.f),
+                      base.w, base.h * 0.6f };
+        const f32 o = layout_.dp(2.f);
+        ui_.rect(r.x - o, r.y - o, r.w + o * 2.f, r.h + o * 2.f,
+                 hudTint(theme::Ink));
+        ui_.rect(r.x, r.y, r.w, r.h, hudTint(theme::MpBed));
+        ui_.rect(r.x, r.y, r.w * cachedAirPct, r.h,
+                 hudTint(cachedAirPct < 0.25f ? theme::Danger : theme::Mp));
+        ui_.text(T(StrKey::Hud_Air), r.x + layout_.dp(theme::SPACE_XS_DP),
                  r.y + (r.h - ui_.textHeight(theme::TEXT_CAPTION)) * 0.5f,
                  theme::TEXT_CAPTION, theme::TextPrimary);
     }

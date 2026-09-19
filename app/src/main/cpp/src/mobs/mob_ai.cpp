@@ -145,7 +145,13 @@ glm::vec3 followPath(const MobAI& ai, const glm::vec3& pos,
     return toT / d;
 }
 
-void mobAttackPlayer(ecs::Registry& reg, ecs::Entity target, f32 damage)
+/// Удар моба по игроку.
+///
+/// `poisonDps`/`poisonTime` берутся из определения твари, а не из
+/// ветки по её имени: «особая способность» — это свойство, и вторая
+/// ядовитая тварь не должна требовать второй ветки.
+void mobAttackPlayer(ecs::Registry& reg, ecs::Entity target, f32 damage,
+                     f32 poisonDps = 0.f, f32 poisonTime = 0.f)
 {
     auto* h = reg.get<ecs::Health>(target);
     if (!h) return;
@@ -157,7 +163,10 @@ void mobAttackPlayer(ecs::Registry& reg, ecs::Entity target, f32 damage)
 
     combat::DamageInstance dmg{};
     dmg.amount     = damage;
-    dmg.type       = combat::DamageType::Physical;
+    dmg.type       = poisonTime > 0.f ? combat::DamageType::Poison
+                                      : combat::DamageType::Physical;
+    dmg.poisonDps  = poisonDps;
+    dmg.poisonTime = poisonTime;
     dmg.sourceEntity = 0;
     dmg.targetEntity = (u32)target;
     combat::applyDamage(reg, target, dmg);
@@ -290,7 +299,24 @@ void updateMobs(world::ChunkManager& world,
             vel->linear.x *= std::exp(-8.f * dt);
             vel->linear.z *= std::exp(-8.f * dt);
         } else {
-            switch (agent->state) {
+            // ---- Самолечение ----
+        //
+        // Свойство твари, а не ветка по имени: у кого healPeriod
+        // больше нуля, тот и лечится. Лечится, только когда ей и
+        // правда плохо, — иначе полоска здоровья стояла бы полной
+        // весь бой, и убить такую тварь было бы нельзя вовсе.
+        if (def.healPeriod > 0.f && def.healAmount > 0.f) {
+            ai->healCooldown -= dt;
+            auto* mh = reg.get<ecs::Health>(e);
+            if (mh && mh->current > 0.f && ai->healCooldown <= 0.f &&
+                mh->current < mh->max * def.healBelow)
+            {
+                mh->current = std::min(mh->max, mh->current + def.healAmount);
+                ai->healCooldown = def.healPeriod;
+            }
+        }
+
+        switch (agent->state) {
             case AIAgent::Idle: {
                 vel->linear.x *= std::exp(-6.f * dt);
                 vel->linear.z *= std::exp(-6.f * dt);
@@ -429,7 +455,8 @@ void updateMobs(world::ChunkManager& world,
                         cooldown *= 1.6f;   // мощная атака дольше откатывается
                     } else if (distToPlayer < def.attackRange + 0.4f) {
                         mobAttackPlayer(reg, playerEntity,
-                                        def.attackDamage * dmgMult);
+                                        def.attackDamage * dmgMult,
+                                        def.poisonDps, def.poisonTime);
                         if (def.isBoss) ++ai->slamCounter;
                     }
                     ai->attackCooldown = cooldown;

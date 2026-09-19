@@ -27,7 +27,7 @@ enum class StrKey : u16 {
 
     // --- HUD ---
     Hud_Health, Hud_Mana, Hud_Stamina, Hud_Gold, Hud_Xp, Hud_Level,
-    Hud_Resonance, Hud_FinisherReady, Hud_ActiveQuests,
+    Hud_Resonance, Hud_FinisherReady, Hud_ActiveQuests, Hud_Air,
 
     // --- Инвентарь ---
     Inv_Title, Inv_Use, Inv_Drop, Inv_Sort,
@@ -76,6 +76,7 @@ enum class StrKey : u16 {
     // живёт — только по рассказу.
     Notif_VillageFarmstead, Notif_VillageStonemason,
     Notif_VillageGarrison,  Notif_VillageWoodland,
+    Notif_Drowning,
 
     // --- Подсказка взаимодействия ---
     // Её не было вовсе, и это стоило игроку трёх экранов: близость
