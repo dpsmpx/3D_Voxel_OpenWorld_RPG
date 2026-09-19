@@ -41,6 +41,9 @@
 #include "mobs/spawner.h"
 #include "world/hazards.h"
 #include "world/spawn.h"
+#include "world/weather.h"
+#include "world/precipitation.h"
+#include "render/projectile_renderer.h"
 #include "world/world_spec.h"
 #include "save/save_export.h"
 #include "core/shared_dir.h"
@@ -10132,6 +10135,654 @@ void testWorldsMenuCreateAndTransfer() {
 }
 
 // ------------------------------------------------------------
+void testWeatherCyclonesAndSeasons() {
+    group("погода: циклоны, тучи, осадки, радуга");
+
+    world::blocks();
+    constexpr u64 SEED = 0xC0FFEEull;
+    world::TerrainGenerator gen(SEED);
+    world::WeatherField field(SEED);
+
+    // ---- 1. Погода выводится, а не хранится ----
+    //
+    // Один и тот же вопрос обязан давать один и тот же ответ: иначе
+    // погоду пришлось бы сохранять вместе с миром, восстанавливать
+    // при загрузке и догонять после паузы.
+    {
+        const f64 t = 1200.0 * 3.7;
+        const auto a = field.at(gen, 120, -340, t);
+        const auto b = field.at(gen, 120, -340, t);
+        check(a.cloud == b.cloud && a.precip == b.precip &&
+              a.pressure == b.pressure && a.sky == b.sky,
+              "два одинаковых вопроса — один ответ");
+
+        world::WeatherField same(SEED);
+        const auto c = same.at(gen, 120, -340, t);
+        check(c.cloud == a.cloud && c.precip == a.precip,
+              "и у другого поля с тем же зерном — тот же");
+
+        world::WeatherField other(SEED ^ 0x9999ull);
+        i32 differ = 0;
+        for (i32 k = 0; k < 40; ++k) {
+            const f64 tk = 1200.0 * (f64)k * 0.5;
+            if (std::fabs(other.at(gen, 120, -340, tk).cloud -
+                          field.at(gen, 120, -340, tk).cloud) > 0.02f) ++differ;
+        }
+        check(differ > 25, "а в другом мире погода своя");
+    }
+
+    // ---- 2. Циклоны рождаются, крепнут, слабеют и уходят ----
+    //
+    // Без этого «циклон» — просто множитель дождя: он включается и
+    // выключается, и назвать его циклоном не за что.
+    {
+        i32 seen = 0, moved = 0, tooOld = 0;
+        f32 maxStrength = 0.f, minRadius = 1e9f, maxRadius = 0.f;
+        for (f64 t = 0; t < 1200.0 * 30; t += 300.0) {
+            world::Cyclone c[world::CYCLONE_MAX_NEAR];
+            const u32 n = field.cyclonesNear(t, 0, 0, c, world::CYCLONE_MAX_NEAR);
+            for (u32 i = 0; i < n; ++i) {
+                ++seen;
+                maxStrength = std::max(maxStrength, c[i].strength);
+                minRadius = std::min(minRadius, c[i].radius);
+                maxRadius = std::max(maxRadius, c[i].radius);
+                if (c[i].age < 0.f || c[i].age > 1.f) ++tooOld;
+                const f32 sp = std::sqrt(c[i].drift.x * c[i].drift.x +
+                                         c[i].drift.y * c[i].drift.y);
+                if (sp > 0.01f) ++moved;
+            }
+        }
+        char m[160];
+        std::snprintf(m, sizeof(m), "циклонов над одной точкой за 30 дней: %d", seen);
+        check(seen > 30, m);
+        check(tooOld == 0, "и ни один не живёт дольше отмеренного");
+        check(moved == seen, "и каждый куда-то едет, а не висит");
+        check(maxStrength > 0.7f, "самые глубокие доходят до полной силы");
+
+        // Циклон обязан РОЖДАТЬСЯ и УХОДИТЬ, а не появляться сразу в
+        // полной силе: иначе дождь включается рубильником, и за
+        // минуту небо переворачивается.
+        {
+            f32 atBirth = 1.f, atPeak = 0.f, atDeath = 1.f;
+            i32 looked = 0;
+            for (f64 t = 0; t < 1200.0 * 60; t += 60.0) {
+                world::Cyclone cc[world::CYCLONE_MAX_NEAR];
+                const u32 k = field.cyclonesNear(t, 0, 0, cc, world::CYCLONE_MAX_NEAR);
+                for (u32 i = 0; i < k; ++i) {
+                    ++looked;
+                    if (cc[i].age < 0.06f) atBirth = std::min(atBirth, cc[i].strength);
+                    if (cc[i].age > 0.40f && cc[i].age < 0.60f)
+                        atPeak = std::max(atPeak, cc[i].strength);
+                    if (cc[i].age > 0.96f) atDeath = std::min(atDeath, cc[i].strength);
+                }
+            }
+            char e[160];
+            std::snprintf(e, sizeof(e),
+                          "сила циклона: при рождении %.2f, в разгар %.2f, "
+                          "на излёте %.2f (%d замеров)",
+                          (double)atBirth, (double)atPeak, (double)atDeath, looked);
+            check(true, e);
+            check(atBirth < 0.25f, "рождается слабым");
+            check(atPeak  > 0.70f, "в разгар доходит до полной силы");
+            check(atDeath < 0.25f, "и уходит, слабея, а не обрывается");
+        }
+        std::snprintf(m, sizeof(m), "радиус от %.0f до %.0f блоков",
+                      (double)minRadius, (double)maxRadius);
+        check(true, m);
+        check(minRadius > 1000.f && maxRadius < 6000.f,
+              "и размер у них соразмерен миру");
+
+        // Один и тот же циклон обязан ДВИГАТЬСЯ: сравниваем ближайший
+        // к нам через час.
+        auto nearest = [&](f64 t) {
+            world::Cyclone c[world::CYCLONE_MAX_NEAR];
+            const u32 n = field.cyclonesNear(t, 0, 0, c, world::CYCLONE_MAX_NEAR);
+            f32 best = 1e9f; glm::vec2 at{0.f}; bool any = false;
+            for (u32 i = 0; i < n; ++i) {
+                const f32 d = glm::length(c[i].center);
+                if (d < best) { best = d; at = c[i].center; any = true; }
+            }
+            return std::make_pair(any, at);
+        };
+        i32 shifts = 0, looks = 0;
+        for (f64 t = 0; t < 1200.0 * 20; t += 1200.0) {
+            const auto a = nearest(t), b = nearest(t + 600.0);
+            if (!a.first || !b.first) continue;
+            ++looks;
+            if (glm::length(a.second - b.second) > 50.f) ++shifts;
+        }
+        check(looks > 5 && shifts > looks / 2,
+              "за десять минут циклоны заметно смещаются");
+    }
+
+    // ---- 3. Погода — местная ----
+    //
+    // Погода, одинаковая на всей карте, — это не погода, а переменная.
+    // С холма должно быть видно, что за рекой ещё светит солнце.
+    {
+        i32 differ = 0, same = 0;
+        for (f64 t = 0; t < 1200.0 * 10; t += 600.0) {
+            const auto a = field.at(gen, 0, 0, t);
+            const auto b = field.at(gen, 30000, 0, t);
+            if (std::fabs(a.cloud - b.cloud) > 0.15f) ++differ;
+            const auto c = field.at(gen, 40, 0, t);
+            if (std::fabs(a.cloud - c.cloud) < 0.02f) ++same;
+        }
+        check(differ > 5, "в тридцати тысячах блоков погода другая");
+        check(same > 15, "а в сорока — та же самая");
+    }
+
+    // ---- 4. Меняется медленно ----
+    //
+    // «В своё время, но не слишком часто»: погода, мигающая раз в
+    // минуту, — это мигание, а не погода.
+    {
+        f32 worstMinute = 0.f, worstHour = 0.f;
+        for (f64 t = 0; t < 1200.0 * 20; t += 60.0) {
+            const f32 a = field.at(gen, 0, 0, t).cloud;
+            worstMinute = std::max(worstMinute,
+                                   std::fabs(field.at(gen, 0, 0, t + 60.0).cloud - a));
+            worstHour = std::max(worstHour,
+                                 std::fabs(field.at(gen, 0, 0, t + 3600.0).cloud - a));
+        }
+        char m[160];
+        std::snprintf(m, sizeof(m),
+                      "за минуту облачность меняется не больше чем на %.2f, "
+                      "за час — на %.2f",
+                      (double)worstMinute, (double)worstHour);
+        check(true, m);
+        // Пятая часть шкалы за минуту — и это ХУДШАЯ минута за
+        // двадцать дней: от ясного неба до пасмурного при таком
+        // темпе всё равно пять минут.
+        check(worstMinute < 0.20f, "за минуту небо не переворачивается");
+        check(worstHour > 0.35f, "но за час погода всё же меняется");
+    }
+
+    // ---- 5. Все состояния бывают, и в разумных долях ----
+    {
+        long hist[(u32)world::Sky::Count] = {};
+        long n = 0, heavy = 0;
+        for (i32 px = -200000; px <= 200000; px += 40000)
+            for (i32 pz = -80000; pz <= 80000; pz += 40000)
+                for (f64 t = 0; t < 1200.0 * 12; t += 60.0) {
+                    const auto s = field.at(gen, px, pz, t);
+                    hist[(u32)s.sky]++; ++n;
+                    if (s.precip > 0.5f) ++heavy;
+                }
+        char m[240];
+        std::snprintf(m, sizeof(m),
+                      "из %ld: ясно %.0f%%, перем %.0f%%, облачно %.0f%%, "
+                      "пасмурно %.0f%%, дождь %.0f%%, снег %.1f%%, шторм %.1f%%",
+                      n,
+                      100.0 * (double)hist[0] / (double)n,
+                      100.0 * (double)hist[1] / (double)n,
+                      100.0 * (double)hist[2] / (double)n,
+                      100.0 * (double)hist[3] / (double)n,
+                      100.0 * (double)hist[4] / (double)n,
+                      100.0 * (double)hist[5] / (double)n,
+                      100.0 * (double)hist[6] / (double)n);
+        check(true, m);
+        for (u32 i = 0; i < (u32)world::Sky::Count; ++i) {
+            char w[96];
+            std::snprintf(w, sizeof(w), "состояние «%s» в мире бывает",
+                          world::skyName((world::Sky)i));
+            check(hist[i] > 0, w);
+        }
+        // Ясная погода обязана быть самой частой: игра про то, чтобы
+        // ходить по миру, а не пережидать дождь.
+        for (u32 i = 1; i < (u32)world::Sky::Count; ++i)
+            if (hist[i] >= hist[0]) {
+                check(false, "ясная погода — самая частая");
+                break;
+            }
+        check(hist[0] * 100 > n * 25, "и занимает не меньше четверти времени");
+        check(heavy * 100 < n * 15, "а сильный дождь — редкость");
+    }
+
+    // ---- 6. Снег идёт там, где холодно, и только там ----
+    {
+        i32 snowyCold = 0, coldPlaces = 0;
+        i32 warmPlaces = 0, snowyWarm = 0;
+        i32 snowy = 0, total = 0;
+        f64 tempSnowy = 0.0, tempDry = 0.0;
+
+        // Сетка, а не линия: вдоль одной прямой жаркие биомы могут и
+        // не попасться вовсе.
+        //
+        // Шаг НЕ круглый, и это важнее, чем кажется. Шум обращается в
+        // ноль в узлах своей решётки, и обход с шагом, кратным её
+        // периоду, попадает в узлы каждый раз: климат выходит ровно
+        // нулевым на всей карте, пустынь и тундр «не находится», а
+        // виновата при этом выборка, а не мир. На шаге 5000 эта
+        // проверка показывала мир без единой пустыни; на 2111 —
+        // пустыни 1.2%, тундры 4.9%.
+        for (i32 px = -400000; px <= 400000; px += 2111)
+        for (i32 pz = -200000; pz <= 200000; pz += 2111) {
+            const bool sn = world::WeatherField::snowsAt(gen, px, pz);
+            const auto col = gen.column(px, pz);
+            const world::BiomeId b = col.climate.biome;
+            ++total;
+            if (sn) { ++snowy; tempSnowy += col.climate.temperature; }
+            else tempDry += col.climate.temperature;
+
+            if (b == world::Tundra || b == world::Taiga) {
+                ++coldPlaces; if (sn) ++snowyCold;
+            }
+            if (b == world::Desert || b == world::Savanna || b == world::Volcanic) {
+                ++warmPlaces; if (sn) ++snowyWarm;
+            }
+        }
+        char m[200];
+        std::snprintf(m, sizeof(m),
+                      "из %d мест снежных %d (%.1f%%); холодных биомов %d, "
+                      "снежных среди них %d; жарких %d, снежных среди них %d",
+                      total, snowy, 100.0 * snowy / total,
+                      coldPlaces, snowyCold, warmPlaces, snowyWarm);
+        check(true, m);
+
+        check(coldPlaces * 100 > total * 5, "холодных биомов в мире хватает");
+        check(snowyCold * 4 > coldPlaces * 3, "в тундре и тайге идёт снег");
+        check(snowyWarm == 0, "а в пустыне, саванне и на вулкане — никогда");
+
+        // Снег — не везде и не нигде: и то и другое означало бы, что
+        // правило ни на что не смотрит.
+        check(snowy * 100 > total * 3,  "снежные места в мире есть");
+        check(snowy * 100 < total * 65, "но не весь мир");
+
+        // И снежные места ДЕЙСТВИТЕЛЬНО холоднее остальных — по тому
+        // самому числу, по которому биом решает, тундра он или тайга.
+        const f64 avgSnowy = tempSnowy / (f64)std::max(1, snowy);
+        const f64 avgDry   = tempDry / (f64)std::max(1, total - snowy);
+        std::snprintf(m, sizeof(m),
+                      "средняя температура: где снег %.2f, где нет %.2f",
+                      avgSnowy, avgDry);
+        check(true, m);
+        check(avgSnowy < avgDry - 0.2, "где идёт снег — там и холоднее");
+    }
+
+    // ---- 7. Радуга: после дождя, на низком солнце ----
+    {
+        i32 moments = 0, badSun = 0, inSnow = 0, inDownpour = 0;
+        i32 brightUnderClouds = 0;
+        f32 best = 0.f;
+        for (i32 px = -100000; px <= 100000; px += 20000)
+            for (f64 t = 0; t < 1200.0 * 10; t += 30.0) {
+                const f64 tod = std::fmod(t / 1200.0, 1.0);
+                const f32 elev = (f32)(-std::cos(tod * 6.283185307));
+                const f32 rb = field.rainbowAt(gen, px, 0, t, elev);
+                if (rb <= 0.05f) continue;
+                ++moments;
+                best = std::max(best, rb);
+                if (elev <= 0.f || elev > 0.55f) ++badSun;
+                const auto s = field.at(gen, px, 0, t);
+                if (s.snow) ++inSnow;
+                if (s.precip > 0.6f) ++inDownpour;
+                // Дождь кончился, солнце низко — и всё равно сплошная
+                // туча: радуги в такой момент быть не должно, и
+                // проверять это нужно, потому что сами по себе эти
+                // моменты частые — две трети всех подходящих.
+                if (rb > 0.40f && s.cloud > 0.80f) ++brightUnderClouds;
+            }
+        char m[160];
+        std::snprintf(m, sizeof(m), "радуга встретилась %d раз, ярчайшая %.2f",
+                      moments, (double)best);
+        check(true, m);
+        check(moments > 0, "радуга в мире бывает");
+        check(badSun == 0, "и только когда солнце низко");
+        check(inSnow == 0, "и никогда по снегу");
+        check(inDownpour == 0, "и никогда в ливень");
+        check(brightUnderClouds == 0,
+              "и яркой — только когда небо расчистилось");
+
+        // Ночью её нет вовсе — ни при каком дожде.
+        i32 atNight = 0;
+        for (f64 t = 0; t < 1200.0 * 10; t += 30.0) {
+            const f64 tod = std::fmod(t / 1200.0, 1.0);
+            if (tod > 0.1 && tod < 0.9) continue;      // только глухая ночь
+            const f32 elev = (f32)(-std::cos(tod * 6.283185307));
+            if (field.rainbowAt(gen, 0, 0, t, elev) > 0.01f) ++atNight;
+        }
+        check(atNight == 0, "и ночью её не бывает");
+    }
+
+    // ---- 8. Сглаживание: шаг в сторону не переключает снег ----
+    {
+        world::Weather w;
+        w.init(SEED);
+        const glm::vec3 pos{ 0.f, 40.f, 0.f };
+        w.snap(gen, pos, 1200.0 * 4);
+        const f32 c0 = w.cloud();
+
+        // Мгновенный скачок поля не даёт скачка на экране.
+        w.update(gen, glm::vec3{ 300000.f, 40.f, 0.f }, 1200.0 * 4 + 0.02, 0.3f, 0.02f);
+        check(std::fabs(w.cloud() - c0) < 0.05f,
+              "за один кадр облачность не прыгает");
+
+        // А за полминуты — догоняет.
+        for (i32 i = 0; i < 1500; ++i)
+            w.update(gen, glm::vec3{ 300000.f, 40.f, 0.f },
+                     1200.0 * 4 + 0.02 * (f64)i, 0.3f, 0.02f);
+        const f32 target = field.at(gen, 300000, 0, 1200.0 * 4 + 30.0).cloud;
+        char m[140];
+        std::snprintf(m, sizeof(m), "за полминуты догнала: %.2f против %.2f",
+                      (double)w.cloud(), (double)target);
+        check(true, m);
+        check(std::fabs(w.cloud() - target) < 0.2f, "но догоняет за полминуты");
+
+        // Тучи гасят свет — по этому пасмурность и узнают.
+        check(w.lightScale() <= 1.f && w.lightScale() >= 0.4f,
+              "тучи гасят дневной свет, но не до ночи");
+    }
+
+    // ---- 9. Ветер в циклоне закручен ----
+    //
+    // По этому циклон и узнают с земли: ветер не просто дует от
+    // середины, он идёт ВОКРУГ неё, и пока середина проходит мимо,
+    // он поворачивает.
+    //
+    // Смотрим только туда, где циклон ОДИН. Там, где их несколько,
+    // ветры складываются, и «вокруг чьей середины» — вопрос без
+    // ответа.
+    {
+        f64 sumTangent = 0.0, sumRadial = 0.0;
+        i32 n = 0;
+        f64 innerWind = 0.0, outerWind = 0.0;
+        i32 weighed = 0;
+        for (f64 t = 0; t < 1200.0 * 60 && n < 400; t += 600.0) {
+            world::Cyclone c[world::CYCLONE_MAX_NEAR];
+            const u32 k = field.cyclonesNear(t, 0, 0, c, world::CYCLONE_MAX_NEAR);
+            for (u32 i = 0; i < k; ++i) {
+                if (c[i].strength < 0.6f) continue;
+
+                // Заодно: у середины ветер сильнее, чем за краем.
+                // Мерим по самому циклону, не требуя одиночества, —
+                // иначе на редких совпадениях мерить оказалось бы
+                // нечего вовсе.
+                innerWind += glm::length(field.at(gen,
+                    (i32)c[i].center.x + 100, (i32)c[i].center.y, t).wind);
+                outerWind += glm::length(field.at(gen,
+                    (i32)(c[i].center.x + c[i].radius * 4.f),
+                    (i32)c[i].center.y, t).wind);
+                ++weighed;
+
+                for (i32 a = 0; a < 8; ++a) {
+                    const f32 ang = (f32)a * 0.7853981f;
+                    const i32 x = (i32)(c[i].center.x + std::cos(ang) * c[i].radius * 0.5f);
+                    const i32 z = (i32)(c[i].center.y + std::sin(ang) * c[i].radius * 0.5f);
+
+                    world::Cyclone here[world::CYCLONE_MAX_NEAR];
+                    if (field.cyclonesNear(t, x, z, here, world::CYCLONE_MAX_NEAR) != 1)
+                        continue;
+
+                    const glm::vec2 w = field.at(gen, x, z, t).wind;
+                    if (glm::length(w) < 0.01f) continue;
+                    const glm::vec2 rad = glm::normalize(
+                        glm::vec2{ (f32)x - c[i].center.x, (f32)z - c[i].center.y });
+                    const glm::vec2 tan{ -rad.y, rad.x };
+                    const glm::vec2 wn = glm::normalize(w);
+                    sumRadial  += std::fabs(glm::dot(rad, wn));
+                    sumTangent += std::fabs(glm::dot(tan, wn));
+                    ++n;
+
+                }
+            }
+        }
+        char m[180];
+        std::snprintf(m, sizeof(m),
+                      "в одиночном циклоне ветер поперёк радиуса на %.2f, "
+                      "вдоль — на %.2f (%d замеров)",
+                      n ? sumTangent / n : 0.0, n ? sumRadial / n : 0.0, n);
+        check(true, m);
+        check(n > 50, "одиночных циклонов для замера хватило");
+        check(n > 0 && sumTangent / n > 0.70,
+              "ветер идёт ВОКРУГ середины");
+        check(n > 0 && sumRadial / n < 0.60,
+              "а не от неё и не к ней");
+        char w[160];
+        std::snprintf(w, sizeof(w),
+                      "ветер у середины %.1f, за краем %.1f (%d циклонов)",
+                      weighed ? innerWind / weighed : 0.0,
+                      weighed ? outerWind / weighed : 0.0, weighed);
+        check(true, w);
+        check(weighed > 10 && innerWind > outerWind * 2.0,
+              "и у середины он вдвое сильнее, чем вдали от неё");
+    }
+}
+
+// ------------------------------------------------------------
+void testRainAndSnowParticles() {
+    group("осадки: капли падают, снег кружит, под крышей сухо");
+
+    world::blocks();
+    items::items();
+
+    // ---- 1. Сколько частиц при какой погоде ----
+    {
+        check(world::Precipitation::targetCount(0.f, 0.f) == 0,
+              "в ясную погоду частиц нет вовсе");
+        const u32 light = world::Precipitation::targetCount(0.25f, 0.f);
+        const u32 heavy = world::Precipitation::targetCount(1.0f, 0.f);
+        check(light > 0 && light < heavy, "морось реже ливня");
+        check(heavy <= world::Precipitation::MAX_DROPS, "и потолок не пробит");
+
+        // Снежинка крупная и падает медленно: при том же числе её в
+        // воздухе видно куда больше, поэтому их берётся меньше.
+        const u32 snow = world::Precipitation::targetCount(1.0f, 1.0f);
+        check(snow > 0 && snow < heavy, "снега в воздухе меньше, чем дождя");
+    }
+
+    if (!jobs::gJobs.running()) jobs::gJobs.start(2);
+    {
+        constexpr u64 SEED = 0x5A17Fu;
+        world::ChunkManager mgr(SEED, 2);
+        bool ready = false;
+        for (i32 i = 0; i < 900 && !ready; ++i) {
+            mgr.update({ 8.f, 70.f, 8.f });
+            ready = mgr.isReadyAt(8, 8) && mgr.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        const i32 ground = mgr.generator().surfaceHeight(8, 8);
+        const glm::vec3 eye{ 8.5f, (f32)ground + 1.6f, 8.5f };
+
+        // ---- 2. Дождь идёт: частицы появляются и падают ----
+        {
+            world::Precipitation p;
+            for (i32 i = 0; i < 40; ++i)
+                p.update(mgr, eye, 1.f, 0.f, glm::vec2{ 0.f }, 1.f / 60.f);
+
+            const u32 want = world::Precipitation::targetCount(1.f, 0.f);
+            char m[140];
+            std::snprintf(m, sizeof(m), "живых капель %u при цели %u",
+                          p.liveCount(), want);
+            check(true, m);
+            check(p.liveCount() * 10 > want * 7,
+                  "за сорок кадров небо наполнилось каплями");
+
+            // Все живые — в круге вокруг игрока и выше земли.
+            i32 outside = 0, underground = 0;
+            for (const auto& d : p.drops()) {
+                if (!d.alive) continue;
+                const f32 dx = d.pos.x - eye.x, dz = d.pos.z - eye.z;
+                if (dx * dx + dz * dz >
+                    (world::Precipitation::RADIUS * 1.6f) *
+                    (world::Precipitation::RADIUS * 1.6f)) ++outside;
+                if (d.pos.y < d.killY - 0.001f) ++underground;
+            }
+            check(outside == 0, "и все они рядом с игроком");
+            check(underground == 0, "и ни одна не ушла под землю");
+
+            // Падают ВНИЗ.
+            f32 before = 0.f, after = 0.f;
+            i32 counted = 0;
+            for (const auto& d : p.drops()) if (d.alive) { before += d.pos.y; ++counted; }
+            p.update(mgr, eye, 1.f, 0.f, glm::vec2{ 0.f }, 1.f / 60.f);
+            i32 c2 = 0;
+            for (const auto& d : p.drops()) if (d.alive) { after += d.pos.y; ++c2; }
+            check(counted > 0 && c2 > 0 && after / c2 < before / counted,
+                  "и за кадр опускаются");
+        }
+
+        // ---- 3. Снег падает медленнее дождя ----
+        {
+            world::Precipitation rain, snow;
+            for (i32 i = 0; i < 30; ++i) {
+                rain.update(mgr, eye, 1.f, 0.f, glm::vec2{ 0.f }, 1.f / 60.f);
+                snow.update(mgr, eye, 1.f, 1.f, glm::vec2{ 0.f }, 1.f / 60.f);
+            }
+            f32 rv = 0.f, sv = 0.f; i32 rn = 0, sn = 0;
+            for (const auto& d : rain.drops()) if (d.alive) { rv += -d.vel.y; ++rn; }
+            for (const auto& d : snow.drops()) if (d.alive) { sv += -d.vel.y; ++sn; }
+            char m[140];
+            std::snprintf(m, sizeof(m), "капля падает со скоростью %.1f, снежинка — %.1f",
+                          rn ? (double)(rv / rn) : 0.0, sn ? (double)(sv / sn) : 0.0);
+            check(true, m);
+            check(rn > 0 && sn > 0 && rv / rn > (sv / sn) * 4.f,
+                  "снег падает в разы медленнее дождя");
+        }
+
+        // ---- 4. Ветер сносит ----
+        {
+            world::Precipitation calm, windy;
+            const glm::vec2 wind{ 20.f, 0.f };
+            for (i32 i = 0; i < 30; ++i) {
+                calm.update(mgr, eye, 1.f, 1.f, glm::vec2{ 0.f }, 1.f / 60.f);
+                windy.update(mgr, eye, 1.f, 1.f, wind, 1.f / 60.f);
+            }
+            f32 cx = 0.f, wx = 0.f; i32 cn = 0, wn = 0;
+            for (const auto& d : calm.drops())  if (d.alive) { cx += d.pos.x - eye.x; ++cn; }
+            for (const auto& d : windy.drops()) if (d.alive) { wx += d.pos.x - eye.x; ++wn; }
+            check(cn > 0 && wn > 0 && wx / wn > cx / cn + 0.5f,
+                  "по ветру снег сносит в сторону");
+        }
+
+        // ---- 5. Под крышей сухо ----
+        //
+        // Это единственное, ради чего вообще считается высота, на
+        // которой капля кончается. Дождь, идущий сквозь крышу, —
+        // первое, что замечают в доме.
+        {
+            const i32 roofY = ground + 6;
+            for (i32 dx = -6; dx <= 6; ++dx)
+                for (i32 dz = -6; dz <= 6; ++dz)
+                    mgr.setVoxel(8 + dx, roofY, 8 + dz, world::STONE);
+
+            world::Precipitation p;
+            const glm::vec3 inside{ 8.5f, (f32)ground + 1.6f, 8.5f };
+            for (i32 i = 0; i < 90; ++i)
+                p.update(mgr, inside, 1.f, 0.f, glm::vec2{ 0.f }, 1.f / 60.f);
+
+            i32 under = 0, above = 0;
+            for (const auto& d : p.drops()) {
+                if (!d.alive) continue;
+                const f32 dx = d.pos.x - inside.x, dz = d.pos.z - inside.z;
+                const bool overHouse = std::fabs(dx) <= 6.f && std::fabs(dz) <= 6.f;
+                if (!overHouse) continue;
+                if (d.pos.y < (f32)roofY) ++under; else ++above;
+            }
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "над крышей капель %d, под крышей %d", above, under);
+            check(true, m);
+            check(above > 0, "над крышей дождь идёт");
+            check(under == 0, "а под крышей — ни капли");
+
+            // Крышу убираем: дальше она мешает.
+            for (i32 dx = -6; dx <= 6; ++dx)
+                for (i32 dz = -6; dz <= 6; ++dz)
+                    mgr.setVoxel(8 + dx, roofY, 8 + dz, world::AIR);
+        }
+
+        // ---- 6. Под каменным сводом осадков нет ----
+        //
+        // Своду даётся запас шире, чем радиус, в котором рождаются
+        // капли: иначе «под землёй» означало бы лишь «над игроком
+        // камень», а соседняя колонка в трёх шагах могла быть
+        // открыта небу — и дождь шёл бы честно, просто не там.
+        {
+            const i32 ceil = ground + 4;
+            const i32 span = (i32)world::Precipitation::RADIUS + 6;
+            for (i32 dx = -span; dx <= span; ++dx)
+                for (i32 dz = -span; dz <= span; ++dz)
+                    mgr.setVoxel(8 + dx, ceil, 8 + dz, world::STONE);
+
+            world::Precipitation p;
+            const glm::vec3 under{ 8.5f, (f32)ground + 1.6f, 8.5f };
+            for (i32 i = 0; i < 60; ++i)
+                p.update(mgr, under, 1.f, 0.f, glm::vec2{ 0.f }, 1.f / 60.f);
+            // Считаем только то, что НИЖЕ свода. Выше него небо
+            // открыто, и дождь там идёт по праву — он стучит по
+            // своду сверху, а не капает под ним.
+            i32 below = 0, above = 0;
+            for (const auto& d : p.drops()) {
+                if (!d.alive) continue;
+                if (d.pos.y < (f32)ceil) ++below; else ++above;
+            }
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "над сводом капель %d, под сводом %d", above, below);
+            check(true, m);
+            check(above > 0, "по своду дождь стучит");
+            check(below == 0, "а под ним не капает ни разу");
+
+            for (i32 dx = -span; dx <= span; ++dx)
+                for (i32 dz = -span; dz <= span; ++dz)
+                    mgr.setVoxel(8 + dx, ceil, 8 + dz, world::AIR);
+        }
+
+        // ---- 7. Ясная погода гасит всё разом ----
+        {
+            world::Precipitation p;
+            for (i32 i = 0; i < 40; ++i)
+                p.update(mgr, eye, 1.f, 0.f, glm::vec2{ 0.f }, 1.f / 60.f);
+            check(p.liveCount() > 0, "дождь шёл");
+            p.update(mgr, eye, 0.f, 0.f, glm::vec2{ 0.f }, 1.f / 60.f);
+            check(p.liveCount() == 0, "и кончился весь сразу");
+        }
+
+        // ---- 8. Инстансы: капля летит вдоль своего падения ----
+        {
+            world::Precipitation p;
+            for (i32 i = 0; i < 40; ++i)
+                p.update(mgr, eye, 1.f, 0.f, glm::vec2{ 0.f }, 1.f / 60.f);
+
+            std::vector<render::MobInstance> inst;
+            render::precipInstances(p, 0.f, inst);
+            check(inst.size() == p.liveCount(),
+                  "инстансов ровно столько, сколько живых капель");
+            check(!inst.empty(), "и они есть");
+            if (!inst.empty()) {
+                // Капля вытянута: иначе дождь идёт кубиками.
+                check(inst[0].size.z > inst[0].size.x * 5.f,
+                      "капля вытянута вдоль полёта");
+
+                // И повёрнута ВДОЛЬ скорости: местная ось Z обязана
+                // смотреть туда же, куда капля летит.
+                // Тот же поворот, что делает вершинный шейдер.
+                const glm::vec3 fwd = orient::qrot(inst[0].rot, glm::vec3(0, 0, 1));
+                check(fwd.y < -0.9f, "и смотрит вниз, куда и падает");
+            }
+
+            std::vector<render::MobInstance> snowInst;
+            world::Precipitation s;
+            for (i32 i = 0; i < 40; ++i)
+                s.update(mgr, eye, 1.f, 1.f, glm::vec2{ 0.f }, 1.f / 60.f);
+            render::precipInstances(s, 1.f, snowInst);
+            check(!snowInst.empty(), "снежинки тоже становятся инстансами");
+            if (!snowInst.empty() && !inst.empty()) {
+                check(snowInst[0].size.x > inst[0].size.x * 2.f,
+                      "снежинка крупнее капли");
+                check(snowInst[0].size.z < snowInst[0].size.x * 2.f,
+                      "и не вытянута: она не летит, а кружит");
+            }
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testBlightForestAndCastles() {
     group("Чёрный лес: густая нечистая земля и замок посреди неё");
 
@@ -15239,6 +15890,8 @@ int main() {
     testSpawnSearchFindsGoodGround();
     testNewWorldEveryLaunch();
     testWorldsMenuCreateAndTransfer();
+    testWeatherCyclonesAndSeasons();
+    testRainAndSnowParticles();
     testFallsTrapsAndAmbushes();
     testSecretTreasureAndItsQuest();
     testStoryChainRunsInOrder();

@@ -51,6 +51,12 @@ struct CameraUbo {
     glm::vec4 sunLight;    ///< rgb — цвет солнца, линейный; w — день × над горизонтом
     glm::vec4 ambLight;    ///< rgb — оттенок рассеянного света; w — его сила
     glm::vec4 skyLinear;   ///< rgb — цвет неба, линейный; w — солнце над горизонтом
+    /// Погода. x — доля неба под тучами, y — сила осадков,
+    /// z — яркость радуги, w — снег (0 дождь, 1 снег).
+    glm::vec4 weather;
+    /// Ветер. xy — блоков в секунду, по которым едут тучи;
+    /// z — время в секундах для их движения, w — запас.
+    glm::vec4 wind;
 };
 
 class Camera {
@@ -59,6 +65,16 @@ public:
     void setViewport(u32 w, u32 h)        { screenW_ = w; screenH_ = h; }
     void setSunDir(const glm::vec3& d)    { sunDir_ = glm::normalize(d); }
     void setFog(f32 start, f32 end)       { fogStart_ = start; fogEnd_ = end; }
+
+    /// Погода: тучи, осадки, радуга, снег и ветер.
+    /// Задаются раз в кадр из world::Weather.
+    void setWeather(f32 cloud, f32 precip, f32 rainbow, f32 snowMix,
+                    const glm::vec2& wind)
+    {
+        cloud_ = cloud; precip_ = precip; rainbow_ = rainbow;
+        snowMix_ = snowMix; wind_ = wind;
+    }
+    f32 cloudCover() const { return cloud_; }
 
     /// Параметры суток: цвет неба, сила небесного света и фаза дня.
     /// Задаются раз в кадр из world::DayCycle.
@@ -228,15 +244,30 @@ public:
             toLin(glm::mix(glm::vec3(1.00f, 0.52f, 0.26f),
                            glm::vec3(1.00f, 0.97f, 0.92f),
                            glm::smoothstep(0.f, 0.30f, sunDir_.y)));
-        const glm::vec3 skyLin = toLin(skyColor_);
+        // Пасмурное небо серое, и это касается не только неба: тем же
+        // цветом красится туман вдали, и разойдись они — стык было бы
+        // видно по всей линии горизонта. Поэтому тучи подмешиваются
+        // ЗДЕСЬ, один раз, а не в каждом шейдере по-своему.
+        const glm::vec3 overcastTint{ 0.60f, 0.62f, 0.66f };
+        const glm::vec3 skyCol =
+            glm::mix(skyColor_, overcastTint * (0.28f + 0.72f * day),
+                     glm::clamp(cloud_, 0.f, 1.f) * 0.75f);
+
+        const glm::vec3 skyLin = toLin(skyCol);
         const f32 skyMax = glm::max(glm::max(skyLin.r, skyLin.g),
                                     glm::max(skyLin.b, 0.001f));
         const glm::vec3 ambTint = glm::mix(glm::vec3(1.f), skyLin / skyMax, 0.55f);
 
-        u.skyColor  = glm::vec4(skyColor_, day);
-        u.sunLight  = glm::vec4(sunTint, day * above);
+        // Солнце тучи гасят, рассеянный свет — нет. Так оно и есть:
+        // в пасмурный день теней не видно, а светло.
+        const f32 sunThrough = 1.f - glm::clamp(cloud_, 0.f, 1.f) * 0.85f;
+
+        u.skyColor  = glm::vec4(skyCol, day);
+        u.sunLight  = glm::vec4(sunTint, day * above * sunThrough);
         u.ambLight  = glm::vec4(ambTint, glm::mix(0.14f, 0.60f, day));
         u.skyLinear = glm::vec4(skyLin, above);
+        u.weather   = glm::vec4(cloud_, precip_, rainbow_, snowMix_);
+        u.wind      = glm::vec4(wind_.x, wind_.y, timeSec, 0.f);
         return u;
     }
 
@@ -260,6 +291,8 @@ private:
     // на всю остальную сцену. Ближе десяти сантиметров камера всё
     // равно не подходит: её не пускают столкновения.
     f32 near_ = 0.1f, far_ = 512.f;
+    f32 cloud_ = 0.f, precip_ = 0.f, rainbow_ = 0.f, snowMix_ = 0.f;
+    glm::vec2 wind_{0.f};
     i32 debugShading_ = 0;
     bool debugCamera_ = false;
     u32 screenW_ = 1080, screenH_ = 1920;

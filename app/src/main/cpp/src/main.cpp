@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <memory>
+#include <vector>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -49,6 +50,8 @@
 #include "mobs/spawner.h"
 #include "world/hazards.h"
 #include "world/spawn.h"
+#include "world/weather.h"
+#include "world/precipitation.h"
 #include "world/world_spec.h"
 #include "save/save_export.h"
 #include "mobs/mob_ai.h"
@@ -138,6 +141,18 @@ struct Engine {
     /// Игровые сутки: спавн мобов, солнце, цвет неба, ассортимент
     /// торговцев. Сохраняются вместе с миром.
     world::DayCycle                        dayCycle;
+
+    /// Погода: циклоны, тучи, осадки, радуга.
+    ///
+    /// Отдельно сохранять её нечего: она выводится из зерна мира и
+    /// времени, а то и другое сейв уже помнит.
+    world::Weather                         weather;
+
+    /// Капли и снежинки вокруг игрока.
+    world::Precipitation                   precip;
+    /// Их же в виде инстансов — буфер живёт между кадрами, чтобы не
+    /// выделять память шестьдесят раз в секунду.
+    std::vector<render::MobInstance>       precipInstances;
 
     cfg::PlaytimeTracker playtime;
     f32  autosaveTimer  = 0.f;
@@ -734,6 +749,12 @@ struct Engine {
         playerSpawn = world::spawnPositionOrFallback(world->generator(), seed, 0, 0);
         if (player) player->controller.setPosition(playerSpawn);
 
+        // Погода у нового мира своя, и догоняется она сразу: плавный
+        // переход от погоды ПРОШЛОГО мира не имел бы смысла.
+        weather.init(seed);
+        weather.snap(world->generator(), playerSpawn, dayCycle.worldSeconds());
+        precip.reset();
+
         // Имя по умолчанию — чтобы мир было чем назвать в списке.
         // Игрок переименует его на экране создания, если захочет.
         world::defaultWorldName(worldName, sizeof(worldName), seed);
@@ -806,6 +827,13 @@ struct Engine {
             if (auto* tf = registry.get<ecs::Transform>(player->entity())) {
                 player->controller.setPosition(tf->position);
             }
+            // Время в загруженном мире другое, а погода считается от
+            // него: без этого первые полминуты в мире стояла бы погода
+            // того момента, когда сейв открывали.
+            weather.snap(world->generator(),
+                         player->controller.state().position,
+                         dayCycle.worldSeconds());
+
             // Загруженная репутация — не событие: объявлять смену тира
             // за прошлую жизнь незачем.
             player->resyncReputationBaseline();
@@ -1074,6 +1102,22 @@ struct Engine {
 
         playtime.tick(dt);
         dayCycle.tick(dt);
+
+        if (world && player) {
+            weather.update(world->generator(),
+                           player->controller.state().position,
+                           dayCycle.worldSeconds(),
+                           dayCycle.sunElevation(), dt);
+
+            // Осадки идут вокруг ГЛАЗ, а не вокруг ног: от третьего
+            // лица камера стоит на пару блоков выше и позади, и
+            // столб дождя вокруг ступней в кадр попадал бы краем.
+            const glm::vec3 eye = render
+                ? render->camera().position()
+                : player->controller.state().position;
+            precip.update(*world, eye, weather.precip(), weather.snowMix(),
+                          weather.wind(), dt);
+        }
 
         // ТЗ 4.4: торговец обновляет ассортимент раз в игровой день.
         if (dayCycle.dayJustChanged()) {
@@ -1441,6 +1485,8 @@ struct Engine {
         cam.setYawPitch(cameraYawPitch.x, cameraYawPitch.y);
         cam.setSunDir(dayCycle.sunDirection());
         cam.setSky(dayCycle.skyColor(), dayCycle.skyLight(), dayCycle.timeOfDay());
+        cam.setWeather(weather.cloud(), weather.precip(), weather.rainbow(),
+                       weather.snowMix(), weather.wind());
 
         // Минимальная детерминированная сцена: камера, солнце и небо
         // прибиты к числам из world/debug_scene.h — тем самым, по
@@ -1622,7 +1668,10 @@ struct Engine {
 
         if (render && world && player) {
             const physics::RayHit hit = player->targetBlock(*world);
-            render->prepareFrame(vk, *world, registry, timeSec, dt,
+            render::precipInstances(precip, weather.snowMix(), precipInstances);
+        render->setPrecip(precipInstances.data(), (u32)precipInstances.size());
+
+        render->prepareFrame(vk, *world, registry, timeSec, dt,
                                  player.get(), hit, fps);
         }
     }

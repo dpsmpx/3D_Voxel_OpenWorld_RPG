@@ -146,6 +146,13 @@ int main(int argc, char** argv) {
     float bestArea = 0.f;
     u32   bestFace = 0;
     const char* out = "build/vkcheck/frame.ppm";
+    float cloud = 0.f, rain = 0.f, rainbow = 0.f, windX = 0.f, windZ = 0.f;
+    bool  weatherGiven = false;
+    // Небо по умолчанию НЕ рисуется: фон заливается ровным цветом,
+    // иначе счёт «пикселей, отличных от фона» потерял бы смысл. Но
+    // сам шейдер неба — самый дорогой в кадре и единственный, где
+    // живут тучи и радуга, и посмотреть на него было нечем.
+    bool  drawSky = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : "0"; };
@@ -166,6 +173,14 @@ int main(int argc, char** argv) {
         else if (a == "--fp16") fp16 = true;
         else if (a == "--shading") shading = atoi(next());
         else if (a == "--time")    { timeOfDay = (float)atof(next()); timeGiven = true; }
+        // Погода: её видно только глазами, а глаза здесь — настоящий
+        // кадр. Без этого тучи и радуга проверялись бы только тем,
+        // что шейдер собрался.
+        else if (a == "--sky")     drawSky = atoi(next()) != 0;
+        else if (a == "--cloud")   { cloud = (float)atof(next()); weatherGiven = true; }
+        else if (a == "--rain")    { rain = (float)atof(next()); weatherGiven = true; }
+        else if (a == "--rainbow") { rainbow = (float)atof(next()); weatherGiven = true; }
+        else if (a == "--wind")    { windX = (float)atof(next()); windZ = (float)atof(next()); weatherGiven = true; }
         else if (a == "--scene") {
             const std::string v = next();
             if (v == "minimal") minimalScene = true;
@@ -323,6 +338,30 @@ int main(int argc, char** argv) {
         if (!blendPipe.create(dev, shaders, d)) { std::printf("vkcheck: конвейер (вода)\n"); return 1; }
     }
 
+    // Небо — тот же конвейер, что у render::Skybox: полноэкранный
+    // треугольник, проверка глубины без записи.
+    vk::GraphicsPipeline skyPipe;
+    if (drawSky) {
+        vk::PipelineDesc d{};
+        d.renderPass   = rp;
+        d.descLayout   = desc.layout();
+        d.vertName     = "shaders/sky.vert.spv";
+        d.fragName     = "shaders/sky.frag.spv";
+        d.depthFormat  = DEPTH;
+        d.cullMode     = VK_CULL_MODE_NONE;
+        d.depthTest    = true;
+        d.depthWrite   = false;
+        d.blend        = false;
+        d.bindings     = nullptr;
+        d.bindingCount = 0;
+        d.attrs        = nullptr;
+        d.attrCount    = 0;
+        if (!skyPipe.create(dev, shaders, d)) {
+            std::printf("vkcheck: конвейер неба\n");
+            return 1;
+        }
+    }
+
     // ---- мир: тот же генератор и тот же мешер ----
     world::blocks();
     world::TerrainGenerator gen(seed);
@@ -475,6 +514,14 @@ int main(int argc, char** argv) {
                     "свет неба %.2f\n",
                     (double)dc.timeOfDay(), (double)sd.x, (double)sd.y,
                     (double)sd.z, (double)dc.skyLight());
+    }
+
+    if (weatherGiven) {
+        cam.setWeather(cloud, rain, rainbow, 0.f, glm::vec2(windX, windZ));
+        std::printf("vkcheck: погода — тучи %.2f, осадки %.2f, радуга %.2f, "
+                    "ветер %.1f %.1f\n",
+                    (double)cloud, (double)rain, (double)rainbow,
+                    (double)windX, (double)windZ);
     }
 
     render::CameraUbo u = cam.toUbo(world::SCENE_TIME_SEC);
@@ -669,6 +716,16 @@ int main(int argc, char** argv) {
         drawOne(opaquePipe, bestMesh, bestTri);
     } else {
         drawAll(opaquePipe, false);
+
+        // Небо — после непрозрачного и до воды, ровно как в игре.
+        if (drawSky && skyPipe.valid()) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipe.handle());
+            VkDescriptorSet ds0 = desc.set(0);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    skyPipe.layout(), 0, 1, &ds0, 0, nullptr);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+        }
+
         drawAll(blendPipe,  true);
     }
 
