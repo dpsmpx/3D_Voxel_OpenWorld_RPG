@@ -232,6 +232,74 @@ void Spawner::updateBosses(world::ChunkManager& world, ecs::Registry& reg,
     }
 }
 
+void Spawner::updateAmbushes(world::ChunkManager& world, ecs::Registry& reg,
+                             const glm::vec3& playerPos, u64 worldSeed)
+{
+    // Четверо: трое — это стычка, шестеро — это уже бой, которого
+    // игрок первого уровня не переживёт нигде.
+    constexpr u32 AMBUSH_SIZE = 4;
+    constexpr f32 TRIGGER     = 14.f;
+
+    const i32 sc0x = (i32)std::floor(playerPos.x / 256.f);
+    const i32 sc0z = (i32)std::floor(playerPos.z / 256.f);
+
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            const i32 sx = sc0x + dx, sz = sc0z + dz;
+            const world::VillageSite a = world::villageAt(
+                sx, sz, worldSeed, &world.generator());
+            if (!a.exists) continue;
+
+            // Те же отрезки, что кладёт applyRoads: на восток и на юг.
+            const world::VillageSite ends[2] = {
+                world::villageAt(sx + 1, sz, worldSeed, &world.generator()),
+                world::villageAt(sx, sz + 1, worldSeed, &world.generator()),
+            };
+            for (u32 side = 0; side < 2; ++side) {
+                const world::VillageSite& b = ends[side];
+                if (!b.exists) continue;
+
+                const u64 key = ((u64)(u32)sx << 40) ^ ((u64)(u32)sz << 16) ^ side;
+                if (std::find(sprung_.begin(), sprung_.end(), key) != sprung_.end())
+                    continue;
+
+                // Место засады — не ровно середина: середину видно
+                // с обоих концов, а засаду ставят там, где дорога
+                // уже отошла от деревни.
+                const u32 h = (u32)(key * 0x9E3779B1u);
+                const f32 t = 0.35f + (f32)(h & 0xFF) / 255.f * 0.30f;
+                const glm::vec2 A{ (f32)a.center.x, (f32)a.center.z };
+                const glm::vec2 B{ (f32)b.center.x, (f32)b.center.z };
+                const glm::vec2 P = A + (B - A) * t;
+
+                const f32 ddx = P.x - playerPos.x, ddz = P.y - playerPos.z;
+                if (ddx * ddx + ddz * ddz > TRIGGER * TRIGGER) continue;
+
+                // Сработала — выставляем разом и вокруг.
+                u32 placed = 0;
+                for (u32 i = 0; i < AMBUSH_SIZE; ++i) {
+                    const f32 ang = (f32)i / (f32)AMBUSH_SIZE * 6.28318f;
+                    const i32 bx = (i32)(playerPos.x + std::cos(ang) * 7.f);
+                    const i32 bz = (i32)(playerPos.z + std::sin(ang) * 7.f);
+                    if (!world.findChunk(bx >> 5, bz >> 5)) continue;
+                    const i32 gy = world.generator().surfaceHeight(bx, bz);
+                    if (world.getVoxel(bx, gy - 1, bz) == world::AIR) continue;
+
+                    const u16 id = ((h >> (i * 2)) & 1) ? MOB_GOBLIN : MOB_SKELETON;
+                    const glm::vec3 at{ (f32)bx + 0.5f, (f32)gy, (f32)bz + 0.5f };
+                    if (spawnMob(world, reg, id, at).valid()) {
+                        ++mobCount_;
+                        ++placed;
+                    }
+                }
+                // Засада считается сработавшей, только если из неё
+                // кто-то вышел: иначе она сгорела бы впустую на
+                // незагруженных чанках.
+                if (placed > 0) sprung_.push_back(key);
+            }
+        }
+}
+
 void Spawner::update(world::ChunkManager& world,
                      ecs::Registry& reg,
                      const glm::vec3& playerPos,
@@ -314,6 +382,16 @@ void Spawner::update(world::ChunkManager& world,
                 break;
             }
         }
+    }
+
+    // ---- Засады ----
+    //
+    // Раз в полсекунды: чаще незачем, а реже — и игрок успеет
+    // пройти место засады насквозь.
+    ambushTimer_ += dt;
+    if (ambushTimer_ >= 0.5f) {
+        ambushTimer_ = 0.f;
+        updateAmbushes(world, reg, playerPos, worldSeed);
     }
 
     despawnTimer_ += dt;

@@ -37,6 +37,7 @@
 #include "mobs/mob_def.h"
 #include "mobs/mob_ai.h"
 #include "mobs/spawner.h"
+#include "world/hazards.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
 #include "save/save_format.h"
@@ -8215,6 +8216,336 @@ void testCourierWalksTheRoad() {
 }
 
 // ------------------------------------------------------------
+void testFallsTrapsAndAmbushes() {
+    group("опасности: обрыв, ловушка и засада");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    jobs::gJobs.start(2);
+    {
+        constexpr u64 SEED = 0xDEAD11;
+        world::ChunkManager world(SEED, 2);
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        // ---- 1. Падать больно, но не с крыльца ----
+        //
+        // Урона от падения не было вовсе: с любой высоты игрок
+        // приземлялся целым, и пропасть работала лифтом вниз.
+        const i32 surf = world.generator().surfaceHeight(8, 8) + 4;
+        for (i32 z = -6; z <= 10; ++z)
+            for (i32 x = -6; x <= 10; ++x) {
+                world.setVoxel(x, surf - 1, z, world::STONE);
+                for (i32 y = surf; y < surf + 60; ++y)
+                    world.setVoxel(x, y, z, world::AIR);
+            }
+
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(4.5f, (f32)surf, 4.5f));
+        auto* hp = reg.get<ecs::Health>(pl.entity());
+        check(hp != nullptr, "здоровье есть");
+        if (!hp) { jobs::gJobs.stop(); return; }
+
+        auto drop = [&](f32 blocks) {
+            hp->current = hp->max;
+            hp->invulnTime = 0.f;
+            pl.controller.setPosition({ 4.5f, (f32)surf + blocks, 4.5f });
+            f32 taken = 0.f;
+            for (int i = 0; i < 60 * 8; ++i) {
+                pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+                if (pl.lastFallDamage > 0.f) taken = pl.lastFallDamage;
+                if (pl.controller.state().onGround && i > 4) break;
+            }
+            return taken;
+        };
+
+        const f32 small = drop(3.f);
+        const f32 big   = drop(14.f);
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "с трёх блоков снято %.0f, с четырнадцати — %.0f",
+                          (double)small, (double)big);
+            check(true, m);
+        }
+        check(small < 0.01f, "с трёх блоков спрыгивают безнаказанно");
+        check(big > 30.f, "а с четырнадцати — это уже обрыв");
+        check(big < hp->max, "но не смерть на месте с одной высоты");
+
+        // Вода ловит: прыжок в воду с обрыва — это спасение, а не
+        // тот же удар о землю.
+        //
+        // Глубокая вода и мелкая — разные случаи, и проверять надо
+        // оба. В глубокой игрок до дна не доходит вовсе, и высота
+        // полёта обнуляется сама. В мелкой он ДОСТАЁТ дна, приземление
+        // засчитывается — и без отдельной оговорки лужа в один блок
+        // ранила бы ровно как камень.
+        {
+            for (i32 z = -6; z <= 10; ++z)
+                for (i32 x = -6; x <= 10; ++x)
+                    for (i32 y = surf; y < surf + 4; ++y)
+                        world.setVoxel(x, y, z, world::WATER);
+            check(drop(14.f) < 0.01f, "падение в глубокую воду не ранит");
+
+            for (i32 z = -6; z <= 10; ++z)
+                for (i32 x = -6; x <= 10; ++x)
+                    for (i32 y = surf; y < surf + 4; ++y)
+                        world.setVoxel(x, y, z, y == surf ? world::WATER
+                                                          : world::AIR);
+            check(drop(14.f) < 0.01f, "и в лужу по колено — тоже");
+
+            // И главное: нырнувший ВЫХОДИТ НА БЕРЕГ, то есть
+            // приземляется. Без сброса высоты в воде ему засчитали
+            // бы падение, случившееся минуту назад.
+            // Берег: ровная плита подальше на восток, чтобы
+            // выплывший вышел на неё, а не на первый же природный
+            // уступ — уступ мерил бы себя, а не прежнее падение.
+            //
+            // Уровень берега — вровень с водой, а не на дне озера:
+            // иначе выход из воды сам по себе был бы шагом вниз на
+            // пять блоков, и мерили бы мы его.
+            for (i32 z = -6; z <= 10; ++z)
+                for (i32 x = 3; x <= 48; ++x) {
+                    for (i32 y = surf - 1; y <= surf + 3; ++y)
+                        world.setVoxel(x, y, z, world::STONE);
+                    for (i32 y = surf + 4; y < surf + 24; ++y)
+                        world.setVoxel(x, y, z, world::AIR);
+                }
+            for (i32 z = -6; z <= 10; ++z)
+                for (i32 x = -6; x <= 2; ++x)
+                    for (i32 y = surf; y < surf + 5; ++y)
+                        world.setVoxel(x, y, z, world::WATER);
+            hp->current = hp->max;
+            hp->invulnTime = 0.f;
+            pl.controller.setPosition({ 0.5f, (f32)surf + 20.f, 4.5f });
+            f32 ashore = 0.f;
+            {
+                player::PlayerInput swimOut;
+                // При нулевом рыскании «вправо» — это -X, поэтому к
+                // берегу на востоке гребут влево. Ось джойстика, а
+                // не сторона света.
+                swimOut.moveAxis = { -1.f, 0.f };
+                bool wasWet = false;
+                for (int i = 0; i < 60 * 12; ++i) {
+                    // Сперва просто падаем, потом гребём к берегу.
+                    pl.update(world, i < 120 ? player::PlayerInput{} : swimOut,
+                              1.f / 60.f, 0.f, 0.f);
+                    if (pl.lastFallDamage > 0.f) ashore = pl.lastFallDamage;
+                    const auto& st = pl.controller.state();
+                    if (st.inWater) wasWet = true;
+                    // Как только выбрался на сушу — довольно: дальше
+                    // начинается настоящий рельеф с настоящими
+                    // уступами, и мерить он будет уже их.
+                    if (wasWet && !st.inWater && st.onGround) break;
+                }
+                check(wasWet, "в воду он и правда попал");
+            }
+            {
+                char m[140];
+                std::snprintf(m, sizeof(m),
+                              "выйдя на берег после ныряния, получил %.0f (x=%.1f)",
+                              (double)ashore,
+                              (double)pl.controller.state().position.x);
+                check(true, m);
+            }
+            check(ashore < 0.01f,
+                  "вышедшему из воды не засчитывают прежнее падение");
+
+            for (i32 z = -6; z <= 10; ++z)
+                for (i32 x = -6; x <= 10; ++x)
+                    for (i32 y = surf; y < surf + 5; ++y)
+                        world.setVoxel(x, y, z, world::AIR);
+        }
+
+        // ---- 2. Ловушка бьёт того, кто наступил ----
+        {
+            ecs::Registry treg;
+            player::Player tp;
+            tp.init(treg, glm::vec3(100.5f, 64.f, 100.5f));
+            auto* thp = treg.get<ecs::Health>(tp.entity());
+            check(thp != nullptr, "здоровье у наступившего есть");
+            if (thp) {
+                const ecs::Entity t = treg.create();
+                ecs::Transform tf;
+                tf.position = { 100.5f, 64.f, 100.5f };
+                treg.add(t, tf);
+                treg.add(t, hazards::Trap{});
+                treg.add(t, hazards::TrapTag{ 7 });
+
+                const f32 before = thp->current;
+                const f32 hit = hazards::tickTraps(treg, tp.entity(),
+                                                   tf.position, 1.f / 60.f);
+                check(hit > 0.f, "ловушка сработала");
+                check(thp->current < before, "и сняла здоровье");
+
+                // Второй раз подряд — нет: она разряжена.
+                thp->invulnTime = 0.f;
+                const f32 again = hazards::tickTraps(treg, tp.entity(),
+                                                     tf.position, 1.f / 60.f);
+                check(again < 0.01f, "разряженная ловушка не бьёт");
+
+                // Мимо не бьёт даже взведённая.
+                if (auto* tr = treg.get<hazards::Trap>(t)) tr->armed = true;
+                thp->invulnTime = 0.f;
+                const f32 miss = hazards::tickTraps(
+                    treg, tp.entity(), tf.position + glm::vec3(6.f, 0.f, 0.f),
+                    1.f / 60.f);
+                check(miss < 0.01f, "а того, кто прошёл стороной, не задевает");
+            }
+        }
+
+        // ---- 3. Ловушки стоят там, где строят, а не где попало ----
+        {
+            std::vector<hazards::TrapPoint> pts;
+            // Ищем подземелье и смотрим, что у него есть ловушки.
+            world::DungeonSite d;
+            for (i32 sz = -6; sz <= 6 && !d.exists; ++sz)
+                for (i32 sx = -6; sx <= 6 && !d.exists; ++sx)
+                    d = world::dungeonAt(sx, sz, SEED);
+            check(d.exists, "подземелье для разбора найдено");
+            if (d.exists) {
+                hazards::trapPointsNear(
+                    { (f32)d.center.x, (f32)d.center.y, (f32)d.center.z },
+                    SEED, world.generator(), pts);
+                int mine = 0;
+                for (const auto& p : pts) {
+                    const i32 dd = std::abs(p.pos.x - d.center.x) +
+                                   std::abs(p.pos.z - d.center.z);
+                    if (dd < 40) ++mine;
+                }
+                char m[120];
+                std::snprintf(m, sizeof(m), "у подземелья ловушек %d из %d рядом",
+                              mine, (int)pts.size());
+                check(true, m);
+                check(mine >= 3, "в подземелье есть ловушки");
+            }
+
+            // А в чистом поле — ни одной.
+            hazards::trapPointsNear({ 4000.f, 64.f, 4000.f }, SEED,
+                                    world.generator(), pts);
+            bool bare = true;
+            for (i32 sz = 14; sz <= 16 && bare; ++sz)
+                for (i32 sx = 14; sx <= 16 && bare; ++sx)
+                    if (world::dungeonAt(sx, sz, SEED).exists ||
+                        world::castleAt(sx, sz, SEED, &world.generator()).exists)
+                        bare = false;
+            if (bare) check(pts.empty(), "в чистом поле ловушек нет");
+            else check(true, "рядом с той точкой есть постройка — проверка пропущена");
+        }
+
+        // ---- 4. Засада выходит разом ----
+        {
+            // Ищем пару соседних деревень — там же, где applyRoads
+            // кладёт дорогу.
+            world::VillageSite a, b;
+            for (i32 sz = -10; sz <= 10 && !b.exists; ++sz)
+                for (i32 sx = -10; sx <= 10 && !b.exists; ++sx) {
+                    const auto v = world::villageAt(sx, sz, SEED, &world.generator());
+                    if (!v.exists) continue;
+                    const auto e = world::villageAt(sx + 1, sz, SEED, &world.generator());
+                    if (e.exists) { a = v; b = e; }
+                }
+            check(b.exists, "дорога между деревнями найдена");
+            if (b.exists) {
+                // Засада стоит где-то на трети-двух третях пути.
+                // Идём по дороге и смотрим, нарвёмся ли.
+                world::ChunkManager w2(SEED, 3);
+                ecs::Registry areg;
+                mobs::Spawner sp;
+                world::DayCycle day;
+                day.reset(0.5f);
+
+                int sprung = 0;
+                for (int k = 30; k <= 70 && sprung == 0; k += 2) {
+                    const f32 t = (f32)k / 100.f;
+                    const glm::vec3 p{
+                        (f32)a.center.x + ((f32)b.center.x - (f32)a.center.x) * t,
+                        (f32)a.center.y,
+                        (f32)a.center.z + ((f32)b.center.z - (f32)a.center.z) * t };
+                    bool ok = false;
+                    for (int i = 0; i < 700 && !ok; ++i) {
+                        w2.update(p);
+                        ok = w2.isReadyAt((i32)p.x, (i32)p.z) && w2.pendingJobs() == 0;
+                        if (!ok) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    }
+                    if (!ok) continue;
+                    const u32 before = (u32)areg.pool<mobs::MobTag>().size();
+                    for (int i = 0; i < 60; ++i)
+                        sp.update(w2, areg, p, day, SEED, 1.f / 60.f);
+                    const u32 after = (u32)areg.pool<mobs::MobTag>().size();
+                    if (sp.sprungAmbushCount() > 0) {
+                        sprung = (int)(after - before);
+                        char m[140];
+                        std::snprintf(m, sizeof(m),
+                                      "на дороге нарвались: вышло разом %d", sprung);
+                        check(true, m);
+                    }
+                }
+                check(sprung >= 2, "засада выходит группой, а не по одному");
+
+                // Второй раз то же место не стреляет.
+                const u32 was = sp.sprungAmbushCount();
+                const glm::vec3 mid{
+                    (f32)(a.center.x + b.center.x) * 0.5f,
+                    (f32)a.center.y,
+                    (f32)(a.center.z + b.center.z) * 0.5f };
+                for (int i = 0; i < 300; ++i)
+                    sp.update(w2, areg, mid, day, SEED, 1.f / 60.f);
+                check(sp.sprungAmbushCount() == was,
+                      "и второй раз в том же месте не повторяется");
+            }
+        }
+
+        // ---- 5. Провал: дыра до самого низа ----
+        {
+            world::SinkholeSite s;
+            for (i32 sz = -10; sz <= 10 && !s.exists; ++sz)
+                for (i32 sx = -10; sx <= 10 && !s.exists; ++sx)
+                    s = world::sinkholeAt(sx, sz, SEED, &world.generator());
+            check(s.exists, "провал в мире найден");
+            if (s.exists) {
+                check(s.radius >= 5, "устье шириной с обрыв, а не с колодец");
+                const i32 cxc = (i32)std::floor((f32)s.center.x / world::CHUNK_SIZE);
+                const i32 czc = (i32)std::floor((f32)s.center.z / world::CHUNK_SIZE);
+                world::Chunk ch;
+                ch.coord = { cxc, 0, czc };
+                std::vector<world::TerrainGenerator::Column> cols;
+                world::computeChunkColumns(world.generator(), cxc, czc, cols);
+                world::generateChunkVoxels(ch, world.generator(), cols.data(), SEED);
+                const i32 lx = s.center.x - cxc * world::CHUNK_SIZE;
+                const i32 lz = s.center.z - czc * world::CHUNK_SIZE;
+                check(ch.inBounds(lx, s.center.y, lz), "середина провала в чанке");
+                if (ch.inBounds(lx, s.center.y, lz)) {
+                    int air = 0;
+                    for (i32 y = s.bottom; y <= s.center.y; ++y)
+                        if (ch.at(lx, y, lz) == world::AIR) ++air;
+                    const i32 depth = s.center.y - s.bottom + 1;
+                    char m[140];
+                    std::snprintf(m, sizeof(m), "в устье пусто на %d из %d блоков",
+                                  air, depth);
+                    check(true, m);
+                    check(air * 10 >= depth * 9, "провал пуст до самого дна");
+                    check(depth > (i32)player::FALL_SAFE_BLOCKS * 3,
+                          "и глубок настолько, что падение в него ранит");
+                    check(ch.at(lx, s.bottom - 1, lz) == world::STONE,
+                          "а дно каменное — сквозь него не проваливаются");
+                }
+            }
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testBlightForestAndCastles() {
     group("Чёрный лес: густая нечистая земля и замок посреди неё");
 
@@ -12901,6 +13232,7 @@ int main() {
     testCourierWalksTheRoad();
     testLairHoldsOneBeast();
     testBlightForestAndCastles();
+    testFallsTrapsAndAmbushes();
     testTreeDungeonIsClimbable();
     testShurikenFliesAndHits();
     testDashMovesForward();

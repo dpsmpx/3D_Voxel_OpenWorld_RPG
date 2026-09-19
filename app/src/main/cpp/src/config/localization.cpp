@@ -148,6 +148,8 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Notif_LairSkeletons */ "Bone fields — only skeletons roam here",
     /* Notif_LairGoblins */   "A goblin camp — only goblins roam here",
     /* Notif_LairSlimes */    "A slime bog — only slimes roam here",
+    /* Notif_Fall */          "A hard landing",
+    /* Notif_Trap */          "A trap!",
 
     /* Hud_Use */           "USE",
     /* Ench_Altar */        "Enchant Altar",
@@ -293,6 +295,8 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Notif_LairSkeletons */ "Костяное поле — тут водятся одни скелеты",
     /* Notif_LairGoblins */   "Гоблинская стоянка — тут одни гоблины",
     /* Notif_LairSlimes */    "Слизневая топь — тут водятся одни слизни",
+    /* Notif_Fall */          "Тяжёлое приземление",
+    /* Notif_Trap */          "Ловушка!",
 
     /* Hud_Use */           "ИСПОЛЬЗОВАТЬ",
     /* Ench_Altar */        "Алтарь зачарования",

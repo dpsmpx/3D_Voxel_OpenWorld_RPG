@@ -390,6 +390,41 @@ void Player::updateImpl(world::ChunkManager& world,
         audio::events().land(controller.state().position, prevVelY);
     }
 
+    // ---- Удар о землю ----
+    //
+    // Падать было не больно: с любой высоты игрок приземлялся целым,
+    // и пропасть работала лифтом вниз. Обрыв без этого — не опасность,
+    // а декорация.
+    //
+    // Считаем от ВЫСОТЫ полёта, а не от скорости удара: скорость
+    // упирается в maxFallSpeed, и падение с двадцати блоков не
+    // отличалось бы от падения с шестидесяти.
+    lastFallDamage = 0.f;
+    {
+        const auto& st = controller.state();
+        // Вода и лава сбрасывают отсчёт наравне с землёй, и это не
+        // перестраховка: нырнувший с обрыва в озеро выплывает и
+        // ВЫХОДИТ НА БЕРЕГ — то есть приземляется. Без сброса ему
+        // засчитали бы падение, случившееся минуту назад и совсем в
+        // другом месте.
+        if (st.onGround || st.inWater || st.inLava) {
+            if (!wasOnGround && isOnGround) {
+                const f32 drop = fallPeakY_ - st.position.y;
+                if (drop > FALL_SAFE_BLOCKS) {
+                    combat::DamageInstance dmg;
+                    dmg.amount = (drop - FALL_SAFE_BLOCKS) * FALL_DAMAGE_PER_BLOCK;
+                    dmg.type   = combat::DamageType::Physical;
+                    dmg.targetEntity = (u32)entity_;
+                    dmg.sourceName   = "fall";
+                    lastFallDamage = combat::applyDamage(*reg_, entity_, dmg);
+                }
+            }
+            fallPeakY_ = st.position.y;
+        } else {
+            fallPeakY_ = std::max(fallPeakY_, st.position.y);
+        }
+    }
+
     // ---- Направление прицела ----
     const f32 cp = std::cos(cameraPitch);
     const f32 sp = std::sin(cameraPitch);

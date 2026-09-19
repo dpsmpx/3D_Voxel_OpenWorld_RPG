@@ -47,6 +47,7 @@
 #include "physics/collision.h"
 
 #include "mobs/spawner.h"
+#include "world/hazards.h"
 #include "mobs/mob_ai.h"
 
 #include "combat/projectile.h"
@@ -109,6 +110,7 @@ struct Engine {
     std::unique_ptr<player::Player>        player;
     std::unique_ptr<ui::UiSystem>          ui;
     std::unique_ptr<mobs::Spawner>         spawner;
+    std::unique_ptr<hazards::TrapSpawner>  trapSpawner;
     std::unique_ptr<npc::NpcSpawner>       npcSpawner;
     std::unique_ptr<crafting::StationSpawner>  stationSpawner;
     std::unique_ptr<world::EnchantAltarSpawner> altarSpawner;
@@ -471,6 +473,7 @@ struct Engine {
         }
 
         spawner        = std::make_unique<mobs::Spawner>();
+        trapSpawner    = std::make_unique<hazards::TrapSpawner>();
         npcSpawner     = std::make_unique<npc::NpcSpawner>();
         stationSpawner = std::make_unique<crafting::StationSpawner>();
         altarSpawner   = std::make_unique<world::EnchantAltarSpawner>();
@@ -581,6 +584,7 @@ struct Engine {
         stationSpawner.reset();
         npcSpawner.reset();
         spawner.reset();
+        trapSpawner.reset();
         // У UiSystem нет деструктора, освобождающего ресурсы Vulkan:
         // атлас шрифта, его память и сэмплер, пул дескрипторов,
         // конвейер, модули шейдеров и вершинные буферы кадров жили до
@@ -1077,6 +1081,11 @@ struct Engine {
                                    ui::theme::NotifyPriority::Normal);
                     // Логово: без слова об этом «вокруг одни волки»
                     // читается как поломка спавна.
+                    // Удар о землю: без слова игрок не поймёт, за
+                    // что у него убавилось здоровья.
+                    if (player->lastFallDamage > 0.f)
+                        ui->notify(cfg::T(cfg::StrKey::Notif_Fall),
+                                   ui::theme::NotifyPriority::High);
                     if (player->enteredLair) {
                         cfg::StrKey k = cfg::StrKey::Notif_LairWolves;
                         switch (player->lairKind) {
@@ -1284,6 +1293,19 @@ struct Engine {
             const glm::vec3 ppos = player->controller.state().position;
             npcSpawner->update(*world, registry, ppos, worldSeed);
             npc::updateNpcs(*world, registry, player->entity(), ppos, dt);
+        }
+        // Ловушки: сперва заводим и перезаряжаем, потом смотрим,
+        // не наступил ли кто. В обратном порядке только что
+        // заведённая ловушка срабатывала бы в тот же кадр, ещё до
+        // того, как игрок её увидит.
+        if (trapSpawner && player) {
+            const glm::vec3 ppos = player->controller.state().position;
+            trapSpawner->update(*world, registry, ppos, worldSeed, dt);
+            const f32 hurt = hazards::tickTraps(registry, player->entity(),
+                                                ppos, dt);
+            if (hurt > 0.f && ui)
+                ui->notify(cfg::T(cfg::StrKey::Notif_Trap),
+                           ui::theme::NotifyPriority::High);
         }
         if (stationSpawner && player) {
             const glm::vec3 ppos = player->controller.state().position;

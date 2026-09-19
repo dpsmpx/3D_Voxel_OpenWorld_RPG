@@ -70,6 +70,7 @@ enum class StrKey : u16 {
     // волки, — иначе это читается как поломка спавна.
     Notif_LairWolves, Notif_LairSkeletons,
     Notif_LairGoblins, Notif_LairSlimes,
+    Notif_Fall, Notif_Trap,
 
     // --- Подсказка взаимодействия ---
     // Её не было вовсе, и это стоило игроку трёх экранов: близость

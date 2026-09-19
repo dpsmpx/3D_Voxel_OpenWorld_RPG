@@ -1294,7 +1294,112 @@ VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
 }
 
 // ============================================================
+// Провалы
+// ============================================================
+//
+// Обрыв, в который падают. Отвесные стены, дно глубоко внизу и
+// каменный венец по краю: без венца дыра в траве читается как
+// ошибка генератора, а не как место.
+namespace {
+
+/// Где провал БЫЛ БЫ — по одним хэшам, без запросов к рельефу.
+/// Та же причина, что и у замка: спрашивают часто, а рельеф дорог.
+bool sinkholeCandidate(i32 superX, i32 superZ, u64 worldSeed,
+                       i32& outX, i32& outZ, i32& outR)
+{
+    // Провал живёт в своей ячейке и не делит её со структурой:
+    // яма посреди деревни — это не опасность, это поломка.
+    if (structs::layoutFor(superX, superZ, worldSeed).kind != structs::None)
+        return false;
+
+    const u32 h = hashXZ(superX, superZ, worldSeed ^ 0x5140);
+    if ((h & 0xFF) >= 110) return false;
+
+    outX = superX * structs::SUPER_BLOCKS + 40 + (i32)((h >> 8)  & 0x7F);
+    outZ = superZ * structs::SUPER_BLOCKS + 40 + (i32)((h >> 15) & 0x7F);
+    // Радиус 5..10: уже пяти — колодец, шире десяти — котлован, и
+    // по краю его уже обходят, а не падают.
+    outR = 5 + (i32)((h >> 23) & 0x5);
+    return true;
+}
+
+} // namespace
+
+SinkholeSite sinkholeAt(i32 superX, i32 superZ, u64 worldSeed,
+                        const TerrainGenerator* terrain)
+{
+    SinkholeSite site;
+    if (!terrain) return site;
+
+    i32 cx = 0, cz = 0, r = 0;
+    if (!sinkholeCandidate(superX, superZ, worldSeed, cx, cz, r)) return site;
+
+    const i32 wy = terrain->surfaceHeight(cx, cz);
+    // На суше и повыше моря: провал в океане — это просто океан.
+    if (wy < TerrainGenerator::SEA_LEVEL + 8) return site;
+
+    site.exists = true;
+    site.center = { cx, wy, cz };
+    site.radius = r;
+    // Дно на двадцати блоках над коренной породой: глубже — и падение
+    // убивает всегда, мельче — и это яма, а не обрыв.
+    site.bottom = 20;
+    return site;
+}
+
+/// Провалы своего чанка: колонка за колонкой, как и замок.
+static void applySinkholes(Chunk& c, const FeatureContext& ctx) {
+    const i32 bx0 = c.coord.x * CHUNK_SIZE;
+    const i32 bz0 = c.coord.z * CHUNK_SIZE;
+    const i32 sc0x = (i32)std::floor((f32)bx0 / (f32)structs::SUPER_BLOCKS);
+    const i32 sc0z = (i32)std::floor((f32)bz0 / (f32)structs::SUPER_BLOCKS);
+
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            i32 px = 0, pz = 0, pr = 0;
+            if (!sinkholeCandidate(sc0x + dx, sc0z + dz, ctx.seed, px, pz, pr))
+                continue;
+            // Задевает ли провал этот чанк? Венец шире устья на блок.
+            const i32 reach = pr + 1;
+            if (bx0 + CHUNK_SIZE - 1 < px - reach || bx0 > px + reach) continue;
+            if (bz0 + CHUNK_SIZE - 1 < pz - reach || bz0 > pz + reach) continue;
+
+            const SinkholeSite s = sinkholeAt(sc0x + dx, sc0z + dz, ctx.seed,
+                                              ctx.terrain);
+            if (!s.exists) continue;
+
+            for (i32 lz = 0; lz < CHUNK_SIZE; ++lz)
+                for (i32 lx = 0; lx < CHUNK_SIZE; ++lx) {
+                    const i32 wx = bx0 + lx, wz = bz0 + lz;
+                    const i32 ddx = wx - s.center.x, ddz = wz - s.center.z;
+                    const i32 d2 = ddx * ddx + ddz * ddz;
+                    const i32 rr = s.radius * s.radius;
+                    if (d2 > (s.radius + 1) * (s.radius + 1)) continue;
+
+                    // Высоту берём из УЖЕ ПОСЧИТАННЫХ колонок чанка,
+                    // а не спрашиваем генератор заново: своя колонка
+                    // лежит рядом и стоит ноль, а запрос к рельефу —
+                    // семьсот наносекунд, и на три сотни колонок
+                    // устья это четверть миллисекунды на чанк.
+                    const i32 top = ctx.columnAt(lx, lz, wx, wz).surface;
+                    if (d2 <= rr) {
+                        // Устье: вниз до дна — пусто.
+                        for (i32 y = s.bottom; y <= top + 2; ++y)
+                            putWorld(c, wx, y, wz, AIR, true);
+                        // Дно каменное: провалиться сквозь него в
+                        // пещеру — уже не обрыв, а дыра в мире.
+                        putWorld(c, wx, s.bottom - 1, wz, STONE, true);
+                    } else {
+                        // Венец.
+                        putWorld(c, wx, top - 1, wz, STONE, true);
+                    }
+                }
+        }
+}
+
+// ============================================================
 // Замки Чёрного леса
+// ============================================================
 // ============================================================
 //
 // Огромная постройка, а не домик: стена в семьдесят блоков по
@@ -1725,6 +1830,9 @@ void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
     // деревенская мостовая должна остаться сверху, а не под ними.
     applyRoads(chunk, fctx);
     applyTrees(chunk, fctx);
+    // Провал — последним: он выгрызает всё, что над ним поставили.
+    // Дерево, выросшее посреди устья, повисло бы в воздухе.
+    applySinkholes(chunk, fctx);
 }
 
 } // namespace world
