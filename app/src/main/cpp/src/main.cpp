@@ -1091,6 +1091,9 @@ struct Engine {
                                    ui::theme::NotifyPriority::High);
                     // Деревня: чем она живёт, видно по домам, но
                     // сказать об этом словами дешевле и вернее.
+                    if (player->justDrowned)
+                        ui->notify(cfg::T(cfg::StrKey::Notif_Drowning),
+                                   ui::theme::NotifyPriority::High);
                     if (player->enteredVillage) {
                         cfg::StrKey k = cfg::StrKey::Notif_VillageFarmstead;
                         switch (player->villageStyle) {

@@ -9803,6 +9803,218 @@ void testHandcraftWorksAnywhere() {
 }
 
 // ------------------------------------------------------------
+void testSwimmingAndDiving() {
+    group("плавание: держаться на плаву, нырять и не жить на дне");
+
+    world::blocks();
+    items::items();
+
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager world(0x57174Bu, 2);
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        // Озеро: каменная чаша, двенадцать блоков воды, над ней воздух.
+        const i32 floorY = world.generator().surfaceHeight(8, 8) + 4;
+        const i32 topY   = floorY + 12;
+        for (i32 z = -8; z <= 12; ++z)
+            for (i32 x = -8; x <= 12; ++x) {
+                world.setVoxel(x, floorY - 1, z, world::STONE);
+                for (i32 y = floorY; y < topY; ++y)
+                    world.setVoxel(x, y, z, world::WATER);
+                for (i32 y = topY; y < topY + 20; ++y)
+                    world.setVoxel(x, y, z, world::AIR);
+            }
+
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(4.5f, (f32)topY + 2.f, 4.5f));
+        auto* hp = reg.get<ecs::Health>(pl.entity());
+        auto* br = reg.get<ecs::Breath>(pl.entity());
+        check(hp && br, "здоровье и дыхание есть");
+        if (!hp || !br) { jobs::gJobs.stop(); return; }
+
+        auto run = [&](player::PlayerInput in, int n) {
+            for (int i = 0; i < n; ++i)
+                pl.update(world, in, 1.f / 60.f, 0.f, 0.f);
+        };
+        auto y = [&]{ return pl.controller.state().position.y; };
+
+        // ---- 1. Упавший в воду всплывает и ДЕРЖИТСЯ ----
+        //
+        // Держится — вот чего не было: выталкивание работало всегда,
+        // и отпустивший клавиши улетал вверх, покуда была вода.
+        run(player::PlayerInput{}, 60 * 6);
+        const f32 floatY = y();
+        // Равновесие у самой кромки: выталкивание поднимает, пока
+        // ноги не выйдут из воды, дальше тянет обратно. Спрашивать
+        // тут inWater бессмысленно — он мигает на самой линии; важно,
+        // что игрок ВСПЛЫЛ и остался у поверхности, а не утонул и не
+        // улетел.
+        check(std::fabs(floatY - (f32)topY) < 1.5f,
+              "упавший в воду всплывает к поверхности");
+        run(player::PlayerInput{}, 60 * 3);
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "на плаву: y = %.2f, через три секунды %.2f (вода до %d)",
+                          (double)floatY, (double)y(), topY);
+            check(true, m);
+        }
+        check(std::fabs(y() - floatY) < 1.0f, "и держится на одном уровне");
+        check(!pl.controller.state().submerged,
+              "голова при этом над водой");
+        check(br->current > br->max - 0.5f, "и воздух полон");
+
+        // ---- 2. Нырок: погружение по нажатию ----
+        player::PlayerInput dive;
+        dive.crouch = true;
+        run(dive, 60 * 3);
+        {
+            char m[120];
+            std::snprintf(m, sizeof(m), "нырнув на три секунды, ушёл на %.1f блока",
+                          (double)(floatY - y()));
+            check(true, m);
+        }
+        check(floatY - y() > 4.f, "нажатием игрок уходит под воду");
+        check(pl.controller.state().submerged, "и он именно под водой");
+
+        // ---- 3. Под водой он ВИСИТ, а не выскакивает ----
+        //
+        // Главное, чего не хватало: отпустил — и тебя выбросило.
+        const f32 deepY = y();
+        run(player::PlayerInput{}, 60 * 3);
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "отпустив всё на три секунды: было %.2f, стало %.2f",
+                          (double)deepY, (double)y());
+            check(true, m);
+        }
+        check(y() < deepY + 0.5f, "отпустив клавиши, наверх не выбрасывает");
+        check(pl.controller.state().submerged, "он всё ещё под водой");
+        check(y() > (f32)floorY - 0.5f, "и не проваливается сквозь дно");
+
+        // ---- 4. Всплытие по нажатию ----
+        player::PlayerInput rise;
+        rise.jumpHeld = true;
+        const f32 fromY = y();
+        run(rise, 60 * 3);
+        check(y() > fromY + 3.f, "нажатием игрок всплывает");
+
+        // ---- 5. Воздух кончается, и это больно ----
+        {
+            hp->current = hp->max;
+            br->current = br->max;
+            // Уводим на дно и держим.
+            run(dive, 60 * 4);
+            check(pl.controller.state().submerged, "ушли под воду");
+            const f32 airMid = br->current;
+            run(dive, 60 * 4);
+            {
+                char m[140];
+                std::snprintf(m, sizeof(m), "воздух: было %.1f, стало %.1f из %.1f",
+                              (double)airMid, (double)br->current, (double)br->max);
+                check(true, m);
+            }
+            check(br->current < airMid, "под водой воздух убывает");
+
+            bool drowned = false;
+            for (int i = 0; i < 60 * 30 && !drowned; ++i) {
+                pl.update(world, dive, 1.f / 60.f, 0.f, 0.f);
+                if (pl.justDrowned) drowned = true;
+            }
+            check(drowned, "когда воздух кончился, игрок захлёбывается");
+            check(br->current < 0.01f, "и запас на нуле");
+            check(hp->current < hp->max, "здоровье при этом убывает");
+
+            // Темп захлёба. Урон идёт ГЛОТКАМИ, а не потоком:
+            // тонущий должен успеть всплыть, а не умереть за
+            // полсекунды. Считать надо за отрезок времени — на одном
+            // кадре поток от глотка не отличить.
+            hp->current = hp->max;
+            hp->invulnTime = 0.f;
+            int gulps = 0;
+            for (int i = 0; i < 60 * 5; ++i) {
+                pl.update(world, dive, 1.f / 60.f, 0.f, 0.f);
+                if (pl.justDrowned) ++gulps;
+            }
+            {
+                char m[140];
+                std::snprintf(m, sizeof(m),
+                              "за пять секунд без воздуха глотков %d, снято %.0f",
+                              gulps, (double)(hp->max - hp->current));
+                check(true, m);
+            }
+            check(gulps >= 3 && gulps <= 7,
+                  "захлёб приходит раз в секунду, а не каждый кадр");
+            check(hp->current > hp->max * 0.4f,
+                  "и за пять секунд не убивает насмерть");
+        }
+
+        // ---- 6. Всплыл — отдышался ----
+        {
+            const f32 wasAir = br->current;
+            run(rise, 60 * 8);
+            check(!pl.controller.state().submerged, "всплыл");
+            {
+                char m[120];
+                std::snprintf(m, sizeof(m), "отдышался: %.1f -> %.1f",
+                              (double)wasAir, (double)br->current);
+                check(true, m);
+            }
+            check(br->current > br->max - 0.5f, "и воздух набрался обратно");
+        }
+
+        // ---- 7. Брод: по щиколотку стоят на дне, а не всплывают ----
+        //
+        // Выталкивало любого, у кого мокрые ноги: зайдя в лужу в один
+        // блок, игрок всплывал НАД ней и болтался поверх воды.
+        // Стоять в воде было нельзя вовсе — только плавать.
+        {
+            for (i32 z = -8; z <= 12; ++z)
+                for (i32 x = -8; x <= 12; ++x)
+                    for (i32 y2 = floorY + 1; y2 < topY + 20; ++y2)
+                        world.setVoxel(x, y2, z, world::AIR);
+            pl.controller.setPosition({ 4.5f, (f32)floorY + 3.f, 4.5f });
+            br->current = br->max;
+            hp->current = hp->max;
+            int grounded = 0;
+            for (int i = 0; i < 60 * 4; ++i) {
+                pl.update(world, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+                if (pl.controller.state().onGround) ++grounded;
+            }
+            {
+                char m[160];
+                std::snprintf(m, sizeof(m),
+                              "в луже глубиной в блок: стоит на y = %.2f (дно %d), "
+                              "кадров на земле %d из 240",
+                              (double)y(), floorY, grounded);
+                check(true, m);
+            }
+            // Мерим ПОЛОЖЕНИЕ, а не признак «на земле»: в воде
+            // контроллер сообщает о контакте с землёй лишь на кадре
+            // касания, а стоящий на дне его больше не задевает.
+            // Утверждение здесь — «не всплыл», и проверяется оно
+            // высотой.
+            check(y() < (f32)floorY + 0.5f,
+                  "в луже игрок стоит на дне, а не плавает поверх");
+            (void)grounded;
+            check(!pl.controller.state().submerged, "голова снаружи");
+            check(br->current > br->max - 0.5f, "и воздух не тратится");
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testRunningAndFightingTire() {
     group("утомление: бег и долгий бой опускают потолок выносливости");
 
@@ -13874,6 +14086,7 @@ int main() {
     testShurikenFliesAndHits();
     testDashMovesForward();
     testRunningAndFightingTire();
+    testSwimmingAndDiving();
     testHandcraftWorksAnywhere();
     testTrampolineThrowAndBounce();
     testElixirsGrantTimedBuff();

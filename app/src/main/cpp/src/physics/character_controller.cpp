@@ -19,14 +19,19 @@ void CharacterController::detectEnvironment(world::ChunkManager& world) {
 
     glm::vec3 feet = state_.position + glm::vec3(0, 0.1f, 0);
     glm::vec3 mid  = state_.position + glm::vec3(0, box.height * 0.5f, 0);
+    // Уровень глаз. Раньше он читался в переменную, которую не
+    // спрашивал никто, — и «под водой» в игре не значило ничего.
+    // Теперь по нему решается и выталкивание, и дыхание.
+    glm::vec3 eyes = state_.position + glm::vec3(0, box.height * 0.9f, 0);
 
-    // Уровень глаз тоже читался — в headUnderwater, которое не читал
-    // никто: под водой в игре не менялось ничего.
     u16 bF = blockAt(feet);
     u16 bM = blockAt(mid);
+    u16 bE = blockAt(eyes);
 
-    state_.inWater  = (bF == world::WATER) || (bM == world::WATER);
-    state_.inLava   = (bF == world::LAVA)  || (bM == world::LAVA);
+    state_.inWater   = (bF == world::WATER) || (bM == world::WATER);
+    state_.inLava    = (bF == world::LAVA)  || (bM == world::LAVA);
+    state_.waistDeep = (bM == world::WATER);
+    state_.submerged = (bE == world::WATER);
 }
 
 // ============================================================
@@ -282,13 +287,30 @@ void CharacterController::update(world::ChunkManager& world,
         state_.velocity.z *= drag;
         state_.velocity.y *= drag;
 
-        if (!input.jumpHeld && !input.crouch) {
+        if (input.jumpHeld) {
+            // Гребок вверх — всплытие.
+            state_.velocity.y = swimRiseSpeed;
+        } else if (input.crouch) {
+            // Гребок вниз — погружение. Работает и у поверхности:
+            // иначе нырнуть было бы нельзя, выталкивание пересилит.
+            state_.velocity.y = -swimDiveSpeed;
+        } else if (!state_.waistDeep) {
+            // Воды по щиколотку — это брод, а не плавание: тело
+            // стоит на дне, и выталкивать нечего. Раньше хватало
+            // мокрых ног, и зайдя в лужу игрок всплывал над ней.
+            state_.velocity.y -= 9.8f * dt;
+        } else if (!state_.submerged) {
+            // По пояс, голова снаружи — держимся на плаву.
+            // Выталкивает только то, что над водой.
             state_.velocity.y += waterBuoyancy * dt;
+        } else {
+            // Под водой и ничего не жмём — медленно тонем. Раньше
+            // здесь работало то же выталкивание, и нырнувшего
+            // выбрасывало наверх, стоило отпустить клавишу.
+            state_.velocity.y -= waterSinkRate * dt;
         }
-        if (input.jumpHeld) state_.velocity.y = 3.0f;
-        if (input.crouch)   state_.velocity.y = -3.0f;
-        if (state_.velocity.y > 3.5f)  state_.velocity.y = 3.5f;
-        if (state_.velocity.y < -5.0f) state_.velocity.y = -5.0f;
+        if (state_.velocity.y >  swimRiseSpeed) state_.velocity.y =  swimRiseSpeed;
+        if (state_.velocity.y < -5.0f)          state_.velocity.y = -5.0f;
     } else if (state_.onGround && dvLen < 1e-4f && !state_.dashing()) {
         f32 f = std::exp(-groundFriction * dt);
         state_.velocity.x *= f;
