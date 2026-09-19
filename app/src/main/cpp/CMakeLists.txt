@@ -105,7 +105,9 @@ add_library(native-lib SHARED
     src/world/features.cpp
     src/world/hazards.cpp
     src/world/noise.cpp
+    src/world/spawn.cpp
     src/world/terrain.cpp
+    src/world/world_spec.cpp
 
     # Рендер
     src/render/block_outline.cpp

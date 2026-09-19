@@ -40,6 +40,9 @@
 #include "mobs/mob_ai.h"
 #include "mobs/spawner.h"
 #include "world/hazards.h"
+#include "world/spawn.h"
+#include "world/world_spec.h"
+#include "world/features.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
 #include "save/save_format.h"
@@ -9210,6 +9213,421 @@ void testSwampsAndWitches() {
 }
 
 // ------------------------------------------------------------
+void testSpawnSearchFindsGoodGround() {
+    group("точка появления: перебор области и проверка каждой точки");
+
+    world::blocks();
+
+    // ---- 1. В обычных мирах точка находится, и она пригодна ----
+    //
+    // Прежде игрок ставился в (4,4) без единой проверки: в половине
+    // миров это море, в четверти — склон горы.
+    {
+        const u64 seeds[6] = { 0x5A4E0u, 1u, 0xC0FFEEu, 0x1234567u, 99u, 0xDEADBEEFu };
+        i32 ok = 0;
+        for (u64 sd : seeds) {
+            world::TerrainGenerator gen(sd);
+            const world::SpawnSearch s = world::findSpawn(gen, sd, 0, 0);
+            char m[160];
+            if (!s.found) {
+                std::snprintf(m, sizeof(m),
+                              "сид %llu: не нашлось за %d точек",
+                              (unsigned long long)sd, s.tried);
+                check(false, m);
+                continue;
+            }
+            ++ok;
+
+            // Точка обязана лежать в заявленной области.
+            check(std::abs(s.point.x) <= world::SPAWN_HALF_EXTENT &&
+                  std::abs(s.point.z) <= world::SPAWN_HALF_EXTENT,
+                  "найденная точка внутри области 100x100");
+
+            // И обязана быть годной по тем же правилам, по которым
+            // её выбрали: иначе перебор нашёл что-то своё.
+            i32 y = 0;
+            const world::SpawnReject why =
+                world::spawnPointCheck(gen, sd, s.point.x, s.point.z, y);
+            std::snprintf(m, sizeof(m), "сид %llu: точка (%d,%d,%d) годна (%s)",
+                          (unsigned long long)sd, s.point.x, s.point.y, s.point.z,
+                          world::spawnRejectName(why));
+            check(why == world::SpawnReject::Ok, m);
+            check(y == s.point.y, "и высота та же, что вернул перебор");
+
+            // Суша, а не море, и не под потолком мира.
+            check(s.point.y > world::TerrainGenerator::SEA_LEVEL + 1,
+                  "ноги выше уровня моря");
+
+            // Ровно: игрок не появляется в стене.
+            for (i32 i = 0; i < 4; ++i) {
+                static const i32 dx[4] = { 4, -4, 0, 0 };
+                static const i32 dz[4] = { 0, 0, 4, -4 };
+                const i32 h = gen.surfaceHeight(s.point.x + dx[i], s.point.z + dz[i]);
+                check(std::abs(h - s.point.y) <= 4, "вокруг не обрыв");
+            }
+
+            const world::BiomeId b = gen.biomeAt(s.point.x, s.point.z);
+            check(b != world::Ocean && b != world::Volcanic && b != world::Blight,
+                  "биом пригоден для жизни");
+        }
+        check(ok == 6, "точка нашлась во всех шести мирах");
+    }
+
+    // ---- 2. Перебор идёт кольцами: ближняя точка раньше дальней ----
+    //
+    // Порядок обхода — не мелочь: строчный обход находит точку в углу
+    // области и уводит игрока за пятьдесят блоков от того места, куда
+    // целились.
+    {
+        const u64 sd = 0xC0FFEEu;
+        world::TerrainGenerator gen(sd);
+        const world::SpawnSearch s = world::findSpawn(gen, sd, 0, 0);
+        check(s.found, "точка нашлась");
+        if (s.found) {
+            // Всё, что ближе к центру по кольцевой метрике, обязано
+            // быть отвергнутым — иначе перебор прошёл мимо.
+            const i32 ring = std::max(std::abs(s.point.x), std::abs(s.point.z))
+                             / world::SPAWN_STEP;
+            i32 closerGood = 0;
+            for (i32 j = -ring; j <= ring; ++j)
+                for (i32 i = -ring; i <= ring; ++i) {
+                    if (std::max(std::abs(i), std::abs(j)) >= ring) continue;
+                    i32 y = 0;
+                    if (world::spawnPointCheck(gen, sd, i * world::SPAWN_STEP,
+                                               j * world::SPAWN_STEP, y)
+                        == world::SpawnReject::Ok) ++closerGood;
+                }
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "внутри кольца %d годных точек не осталось (%d)",
+                          ring, closerGood);
+            check(closerGood == 0, m);
+        }
+    }
+
+    // ---- 3. Отказы объяснены, а не просто посчитаны ----
+    //
+    // Разбивка по причинам — единственный способ понять, отчего в
+    // мире не нашлось места: «нигде» без причины это тупик.
+    {
+        const u64 sd = 0x51A3Fu;
+        world::TerrainGenerator gen(sd);
+        // Середина океана: там перебор обязан пройти всю область и
+        // отвергнуть каждую точку как воду.
+        i32 ox = 0, oz = 0;
+        bool sea = false;
+        world::SpawnSearch s;
+        for (i32 z = -4000; z <= 4000 && !sea; z += 128)
+            for (i32 x = -4000; x <= 4000 && !sea; x += 128) {
+                // Дешёвое сито: где и в середине суша, перебирать
+                // нечего. Океан признаётся океаном только самим
+                // перебором — «на глаз, через каждые тридцать два
+                // блока» оставляет между пробами островок.
+                if (gen.surfaceHeight(x, z) > world::TerrainGenerator::SEA_LEVEL)
+                    continue;
+                const world::SpawnSearch t = world::findSpawn(gen, sd, x, z);
+                if (t.found) continue;
+                ox = x; oz = z; s = t; sea = true;
+            }
+        check(sea, "нашлась открытая вода шире области перебора");
+        if (sea) {
+            check(!s.found, "посреди океана точка не находится");
+            check(s.tried > 600, "и перебраны все точки области, а не первая");
+            check(s.rejected[(u32)world::SpawnReject::UnderWater] > 0,
+                  "причина названа: вода");
+            check(s.rejected[(u32)world::SpawnReject::Ok] == 0,
+                  "и ни одна точка не засчитана годной");
+
+            // Запасной вариант всё равно обязан дать место: игрок
+            // должен куда-то встать даже в мире из одной воды.
+            const glm::vec3 p = world::spawnPositionOrFallback(gen, sd, ox, oz);
+            check(p.y >= (f32)world::TerrainGenerator::SEA_LEVEL,
+                  "запасная точка на уровне моря, а не на дне");
+            check(std::abs(p.x - ((f32)ox + 0.5f)) < 0.01f &&
+                  std::abs(p.z - ((f32)oz + 0.5f)) < 0.01f,
+                  "и ровно в середине области");
+        }
+    }
+
+    // ---- 4. Проверка и вправду отсеивает плохие точки ----
+    //
+    // Без этого перебор мог бы возвращать первую попавшуюся: раз
+    // отказов не бывает, то и проверки как будто нет.
+    {
+        i32 counts[(u32)world::SpawnReject::Count] = {};
+        i32 total = 0;
+        // Два мира, а не один: редкие причины — провал, логово —
+        // в одном отдельно взятом мире могут не встретиться вовсе,
+        // и проверка «причина работает» выродилась бы в «повезло».
+        for (u64 sd : { 0x5EED1ull, 0xC0FFEEull }) {
+            world::TerrainGenerator gen(sd);
+            for (i32 z = -512; z <= 512; z += 16)
+                for (i32 x = -512; x <= 512; x += 16) {
+                    i32 y = 0;
+                    counts[(u32)world::spawnPointCheck(gen, sd, x, z, y)] += 1;
+                    ++total;
+                }
+        }
+        check(counts[(u32)world::SpawnReject::Ok] > 0, "годные точки есть");
+        check(counts[(u32)world::SpawnReject::Ok] < total,
+              "но годна не каждая — проверка что-то да отсеивает");
+
+        char m[260];
+        std::snprintf(m, sizeof(m),
+                      "из %d точек: годных %d, вода %d, круто %d, биом %d, "
+                      "пещера %d, постройка %d, провал %d, логово %d",
+                      total,
+                      counts[(u32)world::SpawnReject::Ok],
+                      counts[(u32)world::SpawnReject::UnderWater],
+                      counts[(u32)world::SpawnReject::Steep],
+                      counts[(u32)world::SpawnReject::BadBiome],
+                      counts[(u32)world::SpawnReject::Cave],
+                      counts[(u32)world::SpawnReject::Structure],
+                      counts[(u32)world::SpawnReject::Sinkhole],
+                      counts[(u32)world::SpawnReject::Lair]);
+        check(true, m);
+
+        // Каждая причина обязана СРАБАТЫВАТЬ. Причина, которая не
+        // встречается никогда, — это ветка, которой нет: её удалят
+        // при первой же уборке, и никто не заметит разницы.
+        check(counts[(u32)world::SpawnReject::UnderWater] > 0, "вода отсеивается");
+        check(counts[(u32)world::SpawnReject::Steep] > 0, "обрывы отсеиваются");
+        check(counts[(u32)world::SpawnReject::BadBiome] > 0, "дурные биомы отсеиваются");
+        check(counts[(u32)world::SpawnReject::Cave] > 0, "пустота под ногами отсеивается");
+        check(counts[(u32)world::SpawnReject::Structure] > 0, "постройки отсеиваются");
+        check(counts[(u32)world::SpawnReject::Sinkhole] > 0, "провалы отсеиваются");
+        check(counts[(u32)world::SpawnReject::Lair] > 0, "логова отсеиваются");
+    }
+
+    // ---- 4б. Про потолок мира спрашивать незачем ----
+    //
+    // Проверки «не под самым потолком» здесь нет намеренно: генератор
+    // не строит гор выше сотни, а мир высотой в сто двадцать восемь.
+    // Ветка, которая не срабатывает ни разу, — это не страховка, а
+    // непроверенный код. Если рельеф когда-нибудь подрастёт, упадёт
+    // эта проверка — и тогда страховку придётся писать по-настоящему.
+    {
+        i32 highest = 0;
+        for (u64 sd : { 1ull, 0xC0FFEEull, 42ull }) {
+            world::TerrainGenerator gen(sd);
+            for (i32 z = -2000; z <= 2000; z += 64)
+                for (i32 x = -2000; x <= 2000; x += 64)
+                    highest = std::max(highest, gen.surfaceHeight(x, z));
+        }
+        char m[140];
+        std::snprintf(m, sizeof(m),
+                      "самая высокая гора — %d, потолок мира — %d",
+                      highest, (i32)world::CHUNK_SIZE_Y);
+        check(true, m);
+        check(highest + 2 < world::CHUNK_SIZE_Y,
+              "голова игрока помещается на любой вершине");
+    }
+
+    // ---- 5. Точка не висит в воздухе и не утоплена в земле ----
+    //
+    // Самое обидное: точка «годная», а игрок появляется по пояс в
+    // камне или падает с высоты. Проверяем по настоящим вокселям
+    // чанка, а не по высоте из генератора.
+    {
+        const u64 sd = 0xC0FFEEu;
+        world::ChunkManager mgr(sd, 1);
+        const glm::vec3 p = world::spawnPositionOrFallback(mgr.generator(), sd, 0, 0);
+
+        const i32 bx = (i32)std::floor(p.x), bz = (i32)std::floor(p.z);
+        const i32 by = (i32)std::floor(p.y);
+
+        world::Chunk ch;
+        ch.coord = { bx >> 5, 0, bz >> 5 };
+        std::vector<world::TerrainGenerator::Column> cols;
+        world::computeChunkColumns(mgr.generator(), ch.coord.x, ch.coord.z, cols);
+        world::generateChunkVoxels(ch, mgr.generator(), cols.data(), sd);
+
+        const i32 lx = bx & 31, lz = bz & 31;
+        check(world::blocks().get(ch.at(lx, by - 1, lz)).isSolid,
+              "под ногами твёрдый блок — не провалится");
+        for (i32 dy = 0; dy < 2; ++dy) {
+            const u16 b = ch.at(lx, by + dy, lz);
+            char m[120];
+            std::snprintf(m, sizeof(m), "на высоте ног+%d пусто (%s)", dy,
+                          world::blocks().get(b).name);
+            check(!world::blocks().get(b).isSolid, m);
+        }
+    }
+}
+
+// ------------------------------------------------------------
+void testNewWorldEveryLaunch() {
+    group("новый мир при каждом запуске: зерно, смена мира, сейвы");
+
+    items::items();
+    world::blocks();
+
+    // ---- 1. Зерно и вправду случайное ----
+    //
+    // Постоянная 0xC0FFEE означала, что все игроки всех запусков
+    // просыпались на одном и том же берегу.
+    {
+        u64 seen[32] = {};
+        i32 dup = 0;
+        for (i32 i = 0; i < 32; ++i) {
+            seen[i] = world::randomWorldSeed();
+            for (i32 j = 0; j < i; ++j) if (seen[j] == seen[i]) ++dup;
+        }
+        check(dup == 0, "тридцать два зерна подряд — и все разные");
+
+        // Зёрна, идущие подряд, обязаны РАЗОЙТИСЬ, а не отличаться
+        // на единицу: у соседних зёрен рельеф похож, и «случайный
+        // мир» получился бы тем же миром со сдвинутым берегом.
+        i32 close = 0;
+        for (i32 i = 1; i < 32; ++i) {
+            const u64 a = seen[i - 1], b = seen[i];
+            if ((a > b ? a - b : b - a) < 0x100000ull) ++close;
+        }
+        check(close == 0, "и соседние зёрна не жмутся друг к другу");
+
+        // Биты обязаны быть заполнены оба конца: зерно из одних
+        // младших битов — это зерно из часов, а не из случайности.
+        u64 orAll = 0, andAll = ~0ull;
+        for (u64 s : seen) { orAll |= s; andAll &= s; }
+        check(orAll >> 60 != 0, "старшие биты зерна не пустуют");
+        check(andAll == 0, "и ни один бит не залип единицей");
+    }
+
+    // ---- 2. Смена мира уносит из него всех, кроме игрока ----
+    //
+    // Мобы, жители и лут принадлежат ТОМУ миру. Игрок переходит в
+    // новый со всем, что у него в карманах.
+    {
+        ecs::Registry reg;
+        const ecs::Entity player = reg.create();
+        reg.add(player, ecs::Transform{});
+        items::Wallet wal; wal.gold = 1234;
+        reg.add(player, wal);
+
+        // Сущность без Transform — такие есть, и удаление «по пулу
+        // Transform» оставило бы её жить.
+        const ecs::Entity bodiless = reg.create();
+        reg.add(bodiless, items::Wallet{});
+
+        for (i32 i = 0; i < 20; ++i) {
+            const ecs::Entity mob = reg.create();
+            reg.add(mob, ecs::Transform{});
+            reg.add(mob, ecs::EnemyTag{});
+        }
+        check(reg.aliveCount() == 22, "в старом мире 22 сущности");
+        check(reg.alive(bodiless), "и одна из них без Transform");
+
+        reg.destroyAllExcept(player);
+
+        check(reg.aliveCount() == 1, "после смены мира осталась одна");
+        check(reg.alive(player), "и это игрок");
+        check(!reg.alive(bodiless), "бестелесная сущность тоже ушла");
+        auto* w = reg.get<items::Wallet>(player);
+        check(w != nullptr && w->gold == 1234,
+              "кошелёк игрока перешёл в новый мир целым");
+
+        // Реестр обязан остаться рабочим: новый мир будет создавать
+        // в нём своих.
+        const ecs::Entity fresh = reg.create();
+        reg.add(fresh, ecs::Transform{});
+        check(reg.alive(fresh) && reg.aliveCount() == 2,
+              "и в новом мире заводятся новые сущности");
+    }
+
+    // ---- 3. Загруженные чанки перечислимы поимённо ----
+    //
+    // Их меши лежат в видеопамяти, и при смене мира рендер обязан
+    // забыть каждый: иначе по тем же координатам покажется прежняя
+    // земля.
+    {
+        if (!jobs::gJobs.running()) jobs::gJobs.start(2);
+        world::ChunkManager mgr(0x7E5Du, 1);
+        const glm::vec3 here{ 8.f, 40.f, 8.f };
+        for (i32 i = 0; i < 400; ++i) {
+            mgr.update(here);
+            if (mgr.isReadyAt(8, 8) && mgr.pendingJobs() == 0) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        const auto coords = mgr.loadedCoords();
+        check(!coords.empty(), "загруженные чанки перечислены");
+        check(coords.size() == mgr.loadedChunks(),
+              "и перечислены ВСЕ, а не часть");
+        i32 missing = 0;
+        for (const auto& c : coords) if (!mgr.findChunk(c.x, c.z)) ++missing;
+        check(missing == 0, "каждый названный чанк и правда есть");
+        jobs::gJobs.stop();
+    }
+
+    // ---- 4. Сейв помнит своё зерно и в чужой мир не открывается ----
+    //
+    // На этом держится смена мира при загрузке: перед чтением сейва
+    // мир перестраивается под зерно из его метаданных. Пока зерно
+    // было константой, проверка совпадения не срабатывала никогда;
+    // со случайным зерном при запуске не открылся бы ни один сейв.
+    {
+        constexpr u64 MINE  = 0x11115EEDull;
+        constexpr u64 OTHER = 0x22225EEDull;
+
+        save::SaveManager mgr;
+        mgr.init("build/hostcheck");
+        const save::SaveSlot slot = mgr.slots().slot(1, 2);
+        std::remove(slot.dataPath().c_str());
+        std::remove(slot.metaPath().c_str());
+
+        world::ChunkManager mine(MINE, 2);
+        world::DayCycle day;
+        save::WorldDeltaStore deltas;
+        ecs::Registry reg;
+        const ecs::Entity player = reg.create();
+        reg.add(player, ecs::Transform{});
+        reg.add(player, items::Wallet{});
+        npc::NpcSpawner spawner;
+        hazards::TreasureKeeper treasures;
+
+        check(mgr.save(slot, mine, reg, player, deltas, MINE, 5, day,
+                       spawner, treasures) == save::SaveStatus::Ok,
+              "сейв записан");
+
+        // Метаданные читаются БЕЗ мира — именно так загрузка и
+        // узнаёт, какой мир ей понадобится.
+        save::SlotMeta meta;
+        check(mgr.peekMeta(slot, meta) == save::SaveStatus::Ok,
+              "метаданные слота прочитаны");
+        check(meta.seed == MINE, "и зерно в них — то самое");
+
+        ecs::Registry reg2;
+        const ecs::Entity p2 = reg2.create();
+        reg2.add(p2, ecs::Transform{});
+        reg2.add(p2, items::Wallet{});
+        save::WorldDeltaStore d2;
+        npc::NpcSpawner sp2;
+        hazards::TreasureKeeper tr2;
+        world::DayCycle day2;
+        u64 outSeed = 0; u32 outPlay = 0;
+
+        {
+            world::ChunkManager stranger(OTHER, 2);
+            const save::SaveStatus st =
+                mgr.load(slot, stranger, reg2, p2, d2, &outSeed, &outPlay,
+                         &day2, sp2, tr2);
+            check(st != save::SaveStatus::Ok,
+                  "в чужой мир сейв не открывается");
+        }
+        {
+            world::ChunkManager same(meta.seed, 2);
+            const save::SaveStatus st =
+                mgr.load(slot, same, reg2, p2, d2, &outSeed, &outPlay,
+                         &day2, sp2, tr2);
+            check(st == save::SaveStatus::Ok,
+                  "а в мир, построенный по зерну из метаданных, — открывается");
+            check(outSeed == MINE, "и зерно из файла то же");
+        }
+        std::remove(slot.dataPath().c_str());
+        std::remove(slot.metaPath().c_str());
+    }
+}
+
+// ------------------------------------------------------------
 void testBlightForestAndCastles() {
     group("Чёрный лес: густая нечистая земля и замок посреди неё");
 
@@ -14314,6 +14732,8 @@ int main() {
     testLairHoldsOneBeast();
     testBlightForestAndCastles();
     testSwampsAndWitches();
+    testSpawnSearchFindsGoodGround();
+    testNewWorldEveryLaunch();
     testFallsTrapsAndAmbushes();
     testSecretTreasureAndItsQuest();
     testStoryChainRunsInOrder();

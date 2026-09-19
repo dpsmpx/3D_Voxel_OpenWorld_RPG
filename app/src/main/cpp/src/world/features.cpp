@@ -1844,6 +1844,13 @@ LairSite lairCovering(i32 wx, i32 wz, u64 worldSeed,
     return LairSite{};
 }
 
+bool structureCovers(i32 wx, i32 wz, u64 worldSeed,
+                     const TerrainGenerator* terrain)
+{
+    if (structureBlocks(wx, wz, worldSeed)) return true;
+    return castleBlocks(wx, wz, worldSeed, terrain);
+}
+
 // ============================================================
 // Дороги между деревнями
 // ============================================================
