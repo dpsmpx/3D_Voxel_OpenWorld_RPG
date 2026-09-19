@@ -8215,6 +8215,248 @@ void testCourierWalksTheRoad() {
 }
 
 // ------------------------------------------------------------
+void testBlightForestAndCastles() {
+    group("Чёрный лес: густая нечистая земля и замок посреди неё");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    constexpr u64 SEED = 0xB1167;
+    world::ChunkManager mgr(SEED, 1);
+    const auto& gen = mgr.generator();
+
+    // ---- 1. Такая земля в мире есть, и её немного ----
+    i32 bx = 0, bz = 0;
+    int blight = 0, probes = 0;
+    for (i32 z = -2000; z <= 2000; z += 64)
+        for (i32 x = -2000; x <= 2000; x += 64) {
+            ++probes;
+            if (gen.biomeAt(x, z) != world::Blight) continue;
+            ++blight;
+            if (bx == 0 && bz == 0) { bx = x; bz = z; }
+        }
+    {
+        char m[140];
+        std::snprintf(m, sizeof(m), "замеров %d, из них Чёрный лес %d",
+                      probes, blight);
+        check(true, m);
+    }
+    check(blight > 20, "Чёрный лес в мире есть");
+    check(blight * 4 < probes, "но занимает он меньшей части суши");
+    check(bx != 0 || bz != 0, "точка Чёрного леса найдена");
+
+    // ---- 2. Лес там гуще обычного, и он мёртвый ----
+    {
+        const world::BiomeDef& bl = gen.field().def(world::Blight);
+        const world::BiomeDef& fo = gen.field().def(world::Forest);
+        check(bl.treeDensity > fo.treeDensity,
+              "в Чёрном лесу деревьев больше, чем в обычном");
+        check(bl.treeType == world::TreeType::Dead,
+              "и деревья в нём сухие");
+        check(bl.surfaceBlock != world::GRASS,
+              "трава там не растёт");
+    }
+
+    // Считаем настоящие стволы в чанке Чёрного леса против чанка
+    // обычного: таблица — это намерение, а проверять надо мир.
+    {
+        auto woodIn = [&](i32 wx, i32 wz) {
+            const i32 cx = (i32)std::floor((f32)wx / world::CHUNK_SIZE);
+            const i32 cz = (i32)std::floor((f32)wz / world::CHUNK_SIZE);
+            world::Chunk ch;
+            ch.coord = { cx, 0, cz };
+            std::vector<world::TerrainGenerator::Column> cols;
+            world::computeChunkColumns(gen, cx, cz, cols);
+            world::generateChunkVoxels(ch, gen, cols.data(), SEED);
+            int n = 0;
+            for (i32 y = 0; y < world::CHUNK_SIZE_Y; ++y)
+                for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+                    for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                        if (ch.at(x, y, z) == world::WOOD) ++n;
+            return n;
+        };
+        const int inBlight = woodIn(bx, bz);
+        char m[140];
+        std::snprintf(m, sizeof(m), "стволов в чанке Чёрного леса: %d", inBlight);
+        check(true, m);
+        // Четырнадцать деревьев на чанк — это сотня блоков ствола и
+        // больше. Пустой или редкий чанк означал бы, что плотность из
+        // таблицы до расстановки не дошла.
+        check(inBlight > 40, "Чёрный лес и правда густой");
+    }
+
+    // ---- 3. Там водятся только чудовища ----
+    {
+        int peaceful = 0, hostile = 0;
+        for (u32 rng = 0; rng < 400; ++rng) {
+            const u16 id = mobs::mobIdForBiome(world::Blight, false,
+                                               rng * 2654435761u);
+            if (id == mobs::MOB_NONE) continue;
+            if (mobs::mobRegistry().get(id).hostile) ++hostile; else ++peaceful;
+        }
+        char m[120];
+        std::snprintf(m, sizeof(m), "днём в Чёрном лесу: враждебных %d, мирных %d",
+                      hostile, peaceful);
+        check(true, m);
+        check(hostile > 0, "чудовища там водятся");
+        check(peaceful == 0, "а мирной скотины нет вовсе — даже днём");
+    }
+
+    // ---- 4. Замок стоит, и стоит он в Чёрном лесу ----
+    world::CastleSite castle;
+    i32 csx = 0, csz = 0;
+    int castles = 0, cells = 0, outsideBlight = 0;
+    for (i32 sz = -20; sz <= 20; ++sz)
+        for (i32 sx = -20; sx <= 20; ++sx) {
+            ++cells;
+            const world::CastleSite c = world::castleAt(sx, sz, SEED, &gen);
+            if (!c.exists) continue;
+            ++castles;
+            if (gen.biomeAt(c.center.x, c.center.z) != world::Blight)
+                ++outsideBlight;
+            if (!castle.exists) { castle = c; csx = sx; csz = sz; }
+        }
+    {
+        char m[150];
+        std::snprintf(m, sizeof(m),
+                      "ячеек %d, замков %d, из них вне Чёрного леса %d",
+                      cells, castles, outsideBlight);
+        check(true, m);
+    }
+    check(castles > 0, "замки в мире есть");
+    check(outsideBlight == 0, "и ни один не стоит вне Чёрного леса");
+    check(castles * 20 < cells, "замок — редкость, а не забор вдоль дороги");
+    check(castle.exists, "замок для разбора найден");
+    if (!castle.exists) return;
+    check(!world::villageAt(csx, csz, SEED, &gen).exists,
+          "и не делит ячейку с деревней");
+
+    // ---- 5. Замок построен, а не насыпан ----
+    std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> cache;
+    std::vector<world::TerrainGenerator::Column> cols;
+    auto blockAt = [&](i32 wx, i32 wy, i32 wz) -> u16 {
+        const i32 cx = (i32)std::floor((f32)wx / world::CHUNK_SIZE);
+        const i32 cz = (i32)std::floor((f32)wz / world::CHUNK_SIZE);
+        auto key = std::make_pair(cx, cz);
+        auto it = cache.find(key);
+        if (it == cache.end()) {
+            auto ch = std::make_unique<world::Chunk>();
+            ch->coord = { cx, 0, cz };
+            world::computeChunkColumns(gen, cx, cz, cols);
+            world::generateChunkVoxels(*ch, gen, cols.data(), SEED);
+            it = cache.emplace(key, std::move(ch)).first;
+        }
+        const i32 lx = wx - cx * world::CHUNK_SIZE;
+        const i32 lz = wz - cz * world::CHUNK_SIZE;
+        if (!it->second->inBounds(lx, wy, lz)) return world::AIR;
+        return it->second->at(lx, wy, lz);
+    };
+
+    const i32 CX = castle.center.x, CZ = castle.center.z, BY = castle.center.y;
+    const i32 H = world::CASTLE_HALF;
+
+    // Стена: по всему кольцу камень на высоте пояса. Проверяем
+    // четыре стороны, кроме самих ворот.
+    {
+        // Угол кольца занимает башня, а не стена: там перемычку
+        // держит её оболочка, и мерить в углу надо не стену.
+        const i32 T = world::CASTLE_HALF - 4;
+        auto inTower = [&](i32 wx, i32 wz) {
+            return std::abs(std::abs(wx - CX) - T) <= 5 &&
+                   std::abs(std::abs(wz - CZ) - T) <= 5;
+        };
+        int wall = 0, holes = 0;
+        for (i32 d = -H + 2; d <= H - 2; ++d) {
+            const i32 probe[4][2] = {
+                { CX + d, CZ - H }, { CX + d, CZ + H },
+                { CX - H, CZ + d }, { CX + H, CZ + d },
+            };
+            for (int i = 0; i < 4; ++i) {
+                // Ворота в южной стене — там дыра по замыслу.
+                if (i == 1 && std::abs(probe[i][0] - CX) <= 2) continue;
+                if (inTower(probe[i][0], probe[i][1])) continue;
+                if (blockAt(probe[i][0], BY + 3, probe[i][1]) == world::STONE) ++wall;
+                else ++holes;
+            }
+        }
+        char m[140];
+        std::snprintf(m, sizeof(m), "кольцо стены: камня %d, дыр %d", wall, holes);
+        check(true, m);
+        check(wall > 150, "стена стоит по всему кольцу");
+        check(holes == 0, "и без единой дыры");
+    }
+
+    // Ворота: сквозной проход в стене, а не глухая кладка.
+    {
+        bool open = true;
+        for (i32 y = BY; y < BY + 4; ++y)
+            if (blockAt(CX, y, CZ + H) != world::AIR ||
+                blockAt(CX, y, CZ + H - 1) != world::AIR) open = false;
+        check(open, "ворота прорезаны насквозь");
+    }
+
+    // Башни: выше стены, и стоят по углам.
+    {
+        int tall = 0;
+        const i32 T = world::CASTLE_HALF - 4;
+        const i32 corner[4][2] = { { CX - T, CZ - T }, { CX + T, CZ - T },
+                                   { CX - T, CZ + T }, { CX + T, CZ + T } };
+        for (const auto& c : corner) {
+            // Стена кончается на BY+10; башня обязана быть выше.
+            for (i32 dx = -5; dx <= 5; ++dx)
+                for (i32 dz = -5; dz <= 5; ++dz)
+                    if (blockAt(c[0] + dx, BY + 14, c[1] + dz) == world::STONE) {
+                        ++tall; dx = 6; break;
+                    }
+        }
+        check(tall == 4, "все четыре башни выше стены");
+    }
+
+    // Донжон: стены, перекрытия и дверь.
+    {
+        // Стену донжона меряем не одной точкой: через одну колонку в
+        // ней прорезаны бойницы, и попасть проверкой ровно в бойницу
+        // значило бы проверять случай, а не постройку.
+        int high = 0, gaps = 0;
+        for (i32 d = -8; d <= 8; ++d) {
+            if (blockAt(CX + d, BY + 20, CZ - 9) == world::STONE) ++high;
+            else ++gaps;
+        }
+        char km[120];
+        std::snprintf(km, sizeof(km), "стена донжона на высоте 20: камня %d, проёмов %d",
+                      high, gaps);
+        check(true, km);
+        check(high > gaps, "донжон поднимается выше башен");
+        check(gaps > 0, "и в нём прорезаны бойницы");
+        int floors = 0;
+        for (i32 y = BY + 1; y < BY + 22; ++y)
+            if (blockAt(CX, y, CZ) == world::PLANK) ++floors;
+        check(floors >= 2, "внутри донжона есть перекрытия");
+        bool door = true;
+        for (i32 y = BY; y < BY + 3; ++y)
+            if (blockAt(CX, y, CZ + 9) != world::AIR) door = false;
+        check(door, "и дверь, через которую входят");
+    }
+
+    // Двор ровный и пустой: башня, стена и донжон — постройки, а всё
+    // между ними должно быть проходимо.
+    {
+        int blocked = 0, open = 0;
+        for (i32 dx = -20; dx <= 20; ++dx)
+            for (i32 dz = 12; dz <= 20; ++dz) {
+                if (std::abs(dx) <= 9 && std::abs(dz) <= 9) continue;
+                if (blockAt(CX + dx, BY + 1, CZ + dz) == world::AIR) ++open;
+                else ++blocked;
+            }
+        char m[120];
+        std::snprintf(m, sizeof(m), "двор: свободно %d, занято %d", open, blocked);
+        check(true, m);
+        check(open > blocked * 4, "двор проходим, а не зарос");
+    }
+}
+
+// ------------------------------------------------------------
 void testLairHoldsOneBeast() {
     group("логово: область, где водится один-единственный зверь");
 
@@ -12658,6 +12900,7 @@ int main() {
     testRoadConnectsVillages();
     testCourierWalksTheRoad();
     testLairHoldsOneBeast();
+    testBlightForestAndCastles();
     testTreeDungeonIsClimbable();
     testShurikenFliesAndHits();
     testDashMovesForward();

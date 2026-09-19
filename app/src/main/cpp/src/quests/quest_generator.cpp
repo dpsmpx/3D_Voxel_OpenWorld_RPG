@@ -175,6 +175,10 @@ u16 pickMobId(world::ChunkManager& world,
         case world::Volcanic:
             addPool(MOB_SLIME);
             break;
+        case world::Blight:
+            addPool(MOB_SKELETON);
+            addPool(MOB_GOBLIN);
+            break;
         default:
             return MOB_SHEEP;
     }
@@ -242,6 +246,10 @@ u16 pickBlockId(world::ChunkManager& world,
         case world::Volcanic:
             addPool(STONE);
             addPool(GOLD_ORE);
+            break;
+        case world::Blight:
+            addPool(WOOD);
+            addPool(DIRT);
             break;
         default:
             addPool(STONE);

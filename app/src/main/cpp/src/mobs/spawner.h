@@ -15,6 +15,13 @@
 
 namespace mobs {
 
+/// Кто водится в биоме.
+///
+/// Свободная функция, а не метод спавнера: таблица «биом → зверь» —
+/// это факт о мире, и спросить её должно быть можно, не заводя
+/// спавнера с его таймерами и счётчиками.
+u16 mobIdForBiome(world::BiomeId biome, bool night, u32 rng);
+
 class Spawner {
 public:
     /// day — игровые сутки: от них зависит, какие мобы появятся.
@@ -49,8 +56,6 @@ private:
     /// Track per-chunk mob count (координаты чанка → счётчик)
     std::unordered_map<world::ChunkCoord, u8, world::ChunkCoordHash> perChunk_;
 
-    u16 pickMobId(world::TerrainGenerator& gen, i32 x, i32 z, bool night,
-                  u32 rng) const;
 
     /// Кто водится в логове такого рода.
     ///

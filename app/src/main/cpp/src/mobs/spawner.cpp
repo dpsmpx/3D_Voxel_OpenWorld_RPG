@@ -74,10 +74,7 @@ f32 Spawner::lightAt(world::ChunkManager& world, const world::DayCycle& day,
     return day.skyLight();
 }
 
-u16 Spawner::pickMobId(world::TerrainGenerator& gen,
-                       i32 x, i32 z, bool night, u32 rngVal) const
-{
-    world::BiomeId biome = gen.biomeAt(x, z);
+u16 mobIdForBiome(world::BiomeId biome, bool night, u32 rngVal) {
     f32 r = (f32)(rngVal & 0xFFFF) / 65536.f;
 
     switch (biome) {
@@ -106,6 +103,14 @@ u16 Spawner::pickMobId(world::TerrainGenerator& gen,
             return (r < 0.5f) ? MOB_SLIME : MOB_WOLF;
         case world::Volcanic:
             return MOB_SLIME;
+        // Чёрный лес: только чудовища, и никакой скотины. Овца,
+        // мирно пасущаяся среди сухостоя, зловещим это место быть
+        // перестаёт.
+        case world::Blight:
+            return (r < 0.35f) ? MOB_SKELETON
+                 : (r < 0.70f) ? MOB_GOBLIN
+                 : (r < 0.90f) ? MOB_WOLF
+                               : MOB_SLIME;
         default:
             return MOB_NONE;
     }
@@ -279,23 +284,27 @@ void Spawner::update(world::ChunkManager& world,
             const world::LairSite lair = world::lairCovering(
                 sx, sz, worldSeed, &world.generator());
 
+            // Чёрный лес — такая же земля без дневной передышки, как
+            // логово: нечисть там водится и при солнце.
+            const bool blight =
+                world.generator().biomeAt(sx, sz) == world::Blight;
+
             const u32 rv = urand();
             const u16 id = lair.exists
                 ? lairMobId(lair.kind)
-                : pickMobId(
-                    const_cast<world::TerrainGenerator&>(world.generator()),
-                    sx, sz, night || dark, rv);
+                : mobIdForBiome(world.generator().biomeAt(sx, sz),
+                                night || dark, rv);
             if (id == MOB_NONE) continue;
 
             const MobDef& def = mobRegistry().get(id);
             if (def.isBoss) continue;   // боссов ставит только updateBosses
-            if (def.hostile && !dark && !night && !lair.exists) continue;
+            if (def.hostile && !dark && !night && !lair.exists && !blight) continue;
 
             // Густота: в логове зверья больше, чем в чистом поле, —
             // иначе «область, где водится волк» ничем не отличается
             // от поля, по которому изредка пробегает волк.
-            const u32 cap = lair.exists ? MAX_MOBS_PER_LAIR_CHUNK
-                                        : MAX_MOBS_PER_CHUNK;
+            const u32 cap = (lair.exists || blight) ? MAX_MOBS_PER_LAIR_CHUNK
+                                                    : MAX_MOBS_PER_CHUNK;
             if (perChunk_[ck] >= cap) continue;
 
             const glm::vec3 pos { (f32)sx + 0.5f, (f32)sy, (f32)sz + 0.5f };

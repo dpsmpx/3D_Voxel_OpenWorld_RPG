@@ -175,6 +175,13 @@ namespace {
 /// дальше по тексту, а нужна здесь.
 bool structureBlocks(i32 wx, i32 wz, u64 seed);
 bool roadBlocks(i32 wx, i32 wz, u64 seed, const TerrainGenerator* terrain);
+bool castleBlocks(i32 wx, i32 wz, u64 seed, const TerrainGenerator* terrain);
+} // namespace
+
+static bool castleCandidate(i32 superX, i32 superZ, u64 worldSeed,
+                            i32& outX, i32& outZ);
+
+namespace {
 
 /// Деревья и кусты ОДНОГО чанка-источника, положенные в чанк c.
 ///
@@ -217,6 +224,7 @@ void growChunk(Chunk& c, const FeatureContext& ctx, i32 scx, i32 scz) {
         if (surface <= TerrainGenerator::SEA_LEVEL + 1) continue;
         if (structureBlocks(wx, wz, ctx.seed)) continue;
         if (roadBlocks(wx, wz, ctx.seed, ctx.terrain)) continue;
+        if (castleBlocks(wx, wz, ctx.seed, ctx.terrain)) continue;
 
         const trees::TreeShape shape = trees::treeShapeFor(biome.treeType, rng);
         if (shape.trunkHeight == 0) continue;
@@ -241,6 +249,7 @@ void growChunk(Chunk& c, const FeatureContext& ctx, i32 scx, i32 scz) {
         if (surface <= TerrainGenerator::SEA_LEVEL + 1) continue;
         if (structureBlocks(wx, wz, ctx.seed)) continue;
         if (roadBlocks(wx, wz, ctx.seed, ctx.terrain)) continue;
+        if (castleBlocks(wx, wz, ctx.seed, ctx.terrain)) continue;
         trees::stampBush(c, wx, surface, wz, rng >> 10);
     }
 }
@@ -500,6 +509,28 @@ bool structureBlocks(i32 wx, i32 wz, u64 seed) {
             if (wx < L.minBlock.x - MARGIN || wx > L.maxBlock.x + MARGIN) continue;
             if (wz < L.minBlock.z - MARGIN || wz > L.maxBlock.z + MARGIN) continue;
             return true;
+        }
+    return false;
+}
+
+/// Лес не растёт сквозь замок.
+///
+/// structureBlocks смотрит на сетку структур, а замка в ней нет: он
+/// решается своим хэшем и биомом. Без отдельной проверки Чёрный лес
+/// с его четырнадцатью деревьями на чанк зарастил бы двор насквозь.
+bool castleBlocks(i32 wx, i32 wz, u64 seed, const TerrainGenerator* terrain) {
+    constexpr i32 KEEP = CASTLE_HALF + 4;
+    const i32 sc0x = (i32)std::floor((f32)wx / (f32)structs::SUPER_BLOCKS);
+    const i32 sc0z = (i32)std::floor((f32)wz / (f32)structs::SUPER_BLOCKS);
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            // Сперва дешёвое: где замок стоял бы и близко ли это.
+            // Дорогой вопрос «а Чёрный ли тут лес» задаётся только
+            // тем ячейкам, чей замок и правда накрыл бы эту точку.
+            i32 cx = 0, cz = 0;
+            if (!castleCandidate(sc0x + dx, sc0z + dz, seed, cx, cz)) continue;
+            if (std::abs(wx - cx) > KEEP || std::abs(wz - cz) > KEEP) continue;
+            if (castleAt(sc0x + dx, sc0z + dz, seed, terrain).exists) return true;
         }
     return false;
 }
@@ -1263,6 +1294,173 @@ VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
 }
 
 // ============================================================
+// Замки Чёрного леса
+// ============================================================
+//
+// Огромная постройка, а не домик: стена в семьдесят блоков по
+// стороне, четыре угловые башни и донжон посередине.
+//
+// Строится ПО КОЛОНКАМ своего чанка, а не обходом всего замка. Обход
+// всего — это сто тысяч записей на каждый из чанков, которые замок
+// задевает, и почти все мимо: putWorld их отбросит, но перебрать
+// успеет. Колонка своего чанка даёт ровно 32x32 и ни одной лишней.
+namespace castle {
+
+constexpr i32 HALF      = CASTLE_HALF;  ///< внешний край кольца стен
+constexpr i32 WALL_H    = 9;    ///< высота стены над двором
+constexpr i32 TOWER_R   = 5;    ///< полбашни (11x11)
+constexpr i32 TOWER_OFF = HALF - 4;  ///< где стоят башни от середины
+constexpr i32 TOWER_H   = 17;
+constexpr i32 KEEP_HALF = 9;    ///< полдонжона (19x19)
+constexpr i32 KEEP_H    = 22;
+constexpr i32 FLOOR_STEP = 6;   ///< этаж донжона через столько блоков
+constexpr i32 GATE_HALF = 2;    ///< полширины ворот
+constexpr i32 GATE_H    = 6;
+
+inline i32 cheb(i32 a, i32 b) { return std::max(std::abs(a), std::abs(b)); }
+
+/// Одна колонка замка. dx, dz — смещение от середины донжона.
+void column(Chunk& c, i32 wx, i32 wz, i32 dx, i32 dz, i32 base) {
+    const i32 m = cheb(dx, dz);
+    if (m > HALF) return;
+
+    // ---- Площадка ----
+    //
+    // Замок стоит на ровном, иначе стена уходит в склон и ворота
+    // оказываются под землёй. Три блока основания вниз и чистое небо
+    // вверх на всю высоту донжона.
+    for (i32 y = base - 3; y < base; ++y) putWorld(c, wx, y, wz, STONE, true);
+    for (i32 y = base; y <= base + KEEP_H + 3; ++y) putWorld(c, wx, y, wz, AIR, true);
+
+    // ---- Донжон ----
+    if (m <= KEEP_HALF) {
+        const bool wall = (cheb(dx, dz) == KEEP_HALF);
+        if (wall) {
+            for (i32 y = base; y <= base + KEEP_H; ++y)
+                putWorld(c, wx, y, wz, STONE, true);
+            // Бойницы: каждая четвёртая колонка, начиная со второго
+            // этажа. Через одну — это уже не бойницы, а колоннада:
+            // половина стены исчезает.
+            if (((wx + wz) & 3) == 0) {
+                for (i32 f = FLOOR_STEP; f < KEEP_H; f += FLOOR_STEP)
+                    putWorld(c, wx, base + f + 2, wz, AIR, true);
+            }
+        } else {
+            // Перекрытия. Лестницы внутри нет намеренно: донжон
+            // пустой, и подниматься в нём пока некуда — пол на
+            // каждом этаже держит крышу и делит объём.
+            for (i32 f = FLOOR_STEP; f < KEEP_H; f += FLOOR_STEP)
+                putWorld(c, wx, base + f, wz, PLANK, true);
+            putWorld(c, wx, base + KEEP_H, wz, STONE, true);
+            // Фонарь в каждом углу первого этажа: внутри донжона
+            // иначе не видно ничего.
+            if (std::abs(dx) == KEEP_HALF - 1 && std::abs(dz) == KEEP_HALF - 1)
+                putWorld(c, wx, base + 1, wz, LANTERN, true);
+        }
+        return;
+    }
+
+    // ---- Башни ----
+    const i32 tdx = std::abs(dx) - TOWER_OFF;
+    const i32 tdz = std::abs(dz) - TOWER_OFF;
+    if (std::abs(tdx) <= TOWER_R && std::abs(tdz) <= TOWER_R) {
+        const bool shell = (cheb(tdx, tdz) == TOWER_R);
+        if (shell) {
+            for (i32 y = base; y <= base + TOWER_H; ++y)
+                putWorld(c, wx, y, wz, STONE, true);
+            if (((wx + wz) & 1) == 0)
+                putWorld(c, wx, base + TOWER_H + 1, wz, STONE, true);
+        } else {
+            putWorld(c, wx, base + TOWER_H, wz, STONE, true);
+            if (tdx == 0 && tdz == 0)
+                putWorld(c, wx, base + 1, wz, LANTERN, true);
+        }
+        return;
+    }
+
+    // ---- Стена ----
+    if (m >= HALF - 1) {
+        for (i32 y = base; y <= base + WALL_H; ++y)
+            putWorld(c, wx, y, wz, STONE, true);
+        // Зубцы: через один. Стена без них читается как забор.
+        if (((wx + wz) & 1) == 0)
+            putWorld(c, wx, base + WALL_H + 1, wz, STONE, true);
+        return;
+    }
+
+    // ---- Двор ----
+    putWorld(c, wx, base - 1, wz, STONE, true);
+}
+
+/// Ворота прорезаются ПОСЛЕ стены.
+///
+/// Тот же урок, что и с лестницей в дереве: проход, прорезанный до
+/// стены, стена и закладывает обратно.
+void gate(Chunk& c, i32 wx, i32 wz, i32 dx, i32 dz, i32 base) {
+    if (std::abs(dx) > GATE_HALF) return;
+    if (dz < HALF - 1 || dz > HALF) return;
+    for (i32 y = base; y < base + GATE_H; ++y)
+        putWorld(c, wx, y, wz, AIR, true);
+}
+
+/// Дверь донжона — тоже после его стен.
+void keepDoor(Chunk& c, i32 wx, i32 wz, i32 dx, i32 dz, i32 base) {
+    if (std::abs(dx) > 1 || dz != KEEP_HALF) return;
+    for (i32 y = base; y < base + 3; ++y)
+        putWorld(c, wx, y, wz, AIR, true);
+}
+
+} // namespace castle
+
+/// Где БЫЛ БЫ замок этой ячейки — по одним только хэшам.
+///
+/// Вынесено отдельно, потому что цена у двух половин разная на два
+/// порядка: хэш стоит наносекунды, а «какой тут биом» — полный
+/// пересчёт шума. Лес спрашивает про замок для каждого дерева и
+/// каждого куста, девять ячеек на каждое: без дешёвой половины это
+/// полторы тысячи запросов биома на чанк.
+static bool castleCandidate(i32 superX, i32 superZ, u64 worldSeed,
+                            i32& outX, i32& outZ)
+{
+    // Только пустые ячейки: рядом с деревней замок читался бы как её
+    // часть, а он ничей.
+    if (structs::layoutFor(superX, superZ, worldSeed).kind != structs::None)
+        return false;
+
+    // Свой хэш — не тот, по которому решается логово: иначе замок и
+    // логово никогда бы не встретились в одной ячейке, а должны бы.
+    const u32 h = hashXZ(superX, superZ, worldSeed ^ 0xCA57);
+    if ((h & 0xFF) >= 96) return false;
+
+    // Середина ячейки с небольшим сдвигом: замок шириной в семьдесят
+    // блоков, к краю ячейки его прижимать нельзя — он полезет в
+    // соседнюю, где может стоять деревня.
+    outX = superX * structs::SUPER_BLOCKS + 128 + (i32)((h >> 8)  & 0x1F) - 16;
+    outZ = superZ * structs::SUPER_BLOCKS + 128 + (i32)((h >> 14) & 0x1F) - 16;
+    return true;
+}
+
+CastleSite castleAt(i32 superX, i32 superZ, u64 worldSeed,
+                    const TerrainGenerator* terrain)
+{
+    CastleSite site;
+    if (!terrain) return site;
+
+    i32 cx = 0, cz = 0;
+    if (!castleCandidate(superX, superZ, worldSeed, cx, cz)) return site;
+
+    // Замок стоит в Чёрном лесу, и только в нём.
+    if (terrain->biomeAt(cx, cz) != Blight) return site;
+
+    const i32 wy = terrain->surfaceHeight(cx, cz);
+    if (wy < TerrainGenerator::SEA_LEVEL + 3) return site;
+
+    site.exists = true;
+    site.center = { cx, wy, cz };
+    return site;
+}
+
+// ============================================================
 // Логова: области, где водится один-единственный вид
 // ============================================================
 
@@ -1396,6 +1594,39 @@ void applyRoads(Chunk& chunk, const FeatureContext& ctx) {
         }
 }
 
+/// Замок в своём чанке: 32x32 колонки, ни одной лишней.
+static void stampCastle(Chunk& c, const FeatureContext& ctx,
+                        const CastleSite& site)
+{
+    const i32 bx0 = c.coord.x * CHUNK_SIZE;
+    const i32 bz0 = c.coord.z * CHUNK_SIZE;
+    // Чанк вне следа замка — выходим, не перебирая колонки.
+    if (bx0 + CHUNK_SIZE - 1 < site.center.x - castle::HALF ||
+        bx0 > site.center.x + castle::HALF ||
+        bz0 + CHUNK_SIZE - 1 < site.center.z - castle::HALF ||
+        bz0 > site.center.z + castle::HALF) return;
+
+    const i32 base = site.center.y;
+    (void)ctx;
+
+    for (i32 lz = 0; lz < CHUNK_SIZE; ++lz)
+        for (i32 lx = 0; lx < CHUNK_SIZE; ++lx) {
+            const i32 wx = bx0 + lx, wz = bz0 + lz;
+            castle::column(c, wx, wz, wx - site.center.x, wz - site.center.z,
+                           base);
+        }
+
+    // Проёмы — последними, по той же причине, что и лестница в
+    // дереве: прорезанное до стены стена закладывает обратно.
+    for (i32 lz = 0; lz < CHUNK_SIZE; ++lz)
+        for (i32 lx = 0; lx < CHUNK_SIZE; ++lx) {
+            const i32 wx = bx0 + lx, wz = bz0 + lz;
+            const i32 dx = wx - site.center.x, dz = wz - site.center.z;
+            castle::gate(c, wx, wz, dx, dz, base);
+            castle::keepDoor(c, wx, wz, dx, dz, base);
+        }
+}
+
 void applyStructures(Chunk& chunk, const FeatureContext& ctx) {
     // Чанк → диапазон super-chunk'ов
     i32 cx = chunk.coord.x, cz = chunk.coord.z;
@@ -1411,7 +1642,15 @@ void applyStructures(Chunk& chunk, const FeatureContext& ctx) {
     for (i32 sz = sczMin; sz <= sczMax; ++sz) {
         for (i32 sx = scxMin; sx <= scxMax; ++sx) {
             auto L = structs::layoutFor(sx, sz, ctx.seed);
-            if (L.kind == structs::None) continue;
+
+            // Замок живёт в ПУСТОЙ ячейке, поэтому спрашивается до
+            // проверки на None: в сетке структур его нет, он решается
+            // своим хэшем и биомом.
+            if (L.kind == structs::None) {
+                const CastleSite cs = castleAt(sx, sz, ctx.seed, ctx.terrain);
+                if (cs.exists) stampCastle(chunk, ctx, cs);
+                continue;
+            }
 
             // Пересечение AABB структуры с AABB чанка?
             if (L.maxBlock.x < cmin.x || L.minBlock.x > cmax.x) continue;
