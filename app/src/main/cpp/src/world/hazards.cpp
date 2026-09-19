@@ -7,6 +7,9 @@
 #include "terrain.h"
 #include "../ecs/components.h"
 #include "../combat/status_effects.h"
+#include "../items/item_pickup.h"
+#include "../items/loot_table.h"
+#include "../items/item_def.h"
 #include "../audio/audio_events.h"
 #include <cmath>
 #include <algorithm>
@@ -144,6 +147,62 @@ void TrapSpawner::update(world::ChunkManager& world, ecs::Registry& reg,
         reg.add(e, TrapTag{ p.key });
         ++activeCount_;
     }
+}
+
+void TreasureKeeper::setOpenedKeys(std::vector<u64> keys) {
+    opened_ = std::move(keys);
+    std::sort(opened_.begin(), opened_.end());
+}
+
+u32 TreasureKeeper::update(world::ChunkManager& world, ecs::Registry& reg,
+                           const glm::vec3& playerPos, u64 worldSeed)
+{
+    const i32 sc0x = (i32)std::floor(playerPos.x / (f32)SUPER_BLOCKS);
+    const i32 sc0z = (i32)std::floor(playerPos.z / (f32)SUPER_BLOCKS);
+
+    u32 spilled = 0;
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            const world::TreasureSite t = world::treasureAt(
+                sc0x + dx, sc0z + dz, worldSeed, &world.generator());
+            if (!t.exists) continue;
+
+            const u64 key = ((u64)(u32)t.center.x << 32) ^ (u32)t.center.z;
+            if (std::binary_search(opened_.begin(), opened_.end(), key))
+                continue;
+
+            const glm::vec3 mid{ (f32)t.center.x + 0.5f,
+                                 (f32)t.center.y,
+                                 (f32)t.center.z + 0.5f };
+            if (glm::distance(mid, playerPos) > REACH) continue;
+
+            // Содержимое: то же, что падает с богатого сундука.
+            // Отдельной таблицы у клада нет намеренно — две таблицы
+            // об одном и том же расходятся молча.
+            std::vector<items::ItemStack> haul;
+            auto add = [&](u16 id, u16 n) {
+                items::ItemStack st;
+                st.itemId = id;
+                st.count  = n;
+                haul.push_back(st);
+            };
+            add(items::ITEM_GOLD_COIN,  (u16)(60 + (t.seed % 140)));
+            add(items::ITEM_GOLD_INGOT, (u16)(2 + (t.seed % 4)));
+            add(items::ITEM_POTION_HEALTH_LARGE, 2);
+            if ((t.seed & 3) == 0) add(items::ITEM_ELIXIR_STRENGTH, 1);
+
+            for (const auto& st : haul) {
+                if (items::spawnPickup(reg, mid + glm::vec3(0.f, 0.6f, 0.f), st,
+                                       glm::vec3(0.f, 2.f, 0.f)).valid())
+                    ++spilled;
+            }
+            if (spilled > 0) {
+                opened_.push_back(key);
+                std::sort(opened_.begin(), opened_.end());
+                audio::events().uiClick();
+            }
+        }
+    return spilled;
 }
 
 f32 tickTraps(ecs::Registry& reg, ecs::Entity victim,

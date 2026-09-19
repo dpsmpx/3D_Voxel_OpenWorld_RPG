@@ -288,6 +288,12 @@ bool startDialogue(ecs::Registry& reg,
             opts.allowKill    = true;
             opts.allowCollect = true;
             opts.allowExplore = true;
+            // Подсказку к тайнику даёт не всякий: клад помнит тот,
+            // кто и так рассказывает истории — раздатчик заданий, а
+            // не кузнец у наковальни.
+            if (auto* tag = reg.get<NpcTag>(npcEntity))
+                opts.allowTreasure =
+                    npcRegistry().get(tag->id).role == NpcRole::QuestGiver;
             opts.seed         = (u64)npcEntity * 0xABCDEFULL + playerLevel;
 
             // Репутация

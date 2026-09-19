@@ -5,6 +5,7 @@
 #pragma once
 #include "../core/types.h"
 #include "../npc/npc_spawner.h"
+#include "../world/hazards.h"
 #include "save_format.h"
 
 namespace save {
@@ -24,5 +25,12 @@ void serializeNpcState(ByteWriter& w, const npc::NpcSpawner& spawner);
 /// Читает список убитых и отдаёт его спавнеру.
 /// @return false при повреждённых данных
 bool deserializeNpcState(ByteReader& r, npc::NpcSpawner& spawner);
+
+/// Вскрытые тайники.
+///
+/// Лежит рядом с убитыми NPC, потому что это то же самое: список
+/// того, что в мире УЖЕ случилось и не должно случиться снова.
+void serializeTreasures(ByteWriter& w, const hazards::TreasureKeeper& keeper);
+bool deserializeTreasures(ByteReader& r, hazards::TreasureKeeper& keeper);
 
 } // namespace save

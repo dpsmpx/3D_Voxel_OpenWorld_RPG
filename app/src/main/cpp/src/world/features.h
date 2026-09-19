@@ -172,6 +172,31 @@ struct LairSite {
 LairSite lairAt(i32 superX, i32 superZ, u64 worldSeed,
                 const TerrainGenerator* terrain);
 
+/// --- Тайники: сокровище под старыми руинами ---
+///
+/// Сокровище тайное в буквальном смысле: замурованная камера под
+/// развалинами, куда нет ни хода, ни лестницы. Добираются до неё
+/// СВЕРХУ, разобрав землю, — и знать, где копать, можно только от
+/// того, кто помнит эти развалины.
+///
+/// Потому клад и привязан к руинам, а не рассыпан по карте: клад в
+/// чистом поле не находят, его находят по рассказу.
+struct TreasureSite {
+    bool       exists = false;
+    glm::ivec3 center{0};   ///< середина камеры
+    u32        seed = 0;
+};
+
+/// Тайник в супер-чанке (sx, sz), если он там есть.
+TreasureSite treasureAt(i32 superX, i32 superZ, u64 worldSeed,
+                        const TerrainGenerator* terrain);
+
+/// Ближайший тайник к точке, не дальше maxBlocks. Спрашивают квесты:
+/// подсказка ведёт к настоящему кладу, а не к случайной точке.
+TreasureSite nearestTreasure(const glm::ivec3& from, u64 worldSeed,
+                             const TerrainGenerator* terrain,
+                             i32 maxBlocks);
+
 /// --- Провалы: обрывы, в которые падают ---
 ///
 /// Дыра в земле от поверхности до самых пещер. Не пещера и не

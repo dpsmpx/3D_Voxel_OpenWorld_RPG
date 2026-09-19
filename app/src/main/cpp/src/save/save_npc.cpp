@@ -36,4 +36,26 @@ bool deserializeNpcState(ByteReader& r, npc::NpcSpawner& spawner) {
     return true;
 }
 
+void serializeTreasures(ByteWriter& w, const hazards::TreasureKeeper& keeper) {
+    const std::vector<u64>& keys = keeper.openedKeys();
+    w.varU32((u32)keys.size());
+    for (u64 k : keys) w.writeU64(k);
+}
+
+bool deserializeTreasures(ByteReader& r, hazards::TreasureKeeper& keeper) {
+    u32 count = 0;
+    if (!r.varU32v(count)) return false;
+    if (count > MAX_DEAD_KEYS) return false;
+
+    std::vector<u64> keys;
+    keys.reserve(count);
+    for (u32 i = 0; i < count; ++i) {
+        u64 k = 0;
+        if (!r.u64v(k)) return false;
+        keys.push_back(k);
+    }
+    keeper.setOpenedKeys(std::move(keys));
+    return true;
+}
+
 } // namespace save

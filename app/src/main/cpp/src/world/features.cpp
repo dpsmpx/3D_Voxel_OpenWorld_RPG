@@ -1294,7 +1294,114 @@ VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
 }
 
 // ============================================================
+// Тайники под руинами
+// ============================================================
+namespace treasure {
+
+constexpr i32 DEPTH    = 6;   ///< на сколько ниже поверхности
+constexpr i32 HALF     = 2;   ///< полкамеры: 5x5
+constexpr i32 HEIGHT   = 3;
+
+} // namespace treasure
+
+TreasureSite treasureAt(i32 superX, i32 superZ, u64 worldSeed,
+                        const TerrainGenerator* terrain)
+{
+    TreasureSite site;
+    if (!terrain) return site;
+
+    // Клад лежит под руинами. Не потому, что так красивее, а потому
+    // что клад в чистом поле не находят: его находят по рассказу, а
+    // рассказывают про место, у которого есть имя.
+    const structs::Layout L = structs::layoutFor(superX, superZ, worldSeed);
+    if (L.kind != structs::Ruin) return site;
+
+    const i32 cx = (L.minBlock.x + L.maxBlock.x) / 2;
+    const i32 cz = (L.minBlock.z + L.maxBlock.z) / 2;
+    const i32 top = terrain->surfaceHeight(cx, cz);
+    if (top < TerrainGenerator::SEA_LEVEL + 4) return site;
+    // Камера целиком должна помещаться выше коренной породы.
+    if (top - treasure::DEPTH - treasure::HEIGHT < 4) return site;
+
+    site.exists = true;
+    site.seed   = L.seed;
+    site.center = { cx, top - treasure::DEPTH, cz };
+    return site;
+}
+
+TreasureSite nearestTreasure(const glm::ivec3& from, u64 worldSeed,
+                             const TerrainGenerator* terrain,
+                             i32 maxBlocks)
+{
+    TreasureSite best;
+    i64 bestD2 = (i64)maxBlocks * maxBlocks;
+
+    const i32 reach = maxBlocks / structs::SUPER_BLOCKS + 1;
+    const i32 sc0x = (i32)std::floor((f32)from.x / (f32)structs::SUPER_BLOCKS);
+    const i32 sc0z = (i32)std::floor((f32)from.z / (f32)structs::SUPER_BLOCKS);
+
+    for (i32 dz = -reach; dz <= reach; ++dz)
+        for (i32 dx = -reach; dx <= reach; ++dx) {
+            const TreasureSite t = treasureAt(sc0x + dx, sc0z + dz,
+                                              worldSeed, terrain);
+            if (!t.exists) continue;
+            const i64 ddx = t.center.x - from.x;
+            const i64 ddz = t.center.z - from.z;
+            const i64 d2 = ddx * ddx + ddz * ddz;
+            if (d2 < bestD2) { bestD2 = d2; best = t; }
+        }
+    return best;
+}
+
+/// Камера тайника в своём чанке.
+///
+/// Замурована намеренно: ни хода, ни лестницы. Единственный способ
+/// попасть внутрь — разобрать землю сверху, и ровно это делает клад
+/// кладом, а не комнатой с сундуком.
+static void applyTreasures(Chunk& c, const FeatureContext& ctx) {
+    const i32 bx0 = c.coord.x * CHUNK_SIZE;
+    const i32 bz0 = c.coord.z * CHUNK_SIZE;
+    const i32 sc0x = (i32)std::floor((f32)bx0 / (f32)structs::SUPER_BLOCKS);
+    const i32 sc0z = (i32)std::floor((f32)bz0 / (f32)structs::SUPER_BLOCKS);
+
+    for (i32 dz = -1; dz <= 1; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            const TreasureSite t = treasureAt(sc0x + dx, sc0z + dz,
+                                              ctx.seed, ctx.terrain);
+            if (!t.exists) continue;
+            const i32 reach = treasure::HALF + 1;
+            if (bx0 + CHUNK_SIZE - 1 < t.center.x - reach ||
+                bx0 > t.center.x + reach) continue;
+            if (bz0 + CHUNK_SIZE - 1 < t.center.z - reach ||
+                bz0 > t.center.z + reach) continue;
+
+            const i32 y0 = t.center.y;
+            const i32 y1 = y0 + treasure::HEIGHT - 1;
+            for (i32 wz = t.center.z - reach; wz <= t.center.z + reach; ++wz)
+                for (i32 wx = t.center.x - reach; wx <= t.center.x + reach; ++wx) {
+                    const bool wall = std::abs(wx - t.center.x) > treasure::HALF ||
+                                      std::abs(wz - t.center.z) > treasure::HALF;
+                    for (i32 y = y0 - 1; y <= y1 + 1; ++y) {
+                        const bool cap = (y < y0 || y > y1);
+                        putWorld(c, wx, y, wz, (wall || cap) ? STONE : AIR, true);
+                    }
+                }
+
+            // Золотая жила по углам пола: она и видна, и означает
+            // «здесь копали не зря».
+            const i32 g = treasure::HALF - 1;
+            putWorld(c, t.center.x - g, y0, t.center.z - g, GOLD_ORE, true);
+            putWorld(c, t.center.x + g, y0, t.center.z - g, GOLD_ORE, true);
+            putWorld(c, t.center.x - g, y0, t.center.z + g, GOLD_ORE, true);
+            putWorld(c, t.center.x + g, y0, t.center.z + g, GOLD_ORE, true);
+            // Фонарь посередине: камера без света — чёрный куб.
+            putWorld(c, t.center.x, y1, t.center.z, LANTERN, true);
+        }
+}
+
+// ============================================================
 // Провалы
+// ============================================================
 // ============================================================
 //
 // Обрыв, в который падают. Отвесные стены, дно глубоко внизу и
@@ -1830,6 +1937,9 @@ void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
     // деревенская мостовая должна остаться сверху, а не под ними.
     applyRoads(chunk, fctx);
     applyTrees(chunk, fctx);
+    // Тайник — под землёй, до провалов: провал, попавший на руины,
+    // вскроет камеру сверху, и это честно.
+    applyTreasures(chunk, fctx);
     // Провал — последним: он выгрызает всё, что над ним поставили.
     // Дерево, выросшее посреди устья, повисло бы в воздухе.
     applySinkholes(chunk, fctx);

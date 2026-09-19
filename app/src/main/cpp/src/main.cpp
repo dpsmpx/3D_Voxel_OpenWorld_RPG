@@ -111,6 +111,9 @@ struct Engine {
     std::unique_ptr<ui::UiSystem>          ui;
     std::unique_ptr<mobs::Spawner>         spawner;
     std::unique_ptr<hazards::TrapSpawner>  trapSpawner;
+    /// Вскрытые тайники живут рядом с сохранением, а не в спавнере:
+    /// это то, что в мире УЖЕ случилось.
+    hazards::TreasureKeeper                treasures;
     std::unique_ptr<npc::NpcSpawner>       npcSpawner;
     std::unique_ptr<crafting::StationSpawner>  stationSpawner;
     std::unique_ptr<world::EnchantAltarSpawner> altarSpawner;
@@ -605,7 +608,7 @@ struct Engine {
         auto st = saveMgr.save(sl, *world, registry,
                                player->entity(), worldDelta,
                                worldSeed, playtime.seconds(), dayCycle,
-                               *npcSpawner);
+                               *npcSpawner, treasures);
 
         if (st == save::SaveStatus::Ok) {
             lastSaveProfile = profile;
@@ -633,7 +636,7 @@ struct Engine {
 
         auto st = saveMgr.load(sl, *world, registry, player->entity(),
                                worldDelta, &loadedSeed, &loadedPlaytime,
-                               &dayCycle, *npcSpawner);
+                               &dayCycle, *npcSpawner, treasures);
 
         if (st == save::SaveStatus::Ok) {
             worldSeed = loadedSeed;
@@ -1305,6 +1308,11 @@ struct Engine {
                                                 ppos, dt);
             if (hurt > 0.f && ui)
                 ui->notify(cfg::T(cfg::StrKey::Notif_Trap),
+                           ui::theme::NotifyPriority::High);
+
+            // Тайник: докопавшемуся высыпается всё разом.
+            if (treasures.update(*world, registry, ppos, worldSeed) > 0 && ui)
+                ui->notify(cfg::T(cfg::StrKey::Notif_Treasure),
                            ui::theme::NotifyPriority::High);
         }
         if (stationSpawner && player) {

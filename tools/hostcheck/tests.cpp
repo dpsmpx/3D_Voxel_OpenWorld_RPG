@@ -31,6 +31,7 @@
 #include "combat/resonance.h"
 #include "factions/faction.h"
 #include "quests/quest.h"
+#include "quests/quest_generator.h"
 #include "quests/quest_def.h"
 #include "combat/status_effects.h"
 #include "combat/damage.h"
@@ -8216,6 +8217,201 @@ void testCourierWalksTheRoad() {
 }
 
 // ------------------------------------------------------------
+void testSecretTreasureAndItsQuest() {
+    group("тайник: замурованный клад под руинами и подсказка к нему");
+
+    world::blocks();
+    items::items();
+
+    constexpr u64 SEED = 0x7EA5;
+    jobs::gJobs.start(2);
+    world::ChunkManager world(SEED, 2);
+    const auto& gen = world.generator();
+
+    // ---- 1. Тайники есть, и лежат они под руинами ----
+    world::TreasureSite site;
+    int found = 0, cells = 0, notRuin = 0;
+    for (i32 sz = -12; sz <= 12; ++sz)
+        for (i32 sx = -12; sx <= 12; ++sx) {
+            ++cells;
+            const auto t = world::treasureAt(sx, sz, SEED, &gen);
+            if (!t.exists) continue;
+            ++found;
+            // Под руинами, а не где попало: деревня, подземелье и
+            // замок — чужие места.
+            if (world::villageAt(sx, sz, SEED, &gen).exists ||
+                world::dungeonAt(sx, sz, SEED).exists ||
+                world::treeDungeonAt(sx, sz, SEED, &gen).exists)
+                ++notRuin;
+            if (!site.exists) site = t;
+        }
+    {
+        char m[140];
+        std::snprintf(m, sizeof(m), "ячеек %d, тайников %d, не под руинами %d",
+                      cells, found, notRuin);
+        check(true, m);
+    }
+    check(found > 10, "тайники в мире есть");
+    check(notRuin == 0, "и ни один не лёг под чужую постройку");
+    check(site.exists, "тайник для разбора найден");
+    if (!site.exists) { jobs::gJobs.stop(); return; }
+
+    // ---- 2. Камера замурована ----
+    //
+    // Ни хода, ни лестницы: добираются сверху, разобрав землю. Это и
+    // делает клад кладом, а не комнатой с сундуком.
+    {
+        const i32 cxc = (i32)std::floor((f32)site.center.x / world::CHUNK_SIZE);
+        const i32 czc = (i32)std::floor((f32)site.center.z / world::CHUNK_SIZE);
+        std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> cache;
+        std::vector<world::TerrainGenerator::Column> cols;
+        auto blockAt = [&](i32 wx, i32 wy, i32 wz) -> u16 {
+            const i32 cx = (i32)std::floor((f32)wx / world::CHUNK_SIZE);
+            const i32 cz = (i32)std::floor((f32)wz / world::CHUNK_SIZE);
+            auto key = std::make_pair(cx, cz);
+            auto it = cache.find(key);
+            if (it == cache.end()) {
+                auto ch = std::make_unique<world::Chunk>();
+                ch->coord = { cx, 0, cz };
+                world::computeChunkColumns(gen, cx, cz, cols);
+                world::generateChunkVoxels(*ch, gen, cols.data(), SEED);
+                it = cache.emplace(key, std::move(ch)).first;
+            }
+            const i32 lx = wx - cx * world::CHUNK_SIZE;
+            const i32 lz = wz - cz * world::CHUNK_SIZE;
+            if (!it->second->inBounds(lx, wy, lz)) return world::AIR;
+            return it->second->at(lx, wy, lz);
+        };
+        (void)cxc; (void)czc;
+
+        const i32 CX = site.center.x, CY = site.center.y, CZ = site.center.z;
+        check(blockAt(CX, CY + 1, CZ) == world::AIR, "внутри камеры пусто");
+
+        // Свод и стены — камень по всему обводу.
+        int shell = 0, holes = 0;
+        for (i32 dx = -3; dx <= 3; ++dx)
+            for (i32 dz = -3; dz <= 3; ++dz) {
+                if (std::abs(dx) == 3 || std::abs(dz) == 3) {
+                    // Стена
+                    for (i32 y = CY; y < CY + 3; ++y)
+                        (blockAt(CX + dx, y, CZ + dz) == world::STONE) ? ++shell
+                                                                       : ++holes;
+                } else {
+                    // Свод
+                    (blockAt(CX + dx, CY + 3, CZ + dz) == world::STONE) ? ++shell
+                                                                       : ++holes;
+                }
+            }
+        char m[140];
+        std::snprintf(m, sizeof(m), "обвод камеры: камня %d, дыр %d", shell, holes);
+        check(true, m);
+        check(shell > 40, "камера обнесена камнем");
+        check(holes == 0, "и замурована без единого лаза");
+
+        // Золотая жила и фонарь — то, ради чего копали.
+        int gold = 0;
+        for (i32 dx = -2; dx <= 2; ++dx)
+            for (i32 dz = -2; dz <= 2; ++dz)
+                if (blockAt(CX + dx, CY, CZ + dz) == world::GOLD_ORE) ++gold;
+        check(gold >= 4, "на полу камеры золотая жила");
+        check(blockAt(CX, CY + 2, CZ) == world::LANTERN,
+              "и фонарь, иначе камера — чёрный куб");
+
+        // Клад лежит ГЛУБОКО: сверху земля, а не воздух.
+        const i32 top = gen.surfaceHeight(CX, CZ);
+        char dm[120];
+        std::snprintf(dm, sizeof(dm), "поверхность на %d, камера на %d", top, CY);
+        check(true, dm);
+        check(top - (CY + 3) >= 2, "между сводом и травой есть что копать");
+    }
+
+    // ---- 3. Докопавшемуся высыпается добро ----
+    {
+        ecs::Registry reg;
+        hazards::TreasureKeeper keeper;
+        const glm::vec3 inside{ (f32)site.center.x + 0.5f,
+                                (f32)site.center.y,
+                                (f32)site.center.z + 0.5f };
+        const glm::vec3 far = inside + glm::vec3(60.f, 0.f, 60.f);
+
+        check(keeper.update(world, reg, far, SEED) == 0,
+              "издали клад не открывается");
+        const u32 spilled = keeper.update(world, reg, inside, SEED);
+        {
+            char m[120];
+            std::snprintf(m, sizeof(m), "в камере высыпалось стопок: %u", spilled);
+            check(true, m);
+        }
+        check(spilled >= 3, "дошедшему высыпается добро");
+        check(keeper.openedCount() == 1, "тайник помечен вскрытым");
+
+        // Второй раз тот же клад не наполняется: иначе это не клад,
+        // а бесконечный источник золота.
+        const u32 again = keeper.update(world, reg, inside, SEED);
+        check(again == 0, "вскрытый клад второй раз не наполняется");
+
+        // И переживает сохранение: докопался, вышел, загрузился —
+        // и копай то же место снова было бы то же самое.
+        {
+            save::ByteWriter w;
+            save::serializeTreasures(w, keeper);
+            hazards::TreasureKeeper k2;
+            save::ByteReader r(w.data());
+            check(save::deserializeTreasures(r, k2), "список вскрытых прочитан");
+            check(k2.openedCount() == 1, "и в нём тот же тайник");
+            ecs::Registry reg2;
+            check(k2.update(world, reg2, inside, SEED) == 0,
+                  "после загрузки вскрытый клад пуст");
+        }
+    }
+
+    // ---- 4. Подсказка ведёт к настоящему кладу ----
+    {
+        ecs::Registry reg;
+        const glm::ivec3 giver{ site.center.x + 120, site.center.y, site.center.z + 90 };
+
+        // Ближайший тайник — это он и есть.
+        const auto near = world::nearestTreasure(giver, SEED, &gen, 900);
+        check(near.exists, "по подсказке ближайший тайник находится");
+        if (near.exists) {
+            const i32 dd = std::abs(near.center.x - giver.x) +
+                           std::abs(near.center.z - giver.z);
+            check(dd <= 900, "и он в пределах, о которых спрашивали");
+        }
+
+        quests::QuestGenOptions opts{};
+        opts.giverPos      = giver;
+        opts.playerLevel   = 3;
+        opts.allowKill     = false;
+        opts.allowCollect  = false;
+        opts.allowExplore  = false;
+        opts.allowTreasure = true;
+        opts.seed          = 12345;
+
+        const ecs::Entity qe = quests::generateQuest(reg, world, opts);
+        auto* q = reg.get<quests::Quest>(qe);
+        check(q != nullptr, "задание выдано");
+        if (q) {
+            check(q->tmpl.type == quests::QuestType::Treasure,
+                  "и это именно подсказка к тайнику");
+            const auto real = world::treasureAt(
+                (i32)std::floor((f32)q->tmpl.targetLocation.x / 256.f),
+                (i32)std::floor((f32)q->tmpl.targetLocation.z / 256.f),
+                SEED, &gen);
+            check(real.exists, "цель задания — настоящий тайник, а не точка в поле");
+            if (real.exists)
+                check(real.center == q->tmpl.targetLocation,
+                      "и ровно тот, что лежит в мире");
+            check(q->tmpl.targetRadius <= 4,
+                  "радиус такой, что надо докопаться, а не пройти поверху");
+            check(q->description[0] != '\0', "подсказка не пустая");
+        }
+    }
+
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testFallsTrapsAndAmbushes() {
     group("опасности: обрыв, ловушка и засада");
 
@@ -11809,8 +12005,9 @@ void testSaveFileRoundTrip() {
     reg.add(player, wal);
 
     npc::NpcSpawner spawner;
+    hazards::TreasureKeeper treasures;
     const save::SaveStatus ws = mgr.save(slot, world, reg, player, deltas,
-                                         SEED, 777, day, spawner);
+                                         SEED, 777, day, spawner, treasures);
     if (ws != save::SaveStatus::Ok)
         std::printf("    (статус записи: %d, путь: %s)\n",
                     (int)ws, slot.dataPath().c_str());
@@ -11838,8 +12035,10 @@ void testSaveFileRoundTrip() {
     world::DayCycle day2;
 
     npc::NpcSpawner spawner2;
+    hazards::TreasureKeeper treasures2;
     const save::SaveStatus rs = mgr.load(slot, world2, reg2, player2, deltas2,
-                                         &outSeed, &outPlay, &day2, spawner2);
+                                         &outSeed, &outPlay, &day2, spawner2,
+                                         treasures2);
     check(rs == save::SaveStatus::Ok, "сейв прочитан обратно");
     check(outSeed == SEED, "зерно мира дошло целым");
     check(outPlay == 777, "наигранное время дошло целым");
@@ -13233,6 +13432,7 @@ int main() {
     testLairHoldsOneBeast();
     testBlightForestAndCastles();
     testFallsTrapsAndAmbushes();
+    testSecretTreasureAndItsQuest();
     testTreeDungeonIsClimbable();
     testShurikenFliesAndHits();
     testDashMovesForward();

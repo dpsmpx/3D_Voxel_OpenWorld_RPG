@@ -77,6 +77,26 @@ QuestTemplateRegistry::QuestTemplateRegistry() {
         "Beyond the veil","A legendary journey awaits.",
         1, 1, 2000, 280, 55);
 
+    // ---------------- Treasure ----------------
+    //
+    // Награда меньше, чем у Explore той же сложности: главная
+    // награда тут в самой яме.
+    set(QuestType::Treasure, QuestDifficulty::Trivial,
+        "A rumour",       "Old folk speak of a cache beneath the ruins.",
+        1, 1, 60, 10, 3);
+    set(QuestType::Treasure, QuestDifficulty::Easy,
+        "Buried under stone", "Dig down at the ruins and see what is there.",
+        1, 1, 150, 24, 8);
+    set(QuestType::Treasure, QuestDifficulty::Normal,
+        "The sealed vault", "A walled chamber lies under the old ruins.",
+        1, 1, 380, 60, 15);
+    set(QuestType::Treasure, QuestDifficulty::Hard,
+        "Far cache",      "The cache is far, and nobody has dug it out yet.",
+        1, 1, 850, 120, 30);
+    set(QuestType::Treasure, QuestDifficulty::Epic,
+        "The last hoard", "A hoard nobody has reached in living memory.",
+        1, 1, 2100, 300, 55);
+
     // ---------------- Defend ----------------
     set(QuestType::Defend, QuestDifficulty::Trivial,
         "Hold the line",  "Protect the villager for %d seconds.",
@@ -135,6 +155,7 @@ const char* questTypeName(QuestType t) {
         case QuestType::Explore: return "Explore";
         case QuestType::Defend:  return "Defend";
         case QuestType::Deliver: return "Deliver";
+        case QuestType::Treasure: return "Treasure";
         default:                 return "?";
     }
 }

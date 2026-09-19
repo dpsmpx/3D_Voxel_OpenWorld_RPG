@@ -93,6 +93,9 @@ QuestType pickType(const QuestGenOptions& o, u64 seed) {
 
     // Explore — средний
     if (o.allowExplore) list[n++] = { QuestType::Explore, 2 };
+    // Вес три: подсказка к кладу должна попадаться, а не быть
+    // редкостью, о которой игрок не узнает.
+    if (o.allowTreasure) list[n++] = { QuestType::Treasure, 3 };
 
     if (o.allowDefend)  list[n++] = { QuestType::Defend,  1 };
     if (o.allowDeliver) list[n++] = { QuestType::Deliver, 1 };
@@ -371,6 +374,18 @@ void finalizeQuest(Quest& q,
                           q.tmpl.targetLocation.z);
             break;
         }
+        case QuestType::Treasure: {
+            std::snprintf(q.title, sizeof(q.title), "%s", tmplDef.titlePattern);
+            // Глубину называем отдельно: без неё игрок стоит на
+            // нужном месте и не понимает, что копать надо вниз.
+            std::snprintf(q.description, sizeof(q.description),
+                          "%s Ruins at (%d, %d), buried %d blocks down.",
+                          tmplDef.descPattern,
+                          q.tmpl.targetLocation.x,
+                          q.tmpl.targetLocation.z,
+                          6);
+            break;
+        }
         case QuestType::Defend: {
             std::snprintf(q.title, sizeof(q.title), "%s", tmplDef.titlePattern);
             std::snprintf(q.description, sizeof(q.description),
@@ -424,6 +439,26 @@ ecs::Entity generateQuest(ecs::Registry& reg,
             q.tmpl.targetLocation = pickExploreLocation(
                 world, options.giverPos, q.tmpl.difficulty, rng.next());
             q.tmpl.targetRadius = 6;
+            break;
+        }
+        case QuestType::Treasure: {
+            // Цель — НАСТОЯЩИЙ тайник, а не точка в стороне. Если
+            // поблизости клада нет, подсказке не о чем говорить, и
+            // задание становится обычной разведкой: врать игроку про
+            // клад, которого нет, хуже, чем не дать подсказку.
+            const world::TreasureSite t = world::nearestTreasure(
+                options.giverPos, world.seed(), &world.generator(), 900);
+            if (t.exists) {
+                q.tmpl.targetLocation = t.center;
+                // Радиус меньше, чем у разведки: до камеры надо
+                // именно ДОКОПАТЬСЯ, а не пройти мимо поверху.
+                q.tmpl.targetRadius = 3;
+            } else {
+                q.tmpl.type = QuestType::Explore;
+                q.tmpl.targetLocation = pickExploreLocation(
+                    world, options.giverPos, q.tmpl.difficulty, rng.next());
+                q.tmpl.targetRadius = 6;
+            }
             break;
         }
         case QuestType::Defend: {

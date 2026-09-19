@@ -31,6 +31,9 @@ struct QuestGenOptions {
     bool                allowExplore  = true;
     bool                allowDefend   = false;
     bool                allowDeliver  = false;
+    /// Подсказка к тайнику. Её даёт не всякий: клад помнят старики,
+    /// а не первый встречный торговец.
+    bool                allowTreasure = false;
 
     /// seed для детерминированной генерации
     u64                 seed          = 0;

@@ -150,6 +150,7 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Notif_LairSlimes */    "A slime bog — only slimes roam here",
     /* Notif_Fall */          "A hard landing",
     /* Notif_Trap */          "A trap!",
+    /* Notif_Treasure */      "A cache, and it is yours",
 
     /* Hud_Use */           "USE",
     /* Ench_Altar */        "Enchant Altar",
@@ -297,6 +298,7 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Notif_LairSlimes */    "Слизневая топь — тут водятся одни слизни",
     /* Notif_Fall */          "Тяжёлое приземление",
     /* Notif_Trap */          "Ловушка!",
+    /* Notif_Treasure */      "Тайник, и он ваш",
 
     /* Hud_Use */           "ИСПОЛЬЗОВАТЬ",
     /* Ench_Altar */        "Алтарь зачарования",
