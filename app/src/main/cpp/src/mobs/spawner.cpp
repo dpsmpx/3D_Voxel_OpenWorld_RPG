@@ -99,8 +99,13 @@ u16 mobIdForBiome(world::BiomeId biome, bool night, u32 rngVal) {
             return (r < 0.6f) ? MOB_SHEEP : MOB_WOLF;
         case world::Mountains:
             return night ? MOB_GOBLIN : MOB_NONE;
+        // Болото: слизни, волки и ведьмы. Ведьма — не «ещё один
+        // моб», а причина ходить на болото с опаской: травит ударом
+        // и залечивается.
         case world::Swamp:
-            return (r < 0.5f) ? MOB_SLIME : MOB_WOLF;
+            return (r < 0.40f) ? MOB_SLIME
+                 : (r < 0.70f) ? MOB_WOLF
+                               : MOB_WITCH;
         case world::Volcanic:
             return MOB_SLIME;
         // Чёрный лес: только чудовища, и никакой скотины. Овца,

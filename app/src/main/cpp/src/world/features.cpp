@@ -1359,6 +1359,48 @@ VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
 }
 
 // ============================================================
+// Болотные бочаги
+// ============================================================
+//
+// Болото было болотом только по имени: та же трава, тот же рельеф,
+// разве что суше на два блока и деревья сухие. Стоячая вода — то
+// единственное, по чему болото узнают с первого взгляда.
+void applySwampPools(Chunk& chunk, const FeatureContext& ctx) {
+    const auto& terrain = *ctx.terrain;
+    const i32 bx0 = chunk.coord.x * CHUNK_SIZE;
+    const i32 bz0 = chunk.coord.z * CHUNK_SIZE;
+
+    // Дёшево: биом спрашивается ОДИН раз на чанк, по его середине.
+    // Побочный эффект тут в пользу — бочаги кончаются на границе
+    // чанка, и берег выходит рваным, как ему и положено.
+    const i32 midX = bx0 + CHUNK_SIZE / 2;
+    const i32 midZ = bz0 + CHUNK_SIZE / 2;
+    if (terrain.biomeAt(midX, midZ) != Swamp) return;
+
+    for (i32 lz = 0; lz < CHUNK_SIZE; ++lz)
+        for (i32 lx = 0; lx < CHUNK_SIZE; ++lx) {
+            const i32 wx = bx0 + lx, wz = bz0 + lz;
+
+            // Пятна воды, а не рябь по всему болоту: хэш по клетке
+            // четыре на четыре даёт бочаги, по которым можно обойти.
+            const u32 h = hashXZ(wx >> 2, wz >> 2, ctx.seed ^ 0x5A4A6);
+            if ((h & 0xFF) >= 96) continue;
+
+            const i32 top = ctx.columnAt(lx, lz, wx, wz).surface;
+            if (top <= TerrainGenerator::SEA_LEVEL) continue;
+            if (top >= CHUNK_SIZE_Y - 4) continue;
+
+            // Бочаг в один-два блока глубиной. Глубже — это уже
+            // озеро, и в него придётся плыть, а по болоту ходят.
+            const i32 depth = 1 + (i32)((h >> 8) & 1);
+            for (i32 d = 0; d < depth; ++d)
+                put(chunk, lx, top - 1 - d, lz, WATER);
+            // Дно илистое: под водой болота не камень.
+            put(chunk, lx, top - 1 - depth, lz, DIRT);
+        }
+}
+
+// ============================================================
 // Тайники под руинами
 // ============================================================
 namespace treasure {
@@ -2004,6 +2046,9 @@ void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
     applyTrees(chunk, fctx);
     // Тайник — под землёй, до провалов: провал, попавший на руины,
     // вскроет камеру сверху, и это честно.
+    // Бочаги — до тайников и провалов: те выгрызают землю, и
+    // вода, налитая после них, повисла бы над ямой.
+    applySwampPools(chunk, fctx);
     applyTreasures(chunk, fctx);
     // Провал — последним: он выгрызает всё, что над ним поставили.
     // Дерево, выросшее посреди устья, повисло бы в воздухе.

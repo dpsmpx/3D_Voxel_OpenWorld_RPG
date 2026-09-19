@@ -8975,6 +8975,241 @@ void testFallsTrapsAndAmbushes() {
 }
 
 // ------------------------------------------------------------
+void testSwampsAndWitches() {
+    group("болота и ведьмы: стоячая вода, отрава и самолечение");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    constexpr u64 SEED = 0x5A4A9;
+
+    // ---- 1. На болоте стоит вода ----
+    //
+    // Болото было болотом только по имени: та же трава, тот же
+    // рельеф, разве что суше на два блока.
+    {
+        world::ChunkManager mgr(SEED, 1);
+        const auto& gen = mgr.generator();
+
+        i32 swx = 0, swz = 0;
+        bool found = false;
+        for (i32 z = -3000; z <= 3000 && !found; z += 32)
+            for (i32 x = -3000; x <= 3000 && !found; x += 32)
+                if (gen.biomeAt(x, z) == world::Swamp) { swx = x; swz = z; found = true; }
+        check(found, "болото в мире нашлось");
+        if (!found) return;
+
+        auto waterIn = [&](i32 wx, i32 wz, int& water, int& surface) {
+            const i32 cx = (i32)std::floor((f32)wx / world::CHUNK_SIZE);
+            const i32 cz = (i32)std::floor((f32)wz / world::CHUNK_SIZE);
+            world::Chunk ch;
+            ch.coord = { cx, 0, cz };
+            std::vector<world::TerrainGenerator::Column> cols;
+            world::computeChunkColumns(gen, cx, cz, cols);
+            world::generateChunkVoxels(ch, gen, cols.data(), SEED);
+            water = surface = 0;
+            for (i32 lz = 0; lz < world::CHUNK_SIZE; ++lz)
+                for (i32 lx = 0; lx < world::CHUNK_SIZE; ++lx) {
+                    ++surface;
+                    const i32 top = gen.surfaceHeight(cx * world::CHUNK_SIZE + lx,
+                                                      cz * world::CHUNK_SIZE + lz);
+                    if (top < 1 || top >= world::CHUNK_SIZE_Y) continue;
+                    if (ch.at(lx, top - 1, lz) == world::WATER) ++water;
+                }
+        };
+
+        int water = 0, surface = 0;
+        waterIn(swx, swz, water, surface);
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "в чанке болота колонок с водой %d из %d",
+                          water, surface);
+            check(true, m);
+        }
+        check(water > 50, "на болоте стоит вода");
+        check(water < surface, "но болото не сплошное озеро — по нему ходят");
+
+        // А на равнине её нет: бочаги — свойство болота, а не всего
+        // мира.
+        i32 plx = 0, plz = 0;
+        bool plain = false;
+        for (i32 z = -3000; z <= 3000 && !plain; z += 32)
+            for (i32 x = -3000; x <= 3000 && !plain; x += 32)
+                if (gen.biomeAt(x, z) == world::Plains) { plx = x; plz = z; plain = true; }
+        if (plain) {
+            int pw = 0, ps = 0;
+            waterIn(plx, plz, pw, ps);
+            char m[140];
+            std::snprintf(m, sizeof(m), "в чанке равнины колонок с водой %d из %d",
+                          pw, ps);
+            check(true, m);
+            check(pw * 4 < water, "на равнине воды заметно меньше, чем на болоте");
+        }
+    }
+
+    // ---- 2. Ведьма водится на болоте ----
+    {
+        int witches = 0, others = 0;
+        for (u32 rng = 0; rng < 600; ++rng) {
+            const u16 id = mobs::mobIdForBiome(world::Swamp, true,
+                                               rng * 2654435761u);
+            if (id == mobs::MOB_WITCH) ++witches; else ++others;
+        }
+        char m[120];
+        std::snprintf(m, sizeof(m), "на болоте из 600 бросков ведьм %d", witches);
+        check(true, m);
+        check(witches > 50, "ведьмы на болоте водятся");
+        check(others > 0, "но не одни они");
+
+        // И только там: ведьма — примета болота.
+        int elsewhere = 0;
+        const world::BiomeId dry[4] = { world::Plains, world::Forest,
+                                        world::Desert, world::Taiga };
+        for (world::BiomeId b : dry)
+            for (u32 rng = 0; rng < 300; ++rng)
+                if (mobs::mobIdForBiome(b, true, rng * 2654435761u)
+                    == mobs::MOB_WITCH) ++elsewhere;
+        check(elsewhere == 0, "и нигде больше");
+    }
+
+    // ---- 3. Удар ведьмы травит ----
+    {
+        const auto& def = mobs::mobRegistry().get(mobs::MOB_WITCH);
+        check(def.name != nullptr, "у ведьмы есть имя");
+        check(def.hostile, "и она враждебна");
+        check(def.poisonTime > 0.f && def.poisonDps > 0.f,
+              "её удар травит");
+        check(def.healPeriod > 0.f && def.healAmount > 0.f,
+              "и она залечивается");
+
+        // Отрава доходит до цели через общий расчёт урона.
+        ecs::Registry reg;
+        const ecs::Entity victim = reg.create();
+        reg.add(victim, ecs::Health{ 100.f, 100.f, 0.f, 0.f });
+        reg.add(victim, combat::StatusEffects{});
+
+        combat::DamageInstance dmg{};
+        dmg.amount     = def.attackDamage;
+        dmg.type       = combat::DamageType::Poison;
+        dmg.poisonDps  = def.poisonDps;
+        dmg.poisonTime = def.poisonTime;
+        dmg.targetEntity = (u32)victim;
+        combat::applyDamage(reg, victim, dmg);
+
+        auto* se = reg.get<combat::StatusEffects>(victim);
+        auto* hp = reg.get<ecs::Health>(victim);
+        check(se && se->poisonTime > 0.f, "цель отравлена");
+        if (!se || !hp) return;
+
+        const f32 afterHit = hp->current;
+        check(afterHit < 100.f, "и удар сам по себе ранит");
+
+        // Отрава идёт ПОСЛЕ удара: в этом её смысл — отбежать
+        // недостаточно.
+        for (int i = 0; i < 60 * 3; ++i)
+            combat::tickStatuses(reg, 1.f / 60.f);
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "после удара %.1f, через три секунды отравы %.1f",
+                          (double)afterHit, (double)hp->current);
+            check(true, m);
+        }
+        check(hp->current < afterHit - 3.f,
+              "отрава продолжает травить после удара");
+    }
+
+    // ---- 4. Ведьма залечивается, и только когда ей плохо ----
+    {
+        jobs::gJobs.start(2);
+        world::ChunkManager world(SEED, 1);
+        ecs::Registry reg;
+
+        const auto& def = mobs::mobRegistry().get(mobs::MOB_WITCH);
+        const ecs::Entity w = reg.create();
+        ecs::Transform tf;
+        tf.position = { 4.5f, 64.f, 4.5f };
+        reg.add(w, tf);
+        reg.add(w, ecs::Velocity{});
+        reg.add(w, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
+        reg.add(w, ecs::Kind{ ecs::EntityKind::Mob });
+        reg.add(w, ecs::EnemyTag{});
+        reg.add(w, mobs::MobTag{ mobs::MOB_WITCH });
+        reg.add(w, mobs::MobAI{});
+        reg.add(w, ecs::AIAgent{});
+        reg.add(w, combat::StatusEffects{});
+
+        auto* hp = reg.get<ecs::Health>(w);
+        check(hp != nullptr, "у ведьмы есть здоровье");
+        if (!hp) { jobs::gJobs.stop(); return; }
+
+        // Поцарапанной она не лечится: лечение начинается, только
+        // когда ей и правда плохо. Иначе полоска стояла бы полной
+        // весь бой, и убить её было бы нельзя вовсе.
+        //
+        // Берём ПОЧТИ полное здоровье, а не полное: у полной лечение
+        // упёрлось бы в потолок и по итогу ничего не изменило — такая
+        // проверка прошла бы и без всякого условия.
+        hp->current = def.maxHealth * 0.9f;
+        const f32 scratched = hp->current;
+        for (int i = 0; i < 60 * 20; ++i)
+            mobs::updateMobs(world, reg, ecs::Entity{}, { 200.f, 64.f, 200.f },
+                             1.f / 60.f);
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "поцарапанная ведьма за двадцать секунд: %.1f -> %.1f",
+                          (double)scratched, (double)hp->current);
+            check(true, m);
+        }
+        check(std::fabs(hp->current - scratched) < 0.01f,
+              "поцарапанная ведьма не лечится");
+
+        // А израненная — лечится.
+        hp->current = def.maxHealth * 0.3f;
+        const f32 hurt = hp->current;
+        for (int i = 0; i < 60 * 20; ++i)
+            mobs::updateMobs(world, reg, ecs::Entity{}, { 200.f, 64.f, 200.f },
+                             1.f / 60.f);
+        {
+            char m[140];
+            std::snprintf(m, sizeof(m),
+                          "израненная ведьма за двадцать секунд: %.1f -> %.1f из %.1f",
+                          (double)hurt, (double)hp->current, (double)hp->max);
+            check(true, m);
+        }
+        check(hp->current > hurt + def.healAmount * 0.9f,
+              "израненная ведьма залечивается");
+        check(hp->current <= hp->max + 0.01f, "но не сверх своего запаса");
+
+        // Обычный моб не лечится: способность у неё, а не у всех.
+        const ecs::Entity g = reg.create();
+        ecs::Transform gtf;
+        gtf.position = { 9.5f, 64.f, 9.5f };
+        reg.add(g, gtf);
+        reg.add(g, ecs::Velocity{});
+        reg.add(g, ecs::Health{ 20.f, 40.f, 0.f, 0.f });
+        reg.add(g, ecs::Kind{ ecs::EntityKind::Mob });
+        reg.add(g, ecs::EnemyTag{});
+        reg.add(g, mobs::MobTag{ mobs::MOB_GOBLIN });
+        reg.add(g, mobs::MobAI{});
+        reg.add(g, ecs::AIAgent{});
+        reg.add(g, combat::StatusEffects{});
+        auto* ghp = reg.get<ecs::Health>(g);
+        const f32 gWas = ghp ? ghp->current : 0.f;
+        for (int i = 0; i < 60 * 20; ++i)
+            mobs::updateMobs(world, reg, ecs::Entity{}, { 200.f, 64.f, 200.f },
+                             1.f / 60.f);
+        if (ghp) check(ghp->current <= gWas + 0.01f,
+                       "а гоблин так не умеет");
+
+        jobs::gJobs.stop();
+    }
+}
+
+// ------------------------------------------------------------
 void testBlightForestAndCastles() {
     group("Чёрный лес: густая нечистая земля и замок посреди неё");
 
@@ -14078,6 +14313,7 @@ int main() {
     testCourierWalksTheRoad();
     testLairHoldsOneBeast();
     testBlightForestAndCastles();
+    testSwampsAndWitches();
     testFallsTrapsAndAmbushes();
     testSecretTreasureAndItsQuest();
     testStoryChainRunsInOrder();
