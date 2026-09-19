@@ -59,6 +59,17 @@ private:
     static constexpr f32 SPAWN_DIST   = 200.f;
     static constexpr f32 DESPAWN_DIST = 260.f;
 
+    /// ---- Посыльные ----
+    ///
+    /// Спавнятся не в деревне, а НА ДОРОГЕ рядом с игроком: деревни
+    /// стоят в двухстах пятидесяти блоках друг от друга, а деспавн
+    /// срабатывает на двухстах шестидесяти. Посыльный, вышедший из
+    /// деревни, исчез бы на полпути, и встретить его на дороге было
+    /// бы нельзя — то есть незачем его и заводить.
+    void updateCouriers(world::ChunkManager& world, ecs::Registry& reg,
+                        const glm::vec3& playerPos, u64 worldSeed);
+
+    f32 courierTimer_ = 0.f;
     f32 spawnTimer_ = 0.f;
     f32 despawnTimer_ = 0.f;
     u32 activeCount_ = 0;

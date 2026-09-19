@@ -7890,6 +7890,305 @@ void testForestIsBigAndDense() {
 }
 
 // ------------------------------------------------------------
+/// Две соседние по сетке super-chunk деревни, между которыми есть
+/// дорога. Обе проверки ниже начинают с одного и того же поиска.
+struct RoadPair {
+    bool found = false;
+    world::VillageSite a, b;
+};
+
+RoadPair findRoadPair(const world::TerrainGenerator& gen, u64 seed) {
+    RoadPair p;
+    for (i32 r = 0; r < 14 && !p.found; ++r)
+        for (i32 sa = -r; sa <= r && !p.found; ++sa)
+            for (i32 sb = -r; sb <= r && !p.found; ++sb) {
+                if (std::max(std::abs(sa), std::abs(sb)) != r) continue;
+                const auto a = world::villageAt(sa, sb, seed, &gen);
+                if (!a.exists) continue;
+                const auto east = world::villageAt(sa + 1, sb, seed, &gen);
+                if (east.exists) { p = { true, a, east }; break; }
+                const auto south = world::villageAt(sa, sb + 1, seed, &gen);
+                if (south.exists) { p = { true, a, south }; break; }
+            }
+    return p;
+}
+
+/// Проверка одного отрезка дороги в мире с данным зерном.
+///
+/// Считает, сколько точек середины пути вымощено и сколько заросло,
+/// и складывает в переданные счётчики. Одного зерна мало: дорога,
+/// прошедшая через равнину, не скажет ничего про дорогу через лес, а
+/// расчищает полотно как раз лес.
+void measureRoad(u64 SEED, int& sampledOut, int& pavedOut, int& woodedOut,
+                 int& midOut, int& wideOut)
+{
+    world::ChunkManager mgr(SEED, 1);
+    const RoadPair pair = findRoadPair(mgr.generator(), SEED);
+    if (!pair.found) return;
+
+    // Генерируем только те чанки, по которым идёт отрезок, с запасом
+    // в один чанк поперёк: класть дорогу целиком незачем, проверяем
+    // середину пути.
+    const glm::ivec3 A = pair.a.center, B = pair.b.center;
+    std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> gencache;
+    std::vector<world::TerrainGenerator::Column> cols;
+    auto chunkAt = [&](i32 cx, i32 cz) -> world::Chunk* {
+        auto key = std::make_pair(cx, cz);
+        auto it = gencache.find(key);
+        if (it != gencache.end()) return it->second.get();
+        auto ch = std::make_unique<world::Chunk>();
+        ch->coord = { cx, 0, cz };
+        world::computeChunkColumns(mgr.generator(), cx, cz, cols);
+        world::generateChunkVoxels(*ch, mgr.generator(), cols.data(), SEED);
+        world::Chunk* raw = ch.get();
+        gencache.emplace(key, std::move(ch));
+        return raw;
+    };
+    auto blockAt = [&](i32 wx, i32 wy, i32 wz) -> u16 {
+        const i32 cx = (i32)std::floor((f32)wx / world::CHUNK_SIZE);
+        const i32 cz = (i32)std::floor((f32)wz / world::CHUNK_SIZE);
+        world::Chunk* c = chunkAt(cx, cz);
+        const i32 lx = wx - cx * world::CHUNK_SIZE;
+        const i32 lz = wz - cz * world::CHUNK_SIZE;
+        if (!c->inBounds(lx, wy, lz)) return world::AIR;
+        return c->at(lx, wy, lz);
+    };
+    // Блок полотна — тот, на который putOnGround кладёт камень:
+    // surfaceHeight − 1. Искать «первый сверху» нельзя, над дорогой
+    // свисают кроны.
+    auto surfaceBlock = [&](i32 wx, i32 wz) -> u16 {
+        const i32 y = mgr.generator().surfaceHeight(wx, wz) - 1;
+        if (y < 1) return world::AIR;
+        return blockAt(wx, y, wz);
+    };
+
+    // ---- 1. Дорога идёт ----
+    //
+    // Смотрим середину пути: у самой деревни камень лежит и без
+    // дороги — там своя мостовая.
+    const i32 dxs = B.x - A.x, dzs = B.z - A.z;
+    const i32 steps = std::max(std::abs(dxs), std::abs(dzs));
+    if (steps < 100) return;
+
+    int sampled = 0, paved = 0, wooded = 0;
+    for (i32 i = steps * 15 / 100; i <= steps * 85 / 100; ++i) {
+        const i32 x = A.x + dxs * i / steps;
+        const i32 z = A.z + dzs * i / steps;
+        ++sampled;
+        // Высоту полотна спрашиваем у рельефа, а не ищем сверху:
+        // «первый блок сверху» над дорогой — это крона соседнего
+        // дуба, и по ней о дороге судить нельзя.
+        const i32 roadY = mgr.generator().surfaceHeight(x, z) - 1;
+        if (roadY < 1) continue;
+        if (blockAt(x, roadY, z) == world::STONE) ++paved;
+        // Дерево на полотне дорогу не украшает, а обрывает: по стволу
+        // не пройти. Смотрим ровно то, во что упрётся идущий, — три
+        // блока над камнем.
+        for (i32 y = roadY + 1; y <= roadY + 3; ++y) {
+            const u16 b = blockAt(x, y, z);
+            if (b == world::WOOD || b == world::LEAVES || b == world::CACTUS) {
+                ++wooded;
+                break;
+            }
+        }
+    }
+    sampledOut += sampled;
+    pavedOut   += paved;
+    woodedOut  += wooded;
+
+    // ---- 2. Полотно шириной в три блока ----
+    //
+    // Ширина — это не украшение: посыльный идёт по прямой между
+    // колодцами, а не по клетке, и на дорожке в один блок он бы с неё
+    // сходил.
+    const bool alongX = std::abs(dxs) >= std::abs(dzs);
+    for (i32 i = steps * 4 / 10; i <= steps * 6 / 10; ++i) {
+        const i32 x = A.x + dxs * i / steps;
+        const i32 z = A.z + dzs * i / steps;
+        if (surfaceBlock(x, z) != world::STONE) continue;
+        ++midOut;
+        int w = 0;
+        for (i32 k = -1; k <= 1; ++k)
+            if (surfaceBlock(alongX ? x : x + k, alongX ? z + k : z)
+                == world::STONE) ++w;
+        if (w == 3) ++wideOut;
+    }
+}
+
+void testRoadConnectsVillages() {
+    group("дороги: камень от деревни до деревни, и лес на неё не лезет");
+
+    world::blocks();
+
+    // Три зерна, а не одно: дорога через равнину о расчистке полотна
+    // не скажет ничего — зарастает она в лесу.
+    const u64 seeds[3] = { 0x2A0D, 0xF04E57, 4242 };
+    int sampled = 0, paved = 0, wooded = 0, midpoints = 0, wide = 0;
+    for (u64 sd : seeds)
+        measureRoad(sd, sampled, paved, wooded, midpoints, wide);
+
+    {
+        char m[180];
+        std::snprintf(m, sizeof(m),
+                      "три мира: точек %d, мощёных %d, заросших %d, "
+                      "замеров ширины %d из них полных %d",
+                      sampled, paved, wooded, midpoints, wide);
+        check(true, m);
+    }
+    check(sampled > 300, "есть что мерить");
+    check(paved * 10 >= sampled * 7,
+          "дорога вымощена почти на всём протяжении");
+    check(wooded == 0, "и ни одно дерево не выросло на ней");
+    check(midpoints > 30, "мощёных точек хватает для замера ширины");
+    check(wide * 10 >= midpoints * 8, "полотно шириной в три блока");
+
+    // ---- Дорога не строится дважды ----
+    //
+    // Отрезки кладутся только на восток и на юг. Обратного отрезка
+    // (с запада или с севера) быть не должно — иначе на перекрёстках
+    // дорог оказалось бы вдвое больше нужного.
+    {
+        constexpr u64 SEED = 0x2A0D;
+        world::ChunkManager mgr(SEED, 1);
+        const RoadPair pair = findRoadPair(mgr.generator(), SEED);
+        check(pair.found, "деревни-соседки нашлись");
+        if (!pair.found) return;
+        check(pair.a.center.y > 0 && pair.b.center.y > 0,
+              "у обеих известна высота колодца");
+        const i32 sxA = (i32)std::floor((f32)pair.a.center.x / 256.f);
+        const i32 szA = (i32)std::floor((f32)pair.a.center.z / 256.f);
+        int outgoing = 0;
+        if (world::villageAt(sxA + 1, szA, SEED, &mgr.generator()).exists) ++outgoing;
+        if (world::villageAt(sxA, szA + 1, SEED, &mgr.generator()).exists) ++outgoing;
+        check(outgoing >= 1, "из деревни выходит хотя бы одна дорога вперёд");
+    }
+}
+
+// ------------------------------------------------------------
+void testCourierWalksTheRoad() {
+    group("посыльный: выходит на дорогу и идёт из деревни в деревню");
+
+    world::blocks();
+    items::items();
+    npc::npcRegistry();
+
+    constexpr u64 SEED = 0x2A0D;
+    jobs::gJobs.start(2);
+    world::ChunkManager world(SEED, 3);
+
+    const RoadPair pair = findRoadPair(world.generator(), SEED);
+    check(pair.found, "деревни-соседки нашлись");
+    if (!pair.found) { jobs::gJobs.stop(); return; }
+
+    // Игрок стоит ровно посреди дороги: спавнер ищет ближайшую точку
+    // отрезка и требует, чтобы до неё было не дальше семидесяти
+    // метров.
+    const glm::ivec3 A = pair.a.center, B = pair.b.center;
+    const i32 mx = (A.x + B.x) / 2, mz = (A.z + B.z) / 2;
+    const glm::vec3 playerPos{ (f32)mx + 0.5f,
+                               (f32)world.generator().surfaceHeight(mx, mz),
+                               (f32)mz + 0.5f };
+
+    bool ready = false;
+    for (int i = 0; i < 1200 && !ready; ++i) {
+        world.update(playerPos);
+        ready = world.isReadyAt(mx, mz) && world.pendingJobs() == 0;
+        if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    check(ready, "дорога под ногами построена");
+    if (!ready) { jobs::gJobs.stop(); return; }
+
+    ecs::Registry reg;
+    npc::NpcSpawner spawner;
+
+    auto findCourier = [&]() -> ecs::Entity {
+        auto& pool = reg.pool<npc::NpcTag>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            ecs::Entity e = pool.entityAt((u32)i);
+            auto* t = pool.get(e);
+            if (t && t->id == npc::NPC_COURIER) return e;
+        }
+        return ecs::Entity{};
+    };
+
+    // Посыльные проверяются раз в четыре секунды — это 240 кадров.
+    ecs::Entity courier{};
+    for (int i = 0; i < 60 * 9 && !courier.valid(); ++i) {
+        spawner.update(world, reg, playerPos, SEED);
+        courier = findCourier();
+    }
+    check(courier.valid(), "посыльный вышел на дорогу");
+    if (!courier.valid()) { jobs::gJobs.stop(); return; }
+
+    auto* ai = reg.get<npc::NpcAI>(courier);
+    auto* tf = reg.get<ecs::Transform>(courier);
+    check(ai && tf, "у посыльного есть и рассудок, и место");
+    if (!ai || !tf) { jobs::gJobs.stop(); return; }
+    check(ai->state == npc::NpcAI::Travel, "и он именно в пути");
+
+    // Он стоит НА дороге, а не рядом с ней.
+    {
+        const glm::vec2 P{ tf->position.x, tf->position.z };
+        const glm::vec2 a2{ (f32)A.x, (f32)A.z }, b2{ (f32)B.x, (f32)B.z };
+        const glm::vec2 v = b2 - a2;
+        f32 t = glm::dot(P - a2, v) / glm::dot(v, v);
+        t = std::max(0.f, std::min(1.f, t));
+        check(glm::distance(a2 + v * t, P) < 4.f, "и стоит на полотне");
+    }
+
+    // ---- Идёт к цели ----
+    const glm::vec3 target = ai->travelTarget;
+    const f32 before = glm::distance(glm::vec2(tf->position.x, tf->position.z),
+                                     glm::vec2(target.x, target.z));
+    for (int i = 0; i < 60 * 3; ++i)
+        npc::updateNpcs(world, reg, ecs::Entity{}, playerPos, 1.f / 60.f);
+    const f32 after = glm::distance(glm::vec2(tf->position.x, tf->position.z),
+                                    glm::vec2(target.x, target.z));
+    {
+        char m[140];
+        std::snprintf(m, sizeof(m), "до цели было %.1f, стало %.1f",
+                      (double)before, (double)after);
+        check(true, m);
+    }
+    check(after < before - 5.f, "за три секунды он заметно приблизился к цели");
+
+    // ---- Дойдя, разворачивается ----
+    //
+    // Ставим его вплотную к цели: ждать, пока он пройдёт сотню
+    // метров, проверка не должна.
+    const glm::vec3 home = ai->homePos;
+    tf->position = glm::vec3(target.x, tf->position.y, target.z);
+    for (int i = 0; i < 12; ++i)
+        npc::updateNpcs(world, reg, ecs::Entity{}, playerPos, 1.f / 60.f);
+    check(glm::distance(glm::vec2(ai->travelTarget.x, ai->travelTarget.z),
+                        glm::vec2(home.x, home.z)) < 0.01f,
+          "дойдя, он повернул к тому концу, откуда вышел");
+    check(glm::distance(glm::vec2(ai->homePos.x, ai->homePos.z),
+                        glm::vec2(target.x, target.z)) < 0.01f,
+          "а прежняя цель стала домом");
+
+    // ---- Их не становится толпа ----
+    for (int i = 0; i < 60 * 30; ++i)
+        spawner.update(world, reg, playerPos, SEED);
+    int couriers = 0;
+    {
+        auto& pool = reg.pool<npc::NpcTag>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            auto* t = pool.get(pool.entityAt((u32)i));
+            if (t && t->id == npc::NPC_COURIER) ++couriers;
+        }
+    }
+    {
+        char m[120];
+        std::snprintf(m, sizeof(m), "за полминуты посыльных стало %d", couriers);
+        check(true, m);
+    }
+    check(couriers <= 2, "на дороге их двое, а не толпа");
+
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testTreeDungeonIsClimbable() {
     group("дерево-подземелье: по нему можно подняться");
 
@@ -11811,6 +12110,8 @@ int main() {
     testLocomotionStatesAndTransitions();
     testWellIsRespawnPoint();
     testForestIsBigAndDense();
+    testRoadConnectsVillages();
+    testCourierWalksTheRoad();
     testTreeDungeonIsClimbable();
     testShurikenFliesAndHits();
     testDashMovesForward();

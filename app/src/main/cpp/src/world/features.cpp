@@ -162,13 +162,19 @@ static void stampBush(Chunk& c, i32 bx, i32 groundY, i32 bz, u32 rng) {
 
 } // namespace trees
 
+/// Половина ширины дороги. Три блока: по двое разойтись, но не
+/// проспект. Объявлена здесь, потому что её спрашивают и укладка
+/// дороги, и отказ сажать деревья на ней.
+constexpr i32 ROAD_HALF = 1;
+
 namespace {
 
-/// Стоит ли на этом месте постройка.
+/// Стоит ли на этом месте постройка или дорога.
 ///
 /// Определение ниже, рядом с раскладкой структур: она объявлена
 /// дальше по тексту, а нужна здесь.
 bool structureBlocks(i32 wx, i32 wz, u64 seed);
+bool roadBlocks(i32 wx, i32 wz, u64 seed, const TerrainGenerator* terrain);
 
 /// Деревья и кусты ОДНОГО чанка-источника, положенные в чанк c.
 ///
@@ -210,6 +216,7 @@ void growChunk(Chunk& c, const FeatureContext& ctx, i32 scx, i32 scz) {
         if (surface >= CHUNK_SIZE_Y - 24) continue;
         if (surface <= TerrainGenerator::SEA_LEVEL + 1) continue;
         if (structureBlocks(wx, wz, ctx.seed)) continue;
+        if (roadBlocks(wx, wz, ctx.seed, ctx.terrain)) continue;
 
         const trees::TreeShape shape = trees::treeShapeFor(biome.treeType, rng);
         if (shape.trunkHeight == 0) continue;
@@ -233,6 +240,7 @@ void growChunk(Chunk& c, const FeatureContext& ctx, i32 scx, i32 scz) {
         if (surface >= CHUNK_SIZE_Y - 8) continue;
         if (surface <= TerrainGenerator::SEA_LEVEL + 1) continue;
         if (structureBlocks(wx, wz, ctx.seed)) continue;
+        if (roadBlocks(wx, wz, ctx.seed, ctx.terrain)) continue;
         trees::stampBush(c, wx, surface, wz, rng >> 10);
     }
 }
@@ -492,6 +500,45 @@ bool structureBlocks(i32 wx, i32 wz, u64 seed) {
             if (wx < L.minBlock.x - MARGIN || wx > L.maxBlock.x + MARGIN) continue;
             if (wz < L.minBlock.z - MARGIN || wz > L.maxBlock.z + MARGIN) continue;
             return true;
+        }
+    return false;
+}
+
+/// Лес не растёт на дороге.
+///
+/// Дорога кладётся ДО деревьев, и дуб, выросший посреди неё, дорогу
+/// не только закрывает — он ещё и обрывает путь, по которому ходят
+/// посыльные.
+bool roadBlocks(i32 wx, i32 wz, u64 seed, const TerrainGenerator* terrain) {
+    // Три блока от оси — полотно шириной в три плюс блок с каждой
+    // стороны. Этого хватает и стволу, и кроне: над дорогой ветви
+    // проходят уже выше человеческого роста.
+    constexpr f32 KEEP = (f32)ROAD_HALF + 2.f;
+
+    auto nearSegment = [&](const glm::ivec3& a, const glm::ivec3& b) {
+        const f32 ax = (f32)a.x, az = (f32)a.z;
+        const f32 vx = (f32)(b.x - a.x), vz = (f32)(b.z - a.z);
+        const f32 len2 = vx * vx + vz * vz;
+        if (len2 < 1e-3f) return false;
+        f32 t = (((f32)wx - ax) * vx + ((f32)wz - az) * vz) / len2;
+        if (t < 0.f) t = 0.f;
+        if (t > 1.f) t = 1.f;
+        const f32 dx = (f32)wx - (ax + vx * t);
+        const f32 dz = (f32)wz - (az + vz * t);
+        return dx * dx + dz * dz <= KEEP * KEEP;
+    };
+
+    const i32 sc0x = (i32)std::floor((f32)wx / (f32)structs::SUPER_BLOCKS);
+    const i32 sc0z = (i32)std::floor((f32)wz / (f32)structs::SUPER_BLOCKS);
+    for (i32 dz = -2; dz <= 2; ++dz)
+        for (i32 dx = -2; dx <= 2; ++dx) {
+            const i32 sx = sc0x + dx, sz = sc0z + dz;
+            const VillageSite a = villageAt(sx, sz, seed, terrain);
+            if (!a.exists) continue;
+            const VillageSite e = villageAt(sx + 1, sz, seed, terrain);
+            if (e.exists && nearSegment(a.center, e.center)) return true;
+            const VillageSite s2 = villageAt(sx, sz + 1, seed, terrain);
+            if (s2.exists && nearSegment(a.center, s2.center)) return true;
         }
     return false;
 }
@@ -1215,6 +1262,75 @@ VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
     return site;
 }
 
+// ============================================================
+// Дороги между деревнями
+// ============================================================
+//
+// Соединяются только СОСЕДНИЕ по сетке super-chunk деревни и только в
+// сторону +X и +Z. Иначе каждый отрезок строился бы дважды — с обоих
+// концов, — а на перекрёстках дорог оказалось бы вдвое больше, чем
+// нужно, чтобы куда-то дойти.
+//
+// Дорога кладётся на поверхность тем же putOnGround, что и деревенские
+// дорожки: он сам находит землю и сам отказывается класть камень на
+// камень или в воду. Поэтому дорога честно обрывается у реки и на
+// скалах — мост через ущелье здесь не строится.
+namespace {
+
+void stampRoad(Chunk& c, const FeatureContext& ctx,
+               const glm::ivec3& a, const glm::ivec3& b,
+               i32 bx0, i32 bx1, i32 bz0, i32 bz1)
+{
+    const i32 dx = b.x - a.x, dz = b.z - a.z;
+    const i32 steps = std::max(std::abs(dx), std::abs(dz));
+    if (steps <= 0) return;
+
+    // Поперёк направления: вдоль X ширина идёт по Z, и наоборот.
+    const bool alongX = std::abs(dx) >= std::abs(dz);
+
+    for (i32 i = 0; i <= steps; ++i) {
+        const i32 x = a.x + dx * i / steps;
+        const i32 z = a.z + dz * i / steps;
+        // Шаги вне своего чанка пропускаем сразу: отрезок бывает
+        // длиной в полтысячи блоков, а класть из него нужно
+        // тридцать два.
+        if (x < bx0 || x > bx1 || z < bz0 || z > bz1) continue;
+        for (i32 w = -ROAD_HALF; w <= ROAD_HALF; ++w)
+            putOnGround(c, ctx, alongX ? x : x + w,
+                                alongX ? z + w : z, STONE);
+    }
+}
+
+} // namespace
+
+void applyRoads(Chunk& chunk, const FeatureContext& ctx) {
+    const i32 bx0 = chunk.coord.x * CHUNK_SIZE - 2;
+    const i32 bx1 = bx0 + CHUNK_SIZE + 3;
+    const i32 bz0 = chunk.coord.z * CHUNK_SIZE - 2;
+    const i32 bz1 = bz0 + CHUNK_SIZE + 3;
+
+    const i32 sc0x = (i32)std::floor((f32)chunk.coord.x / (f32)structs::SUPER_CHUNKS);
+    const i32 sc0z = (i32)std::floor((f32)chunk.coord.z / (f32)structs::SUPER_CHUNKS);
+
+    // Два супер-чанка в каждую сторону: отрезок между соседями длиной
+    // до двухсот пятидесяти шести блоков может пересекать этот чанк,
+    // начинаясь и заканчиваясь далеко от него.
+    for (i32 dz = -2; dz <= 2; ++dz)
+        for (i32 dx = -2; dx <= 2; ++dx) {
+            const i32 sx = sc0x + dx, sz = sc0z + dz;
+            const VillageSite a = villageAt(sx, sz, ctx.seed, ctx.terrain);
+            if (!a.exists) continue;
+
+            const VillageSite east  = villageAt(sx + 1, sz, ctx.seed, ctx.terrain);
+            if (east.exists)
+                stampRoad(chunk, ctx, a.center, east.center, bx0, bx1, bz0, bz1);
+
+            const VillageSite south = villageAt(sx, sz + 1, ctx.seed, ctx.terrain);
+            if (south.exists)
+                stampRoad(chunk, ctx, a.center, south.center, bx0, bx1, bz0, bz1);
+        }
+}
+
 void applyStructures(Chunk& chunk, const FeatureContext& ctx) {
     // Чанк → диапазон super-chunk'ов
     i32 cx = chunk.coord.x, cz = chunk.coord.z;
@@ -1301,6 +1417,9 @@ void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
     applyOres(chunk, fctx);
     applyLiquids(chunk, fctx);
     applyStructures(chunk, fctx);
+    // Дороги ПОСЛЕ построек: они идут от деревни к деревне, и
+    // деревенская мостовая должна остаться сверху, а не под ними.
+    applyRoads(chunk, fctx);
     applyTrees(chunk, fctx);
 }
 

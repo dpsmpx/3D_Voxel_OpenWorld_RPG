@@ -17,6 +17,7 @@ enum class NpcRole : u8 {
     Blacksmith,     // кузня (Phase 12)
     Guard,          // стражник, защищает деревню
     Healer,         // лечит игрока за золото (Phase 12)
+    Courier,        // идёт по дороге из деревни в деревню
     Count
 };
 
@@ -53,6 +54,7 @@ enum NpcTypeId : u16 {
     NPC_BLACKSMITH,
     NPC_GUARD,
     NPC_HEALER,
+    NPC_COURIER,
     NPC_COUNT
 };
 
@@ -90,6 +92,7 @@ struct NpcAI {
         Follow,
         Flee,
         Combat,
+        Travel,     ///< посыльный идёт по дороге
         Dead,
     };
 
@@ -106,6 +109,13 @@ struct NpcAI {
 
     /// Только для Guard
     u32   guardTarget = 0;
+
+    /// Только для Courier — куда он идёт по дороге.
+    ///
+    /// Посыльный ходит между двумя точками: дойдя до цели, меняет её
+    /// местами с домом и идёт обратно. Одного поля хватает, потому
+    /// что вторая точка — это homePos, который и так есть у каждого.
+    glm::vec3 travelTarget{0};
 
     /// Только для QuestGiver — текущий предложенный квест
     u32   offeredQuest = 0;

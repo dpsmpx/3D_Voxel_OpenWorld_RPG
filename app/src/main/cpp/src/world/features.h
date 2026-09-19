@@ -76,6 +76,11 @@ void applyLiquids(Chunk& chunk, const FeatureContext& ctx);
 /// структура может пересекать границы.
 void applyStructures(Chunk& chunk, const FeatureContext& ctx);
 
+/// --- Дороги: от деревни к соседней деревне ---
+/// Кладутся после структур и до деревьев: мостовая деревни должна
+/// остаться сверху, а лес — не прорасти сквозь дорогу.
+void applyRoads(Chunk& chunk, const FeatureContext& ctx);
+
 /// Запрос структур мира.
 ///
 /// Структуры размещаются детерминированно по super-chunk-сетке
