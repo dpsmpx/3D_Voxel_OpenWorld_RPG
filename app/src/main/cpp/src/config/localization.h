@@ -35,6 +35,7 @@ enum class StrKey : u16 {
 
     // --- Крафт ---
     Craft_Title, Craft_Workbench, Craft_Anvil, Craft_Alchemy,
+    Craft_ByHand,
     Craft_Ingredients, Craft_Required, Craft_Button, Craft_Select,
 
     // --- Торговля ---

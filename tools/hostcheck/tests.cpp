@@ -4829,23 +4829,47 @@ void testPauseMenuIsGroupedAndComplete() {
     const usize end = src.find("\n}\n", pm);
     const std::string body = src.substr(pm, end - pm);
 
+    // Разделы спрашиваем у самого списка, а не ищем в тексте
+    // функции: список вынесен в menuEntries(), и поиск по исходнику
+    // рисования теперь проверял бы не то, где он есть, а то, где его
+    // печатают.
+    //
     // Инвентаря в списке не было, хотя выход из него вёл сюда.
-    check(body.find("Screen::Inventory") != NONE,
-          "в паузе есть инвентарь");
+    // Ремесла — тоже: экран открывался одной подсказкой у станка, и
+    // в поле был недостижим вовсе.
+    {
+        auto has = [](ui::Screen sc) {
+            for (const auto& e : ui::menuEntries())
+                if (e.target == sc) return true;
+            return false;
+        };
+        check(has(ui::Screen::Inventory), "в паузе есть инвентарь");
+        check(has(ui::Screen::Crafting),  "и ремесло: без станка иначе никак");
 
-    // Все прежние разделы остались достижимы.
-    const char* need[] = { "Screen::Attributes", "Screen::SkillTree",
-                           "Screen::QuestLog", "Screen::Reputation",
-                           "Screen::SaveLoad", "Screen::Settings" };
-    int missing = 0;
-    for (const char* n : need) {
-        if (body.find(n) != NONE) continue;
-        ++missing;
-        char msg[128];
-        std::snprintf(msg, sizeof(msg), "из паузы пропал раздел %s", n);
-        check(false, msg);
+        const ui::Screen need[] = {
+            ui::Screen::Attributes, ui::Screen::SkillTree,
+            ui::Screen::QuestLog,   ui::Screen::Reputation,
+            ui::Screen::SaveLoad,   ui::Screen::Settings,
+        };
+        int missing = 0;
+        for (ui::Screen sc : need) {
+            if (has(sc)) continue;
+            ++missing;
+            char msg[128];
+            std::snprintf(msg, sizeof(msg), "из паузы пропал раздел %d", (int)sc);
+            check(false, msg);
+        }
+        check(missing == 0, "ни один прежний раздел не потерян");
+
+        // И ни один раздел не назван дважды: дубль в списке — это
+        // две одинаковые кнопки на экране.
+        int dupes = 0;
+        const auto& all = ui::menuEntries();
+        for (usize i = 0; i < all.size(); ++i)
+            for (usize j = i + 1; j < all.size(); ++j)
+                if (all[i].target == all[j].target) ++dupes;
+        check(dupes == 0, "и ни один не назван дважды");
     }
-    check(missing == 0, "ни один прежний раздел не потерян");
 
     // Сетка, а не столбец: в альбомной ориентации столбец — худшая
     // из форм, по вертикали места меньше всего.
@@ -8655,6 +8679,125 @@ void testDashMovesForward() {
         check(z < 7.f, "рывок упирается в стену, а не проходит сквозь");
     }
     jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+void testHandcraftWorksAnywhere() {
+    group("крафт на ходу: еда и простые вещи без верстака");
+
+    items::items();
+    const auto& reg = crafting::recipes();
+
+    // ---- 1. Раздел «без станции» больше не пуст ----
+    //
+    // StationType::None был в перечислении с самого начала, и
+    // canCraft умел его пропускать — но НИ ОДИН рецепт им не
+    // пользовался. Весь крафт до единого требовал станции, а станции
+    // стоят только в деревнях.
+    const auto free = reg.findByStation(crafting::StationType::None);
+    {
+        char m[120];
+        std::snprintf(m, sizeof(m), "рецептов без станции %d из %d",
+                      (int)free.size(), (int)reg.count());
+        check(true, m);
+    }
+    check(free.size() >= 4, "рецепты без станции есть");
+    check(free.size() < reg.count() / 2,
+          "но большинство по-прежнему за станками — деревня нужна");
+
+    // Еда среди них обязательна: «простая еда на ходу» — это про
+    // жареное мясо у костра, а не про сюрикены.
+    bool hasFood = false;
+    for (const auto* r : free)
+        if (r->output.itemId == items::ITEM_MEAT_COOKED ||
+            r->output.itemId == items::ITEM_BREAD) hasFood = true;
+    check(hasFood, "еда готовится на ходу");
+
+    // А плавка, оружие и зелья — нет: иначе станки стали бы
+    // украшением.
+    for (const auto* r : free) {
+        const auto& def = items::items().get(r->output.itemId);
+        check(def.category != items::ItemCategory::Weapon,
+              "оружие на коленке не куётся");
+    }
+    {
+        bool smeltFree = false;
+        for (const auto* r : free)
+            if (r->output.itemId == items::ITEM_IRON_INGOT ||
+                r->output.itemId == items::ITEM_GOLD_INGOT) smeltFree = true;
+        check(!smeltFree, "и слитки в поле не плавятся");
+    }
+
+    // ---- 2. В чистом поле они и правда делаются ----
+    items::Inventory inv;
+    crafting::CraftContext ctx{};
+    ctx.inventory     = &inv;
+    ctx.playerLevel   = 1;
+    ctx.nearbyStation = crafting::StationType::None;   // станка рядом нет
+
+    const crafting::Recipe* meat = nullptr;
+    for (const auto* r : free)
+        if (r->output.itemId == items::ITEM_MEAT_COOKED) meat = r;
+    check(meat != nullptr, "рецепт жареного мяса найден");
+    if (!meat) return;
+
+    // Без ингредиентов — отказ по ингредиентам, а не по станции.
+    check(crafting::canCraft(ctx, *meat) ==
+              crafting::CraftStatus::MissingIngredients,
+          "без мяса не пожаришь, но станок при этом ни при чём");
+
+    for (const auto& in : meat->inputs) inv.addItem(in.itemId, in.count);
+    check(crafting::canCraft(ctx, *meat) == crafting::CraftStatus::Ok,
+          "с мясом и дровами — можно");
+    check(crafting::craft(ctx, *meat) == crafting::CraftStatus::Ok,
+          "и крафт проходит");
+    check(inv.countOf(items::ITEM_MEAT_COOKED) == meat->output.count,
+          "жаркое в сумке");
+    check(inv.countOf(items::ITEM_MEAT_RAW) == 0, "сырое ушло");
+
+    // ---- 3. Станочный рецепт в поле по-прежнему недоступен ----
+    const auto bench = reg.findByStation(crafting::StationType::Workbench);
+    check(!bench.empty(), "станочные рецепты остались");
+    if (!bench.empty()) {
+        const crafting::Recipe& b = *bench[0];
+        for (const auto& in : b.inputs) inv.addItem(in.itemId, in.count);
+        check(crafting::canCraft(ctx, b) ==
+                  crafting::CraftStatus::MissingStation,
+              "а верстачный рецепт в поле не сделать");
+        ctx.nearbyStation = crafting::StationType::Workbench;
+        check(crafting::canCraft(ctx, b) == crafting::CraftStatus::Ok,
+              "у верстака — можно");
+
+        // И наоборот: у верстака ручные рецепты не пропадают. Станок
+        // добавляет возможности, а не отбирает — иначе у наковальни
+        // нельзя было бы поджарить мясо.
+        for (const auto& in : meat->inputs) inv.addItem(in.itemId, in.count);
+        check(crafting::canCraft(ctx, *meat) == crafting::CraftStatus::Ok,
+              "а у верстака ручные рецепты никуда не деваются");
+    }
+
+    // ---- 4. Экран крафта открывается без станка ----
+    //
+    // Рецептов мало — открыть экран было нечем: он открывался одной
+    // подсказкой «использовать», которая появляется только рядом со
+    // станком.
+    {
+        ui::UiSystem sys;
+        sys.screen = ui::Screen::Hud;
+        sys.returnTo = ui::Screen::Hud;
+        sys.nearbyStation = crafting::StationType::None;
+
+        bool found = false;
+        for (const auto& e : ui::menuEntries())
+            if (e.target == ui::Screen::Crafting) found = true;
+        check(found, "в меню есть пункт ремесла");
+
+        sys.openCrafting(sys.nearbyStation);
+        check(sys.screen == ui::Screen::Crafting,
+              "экран открылся без станка рядом");
+        check(sys.nearbyStation == crafting::StationType::None,
+              "и открылся именно как крафт на ходу");
+    }
 }
 
 // ------------------------------------------------------------
@@ -12519,6 +12662,7 @@ int main() {
     testShurikenFliesAndHits();
     testDashMovesForward();
     testRunningAndFightingTire();
+    testHandcraftWorksAnywhere();
     testTrampolineThrowAndBounce();
     testElixirsGrantTimedBuff();
     testInventoryDragMovesItems();
