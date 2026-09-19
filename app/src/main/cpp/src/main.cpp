@@ -50,6 +50,7 @@
 #include "world/hazards.h"
 #include "world/spawn.h"
 #include "world/world_spec.h"
+#include "save/save_export.h"
 #include "mobs/mob_ai.h"
 
 #include "combat/projectile.h"
@@ -149,6 +150,22 @@ struct Engine {
     /// добраться до него можно только через объект активности.
     ANativeActivity* activity = nullptr;
     std::string internalDataPath;
+    /// Общее хранилище: оттуда выгруженный мир видят другие
+    /// программы. Система оставляет путь пустым, если хранилище на
+    /// момент запуска не смонтировано, — это нормально, каталог
+    /// подбирается и без него.
+    std::string externalDataPath;
+
+    /// Как игрок назвал текущий мир. Попадает в метаданные слота и
+    /// в имя выгруженного файла.
+    char worldName[world::WORLD_NAME_CAP] = {};
+
+    /// Какой из выгруженных файлов возьмёт следующая загрузка.
+    ///
+    /// Системного выбора файла отсюда не позвать, поэтому файлы
+    /// перебираются по кругу повторными нажатиями. Не изящно, зато
+    /// работает без Activity и без разрешений.
+    u32 importPick = 0;
 
     glm::vec2 cameraYawPitch{ 0.f, -0.35f };
     /// Счётчики отладочной сцены — только для доказательства изоляции.
@@ -242,6 +259,8 @@ struct Engine {
         activity = app->activity;
         internalDataPath = app->activity->internalDataPath ?
                            app->activity->internalDataPath : "/tmp";
+        externalDataPath = app->activity->externalDataPath ?
+                           app->activity->externalDataPath : "";
         settingsPath = internalDataPath + "/settings.cfg";
 
         crash::step("чтение настроек");
@@ -311,6 +330,76 @@ struct Engine {
             ui->refreshSlotMeta(saveMgr.slots());
             ui->notify(cfg::T(cfg::StrKey::Notif_Deleted),
                        ui::theme::NotifyPriority::High);
+        };
+
+        ui->onCreateWorld = [this](const char* name, const char* seedText) {
+            // Пустое поле зерна — не ошибка, а «мне всё равно»:
+            // именно так мир и создают в первый раз.
+            const u64 seed = (seedText && seedText[0] != '\0')
+                           ? world::seedFromText(seedText)
+                           : world::randomWorldSeed();
+            makeWorld(seed);
+
+            if (name && name[0] != '\0')
+                std::snprintf(worldName, sizeof(worldName), "%s", name);
+            else
+                world::defaultWorldName(worldName, sizeof(worldName), seed);
+
+            if (ui) {
+                ui->currentWorldSeed = seed;
+                ui->screen = ui::Screen::Hud;
+                ui->returnTo = ui::Screen::Hud;
+                ui->notify(cfg::T(cfg::StrKey::Notif_WorldCreated),
+                           ui::theme::NotifyPriority::High);
+            }
+        };
+
+        ui->onExportRequested = [this](u32 p, u32 s) {
+            const std::string dir = save::exportDir(internalDataPath.c_str(),
+                                                    externalDataPath.c_str());
+            std::string outPath;
+            const auto st = save::exportSlot(saveMgr.slots().slot(p, s),
+                                             dir, outPath);
+            if (!ui) return;
+            if (st == save::TransferStatus::Ok) {
+                // Путь в уведомлении не для красоты: без него игрок не
+                // знает, где искать файл, и выгрузка бесполезна.
+                ui->notify(std::string(cfg::T(cfg::StrKey::Notif_Exported)) +
+                           ": " + outPath, ui::theme::NotifyPriority::High);
+            } else {
+                ui->notify(std::string(cfg::T(cfg::StrKey::Notif_ExportFailed)) +
+                           ": " + save::transferStatusString(st),
+                           ui::theme::NotifyPriority::High);
+            }
+        };
+
+        ui->onImportRequested = [this](u32 p, u32 s) {
+            // Выбирать файл системным диалогом нечем: он приходит
+            // через Activity, а её здесь нет. Поэтому берётся первый
+            // из общего каталога — туда игрок его и кладёт.
+            const std::string dir = save::exportDir(internalDataPath.c_str(),
+                                                    externalDataPath.c_str());
+            const auto files = save::listExports(dir);
+            if (!ui) return;
+            if (files.empty()) {
+                ui->notify(std::string(cfg::T(cfg::StrKey::Notif_ImportFailed)) +
+                           ": " + dir, ui::theme::NotifyPriority::High);
+                return;
+            }
+            const auto st = save::importSlot(files[importPick % files.size()],
+                                             saveMgr.slots().slot(p, s));
+            // Следующая попытка возьмёт следующий файл: так до нужного
+            // мира добираются повторными нажатиями, а не никак.
+            ++importPick;
+            if (st == save::TransferStatus::Ok) {
+                ui->refreshSlotMeta(saveMgr.slots());
+                ui->notify(cfg::T(cfg::StrKey::Notif_Imported),
+                           ui::theme::NotifyPriority::High);
+            } else {
+                ui->notify(std::string(cfg::T(cfg::StrKey::Notif_ImportFailed)) +
+                           ": " + save::transferStatusString(st),
+                           ui::theme::NotifyPriority::High);
+            }
         };
 
         ui->onCloseDialogue = [this]() {
@@ -645,6 +734,11 @@ struct Engine {
         playerSpawn = world::spawnPositionOrFallback(world->generator(), seed, 0, 0);
         if (player) player->controller.setPosition(playerSpawn);
 
+        // Имя по умолчанию — чтобы мир было чем назвать в списке.
+        // Игрок переименует его на экране создания, если захочет.
+        world::defaultWorldName(worldName, sizeof(worldName), seed);
+        if (ui) ui->currentWorldSeed = seed;
+
         LOGI("мир: зерно %llu, появление (%.1f, %.1f, %.1f)",
              (unsigned long long)seed, (double)playerSpawn.x,
              (double)playerSpawn.y, (double)playerSpawn.z);
@@ -657,7 +751,7 @@ struct Engine {
         auto st = saveMgr.save(sl, *world, registry,
                                player->entity(), worldDelta,
                                worldSeed, playtime.seconds(), dayCycle,
-                               *npcSpawner, treasures);
+                               *npcSpawner, treasures, worldName);
 
         if (st == save::SaveStatus::Ok) {
             lastSaveProfile = profile;
@@ -701,6 +795,11 @@ struct Engine {
         if (st == save::SaveStatus::Ok) {
             worldSeed = loadedSeed;
             playtime.set(loadedPlaytime);
+            // Имя мира живёт в метаданных слота: мир, открытый из
+            // списка, обязан и называться так же, как в списке.
+            if (meta.worldName[0] != '\0')
+                std::snprintf(worldName, sizeof(worldName), "%s", meta.worldName);
+            if (ui) ui->currentWorldSeed = worldSeed;
             lastSaveProfile = profile;
             lastSaveSlot    = slot;
 

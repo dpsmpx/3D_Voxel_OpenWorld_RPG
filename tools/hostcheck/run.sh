@@ -305,6 +305,7 @@ for DIAG in 0 1; do
             -o "$OUT/diagcheck" \
             "$PROJ/tools/hostcheck/diag_build_check.cpp" \
             "$SRC_DIR/config/settings.cpp" "$SRC_DIR/core/crashlog.cpp" \
+            "$SRC_DIR/core/shared_dir.cpp" \
             "$OUT/obj/_stubs.o" -lpthread -ldl \
             > "$OUT/diagcheck.err" 2>&1; then
         echo "✗ Проверка конфигураций не собралась:"

@@ -75,6 +75,7 @@ add_library(native-lib SHARED
     src/core/clipboard.cpp
     src/core/crashlog.cpp
     src/core/job_system.cpp
+    src/core/shared_dir.cpp
 
     # Настройки, локализация, таймер игры
     src/config/localization.cpp
@@ -135,6 +136,7 @@ add_library(native-lib SHARED
     src/ui/drag_drop.cpp
     src/ui/scroll.cpp
     src/ui/slider.cpp
+    src/ui/text_entry.cpp
     src/ui/ui_atlas.cpp
     src/ui/ui_context.cpp
     src/ui/ui_renderer.cpp
@@ -184,6 +186,7 @@ add_library(native-lib SHARED
     src/npc/npc_spawner.cpp
 
     # Сохранения
+    src/save/save_export.cpp
     src/save/save_inventory.cpp
     src/save/save_manager.cpp
     src/save/save_npc.cpp

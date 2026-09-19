@@ -3,6 +3,7 @@
  * @brief Журнал и отчёт о падении в файл, доступный без adb.
  */
 #include "crashlog.h"
+#include "shared_dir.h"
 
 #include <cerrno>
 #include <cstdarg>
@@ -163,28 +164,6 @@ void installHandlers() {
 
 namespace {
 
-/// Имя пакета из пути вида /data/data/<пакет>/... или
-/// /data/user/0/<пакет>/..., либо .../Android/data/<пакет>/files.
-void packageFromPath(const char* path, char* out, size_t outSize) {
-    out[0] = '\0';
-    if (!path) return;
-    static const char* markers[] = {"/Android/data/", "/data/data/", "/data/user/"};
-    for (const char* m : markers) {
-        const char* found = std::strstr(path, m);
-        if (!found) continue;
-        const char* rest = found + std::strlen(m);
-        // У /data/user/ сначала идёт номер пользователя.
-        if (std::strcmp(m, "/data/user/") == 0) {
-            while (*rest && *rest != '/') ++rest;
-            if (*rest == '/') ++rest;
-        }
-        size_t n = 0;
-        while (rest[n] && rest[n] != '/' && n + 1 < outSize) { out[n] = rest[n]; ++n; }
-        out[n] = '\0';
-        if (out[0]) return;
-    }
-}
-
 /// Пробует открыть журнал в каталоге; при успехе запоминает путь.
 bool tryShared(const char* dir) {
     if (!dir || !*dir) return false;
@@ -208,51 +187,17 @@ void init(const char* internalDataPath, const char* externalDataPath) {
     }
 
     // Журнал во внешнем хранилище — единственный способ прочитать его с
-    // телефона: logcat чужого приложения недоступен. Каталог Android/data
-    // с Android 11 закрыт для других приложений, а Android/media — нет,
-    // поэтому основная цель именно он.
-    //
-    // На externalDataPath полагаться нельзя: ANativeActivity оставляет
-    // его пустым, если внешнее хранилище на момент запуска не смонтировано.
-    // Поэтому путь собирается и из него, и из корней хранилища с именем
-    // пакета, взятым из internalDataPath.
+    // телефона: logcat чужого приложения недоступен. Куда именно —
+    // решает sys::sharedDirCandidates: тот же список, по которому
+    // уходят наружу выгруженные миры, и одно правило на обоих.
     char pkg[256];
-    packageFromPath(externalDataPath, pkg, sizeof(pkg));
-    if (!pkg[0]) packageFromPath(internalDataPath, pkg, sizeof(pkg));
+    sys::packageFromPath(externalDataPath, pkg, sizeof(pkg));
+    if (!pkg[0]) sys::packageFromPath(internalDataPath, pkg, sizeof(pkg));
 
-    char dir[512];
-    if (pkg[0]) {
-        // Корень внешнего хранилища: сначала тот, что известен системе,
-        // затем обычные места.
-        const char* env = std::getenv("EXTERNAL_STORAGE");
-        const char* roots[] = { env, "/storage/emulated/0", "/sdcard", nullptr };
-
-        // Если externalDataPath всё же есть, его префикс — самый верный.
-        char fromExternal[512] = {0};
-        if (externalDataPath && *externalDataPath) {
-            const char* found = std::strstr(externalDataPath, "/Android/data/");
-            if (found) {
-                std::snprintf(fromExternal, sizeof(fromExternal), "%.*s",
-                              (int)(found - externalDataPath), externalDataPath);
-            }
-        }
-        if (fromExternal[0]) {
-            std::snprintf(dir, sizeof(dir), "%s/Android/media/%s", fromExternal, pkg);
-            tryShared(dir);
-        }
-        for (const char* root : roots) {
-            if (gSharedFd >= 0) break;
-            if (!root || !*root) continue;
-            std::snprintf(dir, sizeof(dir), "%s/Android/media/%s", root, pkg);
-            tryShared(dir);
-        }
-    }
-
-    // Запасной вариант: собственный внешний каталог. Termux туда не
-    // дотягивается, но файловые менеджеры через системный выбор папки — да.
-    if (gSharedFd < 0 && externalDataPath && *externalDataPath) {
-        tryShared(externalDataPath);
-    }
+    char dirs[8][sys::SHARED_PATH_CAP];
+    const u32 count = sys::sharedDirCandidates(internalDataPath,
+                                               externalDataPath, dirs, 8);
+    for (u32 i = 0; i < count && gSharedFd < 0; ++i) tryShared(dirs[i]);
     if (gSharedFd < 0) gSharedPath[0] = '\0';
 
     installHandlers();

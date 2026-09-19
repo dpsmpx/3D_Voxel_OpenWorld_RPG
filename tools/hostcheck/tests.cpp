@@ -42,6 +42,10 @@
 #include "world/hazards.h"
 #include "world/spawn.h"
 #include "world/world_spec.h"
+#include "save/save_export.h"
+#include "core/shared_dir.h"
+#include "ui/text_entry.h"
+#include "ui/font_data.h"
 #include "world/features.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
@@ -84,6 +88,7 @@
 #include <memory>
 #include <set>
 #include <dirent.h>
+#include <sys/stat.h>
 #include "ui/hud_layout.h"
 #include "config/localization.h"
 #include "core/orientation.h"
@@ -9628,6 +9633,505 @@ void testNewWorldEveryLaunch() {
 }
 
 // ------------------------------------------------------------
+void testWorldsMenuCreateAndTransfer() {
+    group("миры: создание с клавиатуры, список, выгрузка и загрузка");
+
+    items::items();
+    world::blocks();
+
+    // ---- 1. Поле ввода: буфер не портится ----
+    //
+    // Кириллица в UTF-8 двухбайтовая, и забой «на байт» оставлял бы
+    // за собой половину буквы, а переполнение обрезало бы строку
+    // посреди символа. И то и другое превращает имя в мусор.
+    {
+        ui::TextEntry te;
+        check(te.empty(), "поле начинается пустым");
+        check(!te.backspace(), "забой на пустом поле ничего не делает");
+
+        check(te.insert((u32)'A'), "латинская буква набирается");
+        check(te.insert(0x414u),   "кириллическая тоже");   // Д
+        check(te.insert((u32)' '), "и пробел");
+        check(std::strcmp(te.text(), "AД ") == 0, "строка ровно та, что набрали");
+        check(te.glyphs() == 3, "символов три, а не четыре байта");
+        check(te.bytes() == 4,  "а байтов четыре: Д двухбайтовая");
+
+        te.backspace();
+        te.backspace();
+        check(std::strcmp(te.text(), "A") == 0,
+              "забой снимает символ целиком, а не байт");
+        check(te.bytes() == 1, "и хвоста от него не остаётся");
+
+        // Символ, которого нет в шрифте, не берём: имя, показанное
+        // рядом пустых клеток, хуже безымянного.
+        check(!te.insert(0x4E2Du), "иероглиф не принимается");
+        check(!te.insert(0x1F600u), "и картинка тоже");
+        check(std::strcmp(te.text(), "A") == 0, "поле от этого не изменилось");
+
+        // Переполнение: буква, влезшая наполовину, портит строку с
+        // середины, поэтому не влезает она целиком.
+        ui::TextEntry full;
+        for (u32 i = 0; i < ui::TextEntry::CAP + 10; ++i) full.insert(0x414u);
+        check(full.bytes() <= ui::TextEntry::CAP, "буфер не переполнился");
+        check(full.bytes() % 2 == 0, "и обрезан по границе символа");
+        i32 lead = 0;
+        for (u32 i = 0; i < full.bytes(); ++i)
+            if (((u8)full.text()[i] & 0xC0) != 0x80) ++lead;
+        check((u32)lead == full.glyphs(), "каждый символ цел");
+
+        ui::TextEntry st;
+        st.setText("МИР ОДИН");
+        check(std::strcmp(st.text(), "МИР ОДИН") == 0, "setText кладёт как есть");
+        st.setText("");
+        check(st.empty(), "и пустую строку тоже");
+    }
+
+    // ---- 2. Раскладка: каждая клавиша рисуется ----
+    //
+    // Клавиша, которой нет в шрифте, — пустая клетка: нажать её
+    // можно, а понять, что нажал, нельзя.
+    {
+        i32 keys = 0, unprintable = 0, dupes = 0;
+        for (u8 pi = 0; pi < (u8)ui::KeyPage::Count; ++pi) {
+            const auto page = (ui::KeyPage)pi;
+            std::vector<u32> seen;
+            for (u32 r = 0; r < ui::keyRowCount(page); ++r)
+                for (u32 c = 0; c < ui::keysInRow(page, r); ++c) {
+                    const u32 cp = ui::keyAt(page, r, c);
+                    ++keys;
+                    if (ui::glyphIndex(cp) < 0) ++unprintable;
+                    for (u32 s : seen) if (s == cp) ++dupes;
+                    seen.push_back(cp);
+                }
+        }
+        char m[120];
+        std::snprintf(m, sizeof(m), "клавиш на трёх страницах: %d", keys);
+        check(keys > 60, m);
+        check(unprintable == 0, "и каждая из них рисуется шрифтом");
+        check(dupes == 0, "и ни одна не повторяется на своей странице");
+
+        // Страницы переключаются по кругу и возвращаются к началу.
+        ui::KeyPage p = ui::KeyPage::Latin;
+        for (u8 i = 0; i < (u8)ui::KeyPage::Count; ++i) p = ui::nextKeyPage(p);
+        check(p == ui::KeyPage::Latin, "круг страниц замыкается");
+    }
+
+    // ---- 3. Зерно по набранному ----
+    //
+    // Игрок, вводящий 12345, ждёт тот самый мир, который ему назвали,
+    // а не хэш от строки «12345».
+    {
+        check(world::seedFromText("12345") == 12345ull, "число — это число");
+        check(world::seedFromText("  770  ") == 770ull, "пробелы по краям не мешают");
+        check(world::seedFromText("0") == 0ull, "ноль читается нулём");
+        check(world::seedFromText("") == 0ull, "пустая строка — ноль");
+
+        const u64 a = world::seedFromText("ДОЛИНА");
+        const u64 b = world::seedFromText("ДОЛИНЫ");
+        check(a != 0ull, "слово даёт зерно, а не отказ");
+        check(a != b, "разные слова — разные зёрна");
+        check(world::seedFromText("ДОЛИНА") == a, "и одно и то же слово — то же");
+        check(world::seedFromText("12 34") != 1234ull,
+              "число с дыркой посередине числом не считается");
+
+        char name[world::WORLD_NAME_CAP];
+        world::defaultWorldName(name, sizeof(name), 0xABCD1234ull);
+        check(name[0] != '\0', "имя по умолчанию не пустое");
+        check(std::strlen(name) < sizeof(save::SlotMeta::worldName),
+              "и влезает в метаданные слота целиком");
+        char other[world::WORLD_NAME_CAP];
+        world::defaultWorldName(other, sizeof(other), 0x1111ull);
+        check(std::strcmp(name, other) != 0, "у разных миров имена разные");
+    }
+
+    // ---- 4. Экран создания: клавиатура вправду набирает ----
+    //
+    // Раскладка берётся у той же функции, по которой экран ловит
+    // касания: копия её правил проверяла бы копию, а расходятся они
+    // молча — палец попадает мимо клавиши, и ввода нет.
+    {
+        constexpr i32 W = 1920, H = 1080, DPI = 420;
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, { 0.f, 40.f, 0.f });
+        world::ChunkManager wd(0xD2A6, 1);
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(DPI);
+        sys.setScreenSize(W, H);
+        sys.openNewWorld();
+        check(sys.screen == ui::Screen::NewWorld, "экран создания открылся");
+        check(sys.newWorldName.empty() && sys.newWorldSeed.empty(),
+              "и оба поля пусты");
+
+        auto frame = [&]() {
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+        };
+        auto tap = [&](ui::Rect r) {
+            const f32 cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
+            frame();
+            sys.routeTouch(1, cx, cy, 0);
+            frame();
+            sys.routeTouch(1, cx, cy, 1);
+            frame();
+        };
+
+        const ui::NewWorldLayout NW = sys.newWorldLayout();
+        check(NW.keyboard.h > 0.f && NW.keyboard.w > 0.f,
+              "клавиатуре досталось место на экране");
+
+        sys.keyPage = ui::KeyPage::Latin;
+        const ui::KeyboardLayout KB = ui::keyboardLayout(
+            sys.keyPage, NW.keyboard,
+            sys.layout().dp(ui::theme::SPACE_XS_DP),
+            sys.layout().dp(ui::theme::TOUCH_MIN_DP));
+
+        // Клавиатура ОБЯЗАНА помещаться в отведённое ей место.
+        // Пока поля стояли столбиком, ей оставалось меньше высоты
+        // одной клавиши: она вылезала за экран и накрывала «создать»,
+        // и нажать его было нельзя вовсе.
+        {
+            const ui::Rect last = KB.backspaceRect();
+            char m[160];
+            std::snprintf(m, sizeof(m),
+                          "клавиатура занимает %.0f из %.0f точек по высоте",
+                          (double)(last.y + last.h - NW.keyboard.y),
+                          (double)NW.keyboard.h);
+            check(true, m);
+            check(last.y + last.h <= NW.keyboard.y + NW.keyboard.h + 1.f,
+                  "и не вылезает за отведённую область");
+            check(last.h >= sys.layout().dp(ui::theme::TOUCH_MIN_DP) - 0.5f,
+                  "а клавиши не мельче цели касания");
+            check(KB.keyRect(0, 0).w >= 24.f, "и не уже, чем можно попасть");
+        }
+
+        // Ни одна клавиша не накрывает «создать» и поля.
+        {
+            i32 overlap = 0;
+            const ui::Rect guarded[4] = { NW.name, NW.seed, NW.random, NW.create };
+            for (u32 r = 0; r < ui::keyRowCount(sys.keyPage); ++r)
+                for (u32 c = 0; c < ui::keysInRow(sys.keyPage, r); ++c) {
+                    const ui::Rect k = KB.keyRect(r, c);
+                    for (const ui::Rect& g : guarded)
+                        if (k.x < g.x + g.w && g.x < k.x + k.w &&
+                            k.y < g.y + g.h && g.y < k.y + k.h) ++overlap;
+                }
+            check(overlap == 0, "и не накрывает ни поля, ни кнопку «создать»");
+        }
+
+        // Набираем первые три клавиши верхнего ряда.
+        std::string expect;
+        for (u32 c = 0; c < 3; ++c) {
+            const u32 cp = ui::keyAt(sys.keyPage, 0, c);
+            expect.push_back((char)cp);
+            tap(KB.keyRect(0, c));
+        }
+        check(sys.newWorldName.text() == expect,
+              "нажатия по клавишам набрали имя");
+
+        tap(KB.backspaceRect());
+        expect.pop_back();
+        check(sys.newWorldName.text() == expect, "забой стёр последний символ");
+
+        tap(KB.spaceRect());
+        check(sys.newWorldName.bytes() == expect.size() + 1,
+              "пробел набирается тоже");
+
+        // Переключение поля: то же нажатие теперь уходит в зерно.
+        const u32 nameBytes = sys.newWorldName.bytes();
+        tap(NW.seed);
+        check(sys.newWorldField == ui::WorldField::Seed,
+              "тап по полю зерна переводит набор в него");
+        tap(KB.keyRect(0, 0));
+        check(sys.newWorldName.bytes() == nameBytes, "имя больше не меняется");
+        check(!sys.newWorldSeed.empty(), "а зерно набирается");
+
+        // «Случайно» заполняет поле зерна числом.
+        tap(NW.random);
+        check(!sys.newWorldSeed.empty(), "кнопка «случайно» заполнила поле");
+        bool allDigits = true;
+        for (const char* p = sys.newWorldSeed.text(); *p; ++p)
+            if (*p < '0' || *p > '9') allDigits = false;
+        check(allDigits, "и заполнила его числом, а не словом");
+
+        // Смена страницы клавиатуры.
+        tap(KB.pageRect());
+        check(sys.keyPage != ui::KeyPage::Latin, "страница клавиатуры сменилась");
+
+        // «Создать» зовёт обработчик и отдаёт ему НАБРАННОЕ.
+        std::string gotName, gotSeed;
+        i32 calls = 0;
+        sys.onCreateWorld = [&](const char* n, const char* s) {
+            gotName = n ? n : ""; gotSeed = s ? s : ""; ++calls;
+        };
+        const std::string wantName = sys.newWorldName.text();
+        const std::string wantSeed = sys.newWorldSeed.text();
+        tap(NW.create);
+        check(calls == 1, "кнопка «создать» позвала обработчик");
+        check(gotName == wantName, "и передала набранное имя");
+        check(gotSeed == wantSeed, "и набранное зерно");
+    }
+
+    // ---- 4б. И помещается не только на одном экране ----
+    //
+    // Телефон держат и стоя, и лёжа, и плотность у всех разная. Ряд
+    // из одиннадцати клавиш — самое тесное, что есть в игре, и если
+    // он где-то не помещается, то не помещается молча.
+    {
+        struct Screen { i32 w, h, dpi; const char* what; };
+        const Screen screens[] = {
+            { 1080, 1920, 420, "телефон стоя" },
+            { 1920, 1080, 420, "телефон лёжа" },
+            { 1440, 3200, 560, "плотный экран стоя" },
+            {  720, 1280, 320, "мелкий экран стоя" },
+            { 2560, 1600, 280, "планшет лёжа" },
+        };
+        for (const Screen& sc : screens) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(sc.dpi);
+            sys.setScreenSize(sc.w, sc.h);
+            sys.openNewWorld();
+
+            const ui::NewWorldLayout NW = sys.newWorldLayout();
+            const f32 minTouch = sys.layout().dp(ui::theme::TOUCH_MIN_DP);
+
+            bool fits = true, wide = true, tall = true, clear = true;
+            for (u8 pi = 0; pi < (u8)ui::KeyPage::Count; ++pi) {
+                const auto page = (ui::KeyPage)pi;
+                const ui::KeyboardLayout KB = ui::keyboardLayout(
+                    page, NW.keyboard, sys.layout().dp(ui::theme::SPACE_XS_DP),
+                    minTouch);
+                const ui::Rect last = KB.backspaceRect();
+                if (last.y + last.h > NW.keyboard.y + NW.keyboard.h + 1.f) fits = false;
+                if (last.h < minTouch - 0.5f) tall = false;
+                for (u32 r = 0; r < ui::keyRowCount(page); ++r) {
+                    for (u32 c = 0; c < ui::keysInRow(page, r); ++c) {
+                        const ui::Rect k = KB.keyRect(r, c);
+                        // Двадцать четыре точки — примерно полпальца:
+                        // уже этого промахиваются даже по букве.
+                        if (k.w < 24.f) wide = false;
+                        const ui::Rect g[4] = { NW.name, NW.seed, NW.random,
+                                                NW.create };
+                        for (const ui::Rect& q : g)
+                            if (k.x < q.x + q.w && q.x < k.x + k.w &&
+                                k.y < q.y + q.h && q.y < k.y + k.h) clear = false;
+                    }
+                }
+            }
+            char m[160];
+            std::snprintf(m, sizeof(m), "%s: клавиатура помещается", sc.what);
+            check(fits, m);
+            std::snprintf(m, sizeof(m), "%s: клавиши не мельче пальца", sc.what);
+            check(tall && wide, m);
+            std::snprintf(m, sizeof(m), "%s: поля и «создать» не накрыты", sc.what);
+            check(clear, m);
+        }
+    }
+
+    // ---- 5. Мир достижим из меню и помечен как текущий ----
+    {
+        bool found = false;
+        for (const auto& e : ui::menuEntries())
+            if (e.target == ui::Screen::Worlds) found = true;
+        check(found, "в меню паузы есть раздел миров");
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(420);
+        sys.setScreenSize(1920, 1080);
+        sys.screen = ui::Screen::Worlds;
+        check(sys.paused(), "пока список открыт, игра стоит");
+        sys.onBackPressed();
+        check(sys.screen != ui::Screen::Worlds, "«назад» закрывает список");
+    }
+
+    // ---- 6. Выгрузка и загрузка: мир уезжает файлом и возвращается ----
+    {
+        save::SaveManager mgr;
+        mgr.init("build/hostcheck");
+        const save::SaveSlot from = mgr.slots().slot(0, 1);
+        const save::SaveSlot to   = mgr.slots().slot(1, 1);
+        std::remove(from.dataPath().c_str());
+        std::remove(from.metaPath().c_str());
+        std::remove(to.dataPath().c_str());
+        std::remove(to.metaPath().c_str());
+
+        constexpr u64 SEED = 0x2B0AD5ull;
+        world::ChunkManager wd(SEED, 2);
+        world::DayCycle day;
+        save::WorldDeltaStore deltas;
+        ecs::Registry reg;
+        const ecs::Entity player = reg.create();
+        ecs::Transform tf; tf.position = { 3.5f, 42.f, -9.25f };
+        reg.add(player, tf);
+        items::Wallet wal; wal.gold = 999;
+        reg.add(player, wal);
+        npc::NpcSpawner spawner;
+        hazards::TreasureKeeper treasures;
+
+        check(mgr.save(from, wd, reg, player, deltas, SEED, 61, day,
+                       spawner, treasures, "Долина Ветров")
+              == save::SaveStatus::Ok, "мир сохранён под своим именем");
+
+        save::SlotMeta meta;
+        check(mgr.peekMeta(from, meta) == save::SaveStatus::Ok &&
+              std::strcmp(meta.worldName, "Долина Ветров") == 0,
+              "имя, которое дал игрок, попало в метаданные");
+
+        // Имя файла — латиница: кириллица и пробелы на чужих файловых
+        // системах кончаются по-разному, а настоящее имя едет внутри.
+        const std::string fname = save::exportFileName(meta);
+        check(!fname.empty(), "имя файла не пустое");
+        bool safe = true;
+        for (char c : fname) {
+            const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                            (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+                            c == '.';
+            if (!ok) safe = false;
+        }
+        check(safe, "и состоит только из безопасных символов");
+        check(fname.find(save::EXPORT_EXT) != std::string::npos,
+              "и оканчивается расширением мира");
+
+        const std::string dir = "build/hostcheck/exporttest";
+        std::remove((dir + "/" + fname).c_str());
+        ::mkdir("build/hostcheck", 0775);
+        ::mkdir(dir.c_str(), 0775);
+
+        std::string outPath;
+        check(save::exportSlot(from, dir, outPath) == save::TransferStatus::Ok,
+              "мир выгружен одним файлом");
+        check(!outPath.empty(), "и путь к нему назван");
+
+        const auto files = save::listExports(dir);
+        check(files.size() == 1, "и виден в списке выгруженных");
+
+        // Забираем в ДРУГОЙ слот — тот, где ничего не было.
+        check(!to.dataExists(), "целевой слот пуст");
+        check(save::importSlot(outPath, to) == save::TransferStatus::Ok,
+              "файл загружен обратно");
+        check(to.dataExists() && to.metaExists(),
+              "и в слоте появились оба файла");
+
+        save::SlotMeta back;
+        check(mgr.peekMeta(to, back) == save::SaveStatus::Ok, "метаданные читаются");
+        check(back.seed == SEED, "зерно то же");
+        check(std::strcmp(back.worldName, "Долина Ветров") == 0,
+              "и имя мира пережило дорогу");
+
+        // И мир из файла действительно открывается.
+        ecs::Registry reg2;
+        const ecs::Entity p2 = reg2.create();
+        reg2.add(p2, ecs::Transform{});
+        reg2.add(p2, items::Wallet{});
+        world::ChunkManager wd2(SEED, 2);
+        save::WorldDeltaStore d2;
+        npc::NpcSpawner sp2;
+        hazards::TreasureKeeper tr2;
+        world::DayCycle day2;
+        u64 outSeed = 0; u32 outPlay = 0;
+        check(mgr.load(to, wd2, reg2, p2, d2, &outSeed, &outPlay, &day2,
+                       sp2, tr2) == save::SaveStatus::Ok,
+              "загруженный из файла мир открывается");
+        check(outPlay == 61, "и помнит, сколько в нём играли");
+        auto* t2 = reg2.get<ecs::Transform>(p2);
+        check(t2 && std::fabs(t2->position.y - 42.f) < 0.01f,
+              "и где стоял игрок");
+
+        // Чужой файл не принимается молча: слот бы испортился.
+        const std::string junk = dir + "/junk" + save::EXPORT_EXT;
+        {
+            std::FILE* jf = std::fopen(junk.c_str(), "wb");
+            check(jf != nullptr, "мусорный файл создан");
+            if (jf) { std::fputs("this is not a world at all", jf); std::fclose(jf); }
+        }
+        check(save::importSlot(junk, mgr.slots().slot(2, 1))
+              == save::TransferStatus::BadFile,
+              "мусор вместо мира отвергается");
+        check(!mgr.slots().slot(2, 1).dataExists(),
+              "и слот от этого не испортился");
+
+        // И чужой файл, устроенный ПРАВИЛЬНО, но не наш: длины сходятся,
+        // версия та же, а метка в начале чужая. Без метки такой файл
+        // разобрался бы как свой и лёг бы в слот мусором.
+        const std::string alien = dir + "/alien" + save::EXPORT_EXT;
+        {
+            std::FILE* af = std::fopen(alien.c_str(), "wb");
+            check(af != nullptr, "чужой файл создан");
+            if (af) {
+                const u8 head[16] = {
+                    'N','O','P','E',            // не наша метка
+                    1, 0, 0, 0,                 // версия та же
+                    2, 0, 0, 0,                 // метаданных 2 байта
+                    2, 0, 0, 0,                 // тела 2 байта
+                };
+                std::fwrite(head, 1, sizeof(head), af);
+                std::fwrite("abcd", 1, 4, af);
+                std::fclose(af);
+            }
+        }
+        check(save::importSlot(alien, mgr.slots().slot(2, 1))
+              == save::TransferStatus::BadFile,
+              "и правильно устроенный чужой файл — тоже");
+        check(!mgr.slots().slot(2, 1).dataExists(),
+              "слот по-прежнему пуст");
+        std::remove(alien.c_str());
+
+        std::remove(junk.c_str());
+        std::remove(outPath.c_str());
+        std::remove(from.dataPath().c_str());
+        std::remove(from.metaPath().c_str());
+        std::remove(to.dataPath().c_str());
+        std::remove(to.metaPath().c_str());
+    }
+
+    // ---- 7. Общий каталог: туда, где файл увидят другие программы ----
+    //
+    // Android/data с одиннадцатой версии закрыт для чужих приложений,
+    // а Android/media — нет. Выгрузка в закрытый каталог бессмысленна.
+    {
+        char pkg[64];
+        sys::packageFromPath("/data/data/com.example.game/files", pkg, sizeof(pkg));
+        check(std::strcmp(pkg, "com.example.game") == 0,
+              "имя пакета читается из внутреннего пути");
+        sys::packageFromPath("/data/user/0/com.other.app/files", pkg, sizeof(pkg));
+        check(std::strcmp(pkg, "com.other.app") == 0, "и из пути с номером пользователя");
+        sys::packageFromPath("/storage/emulated/0/Android/data/com.x.y/files",
+                             pkg, sizeof(pkg));
+        check(std::strcmp(pkg, "com.x.y") == 0, "и из внешнего");
+        sys::packageFromPath("/tmp/nothing", pkg, sizeof(pkg));
+        check(pkg[0] == '\0', "а из постороннего пути — ничего");
+
+        char dirs[8][sys::SHARED_PATH_CAP];
+        const u32 n = sys::sharedDirCandidates(
+            "/data/data/com.example.game/files",
+            "/storage/emulated/0/Android/data/com.example.game/files",
+            dirs, 8);
+        check(n > 0, "каталоги для выгрузки подобраны");
+        bool media = false, dataDir = false, dupe = false;
+        for (u32 i = 0; i < n; ++i) {
+            if (std::strstr(dirs[i], "/Android/media/com.example.game")) media = true;
+            if (std::strstr(dirs[i], "/Android/data/")) dataDir = true;
+            for (u32 j = i + 1; j < n; ++j)
+                if (std::strcmp(dirs[i], dirs[j]) == 0) dupe = true;
+        }
+        check(media, "и среди них есть Android/media — он открыт для других");
+        check(!dupe, "и ни один не назван дважды");
+        char m[160];
+        std::snprintf(m, sizeof(m), "каталогов подобрано: %u, первый: %s",
+                      n, dirs[0]);
+        check(true, m);
+        check(std::strstr(dirs[0], "/Android/media/") != nullptr,
+              "первым пробуется именно открытый каталог");
+        (void)dataDir;
+
+        // Без единого пути подбирать нечего — и это не падение.
+        check(sys::sharedDirCandidates(nullptr, nullptr, dirs, 8) == 0,
+              "без путей каталогов не находится");
+    }
+}
+
+// ------------------------------------------------------------
 void testBlightForestAndCastles() {
     group("Чёрный лес: густая нечистая земля и замок посреди неё");
 
@@ -14734,6 +15238,7 @@ int main() {
     testSwampsAndWitches();
     testSpawnSearchFindsGoodGround();
     testNewWorldEveryLaunch();
+    testWorldsMenuCreateAndTransfer();
     testFallsTrapsAndAmbushes();
     testSecretTreasureAndItsQuest();
     testStoryChainRunsInOrder();

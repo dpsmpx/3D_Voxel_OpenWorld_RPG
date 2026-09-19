@@ -66,6 +66,7 @@ echo "==> Сборка..."
     "$SRC"/render/{mesh_builder,voxel_pipeline}.cpp \
     "$SRC"/world/{chunk,block,terrain,biome,noise,features,debug_scene}.cpp \
     "$SRC"/core/crashlog.cpp \
+    "$SRC"/core/shared_dir.cpp \
     -lvulkan -ldl -lpthread
 
 echo "==> Кадр..."

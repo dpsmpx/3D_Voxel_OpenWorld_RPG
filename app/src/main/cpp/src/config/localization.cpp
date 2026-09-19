@@ -51,6 +51,20 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Menu_SaveLoad */     "SAVE / LOAD",
     /* Menu_Crafting */     "CRAFTING",
     /* Menu_Trade */        "TRADE",
+    /* Menu_Worlds */       "WORLDS",
+
+    /* World_Title */       "WORLDS",
+    /* World_New */         "NEW WORLD",
+    /* World_Create */      "CREATE",
+    /* World_Open */        "OPEN",
+    /* World_Empty */       "Empty",
+    /* World_Name */        "NAME",
+    /* World_Seed */        "SEED",
+    /* World_RandomSeed */  "RANDOM",
+    /* World_Current */     "CURRENT",
+    /* World_Export */      "EXPORT",
+    /* World_Import */      "IMPORT",
+    /* World_DeleteAsk */   "Delete this world?",
 
     /* Hud_Health */        "HP",
     /* Hud_Mana */          "MP",
@@ -160,6 +174,13 @@ static const char* EN[STR_KEY_COUNT] = {
 
     /* Hud_Use */           "USE",
     /* Ench_Altar */        "Enchant Altar",
+
+    /* Notif_WorldCreated */  "World created",
+    /* Notif_WorldDeleted */  "World deleted",
+    /* Notif_Exported */      "World exported",
+    /* Notif_ExportFailed */  "Export failed",
+    /* Notif_Imported */      "World imported",
+    /* Notif_ImportFailed */  "Import failed",
 };
 
 } // namespace en
@@ -205,6 +226,20 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Menu_SaveLoad */     "СОХР / ЗАГР",
     /* Menu_Crafting */     "КРАФТ",
     /* Menu_Trade */        "ТОРГОВЛЯ",
+    /* Menu_Worlds */       "МИРЫ",
+
+    /* World_Title */       "МИРЫ",
+    /* World_New */         "НОВЫЙ МИР",
+    /* World_Create */      "СОЗДАТЬ",
+    /* World_Open */        "ОТКРЫТЬ",
+    /* World_Empty */       "Пусто",
+    /* World_Name */        "НАЗВАНИЕ",
+    /* World_Seed */        "ЗЕРНО",
+    /* World_RandomSeed */  "СЛУЧАЙНО",
+    /* World_Current */     "ТЕКУЩИЙ",
+    /* World_Export */      "ВЫГРУЗИТЬ",
+    /* World_Import */      "ЗАГРУЗИТЬ",
+    /* World_DeleteAsk */   "Удалить этот мир?",
 
     /* Hud_Health */        "ЗД",
     /* Hud_Mana */          "МН",
@@ -314,6 +349,13 @@ static const char* RU[STR_KEY_COUNT] = {
 
     /* Hud_Use */           "ИСПОЛЬЗОВАТЬ",
     /* Ench_Altar */        "Алтарь зачарования",
+
+    /* Notif_WorldCreated */  "Мир создан",
+    /* Notif_WorldDeleted */  "Мир удалён",
+    /* Notif_Exported */      "Мир выгружен",
+    /* Notif_ExportFailed */  "Выгрузить не вышло",
+    /* Notif_Imported */      "Мир загружен",
+    /* Notif_ImportFailed */  "Загрузить не вышло",
 };
 
 } // namespace ru
