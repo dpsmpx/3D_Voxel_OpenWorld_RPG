@@ -337,6 +337,24 @@ if [ -f /usr/share/vulkan/icd.d/lvp_icd.json ] || [ -n "${VK_ICD_FILENAMES:-}" ]
         exit 1
     fi
     grep -E "^vkcheck:" "$OUT/vkcheck.log" | sed 's/^/  /'
+
+    # Второй кадр — с НЕБОМ и погодой.
+    #
+    # Первый рисует небо ровной заливкой: так считаются пиксели
+    # геометрии. Из-за этого самый дорогой шейдер кадра — и
+    # единственный, где живут тучи и радуга, — не выполнялся здесь ни
+    # разу, и всё, что о нём было известно, это что он собрался.
+    echo "==> Кадр с небом и погодой..."
+    if ! "$PROJ/tools/vkcheck/run.sh" --sky 1 --time 0.30 --yaw 3.14 \
+            --pitch 0.25 --cloud 0.75 --rain 0.6 --rainbow 1.0 \
+            --wind 6 2 --out "$OUT/weather.ppm" \
+            > "$OUT/vkweather.log" 2>&1; then
+        echo "✗ Кадр с погодой не нарисовался:"
+        grep -E "ПРОВАЛ|\[слой\]|error" "$OUT/vkweather.log" | head -20 | sed 's/^/    /'
+        echo "    полный лог: $OUT/vkweather.log"
+        exit 1
+    fi
+    grep -E "^vkcheck: (погода|кадр|пикселей)" "$OUT/vkweather.log" | sed 's/^/  /'
 else
     echo "==> Кадр настоящим Vulkan: пропущено (нет программного драйвера;"
     echo "    apt-get install -y mesa-vulkan-drivers vulkan-validationlayers)"

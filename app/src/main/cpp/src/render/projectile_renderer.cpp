@@ -9,11 +9,46 @@
 #include "../core/log.h"
 #include <cstring>
 #include <algorithm>
+#include <vector>
 
 namespace render {
 
 // Вершинный формат и геометрия куба — общие для всех рендеров
 // MobInstance, см. MOB_ATTRS в mob_renderer.h.
+
+void precipInstances(const world::Precipitation& p, f32 snowMix,
+                     std::vector<MobInstance>& out)
+{
+    out.clear();
+    const bool snow = snowMix > 0.5f;
+
+    // Дождь — штрих, а не точка. Капля, нарисованная кубиком, читается
+    // как грязь на экране; вытянутая вдоль падения — как дождь.
+    const glm::vec3 rainSize{ 0.035f, 0.035f, 0.85f };
+    const glm::vec3 snowSize{ 0.11f,  0.11f,  0.11f };
+
+    // Дождь почти прозрачен: сплошная сетка непрозрачных полос
+    // закрывает мир. Снег плотный и белый — его и должно быть видно.
+    const u32 rainColor = 0xA5BEDC78u;   // rgba(165,190,220,120)
+    const u32 snowColor = 0xFAFAFFE1u;   // rgba(250,250,255,225)
+
+    out.reserve(p.liveCount());
+    for (const world::Drop& d : p.drops()) {
+        if (!d.alive) continue;
+        MobInstance inst{};
+        inst.pos = d.pos;
+        if (snow) {
+            inst.size = snowSize;
+            inst.colorGpu = packInstanceColor(snowColor);
+            inst.rot = orient::yawQuat(d.sway);
+        } else {
+            inst.size = rainSize;
+            inst.colorGpu = packInstanceColor(rainColor);
+            inst.rot = orient::dirQuat(d.vel);
+        }
+        out.push_back(inst);
+    }
+}
 
 bool ProjectileRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout) {
     dev_ = ctx.device();
@@ -65,6 +100,11 @@ bool ProjectileRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptor
     cpu_.reserve(256);
     LOGI("ProjectileRenderer готов");
     return true;
+}
+
+void ProjectileRenderer::setPrecip(const MobInstance* data, u32 count) {
+    precip_.assign(data, data + count);
+    precipCount_ = count;
 }
 
 void ProjectileRenderer::rebuild(ecs::Registry& reg) {
@@ -127,6 +167,14 @@ void ProjectileRenderer::rebuild(ecs::Registry& reg) {
             cpu_.push_back(inst);
         }
     }
+
+    // --- Осадки ---
+    //
+    // Последними: они полупрозрачные и без записи глубины, а значит
+    // порядок между ними и снарядами виден. Снаряд сквозь дождь —
+    // это то, что нужно; дождь сквозь снаряд — нет.
+    if (!precip_.empty())
+        cpu_.insert(cpu_.end(), precip_.begin(), precip_.end());
 
     instanceCount_ = (u32)cpu_.size();
 }

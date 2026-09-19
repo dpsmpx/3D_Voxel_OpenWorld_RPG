@@ -87,6 +87,8 @@ struct CameraUbo {
     glm::vec4 sunLight;
     glm::vec4 ambLight;
     glm::vec4 skyLinear;
+    glm::vec4 weather;
+    glm::vec4 wind;
 };
 
 u32 findMem(VkPhysicalDevice phys, u32 bits, VkMemoryPropertyFlags want) {
@@ -267,6 +269,10 @@ int main(int argc, char** argv) {
             c.sunLight  = glm::vec4(sunTint, day * above);
             c.ambLight  = glm::vec4(ambTint, glm::mix(0.14f, 0.60f, day));
             c.skyLinear = glm::vec4(skyLin, above);
+            // Погода: замер идёт по ясному небу, иначе цена шейдера
+            // зависела бы от того, какая нынче облачность.
+            c.weather   = glm::vec4(0.f);
+            c.wind      = glm::vec4(0.f);
         }
         void* p = nullptr;
         VKOK(vkMapMemory(dev, uboMem, 0, sizeof(CameraUbo), 0, &p));

@@ -45,6 +45,16 @@ public:
     f32  timeOfDay() const { return timeOfDay_; }
     u32  day()       const { return day_; }
 
+    /// Сколько секунд прошло в мире с первого дня.
+    ///
+    /// Спрашивает погода: циклоны живут часами и днями, а time of day
+    /// обнуляется каждые двадцать минут. В double, а не во float:
+    /// после сотни игровых дней секунды перевалят за миллион, и у
+    /// float там шаг уже в десятую долю секунды.
+    f64 worldSeconds() const {
+        return ((f64)day_ + (f64)timeOfDay_) * (f64)DAY_LENGTH_SEC;
+    }
+
     /// true ровно в тот кадр, когда наступили новые сутки.
     bool dayJustChanged() const { return dayJustChanged_; }
 

@@ -21,6 +21,11 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 sunLight;     // rgb — цвет солнца, линейный; w — день x над горизонтом
     vec4 ambLight;     // rgb — оттенок рассеянного света; w — его сила
     vec4 skyLinear;    // rgb — цвет неба, линейный; w — солнце над горизонтом
+    // Погода. weather: x — доля неба под тучами, y — сила осадков,
+    // z — яркость радуги, w — снег (0 дождь, 1 снег).
+    // wind: xy — ветер в блоках в секунду, z — время в секундах.
+    vec4 weather;
+    vec4 wind;
 } cam;
 
 layout(location = 0) out vec4 vColor;

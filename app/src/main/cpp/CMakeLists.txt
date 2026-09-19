@@ -106,8 +106,10 @@ add_library(native-lib SHARED
     src/world/features.cpp
     src/world/hazards.cpp
     src/world/noise.cpp
+    src/world/precipitation.cpp
     src/world/spawn.cpp
     src/world/terrain.cpp
+    src/world/weather.cpp
     src/world/world_spec.cpp
 
     # Рендер
