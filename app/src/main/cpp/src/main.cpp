@@ -1089,6 +1089,21 @@ struct Engine {
                     if (player->lastFallDamage > 0.f)
                         ui->notify(cfg::T(cfg::StrKey::Notif_Fall),
                                    ui::theme::NotifyPriority::High);
+                    // Деревня: чем она живёт, видно по домам, но
+                    // сказать об этом словами дешевле и вернее.
+                    if (player->enteredVillage) {
+                        cfg::StrKey k = cfg::StrKey::Notif_VillageFarmstead;
+                        switch (player->villageStyle) {
+                            case world::VillageStyle::Stonemason:
+                                k = cfg::StrKey::Notif_VillageStonemason; break;
+                            case world::VillageStyle::Garrison:
+                                k = cfg::StrKey::Notif_VillageGarrison;   break;
+                            case world::VillageStyle::Woodland:
+                                k = cfg::StrKey::Notif_VillageWoodland;   break;
+                            default: break;
+                        }
+                        ui->notify(cfg::T(k), ui::theme::NotifyPriority::Normal);
+                    }
                     if (player->enteredLair) {
                         cfg::StrKey k = cfg::StrKey::Notif_LairWolves;
                         switch (player->lairKind) {

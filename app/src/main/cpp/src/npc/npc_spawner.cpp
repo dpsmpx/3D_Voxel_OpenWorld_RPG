@@ -31,7 +31,8 @@ u64 npcPersistentKey(i32 sx, i32 sz, u32 idx) {
     return k;
 }
 
-namespace {
+// generateVillageNpcs объявлена в заголовке: состав деревни —
+// факт о мире, и спрашивают его снаружи.
 
 // Здесь лежала копия хэша из features.cpp — «тот же, что в
 // structs::layoutFor». Раскладку деревни теперь спрашивают у
@@ -40,11 +41,6 @@ namespace {
 
 // Детерминированное позиционирование NPC внутри деревни
 // (позиция + роль + ID).
-struct NpcSpec {
-    u16      typeId;
-    glm::vec3 pos;
-};
-
 // Генерирует список NPC для конкретной деревни.
 // Возвращает false, если super-chunk — не Village.
 bool generateVillageNpcs(world::ChunkManager& world,
@@ -82,24 +78,43 @@ bool generateVillageNpcs(world::ChunkManager& world,
         out.push_back(s);
     };
 
-    // 1 элдер (рядом с колодцем)
+    // Состав зависит от уклада. Деревни были населены одинаково —
+    // один и тот же набор до человека, — и разница между ними
+    // сводилась к тому, где стоит кузнец.
+    const world::VillageStyle style = site.style;
+
+    // 1 элдер (рядом с колодцем) — он есть везде: без него некому
+    // выдавать задания, а сюжет идёт через него.
     addNpc(NPC_QUEST_GIVER, 2.f, 2.f);
-    // 1-2 торговца
+
+    // Торговцы. В ремесленной их больше: там есть чем торговать.
     addNpc(NPC_TRADER, -3.f, 2.f);
-    if ((h >> 20) & 1) addNpc(NPC_TRADER, 3.f, -3.f);
-    // 1 кузнец
-    addNpc(NPC_BLACKSMITH, -5.f, -3.f);
-    // 1 лекарь
-    addNpc(NPC_HEALER, 5.f, 5.f);
-    // 3-5 стражников
+    if (style == world::VillageStyle::Stonemason || ((h >> 20) & 1))
+        addNpc(NPC_TRADER, 3.f, -3.f);
+
+    // Кузнец. В ремесленной — двое: она тем и живёт. В лесной его
+    // нет вовсе — до кузни оттуда ходят к соседям.
+    if (style != world::VillageStyle::Woodland)
+        addNpc(NPC_BLACKSMITH, -5.f, -3.f);
+    if (style == world::VillageStyle::Stonemason)
+        addNpc(NPC_BLACKSMITH, 6.f, -5.f);
+
+    // Лекарь. В сторожевой он нужнее прочего, в лесной его нет.
+    if (style != world::VillageStyle::Woodland)
+        addNpc(NPC_HEALER, 5.f, 5.f);
+
+    // Стража. В сторожевой её вдвое: деревню держат как заставу.
     i32 guards = 3 + (i32)((h >> 22) & 0x3);
+    if (style == world::VillageStyle::Garrison) guards *= 2;
+    else if (style == world::VillageStyle::Woodland) guards = 1 + (guards / 2);
     for (i32 i = 0; i < guards; ++i) {
         f32 ang = (f32)i / (f32)guards * 6.28318f;
         f32 r = 12.f + (f32)((h >> (i * 2)) & 0x7);
         addNpc(NPC_GUARD, std::cos(ang) * r, std::sin(ang) * r);
     }
-    // 3-6 жителей (случайно разбросаны)
+    // Жители. В хлебной их больше всех: она тем и живёт.
     i32 villagers = 3 + (i32)((h >> 26) & 0x3);
+    if (style == world::VillageStyle::Farmstead) villagers += 3;
     for (i32 i = 0; i < villagers; ++i) {
         f32 ang = (f32)((h >> (i + 4)) & 0xFF) / 255.f * 6.28318f;
         f32 r   = 6.f + (f32)((h >> (i * 3 + 8)) & 0xF);
@@ -115,7 +130,7 @@ bool generateVillageNpcs(world::ChunkManager& world,
     return true;
 }
 
-} // namespace
+
 
 bool NpcSpawner::isDead(u64 key) const {
     return std::binary_search(deadKeys_.begin(), deadKeys_.end(), key);

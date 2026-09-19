@@ -71,6 +71,11 @@ enum class StrKey : u16 {
     Notif_LairWolves, Notif_LairSkeletons,
     Notif_LairGoblins, Notif_LairSlimes,
     Notif_Fall, Notif_Trap, Notif_Treasure,
+    // Деревни разные, и разницу игрок должен узнавать словами,
+    // а не только глазом: уклад виден по домам, но чем деревня
+    // живёт — только по рассказу.
+    Notif_VillageFarmstead, Notif_VillageStonemason,
+    Notif_VillageGarrison,  Notif_VillageWoodland,
 
     // --- Подсказка взаимодействия ---
     // Её не было вовсе, и это стоило игроку трёх экранов: близость

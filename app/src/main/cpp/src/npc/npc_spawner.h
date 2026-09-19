@@ -18,6 +18,24 @@ namespace npc {
 /// записывался одним ключом, а спрашивался — никогда.
 u64 npcPersistentKey(i32 sx, i32 sz, u32 idx);
 
+/// Один житель на своём месте.
+struct NpcSpec {
+    u16       typeId;
+    glm::vec3 pos;
+};
+
+/// Кто живёт в деревне супер-чанка (sx, sz) и где стоит.
+///
+/// Вынесено наружу, потому что состав деревни — это факт о мире, а
+/// не внутреннее дело спавнера: «в сторожевой стражи вдвое» иначе
+/// проверить нечем, кроме как заселив полмира и пересчитав тела.
+///
+/// @return false, если деревни там нет
+bool generateVillageNpcs(world::ChunkManager& world,
+                         i32 sx, i32 sz, u64 worldSeed,
+                         std::vector<NpcSpec>& out,
+                         std::vector<u64>& keysOut);
+
 /// Детерминированный спавнер NPC.
 ///
 /// Идея: деревни генерируются в world::features::applyStructures по

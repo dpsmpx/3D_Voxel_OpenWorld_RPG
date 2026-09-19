@@ -570,8 +570,13 @@ void Player::updateImpl(world::ChunkManager& world,
     if (wellTimer_ >= 0.5f) { wellTimer_ = 0.f; noticeWell(world); }
 
     enteredLair = false;
+    enteredVillage = false;
     lairTimer_ += dt;
-    if (lairTimer_ >= 0.5f) { lairTimer_ = 0.f; noticeLair(world); }
+    if (lairTimer_ >= 0.5f) {
+        lairTimer_ = 0.f;
+        noticeLair(world);
+        noticeVillage(world);
+    }
 
     // ---- Уведомление о смене тира репутации ----
     noticeReputationChange();
@@ -722,6 +727,37 @@ void Player::noticeLair(world::ChunkManager& world) {
 
     enteredLair = true;
     audio::events().uiClick();
+}
+
+void Player::noticeVillage(world::ChunkManager& world) {
+    const glm::vec3 p = controller.state().position;
+    const i32 sx = (i32)std::floor(p.x / (f32)world::SUPER_CHUNK_BLOCKS);
+    const i32 sz = (i32)std::floor(p.z / (f32)world::SUPER_CHUNK_BLOCKS);
+
+    // Деревня считается «той, в которой стоим», в сорока блоках от
+    // колодца: кольцо домов кончается на тридцати пяти, и за ним
+    // деревня уже позади.
+    constexpr f32 IN_VILLAGE = 40.f;
+
+    world::VillageStyle found = world::VillageStyle::Count;
+    for (i32 dz = -1; dz <= 1 && found == world::VillageStyle::Count; ++dz)
+        for (i32 dx = -1; dx <= 1; ++dx) {
+            const world::VillageSite v = world::villageAt(
+                sx + dx, sz + dz, world.seed(), &world.generator());
+            if (!v.exists) continue;
+            const f32 ddx = (f32)v.center.x - p.x;
+            const f32 ddz = (f32)v.center.z - p.z;
+            if (ddx * ddx + ddz * ddz > IN_VILLAGE * IN_VILLAGE) continue;
+            found = v.style;
+            break;
+        }
+
+    // Событие — СМЕНА, а не нахождение: иначе игрок слушал бы про
+    // деревню каждые полсекунды всё время, что по ней ходит.
+    if (found == villageStyle) return;
+    villageStyle = found;
+    if (found == world::VillageStyle::Count) return;
+    enteredVillage = true;
 }
 
 void Player::tickDeath(world::ChunkManager& world, f32 dt) {

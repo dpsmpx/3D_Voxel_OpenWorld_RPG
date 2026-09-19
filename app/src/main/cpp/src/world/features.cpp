@@ -612,8 +612,13 @@ enum class Facing : u8 { NegZ = 0, PosZ, NegX, PosX };
 /// Здесь: фундамент и цоколь из камня, стены из доски, угловые стойки
 /// из бревна, окна, соломенная ДВУСКАТНАЯ кровля со свесом, фонарь под
 /// коньком и дверь в той стене, что обращена к центру деревни.
+/// Из чего сложен дом. Не украшение: уклад деревни видно с порога
+/// именно по материалу стены и кровли.
+using HouseKit = VillageMaterials;
+
 void stampHouse(Chunk& c, const FeatureContext& ctx,
-                i32 wx, i32 wz, i32 w, i32 d, u32 rng, Facing face)
+                i32 wx, i32 wz, i32 w, i32 d, u32 rng, Facing face,
+                const HouseKit& kit)
 {
     // Дом меньше четырёх блоков по стороне — это не дом, а будка: в
     // нём не разместить ни двери, ни окна.
@@ -680,7 +685,7 @@ void stampHouse(Chunk& c, const FeatureContext& ctx,
                 // Угловые стойки из бревна: они и держат силуэт. Без
                 // них стена — однотонная плоскость.
                 const bool corner = (dx == 0 || dx == w-1) && (dz == 0 || dz == d-1);
-                putWorld(c, gx, surf + y, gz, corner ? WOOD : PLANK, true);
+                putWorld(c, gx, surf + y, gz, corner ? kit.post : kit.wall, true);
             }
 
     // Двускатная кровля вдоль длинной стороны, со свесом в один блок.
@@ -706,10 +711,10 @@ void stampHouse(Chunk& c, const FeatureContext& ctx,
             for (i32 gz = wz - 1; gz <= wz + d; ++gz) {
                 if (closing) {
                     for (i32 t = lo; t <= hi; ++t)
-                        putWorld(c, wx + t, y, gz, THATCH, true);
+                        putWorld(c, wx + t, y, gz, kit.roof, true);
                 } else {
-                    putWorld(c, wx + lo, y, gz, THATCH, true);
-                    putWorld(c, wx + hi, y, gz, THATCH, true);
+                    putWorld(c, wx + lo, y, gz, kit.roof, true);
+                    putWorld(c, wx + hi, y, gz, kit.roof, true);
                     // Под скатом — воздух, иначе чердак зальётся соломой.
                     for (i32 t = lo + 1; t < hi; ++t)
                         putWorld(c, wx + t, y, gz, AIR, true);
@@ -719,10 +724,10 @@ void stampHouse(Chunk& c, const FeatureContext& ctx,
             for (i32 gx = wx - 1; gx <= wx + w; ++gx) {
                 if (closing) {
                     for (i32 t = lo; t <= hi; ++t)
-                        putWorld(c, gx, y, wz + t, THATCH, true);
+                        putWorld(c, gx, y, wz + t, kit.roof, true);
                 } else {
-                    putWorld(c, gx, y, wz + lo, THATCH, true);
-                    putWorld(c, gx, y, wz + hi, THATCH, true);
+                    putWorld(c, gx, y, wz + lo, kit.roof, true);
+                    putWorld(c, gx, y, wz + hi, kit.roof, true);
                     for (i32 t = lo + 1; t < hi; ++t)
                         putWorld(c, gx, y, wz + t, AIR, true);
                 }
@@ -838,13 +843,41 @@ void stampFence(Chunk& c, const FeatureContext& ctx,
     }
 }
 
+/// Набор материалов и мерки кольца домов по укладу.
+///
+/// Всё, чем деревни отличаются друг от друга ВНЕШНЕ, собрано в одном
+/// месте: разложи это по коду стройки — и добавить пятый уклад можно
+/// будет только вычитав всю функцию.
+struct VillagePlan {
+    HouseKit kit;
+    f32 ringBase;    ///< на каком радиусе стоит первый дом
+    u32 ringJitter;  ///< насколько радиус гуляет от дома к дому
+    i32 extraHouses; ///< домов больше или меньше обычного
+};
+
+VillagePlan villagePlanFor(VillageStyle st) {
+    const VillageMaterials kit = villageMaterialsOf(st);
+    switch (st) {
+        // Кольцо тесное — ремесленники жмутся к мастерским.
+        case VillageStyle::Stonemason: return { kit, 16.f, 0x7,  2 };
+        // Ещё плотнее: такую деревню держат как заставу, а не хутор.
+        case VillageStyle::Garrison:   return { kit, 14.f, 0x3,  0 };
+        // Дома вразброс: ровного кольца в лесу не выходит.
+        case VillageStyle::Woodland:   return { kit, 24.f, 0x1F, -1 };
+        // Просторное кольцо. Такой деревня была всегда — она и
+        // осталась одной из.
+        default:                       return { kit, 20.f, 0xF,  0 };
+    }
+}
+
 void stampVillage(Chunk& c, const FeatureContext& ctx, const structs::Layout& L) {
     const i32 cx = (L.minBlock.x + L.maxBlock.x) / 2;
     const i32 cz = (L.minBlock.z + L.maxBlock.z) / 2;
     const i32 wy = ctx.terrain->surfaceHeight(cx, cz);
 
     const u32 h = L.seed;
-    const i32 count = 6 + (i32)(h % 5);
+    const VillagePlan plan = villagePlanFor(villageStyleOf(h));
+    const i32 count = std::max(4, 6 + (i32)(h % 5) + plan.extraHouses);
 
     // Раскладка домов считается ОДИН раз и переиспользуется: дорожки,
     // утварь и сами дома обязаны знать одни и те же места. Раньше
@@ -861,7 +894,7 @@ void stampVillage(Chunk& c, const FeatureContext& ctx, const structs::Layout& L)
     for (i32 i = 0; i < plotCount; ++i) {
         const f32 angle = (f32)i / (f32)plotCount * 6.28318f;
         const f32 ca = std::cos(angle), sa = std::sin(angle);
-        const f32 r = 20.f + (f32)((h >> (i % 16)) & 0xF);
+        const f32 r = plan.ringBase + (f32)((h >> (i % 16)) & plan.ringJitter);
 
         Plot& p = plots[i];
         p.w = 5 + (i32)((h >> i) & 3);
@@ -949,7 +982,8 @@ void stampVillage(Chunk& c, const FeatureContext& ctx, const structs::Layout& L)
     stampWell(c, cx, cz, wy);
     for (i32 i = 0; i < plotCount; ++i) {
         const Plot& p = plots[i];
-        stampHouse(c, ctx, p.x, p.z, p.w, p.d, h + (u32)i * 31u, p.face);
+        stampHouse(c, ctx, p.x, p.z, p.w, p.d, h + (u32)i * 31u, p.face,
+                   plan.kit);
     }
 }
 
@@ -1249,6 +1283,36 @@ DungeonSite dungeonAt(i32 superX, i32 superZ, u64 worldSeed) {
     return site;
 }
 
+const char* villageStyleName(VillageStyle s) {
+    switch (s) {
+        case VillageStyle::Farmstead:  return "Farmstead";
+        case VillageStyle::Stonemason: return "Stonemason village";
+        case VillageStyle::Garrison:   return "Garrison";
+        case VillageStyle::Woodland:   return "Woodland hamlet";
+        default:                       return "Village";
+    }
+}
+
+VillageMaterials villageMaterialsOf(VillageStyle s) {
+    switch (s) {
+        // Каменная: тёсаная кладка, кровля из доски.
+        case VillageStyle::Stonemason: return { BRICK, WOOD,  PLANK };
+        // Сторожевая: кладка и кладка, без единой доски в стене.
+        case VillageStyle::Garrison:   return { BRICK, BRICK, PLANK };
+        // Лесная: бревенчатые стены под соломой.
+        case VillageStyle::Woodland:   return { WOOD,  WOOD,  THATCH };
+        // Хлебная: доска и солома.
+        default:                       return { PLANK, WOOD,  THATCH };
+    }
+}
+
+VillageStyle villageStyleOf(u32 villageSeed) {
+    // Сдвиг на шестнадцать: младшие биты того же хэша уже разобраны
+    // раскладкой (размер, смещение, число домов). Взять их ещё раз
+    // значило бы связать уклад с размером деревни намертво.
+    return (VillageStyle)((villageSeed >> 16) % (u32)VillageStyle::Count);
+}
+
 VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
                       const TerrainGenerator* terrain) {
     VillageSite site;
@@ -1281,6 +1345,7 @@ VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
 
     site.exists = true;
     site.seed   = L.seed;
+    site.style  = villageStyleOf(L.seed);
     // Колодец ставится ровно в середину раскладки — там же, где его
     // рисует stampVillage, и на ту же высоту.
     //

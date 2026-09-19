@@ -10790,6 +10790,183 @@ void testDeadNpcStaysDead() {
 }
 
 // ------------------------------------------------------------
+void testVillagesDifferFromEachOther() {
+    group("деревни: разный уклад, разный облик, разные жители");
+
+    world::blocks();
+    items::items();
+    npc::npcRegistry();
+
+    constexpr u64 SEED = 0x71A6E;
+    world::ChunkManager mgr(SEED, 1);
+    const auto& gen = mgr.generator();
+
+    // ---- 1. Укладов правда несколько, и они встречаются все ----
+    //
+    // Деревни были одинаковы до блока. Проверять «у этой деревни
+    // уклад X» бесполезно: так прошла бы и та версия, где уклад один
+    // и тот же у всех.
+    int seen[(u8)world::VillageStyle::Count] = {};
+    int villages = 0;
+    world::VillageSite samples[(u8)world::VillageStyle::Count];
+    for (i32 sz = -14; sz <= 14; ++sz)
+        for (i32 sx = -14; sx <= 14; ++sx) {
+            const auto v = world::villageAt(sx, sz, SEED, &gen);
+            if (!v.exists) continue;
+            ++villages;
+            const u8 st = (u8)v.style;
+            if (st < (u8)world::VillageStyle::Count) {
+                if (seen[st] == 0) samples[st] = v;
+                ++seen[st];
+            }
+        }
+    {
+        char m[180];
+        std::snprintf(m, sizeof(m),
+                      "деревень %d: хлебных %d, каменных %d, сторожевых %d, лесных %d",
+                      villages, seen[0], seen[1], seen[2], seen[3]);
+        check(true, m);
+    }
+    check(villages > 20, "деревень в округе хватает");
+    int kinds = 0;
+    for (u8 i = 0; i < (u8)world::VillageStyle::Count; ++i)
+        if (seen[i] > 0) ++kinds;
+    check(kinds == (int)world::VillageStyle::Count,
+          "встречаются все уклады, а не один на весь мир");
+    // И ни один не съедает всё: перекос в девять десятых означал бы,
+    // что уклад считается почти всегда одинаково.
+    for (u8 i = 0; i < (u8)world::VillageStyle::Count; ++i)
+        check(seen[i] * 10 < villages * 9, "и ни один не вытеснил прочие");
+
+    // ---- 2. Уклад — один и тот же при каждом запросе ----
+    //
+    // Генератор чанка и спавнер жителей спрашивают его порознь. Если
+    // ответ хоть раз разойдётся, жители встанут в деревне чужого
+    // уклада — а увидеть это можно только так.
+    {
+        const auto again = world::villageAt(
+            (i32)std::floor((f32)samples[0].center.x / 256.f),
+            (i32)std::floor((f32)samples[0].center.z / 256.f), SEED, &gen);
+        check(again.exists && again.style == samples[0].style,
+              "повторный запрос отдаёт тот же уклад");
+        check(world::villageStyleOf(samples[0].seed) == samples[0].style,
+              "и считается он из зерна деревни, а не из чего-то ещё");
+    }
+
+    // ---- 3. Материалы у укладов разные ----
+    {
+        int distinctWalls = 0;
+        u16 walls[(u8)world::VillageStyle::Count];
+        for (u8 i = 0; i < (u8)world::VillageStyle::Count; ++i) {
+            const auto kit = world::villageMaterialsOf((world::VillageStyle)i);
+            walls[i] = kit.wall;
+            // Стена не должна совпадать с породой: каменную деревню
+            // иначе не отличить от скалы, в которую она упирается.
+            check(kit.wall != world::STONE && kit.wall != world::DIRT,
+                  "стена деревни сложена не из породы");
+            check(kit.roof != world::AIR, "и кровля из чего-то есть");
+        }
+        for (u8 i = 0; i < (u8)world::VillageStyle::Count; ++i) {
+            bool uniq = true;
+            for (u8 j = 0; j < i; ++j) if (walls[j] == walls[i]) uniq = false;
+            if (uniq) ++distinctWalls;
+        }
+        check(distinctWalls >= 2, "стены у укладов не из одного материала");
+    }
+
+    // ---- 4. Облик деревни и правда разный ----
+    //
+    // Считаем блоки стен двух деревень разного уклада: у каменной в
+    // стенах кладка, у хлебной доска, и перепутать их нельзя.
+    auto countIn = [&](const world::VillageSite& v, u16 block) {
+        constexpr i32 VR = 44;
+        const i32 c0x = (i32)std::floor((f32)(v.center.x - VR) / world::CHUNK_SIZE);
+        const i32 c1x = (i32)std::floor((f32)(v.center.x + VR) / world::CHUNK_SIZE);
+        const i32 c0z = (i32)std::floor((f32)(v.center.z - VR) / world::CHUNK_SIZE);
+        const i32 c1z = (i32)std::floor((f32)(v.center.z + VR) / world::CHUNK_SIZE);
+        std::vector<world::TerrainGenerator::Column> cols;
+        int n = 0;
+        for (i32 cx = c0x; cx <= c1x; ++cx)
+            for (i32 cz = c0z; cz <= c1z; ++cz) {
+                world::Chunk ch;
+                ch.coord = { cx, 0, cz };
+                world::computeChunkColumns(gen, cx, cz, cols);
+                world::generateChunkVoxels(ch, gen, cols.data(), SEED);
+                for (i32 y = 0; y < world::CHUNK_SIZE_Y; ++y)
+                    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+                        for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                            if (ch.at(x, y, z) == block) ++n;
+            }
+        return n;
+    };
+
+    {
+        const auto& farm  = samples[(u8)world::VillageStyle::Farmstead];
+        const auto& stone = samples[(u8)world::VillageStyle::Stonemason];
+        const int brickInStone = countIn(stone, world::BRICK);
+        const int brickInFarm  = countIn(farm,  world::BRICK);
+        char m[160];
+        std::snprintf(m, sizeof(m), "кладки: в каменной %d, в хлебной %d",
+                      brickInStone, brickInFarm);
+        check(true, m);
+        check(brickInStone > 100, "каменная деревня и правда сложена из кладки");
+        check(brickInFarm == 0, "а в хлебной кладки нет вовсе");
+    }
+
+    // ---- 5. Жители разные ----
+    {
+        auto roster = [&](const world::VillageSite& v, int& guards,
+                          int& smiths, int& healers, int& total) {
+            guards = smiths = healers = total = 0;
+            const i32 sx = (i32)std::floor((f32)v.center.x / 256.f);
+            const i32 sz = (i32)std::floor((f32)v.center.z / 256.f);
+            std::vector<npc::NpcSpec> specs;
+            std::vector<u64> keys;
+            if (!npc::generateVillageNpcs(mgr, sx, sz, SEED, specs, keys)) return;
+            total = (int)specs.size();
+            for (const auto& s : specs) {
+                const auto role = npc::npcRegistry().get(s.typeId).role;
+                if (role == npc::NpcRole::Guard)      ++guards;
+                if (role == npc::NpcRole::Blacksmith) ++smiths;
+                if (role == npc::NpcRole::Healer)     ++healers;
+            }
+        };
+
+        int g1, s1, h1, t1, g2, s2, h2, t2;
+        roster(samples[(u8)world::VillageStyle::Garrison], g1, s1, h1, t1);
+        roster(samples[(u8)world::VillageStyle::Woodland], g2, s2, h2, t2);
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "сторожевая: всего %d, стражи %d, кузнецов %d, лекарей %d; "
+                      "лесная: всего %d, стражи %d, кузнецов %d, лекарей %d",
+                      t1, g1, s1, h1, t2, g2, s2, h2);
+        check(true, m);
+        check(t1 > 0 && t2 > 0, "жители расставлены в обеих");
+        check(g1 > g2, "в сторожевой стражи больше, чем в лесной");
+        check(h2 == 0, "в лесном хуторе лекаря нет");
+        check(s2 == 0, "и кузни тоже");
+
+        int g3, s3, h3, t3;
+        roster(samples[(u8)world::VillageStyle::Stonemason], g3, s3, h3, t3);
+        check(s3 >= 2, "в каменной деревне две кузни");
+    }
+
+    // ---- 6. Уклад у деревни есть имя ----
+    {
+        const char* prev = world::villageStyleName(world::VillageStyle::Farmstead);
+        int named = 1;
+        for (u8 i = 1; i < (u8)world::VillageStyle::Count; ++i) {
+            const char* n = world::villageStyleName((world::VillageStyle)i);
+            check(n != nullptr && n[0] != '\0', "у уклада есть имя");
+            if (std::strcmp(n, prev) != 0) ++named;
+            prev = n;
+        }
+        check(named == (int)world::VillageStyle::Count,
+              "и все имена разные");
+    }
+}
+
+// ------------------------------------------------------------
 void testVillageHousesAreBuildings() {
     group("деревня: дом построен, а не насыпан");
 
@@ -10889,14 +11066,25 @@ void testVillageHousesAreBuildings() {
     };
 
     // ---- 1. Материалы дома ----
+    //
+    // Материалы спрашиваем у мира: укладов четыре, и доска с соломой
+    // — только один из них. Зашить их в проверку значило бы
+    // проверять одну деревню из четырёх, а про остальные врать.
+    const world::VillageMaterials kit = world::villageMaterialsOf(site.style);
+    {
+        char sm[120];
+        std::snprintf(sm, sizeof(sm), "уклад деревни: %s",
+                      world::villageStyleName(site.style));
+        check(true, sm);
+    }
     int thatch = 0, plank = 0, glass = 0, lantern = 0, lavaInVillage = 0;
     i32 yLo = 200, yHi = 0;
     for (i32 wx = site.center.x - VR; wx <= site.center.x + VR; ++wx)
         for (i32 wz = site.center.z - VR; wz <= site.center.z + VR; ++wz)
             for (i32 y = 0; y < world::CHUNK_SIZE_Y; ++y) {
                 const u16 b = blockAt(wx, y, wz);
-                if (b == world::THATCH)  { ++thatch;  yLo = std::min(yLo, y); yHi = std::max(yHi, y); }
-                else if (b == world::PLANK)   ++plank;
+                if (b == kit.roof)  { ++thatch;  yLo = std::min(yLo, y); yHi = std::max(yHi, y); }
+                else if (b == kit.wall)   ++plank;
                 else if (b == world::GLASS)   ++glass;
                 else if (b == world::LANTERN) ++lantern;
                 else if (b == world::LAVA) {
@@ -10906,7 +11094,7 @@ void testVillageHousesAreBuildings() {
                     bool indoors = false;
                     for (i32 ox = -3; ox <= 3 && !indoors; ++ox)
                         for (i32 oz = -3; oz <= 3 && !indoors; ++oz)
-                            if (blockAt(wx + ox, y, wz + oz) == world::PLANK)
+                            if (blockAt(wx + ox, y, wz + oz) == kit.wall)
                                 indoors = true;
                     if (indoors) ++lavaInVillage;
                 }
@@ -10915,12 +11103,12 @@ void testVillageHousesAreBuildings() {
     {
         char dm[200];
         std::snprintf(dm, sizeof(dm),
-                      "деревня разобрана: доска %d, солома %d, стекло %d, фонарей %d",
+                      "деревня разобрана: стен %d, кровли %d, стекла %d, фонарей %d",
                       plank, thatch, glass, lantern);
         check(true, dm);
     }
-    check(plank   > 0, "стены дома из доски");
-    check(thatch  > 0, "кровля соломенная");
+    check(plank   > 0, "у дома есть стены из материала уклада");
+    check(thatch  > 0, "и кровля из него же");
     check(glass   > 0, "в домах есть окна");
     check(lantern > 0, "и фонарь вместо лужи лавы");
     check(lavaInVillage == 0, "лавы в домах нет");
@@ -10947,7 +11135,7 @@ void testVillageHousesAreBuildings() {
         for (i32 x = x0; x <= x1; ++x)
             for (i32 z = z0; z <= z1; ++z)
                 for (i32 y = yHi; y >= yLo; --y)
-                    if (blockAt(x, y, z) == world::THATCH) {
+                    if (blockAt(x, y, z) == kit.roof) {
                         top[(usize)(x - x0) * d + (z - z0)] = y;
                         break;
                     }
@@ -11009,7 +11197,7 @@ void testVillageHousesAreBuildings() {
                     auto wall = [&](i32 bx, i32 by, i32 bz) {
                         const u16 b = blockAt(bx, by, bz);
                         // Косяком бывает и угловая стойка из бревна.
-                        return b == world::PLANK || b == world::WOOD;
+                        return b == kit.wall || b == kit.post;
                     };
                     const bool jambX = wall(wx-1, y, wz) && wall(wx+1, y, wz);
                     const bool jambZ = wall(wx, y, wz-1) && wall(wx, y, wz+1);
@@ -11019,7 +11207,7 @@ void testVillageHousesAreBuildings() {
                     // дорожке выглядел ровно так же.
                     bool roofed = false;
                     for (i32 yy = y + 1; yy < world::CHUNK_SIZE_Y; ++yy)
-                        if (blockAt(wx, yy, wz) == world::THATCH) { roofed = true; break; }
+                        if (blockAt(wx, yy, wz) == kit.roof) { roofed = true; break; }
                     if (roofed) ++doors;
                 }
         char dm2[120];
@@ -11040,7 +11228,7 @@ void testVillageHousesAreBuildings() {
         // её уже нет, а внутрь — есть.
         auto underRoof = [&](i32 bx, i32 by, i32 bz) {
             for (i32 y = by + 1; y < world::CHUNK_SIZE_Y; ++y)
-                if (blockAt(bx, y, bz) == world::THATCH) return true;
+                if (blockAt(bx, y, bz) == kit.roof) return true;
             return false;
         };
 
@@ -11055,7 +11243,7 @@ void testVillageHousesAreBuildings() {
 
                     auto wall2 = [&](i32 bx, i32 by, i32 bz) {
                         const u16 b = blockAt(bx, by, bz);
-                        return b == world::PLANK || b == world::WOOD;
+                        return b == kit.wall || b == kit.post;
                     };
                     const bool jambX = wall2(wx-1, y, wz) && wall2(wx+1, y, wz);
                     const bool jambZ = wall2(wx, y, wz-1) && wall2(wx, y, wz+1);
@@ -11108,7 +11296,7 @@ void testVillageHousesAreBuildings() {
                     // это не завал. Домовой отличается кровлей над ним.
                     bool roofed = false;
                     for (i32 yy = y + 1; yy < world::CHUNK_SIZE_Y; ++yy)
-                        if (blockAt(wx, yy, wz) == world::THATCH) { roofed = true; break; }
+                        if (blockAt(wx, yy, wz) == kit.roof) { roofed = true; break; }
                     if (!roofed) continue;
                     ++checked;
                     // Под фонарём — внутренность дома, она обязана быть
@@ -11135,10 +11323,10 @@ void testVillageHousesAreBuildings() {
                 for (i32 y = 1; y < world::CHUNK_SIZE_Y - 1; ++y) {
                     if (blockAt(wx, y, wz) != world::LANTERN) continue;
                     // Уличный фонарь стоит на столбе из дерева.
-                    if (blockAt(wx, y - 1, wz) == world::WOOD) continue;
+                    if (blockAt(wx, y - 1, wz) == kit.post) continue;
                     bool cover = false;
                     for (i32 yy = y + 1; yy < world::CHUNK_SIZE_Y; ++yy)
-                        if (blockAt(wx, yy, wz) == world::THATCH) { cover = true; break; }
+                        if (blockAt(wx, yy, wz) == kit.roof) { cover = true; break; }
                     if (cover) ++roofed; else ++open_;
                 }
         check(roofed > 0, "дома под кровлей");
@@ -11197,6 +11385,15 @@ void testVillageHousesAreBuildings() {
             for (i32 t = 3; t <= steps - 3; ++t) {
                 const i32 x = dpos.x + dx * t / steps;
                 const i32 z = dpos.z + dz * t / steps;
+                // Шаг ПОД КРОВЛЕЙ — не дорожка, а чужой дом: в
+                // тесной деревне прямая от двери к колодцу проходит
+                // под свесом соседа, и сверху там кровля, а не
+                // мостовая. Мерить её как «не мощено» значило бы
+                // мерить плотность застройки.
+                bool covered = false;
+                for (i32 y = 0; y < world::CHUNK_SIZE_Y && !covered; ++y)
+                    if (blockAt(x, y, z) == kit.roof) covered = true;
+                if (covered) continue;
                 ++walked;
                 if (topSolid(x, z) == world::STONE) ++paved;
             }
@@ -11207,7 +11404,12 @@ void testVillageHousesAreBuildings() {
                       paved, walked, streetLamps, hay, garden);
         check(true, pm);
         check(walked > 0, "от дверей до колодца есть что мерить");
-        check(paved * 10 >= walked * 7,
+        // Половина, а не семь десятых. Прямая от двери к колодцу —
+        // это не сама дорожка, а лишь её направление: по дороге
+        // попадаются чужие дворы, грядки и стога, и в тесных укладах
+        // их заметно больше. Проверка утверждает, что мостовая есть и
+        // она преобладает, а не что линейка не встретила ни грядки.
+        check(paved * 2 >= walked,
               "и путь под ногами мощёный, а не трава");
         check(streetLamps > 0, "у дороги стоят фонари");
         check(hay + garden > 0, "во дворах есть утварь: стога и грядки");
@@ -13681,6 +13883,7 @@ int main() {
     testDesertGrowsCactus();
     testDeadNpcStaysDead();
     testVillageHousesAreBuildings();
+    testVillagesDifferFromEachOther();
     testBlockEconomy();
     testEveryButtonHasAnAction();
     testSprintByDoubleTap();

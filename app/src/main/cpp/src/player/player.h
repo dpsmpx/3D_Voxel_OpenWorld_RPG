@@ -200,6 +200,10 @@ public:
     /// Спрашивают снаружи: об ударе о землю игроку надо сказать.
     f32 lastFallDamage = 0.f;
 
+    /// Вошли в деревню нового уклада. Поднят на кадре входа.
+    bool enteredVillage = false;
+    world::VillageStyle villageStyle = world::VillageStyle::Count;
+
     bool enteredLair = false;             ///< поднят на кадре входа
     world::LairKind lairKind = world::LairKind::None; ///< где стоим
     bool justDied      = false;   ///< поднят на кадре смерти
@@ -240,6 +244,9 @@ private:
 
     /// Заметить, что вошли в логово (или вышли из него).
     void noticeLair(world::ChunkManager& world);
+
+    /// Заметить, в деревню какого уклада вошли.
+    void noticeVillage(world::ChunkManager& world);
 
     /// Задохнулся: бег не включается, пока выносливость не поднимется
     /// до SPRINT_RESUME.
