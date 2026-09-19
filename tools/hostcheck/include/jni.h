@@ -43,6 +43,10 @@ struct _JNIEnv {
     jmethodID GetMethodID(jclass, const char*, const char*)       { return nullptr; }
     jmethodID GetStaticMethodID(jclass, const char*, const char*) { return nullptr; }
     jstring  NewStringUTF(const char*)                    { return nullptr; }
+    /* Строку, пришедшую из Java, читает выбор файла: ответ диалога
+     * приходит именно строкой. На хосте она всегда пуста — настоящего
+     * диалога здесь нет и быть не может. */
+    const char* GetStringUTFChars(jstring, jboolean*)     { return nullptr; }
     void     ReleaseStringUTFChars(jstring, const char*)  {}
     jobject  CallObjectMethod(jobject, jmethodID, ...)             { return nullptr; }
     jobject  CallStaticObjectMethod(jclass, jmethodID, ...)        { return nullptr; }

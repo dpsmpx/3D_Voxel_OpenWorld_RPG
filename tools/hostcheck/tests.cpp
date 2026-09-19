@@ -60,6 +60,7 @@
 #include "render/mesh_builder.h"
 #include "render/chunk_renderer.h"
 #include "core/clipboard.h"
+#include "core/file_picker.h"
 #include "config/settings.h"
 #include "render/camera.h"
 #include "render/mob_renderer.h"
@@ -11562,6 +11563,397 @@ void testBossesAndDaylightMonsters() {
 }
 
 // ------------------------------------------------------------
+void testStepsSoundLikeStepsAndRainLikeRain() {
+    group("звук: шаг со своей поверхности, дождь петлёй");
+
+    audio::SoundRegistry::instance().init(48000);
+    const auto& reg = audio::sounds();
+
+    /// Что слышно в звуке.
+    struct Profile {
+        f32 dur = 0.f;
+        f32 peak = 0.f;
+        f32 rms = 0.f;
+        /// Доля энергии в верхней половине спектра — грубо, по числу
+        /// смен знака. Шипение траву от камня отличает именно этим.
+        f32 bright = 0.f;
+        /// Во сколько раз начало громче хвоста. У щелчка вся энергия
+        /// в начале; у шага за ударом идёт шорох.
+        f32 headToTail = 0.f;
+    };
+
+    auto profileOf = [&](audio::SoundId id, u32 from, u32 count) {
+        Profile p{};
+        const audio::Sound& s = reg.get(id);
+        if (!s.valid() || from + count > s.frames) return p;
+        p.dur = (f32)count / (f32)s.sampleRate;
+
+        f64 sum = 0.0;
+        i32 crossings = 0;
+        f32 prev = 0.f;
+        for (u32 i = 0; i < count; ++i) {
+            const f32 v = s.samples[from + i];
+            p.peak = std::max(p.peak, std::fabs(v));
+            sum += (f64)v * (f64)v;
+            if ((v >= 0.f) != (prev >= 0.f)) ++crossings;
+            prev = v;
+        }
+        p.rms = (f32)std::sqrt(sum / (f64)count);
+        p.bright = (f32)crossings / (f32)count;
+
+        // Голова — первая шестая, хвост — последняя треть.
+        const u32 head = count / 6, tailFrom = count - count / 3;
+        f64 hs = 0.0, ts = 0.0;
+        for (u32 i = 0; i < head; ++i) {
+            const f32 v = s.samples[from + i];
+            hs += (f64)v * (f64)v;
+        }
+        for (u32 i = tailFrom; i < count; ++i) {
+            const f32 v = s.samples[from + i];
+            ts += (f64)v * (f64)v;
+        }
+        const f64 hr = std::sqrt(hs / (f64)std::max(1u, head));
+        const f64 tr = std::sqrt(ts / (f64)std::max(1u, count - tailFrom));
+        p.headToTail = tr > 1e-9 ? (f32)(hr / tr) : 1e9f;
+        return p;
+    };
+
+    // ---- 1. Шаг длится как шаг, а не как щелчок ----
+    //
+    // Прежний шаг был одной вспышкой шума в восемьдесят
+    // миллисекунд — то есть щелчком, и слышался «тук».
+    struct Mat { audio::SoundId id; const char* what; };
+    const Mat mats[] = {
+        { audio::SOUND_FOOTSTEP_DIRT,  "земля" },
+        { audio::SOUND_FOOTSTEP_GRASS, "трава" },
+        { audio::SOUND_FOOTSTEP_STONE, "камень" },
+        { audio::SOUND_FOOTSTEP_WOOD,  "доска" },
+        { audio::SOUND_FOOTSTEP_SAND,  "песок" },
+        { audio::SOUND_FOOTSTEP_WATER, "вода" },
+    };
+
+    std::map<std::string, Profile> profiles;
+    for (const Mat& m : mats) {
+        const audio::Sound& s = reg.get(m.id);
+        check(s.valid(), "звук шага сгенерирован");
+        if (!s.valid()) continue;
+
+        // Четыре варианта в одном буфере.
+        const u32 one = s.frames / 4;
+        const Profile p = profileOf(m.id, 0, one);
+        profiles[m.what] = p;
+
+        char msg[200];
+        std::snprintf(msg, sizeof(msg),
+                      "%s: %.0f мс, пик %.2f, яркость %.3f, голова/хвост %.1f",
+                      m.what, (double)p.dur * 1000.0, (double)p.peak,
+                      (double)p.bright, (double)p.headToTail);
+        check(true, msg);
+
+        check(p.dur > 0.14f, "шаг длится дольше щелчка");
+        check(p.peak > 0.05f, "и его слышно");
+        check(p.peak <= 1.0f, "и он не клиппует");
+
+        // Два варианта подряд обязаны отличаться: одинаковый шаг
+        // слышен как запись, пущенная по кругу.
+        const Profile p2 = profileOf(m.id, one, one);
+        check(std::fabs(p2.rms - p.rms) > 1e-5f ||
+              std::fabs(p2.peak - p.peak) > 1e-5f,
+              "и соседний вариант звучит иначе");
+    }
+
+    // ---- 2. Поверхности слышно РАЗНЫМИ ----
+    //
+    // Раньше их различал один параметр фильтра, и по звуку камень от
+    // травы почти не отличался.
+    {
+        const f32 grassB = profiles["трава"].bright;
+        const f32 stoneB = profiles["камень"].bright;
+        const f32 sandB  = profiles["песок"].bright;
+        char m[200];
+        std::snprintf(m, sizeof(m),
+                      "яркость: трава %.3f, камень %.3f, песок %.3f, "
+                      "доска %.3f, вода %.3f",
+                      (double)grassB, (double)stoneB, (double)sandB,
+                      (double)profiles["доска"].bright,
+                      (double)profiles["вода"].bright);
+        check(true, m);
+
+        // Камень звонче травы — у него резкий удар и звон, а не шорох.
+        check(stoneB > grassB * 1.2f, "камень звонче травы");
+
+        // И ни одна пара не звучит одинаково.
+        i32 samePairs = 0;
+        for (const Mat& a : mats)
+            for (const Mat& b : mats) {
+                if (a.id >= b.id) continue;
+                const Profile& pa = profiles[a.what];
+                const Profile& pb = profiles[b.what];
+                if (std::fabs(pa.bright - pb.bright) < 0.005f &&
+                    std::fabs(pa.dur - pb.dur) < 0.005f) ++samePairs;
+            }
+        check(samePairs == 0, "и ни одна пара поверхностей не звучит одинаково");
+    }
+
+    // ---- 3. У шага есть хвост, а не только удар ----
+    //
+    // Это и отличает шаг от стука: нога не просто бьёт, она ещё и
+    // доезжает по поверхности.
+    {
+        i32 withTail = 0;
+        for (const Mat& m : mats) {
+            // Голова громче хвоста всегда; вопрос — во сколько раз.
+            // У щелчка хвоста нет вовсе, и отношение улетает.
+            if (profiles[m.what].headToTail < 60.f) ++withTail;
+        }
+        char msg[140];
+        std::snprintf(msg, sizeof(msg),
+                      "поверхностей с внятным хвостом: %d из 6", withTail);
+        check(true, msg);
+        check(withTail >= 5, "почти у каждой поверхности шаг с шорохом");
+    }
+
+    // ---- 4. Дождь: петля без щелчка на стыке ----
+    {
+        const audio::Sound& r = reg.get(audio::SOUND_RAIN);
+        check(r.valid(), "шум дождя сгенерирован");
+        if (r.valid()) {
+            check(r.looping, "и он зациклен");
+            check(r.duration() > 2.f, "и петля длиннее двух секунд");
+
+            f32 peak = 0.f;
+            f64 sum = 0.0;
+            for (u32 i = 0; i < r.frames; ++i) {
+                peak = std::max(peak, std::fabs(r.samples[i]));
+                sum += (f64)r.samples[i] * (f64)r.samples[i];
+            }
+            const f32 rms = (f32)std::sqrt(sum / (f64)r.frames);
+            char m[160];
+            std::snprintf(m, sizeof(m),
+                          "дождь: %.1f с, пик %.2f, средняя громкость %.3f",
+                          (double)r.duration(), (double)peak, (double)rms);
+            check(true, m);
+            check(peak > 0.05f && peak <= 1.f, "дождь слышен и не клиппует");
+            check(rms > 0.01f, "и звучит непрерывно, а не редкими каплями");
+
+            // Стык: разрыв волны в точке склейки слышится щелчком раз
+            // в четыре секунды.
+            const f32 first = std::fabs(r.samples[0]);
+            const f32 last  = std::fabs(r.samples[r.frames - 1]);
+            std::snprintf(m, sizeof(m), "на стыке петли %.4f и %.4f",
+                          (double)first, (double)last);
+            check(true, m);
+            check(first < peak * 0.1f && last < peak * 0.1f,
+                  "и петля сшита без щелчка");
+        }
+    }
+
+    // ---- 5. Дождь заводится и глохнет вместе с погодой ----
+    {
+        audio::AudioEngine eng;
+        audio::AudioEvents ev;
+        ev.setEngine(&eng);
+
+        const u32 before = eng.activeVoiceCount();
+        ev.setRain(0.f);
+        check(eng.activeVoiceCount() == before,
+              "в ясную погоду петля дождя не заводится");
+
+        ev.setRain(0.8f);
+        check(eng.activeVoiceCount() > before, "в дождь она звучит");
+
+        // Повторный вызов не плодит голоса: дождь идёт каждый кадр.
+        const u32 during = eng.activeVoiceCount();
+        for (i32 i = 0; i < 50; ++i) ev.setRain(0.5f + 0.01f * (f32)i);
+        char m[140];
+        std::snprintf(m, sizeof(m), "голосов при дожде %u, после 50 кадров %u",
+                      during, eng.activeVoiceCount());
+        check(true, m);
+        check(eng.activeVoiceCount() == during,
+              "и за полсотни кадров не размножается");
+
+        ev.setRain(0.f);
+        // Затухание: дождь не обрывается, поэтому голос ещё живёт.
+        // Важно, что новый после этого не заводится.
+        ev.setRain(0.f);
+        check(eng.activeVoiceCount() <= during, "а кончившись — стихает");
+    }
+}
+
+// ------------------------------------------------------------
+void testContinueLastWorldAndFilePicker() {
+    group("запуск: прошлый мир продолжается, файл выбирается системой");
+
+    items::items();
+    world::blocks();
+
+    // ---- 1. Решение «продолжать или начинать заново» ----
+    {
+        save::SaveManager mgr;
+        mgr.init("build/hostcheck");
+        const save::SaveSlot slot = mgr.slots().slot(2, 0);
+        std::remove(slot.dataPath().c_str());
+        std::remove(slot.metaPath().c_str());
+
+        u64 seed = 123;
+        check(!save::continueWorld(mgr.slots(), -1, -1, seed),
+              "без прошлого мира продолжать нечего");
+        check(seed == 0, "и зерно при этом не выдумывается");
+
+        check(!save::continueWorld(mgr.slots(), 0, 5, seed),
+              "слот за границами — не мир");
+        check(!save::continueWorld(mgr.slots(), 9, 0, seed),
+              "профиль за границами — тоже");
+        check(!save::continueWorld(mgr.slots(), 2, 0, seed),
+              "и пустой слот не продолжают");
+
+        // Кладём настоящий мир.
+        constexpr u64 MINE = 0x600DBEEFull;
+        world::ChunkManager wd(MINE, 2);
+        world::DayCycle day;
+        save::WorldDeltaStore deltas;
+        ecs::Registry reg;
+        const ecs::Entity player = reg.create();
+        reg.add(player, ecs::Transform{});
+        reg.add(player, items::Wallet{});
+        npc::NpcSpawner spawner;
+        hazards::TreasureKeeper treasures;
+        check(mgr.save(slot, wd, reg, player, deltas, MINE, 42, day,
+                       spawner, treasures, "Прошлый") == save::SaveStatus::Ok,
+              "прошлый мир сохранён");
+
+        check(save::continueWorld(mgr.slots(), 2, 0, seed),
+              "теперь продолжать есть что");
+        check(seed == MINE, "и зерно взято из его метаданных");
+
+        // Метаданные без сейва — это не мир: открывать нечего.
+        std::remove(slot.dataPath().c_str());
+        check(!save::continueWorld(mgr.slots(), 2, 0, seed),
+              "метаданные без сейва миром не считаются");
+
+        std::remove(slot.metaPath().c_str());
+    }
+
+    // ---- 2. Слот прошлого мира переживает перезапуск ----
+    //
+    // Он живёт в настройках: приложение на Android закрывают, не
+    // выходя из него, и «в памяти до выхода» означало бы «никогда».
+    {
+        const std::string path = "build/hostcheck/continue_test.cfg";
+        std::remove(path.c_str());
+
+        config::Settings a{};
+        a.lastProfile = 1;
+        a.lastSlot    = 2;
+        check(a.save(path), "настройки записаны");
+
+        config::Settings b{};
+        check(b.load(path), "и прочитаны обратно");
+        check(b.lastProfile == 1 && b.lastSlot == 2,
+              "слот прошлого мира пережил запись и чтение");
+
+        // Половина пары — это не слот: профиль без слота означал бы
+        // загрузку из слота минус один.
+        config::Settings c{};
+        c.lastProfile = 1;
+        c.lastSlot    = -1;
+        c.clamp();
+        check(c.lastProfile == -1 && c.lastSlot == -1,
+              "полупустая пара обнуляется целиком");
+
+        config::Settings d{};
+        d.lastProfile = 7;
+        d.lastSlot    = 0;
+        d.clamp();
+        check(d.lastProfile == -1, "и профиль за границами — тоже");
+
+        std::remove(path.c_str());
+    }
+
+    // ---- 3. Выбор файла: ответ забирается ОДИН раз ----
+    {
+        // Настоящего диалога на хосте нет, и позвать его нечем:
+        // активности не существует. Проверяем то, что от него не
+        // зависит, — правила забора ответа.
+        check(!sys::openWorldPicker(nullptr), "без активности диалог не открыть");
+        check(sys::takePickedFile().empty(), "и забирать нечего");
+        check(!sys::pickerPending(), "и ничего не ждём");
+    }
+
+    // ---- 4. Java и нативная сторона связаны по имени ----
+    //
+    // Имя функции JNI собирается из пакета и класса. Переименуй
+    // класс в Java — и метод не свяжется: игра упадёт при первом же
+    // выборе файла, и только на устройстве.
+    {
+        const std::string java =
+            readSource("app/src/main/java/com/voxelrpg/game/MainActivity.java");
+        const std::string cpp =
+            readSource("app/src/main/cpp/src/core/file_picker.cpp");
+        const std::string manifest =
+            readSource("app/src/main/AndroidManifest.xml");
+        check(!java.empty(), "класс активности на месте");
+        check(!cpp.empty(), "нативная сторона на месте");
+        check(!manifest.empty(), "манифест прочитан");
+        if (java.empty() || cpp.empty() || manifest.empty()) return;
+
+        // package com.voxelrpg.game;  ->  com_voxelrpg_game
+        const usize pk = java.find("package ");
+        check(pk != std::string::npos, "пакет объявлен");
+        if (pk == std::string::npos) return;
+        std::string pkg = java.substr(pk + 8, java.find(';', pk) - pk - 8);
+        std::string flat;
+        for (char ch : pkg) flat += (ch == '.') ? '_' : ch;
+
+        // class MainActivity
+        const usize cl = java.find("public class ");
+        check(cl != std::string::npos, "класс объявлен");
+        if (cl == std::string::npos) return;
+        const usize clEnd = java.find_first_of(" \n", cl + 13);
+        const std::string cls = java.substr(cl + 13, clEnd - cl - 13);
+
+        // native void имя(
+        const usize nv = java.find("native void ");
+        check(nv != std::string::npos, "нативный метод объявлен");
+        if (nv == std::string::npos) return;
+        const std::string method =
+            java.substr(nv + 12, java.find('(', nv) - nv - 12);
+
+        const std::string want = "Java_" + flat + "_" + cls + "_" + method;
+        char m[220];
+        std::snprintf(m, sizeof(m), "ожидаемое имя JNI: %s", want.c_str());
+        check(true, m);
+        check(cpp.find(want) != std::string::npos,
+              "нативная функция названа ровно так, как ждёт Java");
+
+        // И манифест обязан объявлять ЭТОТ класс, иначе система
+        // запустит голую NativeActivity, в которой метода нет.
+        check(manifest.find("android:hasCode=\"true\"") != std::string::npos,
+              "манифест разрешает Java-код");
+        check(manifest.find("\"." + cls + "\"") != std::string::npos,
+              "и объявляет нашу активность, а не голую NativeActivity");
+
+        // Библиотека должна остаться названной: её грузит
+        // NativeActivity по этому имени.
+        check(manifest.find("android.app.lib_name") != std::string::npos,
+              "и по-прежнему называет нативную библиотеку");
+    }
+
+    // ---- 5. Перебор по кругу остался только запасным путём ----
+    {
+        const std::string src = readSource("app/src/main/cpp/src/main.cpp");
+        check(!src.empty(), "main.cpp прочитан");
+        if (src.empty()) return;
+        const usize picker = src.find("sys::openWorldPicker");
+        const usize folder = src.find("importFromFolder");
+        check(picker != std::string::npos, "системный выбор файла вызывается");
+        check(folder != std::string::npos, "запасной путь на месте");
+        check(picker < folder,
+              "и системный диалог пробуется ПЕРВЫМ, а перебор — только после");
+    }
+}
+
+// ------------------------------------------------------------
 void testBlightForestAndCastles() {
     group("Чёрный лес: густая нечистая земля и замок посреди неё");
 
@@ -16687,6 +17079,8 @@ int main() {
     testMountainsAndVolcanoes();
     testTreesHaveBranchesAndCrowns();
     testBossesAndDaylightMonsters();
+    testStepsSoundLikeStepsAndRainLikeRain();
+    testContinueLastWorldAndFilePicker();
     testFallsTrapsAndAmbushes();
     testSecretTreasureAndItsQuest();
     testStoryChainRunsInOrder();

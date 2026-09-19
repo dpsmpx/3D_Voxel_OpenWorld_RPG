@@ -55,6 +55,15 @@ public:
     void mobDeath(const glm::vec3& worldPos);
     void mobAttack(const glm::vec3& worldPos);
 
+    /// ---- Погода ----
+    ///
+    /// Не событие, а СОСТОЯНИЕ: дождь не «случается», он идёт.
+    /// Поэтому здесь одна петля, которой меняют громкость, а не
+    /// череда одиночных звуков.
+    ///
+    /// intensity — 0..1 сила осадков. Ноль глушит петлю совсем.
+    void setRain(f32 intensity);
+
     /// ---- Мир ----
     void blockBreak(u16 blockId, const glm::vec3& worldPos);
     void blockPlace(u16 blockId, const glm::vec3& worldPos);
@@ -63,6 +72,10 @@ public:
 
 private:
     AudioEngine* engine_ = nullptr;
+
+    /// Голос дождя. Живёт, пока идёт дождь, и гаснет вместе с ним.
+    VoiceHandle rainVoice_{};
+    f32 rainGain_ = 0.f;
 };
 
 inline AudioEvents& events() {

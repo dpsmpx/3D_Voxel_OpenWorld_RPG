@@ -318,6 +318,33 @@ for DIAG in 0 1; do
     fi
 done
 
+# ---- Java: активность с выбором файла ----
+#
+# Java в проекте ровно один класс, и до него не доставала ни одна
+# проверка: собирался он только вместе с APK, то есть в CI и через
+# двадцать минут. Опечатка в имени метода стоила бы целого прогона.
+#
+# Полного android.jar здесь нет — есть заглушки с подписями того, чего
+# класс касается (tools/hostcheck/javastub). Этого хватает, чтобы
+# поймать опечатку, лишнюю запятую и несовпадение типов.
+JAVA_SRC="$PROJ/app/src/main/java"
+if [ -d "$JAVA_SRC" ] && command -v javac >/dev/null 2>&1; then
+    echo "==> Java активности..."
+    JAVA_OUT="$OUT/javac"
+    rm -rf "$JAVA_OUT"; mkdir -p "$JAVA_OUT"
+    if ! javac -nowarn -d "$JAVA_OUT" \
+            -sourcepath "$PROJ/tools/hostcheck/javastub:$JAVA_SRC" \
+            $(find "$JAVA_SRC" -name '*.java') > "$OUT/javac.log" 2>&1; then
+        echo "✗ Java не собралась:"
+        grep -v JAVA_TOOL_OPTIONS "$OUT/javac.log" | head -20 | sed 's/^/    /'
+        exit 1
+    fi
+    CLASSES=$(find "$JAVA_OUT" -name '*.class' | wc -l)
+    echo "✓ Классов собрано: $CLASSES, ошибок нет"
+elif [ -d "$JAVA_SRC" ]; then
+    echo "==> Java активности: пропущено (нет javac)"
+fi
+
 # ---- кадр настоящим Vulkan ----
 #
 # Всё, что выше, проверяет данные и исходный текст. Ни одна из этих

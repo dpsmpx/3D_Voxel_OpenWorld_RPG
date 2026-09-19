@@ -20,6 +20,7 @@
 #include <atomic>
 
 #include "core/clipboard.h"
+#include "core/file_picker.h"
 #include "core/log.h"
 #include "core/job_system.h"
 #include "core/math.h"
@@ -175,12 +176,19 @@ struct Engine {
     /// в имя выгруженного файла.
     char worldName[world::WORLD_NAME_CAP] = {};
 
-    /// Какой из выгруженных файлов возьмёт следующая загрузка.
+    /// Какой из выгруженных файлов возьмёт запасной путь загрузки.
     ///
-    /// Системного выбора файла отсюда не позвать, поэтому файлы
-    /// перебираются по кругу повторными нажатиями. Не изящно, зато
-    /// работает без Activity и без разрешений.
+    /// Нужен только там, где системного диалога нет вовсе.
     u32 importPick = 0;
+
+    /// В какой слот ляжет мир, который сейчас выбирают.
+    struct ImportTarget { u32 profile = 0; u32 slot = 0; };
+    ImportTarget importInto{};
+
+    /// Профиль слота, который продолжаем при запуске; -1 — начинаем
+    /// новый мир. Сам слот берётся из настроек — здесь только
+    /// признак, что продолжать есть что.
+    i32 continueSlot = -1;
 
     glm::vec2 cameraYawPitch{ 0.f, -0.35f };
     /// Счётчики отладочной сцены — только для доказательства изоляции.
@@ -302,10 +310,24 @@ struct Engine {
         // setupButtons(), вместе с их раскладкой.
 
         crash::step("менеджер чанков");
-        // Мир со случайным зерном: постоянная 0xC0FFEE означала, что
-        // все игроки всех запусков просыпались на одном и том же
-        // берегу, и «начать заново» не меняло ровным счётом ничего.
-        makeWorld(world::randomWorldSeed());
+
+        // Продолжаем прошлый мир, а если продолжать нечего —
+        // создаём случайный.
+        //
+        // Зерно берётся из метаданных слота ЗАРАНЕЕ: иначе мир
+        // строился бы дважды — сперва случайный, потом настоящий, —
+        // и первый бросался бы тут же.
+        {
+            const auto& st = cfg::settingsConst();
+            u64 seed = 0;
+            const bool continuing = save::continueWorld(
+                saveMgr.slots(), st.lastProfile, st.lastSlot, seed);
+            if (!continuing) seed = world::randomWorldSeed();
+            makeWorld(seed);
+            continueSlot = continuing ? (i32)st.lastProfile : -1;
+            LOGI(continuing ? "запуск: продолжаем прошлый мир"
+                            : "запуск: прошлого мира нет, создан случайный");
+        }
 
         crash::step("система рендера");
         render = std::make_unique<render::RenderSystem>();
@@ -342,6 +364,18 @@ struct Engine {
         ui->onDeleteRequested = [this](u32 p, u32 s) {
             auto slot = saveMgr.slots().slot(p, s);
             slot.removeFiles();
+
+            // Удалённый мир перестаёт быть тем, который продолжают.
+            // Без этого запуск честно попробовал бы его открыть,
+            // не нашёл бы файла и создал случайный — но в настройках
+            // так и осталась бы ссылка на пустоту.
+            auto& st = cfg::settings();
+            if (st.lastProfile == (i32)p && st.lastSlot == (i32)s) {
+                st.lastProfile = -1;
+                st.lastSlot    = -1;
+                st.save(settingsPath);
+            }
+
             ui->refreshSlotMeta(saveMgr.slots());
             ui->notify(cfg::T(cfg::StrKey::Notif_Deleted),
                        ui::theme::NotifyPriority::High);
@@ -389,32 +423,20 @@ struct Engine {
         };
 
         ui->onImportRequested = [this](u32 p, u32 s) {
-            // Выбирать файл системным диалогом нечем: он приходит
-            // через Activity, а её здесь нет. Поэтому берётся первый
-            // из общего каталога — туда игрок его и кладёт.
-            const std::string dir = save::exportDir(internalDataPath.c_str(),
-                                                    externalDataPath.c_str());
-            const auto files = save::listExports(dir);
             if (!ui) return;
-            if (files.empty()) {
-                ui->notify(std::string(cfg::T(cfg::StrKey::Notif_ImportFailed)) +
-                           ": " + dir, ui::theme::NotifyPriority::High);
-                return;
-            }
-            const auto st = save::importSlot(files[importPick % files.size()],
-                                             saveMgr.slots().slot(p, s));
-            // Следующая попытка возьмёт следующий файл: так до нужного
-            // мира добираются повторными нажатиями, а не никак.
-            ++importPick;
-            if (st == save::TransferStatus::Ok) {
-                ui->refreshSlotMeta(saveMgr.slots());
-                ui->notify(cfg::T(cfg::StrKey::Notif_Imported),
-                           ui::theme::NotifyPriority::High);
-            } else {
-                ui->notify(std::string(cfg::T(cfg::StrKey::Notif_ImportFailed)) +
-                           ": " + save::transferStatusString(st),
-                           ui::theme::NotifyPriority::High);
-            }
+
+            // Системный выбор файла. Раньше его было нечем позвать —
+            // диалог открывается через Activity, а Java в проекте не
+            // было вовсе, — и файлы перебирались по кругу: игрок
+            // клал мир в единственную известную игре папку и жал
+            // кнопку, пока не попадётся нужный.
+            importInto = { p, s };
+            if (sys::openWorldPicker(activity)) return;
+
+            // Диалога нет (запуск поверх голой NativeActivity) —
+            // берём первый файл из общего каталога. Не изящно, зато
+            // игра не остаётся вовсе без загрузки миров.
+            importFromFolder(p, s);
         };
 
         ui->onCloseDialogue = [this]() {
@@ -599,6 +621,14 @@ struct Engine {
         setupButtons();
         ui->refreshSlotMeta(saveMgr.slots());
 
+        // Прошлый мир дочитывается ПОСЛЕ того, как готово всё
+        // остальное: doLoad трогает игрока, спавнеры и интерфейс, и
+        // до этой точки их ещё нет.
+        if (continueSlot >= 0) {
+            const auto& st = cfg::settingsConst();
+            doLoad((u32)st.lastProfile, (u32)st.lastSlot);
+        }
+
         fpsTime = std::chrono::steady_clock::now();
 
         crash::step("инициализация завершена");
@@ -774,6 +804,47 @@ struct Engine {
              probe.chunksBuilt());
     }
 
+    /// Запомнить, в каком мире играли: с него начнётся следующий
+    /// запуск. Пишется в настройки сразу — приложение на Android
+    /// закрывают, не выходя из него.
+    void rememberWorld(u32 profile, u32 slot) {
+        auto& st = cfg::settings();
+        if (st.lastProfile == (i32)profile && st.lastSlot == (i32)slot) return;
+        st.lastProfile = (i32)profile;
+        st.lastSlot    = (i32)slot;
+        st.save(settingsPath);
+    }
+
+    /// Запасная загрузка: первый файл из общего каталога.
+    void importFromFolder(u32 p, u32 s) {
+        const std::string dir = save::exportDir(internalDataPath.c_str(),
+                                                externalDataPath.c_str());
+        const auto files = save::listExports(dir);
+        if (!ui) return;
+        if (files.empty()) {
+            ui->notify(std::string(cfg::T(cfg::StrKey::Notif_ImportFailed)) +
+                       ": " + dir, ui::theme::NotifyPriority::High);
+            return;
+        }
+        applyImport(files[importPick % files.size()], p, s);
+        ++importPick;
+    }
+
+    /// Положить выбранный файл в слот и сказать об этом игроку.
+    void applyImport(const std::string& file, u32 p, u32 s) {
+        const auto st = save::importSlot(file, saveMgr.slots().slot(p, s));
+        if (!ui) return;
+        if (st == save::TransferStatus::Ok) {
+            ui->refreshSlotMeta(saveMgr.slots());
+            ui->notify(cfg::T(cfg::StrKey::Notif_Imported),
+                       ui::theme::NotifyPriority::High);
+        } else {
+            ui->notify(std::string(cfg::T(cfg::StrKey::Notif_ImportFailed)) +
+                       ": " + save::transferStatusString(st),
+                       ui::theme::NotifyPriority::High);
+        }
+    }
+
     void doSave(u32 profile, u32 slot) {
         if (!player || !world || !npcSpawner) return;
         auto sl = saveMgr.slots().slot(profile, slot);
@@ -786,6 +857,7 @@ struct Engine {
         if (st == save::SaveStatus::Ok) {
             lastSaveProfile = profile;
             lastSaveSlot    = slot;
+            rememberWorld(profile, slot);
             if (ui) {
                 char buf[96];
                 std::snprintf(buf, sizeof(buf), "%s P%u S%u",
@@ -832,6 +904,7 @@ struct Engine {
             if (ui) ui->currentWorldSeed = worldSeed;
             lastSaveProfile = profile;
             lastSaveSlot    = slot;
+            rememberWorld(profile, slot);
 
             if (auto* tf = registry.get<ecs::Transform>(player->entity())) {
                 player->controller.setPosition(tf->position);
@@ -1112,6 +1185,15 @@ struct Engine {
         playtime.tick(dt);
         dayCycle.tick(dt);
 
+        // Выбранный в системном диалоге файл приходит из потока Java
+        // и ждёт, пока его заберут. Забираем здесь: игровой цикл —
+        // единственное место, где можно трогать сейвы.
+        {
+            const std::string picked = sys::takePickedFile();
+            if (!picked.empty())
+                applyImport(picked, importInto.profile, importInto.slot);
+        }
+
         if (world && player) {
             weather.update(world->generator(),
                            player->controller.state().position,
@@ -1126,6 +1208,11 @@ struct Engine {
                 : player->controller.state().position;
             precip.update(*world, eye, weather.precip(), weather.snowMix(),
                           weather.wind(), dt);
+
+            // Дождь слышно. Снег — нет: он и в жизни беззвучен, и
+            // шипение под снегопадом читалось бы как дождь.
+            audio::events().setRain(weather.precip() *
+                                    (1.f - weather.snowMix()));
         }
 
         // ТЗ 4.4: торговец обновляет ассортимент раз в игровой день.
