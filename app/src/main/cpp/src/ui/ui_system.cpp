@@ -1248,7 +1248,8 @@ u32 settingsRowCount(SettingsTab tab, bool buttonLayout) {
         case SettingsTab::Input:  return buttonLayout ? 12u : 10u;
         case SettingsTab::Ui:     return 4u;
         case SettingsTab::Audio:  return 3u;
-        case SettingsTab::Game:   return 3u;
+        // Язык, автосейв, его интервал, журнал.
+        case SettingsTab::Game:   return 4u;
         case SettingsTab::Render: return 2u;
         default:                  return 0u;
     }
@@ -1506,6 +1507,17 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 sliderWidget(ui_, r, &s.autosaveInterval, 60.f, 900.f,
                              T(StrKey::Settings_AutosaveInterval), 30.f,
                              [this](float){ notifySettingsChanged(); });
+            }
+            // Журнал: выключается целиком, вместе с logcat. Отчёт о
+            // падении пишется всё равно — см. core/crashlog.h.
+            {
+                Rect r = nextRow();
+                int idx = ui_.pushInteractiveRect(r, [this]() {
+                    cfg::settings().logEnabled = !cfg::settings().logEnabled;
+                    if (onSettingsChanged) onSettingsChanged();
+                });
+                toggleWidget(ui_, r, idx, &s.logEnabled,
+                             T(StrKey::Settings_Logging));
             }
             break;
         }

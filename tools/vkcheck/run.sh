@@ -32,7 +32,10 @@ fi
 
 mkdir -p "$OUT"
 
-echo "==> Шейдеры..."
+. "$PROJ/tools/glsl-cc.sh"
+glsl_find || { echo "vkcheck: $(glsl_hint)"; exit 1; }
+
+echo "==> Шейдеры ($GLSL_CC)..."
 # Собираются в каталог ИНСТРУМЕНТА, а не в app/src/main/assets.
 #
 # Раньше — прямо в поставку, откуда gradle пакует APK. Этого хватило,
@@ -44,14 +47,14 @@ mkdir -p "$OUT/assets/shaders"
 for f in "$PROJ"/app/src/main/cpp/shaders/*.vert "$PROJ"/app/src/main/cpp/shaders/*.frag; do
     [ -e "$f" ] || continue
     base="$(basename "$f")"
-    glslc "$f" -o "$OUT/assets/shaders/$base.spv"
+    glsl_compile "$f" "$OUT/assets/shaders/$base.spv" >/dev/null
 done
 
 # Отладочные фрагментные шейдеры инструмента: вершинный при этом
 # остаётся настоящим, игровым.
 for m in 0 1 2 3 4 5; do
-    glslc -DMODE=$m "$PROJ/tools/vkcheck/debug.frag" \
-          -o "$OUT/assets/shaders/debug$m.frag.spv"
+    glsl_compile "$PROJ/tools/vkcheck/debug.frag" \
+                 "$OUT/assets/shaders/debug$m.frag.spv" "-DMODE=$m" >/dev/null
 done
 
 echo "==> Сборка..."

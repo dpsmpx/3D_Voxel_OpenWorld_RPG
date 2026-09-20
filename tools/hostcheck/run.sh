@@ -185,14 +185,17 @@ echo "✓ Слинковано: $OUT/libnative-lib.so ($SIZE), неразреш�
 # ---- шейдеры ----
 # Ошибка в GLSL не видна ни компилятору C++, ни тестам логики:
 # она всплыла бы только на устройстве чёрным экраном.
-if command -v glslc >/dev/null 2>&1; then
-    echo "==> Компиляция шейдеров..."
+. "$PROJ/tools/glsl-cc.sh"
+if glsl_find; then
+    echo "==> Компиляция шейдеров ($GLSL_CC)..."
     mkdir -p "$OUT/shaders"
     SH_FAIL=0
     for f in "$CPP_DIR"/shaders/*.vert "$CPP_DIR"/shaders/*.frag; do
         [ -f "$f" ] || continue
-        if ! glslc -O "$f" -o "$OUT/shaders/$(basename "$f").spv" \
-                2>> "$OUT/shaders.err"; then
+        # Только stderr: glslangValidator печатает имя файла в stdout
+        # и при успехе тоже, а здесь всякая строка считается дефектом.
+        if ! glsl_compile "$f" "$OUT/shaders/$(basename "$f").spv" \
+                >/dev/null 2>> "$OUT/shaders.err"; then
             SH_FAIL=1
         fi
     done
@@ -210,7 +213,8 @@ if command -v glslc >/dev/null 2>&1; then
     fi
     echo "✓ Шейдеров скомпилировано: $(ls "$OUT/shaders" | wc -l), предупреждений нет"
 else
-    echo "! glslc не найден — шейдеры не проверены (pkg install shaderc)"
+    echo "! шейдеры не проверены:"
+    glsl_hint | sed 's/^/  /'
 fi
 
 # ---- сверка вершинных форматов ----

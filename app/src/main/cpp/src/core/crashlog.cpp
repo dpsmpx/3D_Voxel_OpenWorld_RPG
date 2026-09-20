@@ -21,6 +21,11 @@
 #include <unwind.h>
 
 namespace crash {
+
+/// Ведётся ли журнал. По умолчанию да: до чтения settings.cfg
+/// успевает произойти половина запуска, и молчать в это время
+/// нельзя — именно там и ломается то, что ломается.
+bool gEnabled = true;
 namespace {
 
 constexpr int  MAX_FRAMES  = 32;
@@ -219,13 +224,15 @@ void init(const char* internalDataPath, const char* externalDataPath) {
           pkg[0] ? pkg : "(не определён)");
 }
 
-void write(char level, const char* fmt, ...) {
+namespace {
+
+/// Общее тело write/writeFatal: разница между ними ровно в одной
+/// проверке выше по стеку, и дублировать ради неё разбор va_list
+/// незачем.
+void writeLine(char level, const char* fmt, va_list ap) {
     if (gFd < 0 && gSharedFd < 0) return;
     char msg[1024];
-    va_list ap;
-    va_start(ap, fmt);
     const int n = std::vsnprintf(msg, sizeof(msg) - 2, fmt, ap);
-    va_end(ap);
     if (n < 0) return;
 
     char line[1100];
@@ -233,8 +240,43 @@ void write(char level, const char* fmt, ...) {
     if (len > 0) raw(line, (unsigned)len);
 }
 
+} // namespace
+
+void write(char level, const char* fmt, ...) {
+    if (!gEnabled) return;
+    va_list ap;
+    va_start(ap, fmt);
+    writeLine(level, fmt, ap);
+    va_end(ap);
+}
+
+void writeFatal(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    writeLine('F', fmt, ap);
+    va_end(ap);
+}
+
+void setEnabled(bool on) {
+    if (on == gEnabled) return;
+    // Переход отмечается в файле, и отмечается ДО выключения: иначе
+    // оборвавшийся журнал не отличить от упавшей игры. Сообщение
+    // идёт мимо gEnabled — оно и есть объяснение, почему дальше
+    // тишина.
+    if (on) {
+        gEnabled = true;
+        write('I', "--- журнал включён ---");
+    } else {
+        writeFatal("--- журнал выключен настройкой; "
+                   "отчёт о падении пишется по-прежнему ---");
+        gEnabled = false;
+    }
+}
+
 void step(const char* name) {
     if (!name) return;
+    // Отметка запоминается ВСЕГДА, даже при выключенном журнале:
+    // её печатает отчёт о падении, а он пишется независимо.
     std::snprintf(gLastStep, sizeof(gLastStep), "%s", name);
     write('S', "--- этап: %s", name);
 }

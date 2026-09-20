@@ -307,6 +307,11 @@ struct Engine {
         crash::step("чтение настроек");
         cfg::settings().load(settingsPath);
         cfg::L().setLanguage(cfg::settingsConst().language);
+        // Выключатель журнала применяется ПЕРВЫМ после чтения: всё,
+        // что случится дальше, уже подчиняется настройке. Раньше
+        // этой строки журнал ведётся всегда — иначе незачем было бы
+        // и заводить отметки этапов запуска.
+        crash::setEnabled(cfg::settingsConst().logEnabled);
 
         crash::step("Vulkan: создание контекста");
         // Режим показа надо выбрать ДО создания цепочки: это её
@@ -465,6 +470,10 @@ struct Engine {
         ui->onSettingsChanged = [this]() {
             auto& s = cfg::settings();
             s.clamp();
+
+            // Журнал — первым: если игрок его только что выключил,
+            // строки самой этой перенастройки писать уже не надо.
+            crash::setEnabled(s.logEnabled);
 
             applyInputSettings();
 

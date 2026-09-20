@@ -146,6 +146,7 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Settings_Language */ "Language",
     /* Settings_Autosave */ "Autosave",
     /* Settings_AutosaveInterval */"Autosave Interval",
+    /* Settings_Logging */   "Write Log File",
     /* Settings_ViewDistance */"View Distance",
     /* Settings_UnlimitedFps */ "Unlimited FPS",
 
@@ -322,6 +323,7 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Settings_Language */ "Язык",
     /* Settings_Autosave */ "Автосохранение",
     /* Settings_AutosaveInterval */"Интервал автосейва",
+    /* Settings_Logging */   "Вести журнал",
     /* Settings_ViewDistance */"Дальность прорисовки",
     /* Settings_UnlimitedFps */ "Без ограничения кадров",
 
