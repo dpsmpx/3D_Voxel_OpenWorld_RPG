@@ -260,18 +260,44 @@ bool hasLineOfSight(world::VoxelReader& rd,
     if (steps == 0) return true;
 
     auto& reg = world::blocks();
+    const i32 yTopOff = (i32)std::ceil(mp.bodyHeight);
+
+    // Свободен ли столбец тела в клетке.
+    auto columnClear = [&](i32 x, i32 y, i32 z) {
+        for (i32 yy = y; yy < y + yTopOff; ++yy)
+            if (reg.isSolid(rd.at(x, yy, z))) return false;
+        return true;
+    };
+
+    i32 px = a.x, pz = a.z;
     for (i32 i = 0; i <= steps; ++i) {
         f32 t = (f32)i / (f32)steps;
         i32 x = a.x + (i32)std::round(dx * t);
         i32 y = a.y + (i32)std::round(dy * t);
         i32 z = a.z + (i32)std::round(dz * t);
         if (y < 1 || y >= world::CHUNK_SIZE_Y - 1) return false;
-        // тело
-        i32 yTop = y + (i32)std::ceil(mp.bodyHeight);
-        for (i32 yy = y; yy < yTop; ++yy)
-            if (reg.isSolid(rd.at(x, yy, z))) return false;
+        if (!columnClear(x, y, z)) return false;
+
+        // Угол не срезаем.
+        //
+        // Проверка шла по клеткам, которые линия задевает ЦЕНТРОМ, —
+        // то есть считала существо точкой. Существо же занимает
+        // примерно блок в поперечнике, и на диагональном шаге его
+        // заносит в обе соседние клетки сразу. Поэтому на диагонали
+        // обе они обязаны быть свободны, а не «хотя бы одна».
+        //
+        // Видно это было на торце стены. A* давал честный путь в
+        // обход, сглаживание спрямляло его в диагональ мимо угла,
+        // зверь шёл по прямой к дальней точке, упирался боком в
+        // угловой блок, просил путь заново — и получал тот же самый.
+        // Со стороны: «обошёл стену почти до конца и топчется».
+        if (i > 0 && x != px && z != pz) {
+            if (!columnClear(px, y, z) || !columnClear(x, y, pz)) return false;
+        }
+
         // под ногами (кроме конечной точки — там standable уже проверен)
         if (i < steps && !reg.isSolid(rd.at(x, y - 1, z))) return false;
+        px = x; pz = z;
     }
     return true;
 }

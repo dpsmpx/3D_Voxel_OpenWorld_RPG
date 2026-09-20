@@ -3,6 +3,8 @@
  * @brief Оснастка NPC: двуногий с процедурной вариацией особей.
  */
 #include "npc_rig.h"
+#include "../combat/weapon.h"
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -73,6 +75,15 @@ entity::Rig buildVariant(const NpcDef& def, u8 variant) {
     spec.bodyColor   = shade(def.bodyColor,   1.f + spread(seed, 6) * 0.14f);
     spec.accentColor = shade(def.accentColor, 1.f + spread(seed, 7) * 0.14f);
     spec.headColor   = SKIN[mix(seed, 8) % 6];
+
+    // Оружие. Длина — от досягаемости самого оружия, а не подобрана
+    // на глаз: у копья клинок и должен быть длиннее, чем у кинжала,
+    // и это одно и то же число, которым считается удар.
+    if (def.weaponId != combat::WEAPON_NONE) {
+        const combat::WeaponDef& w = combat::weapons().get(def.weaponId);
+        spec.weaponFrac  = std::min(0.55f, w.reach * 0.18f);
+        spec.weaponColor = 0xC8CCD4FFu;
+    }
 
     return entity::humanoidRig(spec);
 }

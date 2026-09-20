@@ -3,6 +3,8 @@
  * @brief NPC: роли, диалоги с ветвлением, поведение жителей.
  */
 #include "npc_spawner.h"
+#include "../physics/creature_motion.h"
+#include "../combat/weapon.h"
 #include "npc_rig.h"
 #include "npc_def.h"
 #include "npc_ai.h"
@@ -30,6 +32,85 @@ u64 npcPersistentKey(i32 sx, i32 sz, u32 idx) {
     k ^= (u64)idx * 0x9E3779B97F4A7C15ULL;
     return k;
 }
+
+ecs::Entity spawnNpc(world::ChunkManager& world,
+                     ecs::Registry& reg,
+                     u16 typeId,
+                     const glm::vec3& at,
+                     u64 persistKey)
+{
+    const NpcDef& def = npcRegistry().get(typeId);
+    if (def.maxHealth <= 0.f) return {};
+
+    // Место должно вмещать жителя целиком: дома ставит генератор, и
+    // точка у порога легко оказывается внутри стены или косяка.
+    // Раньше такого жителя каждый кадр выдавливало вверх по полблока,
+    // и он уезжал на крышу собственного дома.
+    physics::CreatureBody body;
+    body.halfWidth = def.bodyRadius;
+    body.height    = def.bodyHeight;
+    glm::vec3 spot = at;
+    if (!physics::settle(world, spot, body)) return {};
+
+    const ecs::Entity e = reg.create();
+
+    ecs::Transform tf;
+    tf.position = spot;
+    reg.add(e, tf);
+    reg.add(e, ecs::Velocity{});
+    // Поворот — состояние сущности, а не вычисление в рендере.
+    // NPC доворачивается спокойнее мобов.
+    reg.add(e, ecs::Facing{ 0.f, 0.f, 5.f });
+
+    // Облик особи — из ПОСТОЯННОГО ключа, а не из номера сущности:
+    // иначе селянин менял бы рост и цвет рубахи всякий раз, как чанк
+    // выгружался и загружался обратно.
+    const u32 look = persistKey ? (u32)(persistKey ^ (persistKey >> 32))
+                                : (u32)((i32)at.x * 73856093) ^ (u32)((i32)at.z * 19349663);
+    reg.add(e, ecs::Appearance{ look });
+
+    // Длина шага — из ТОЙ ЖЕ оснастки, которую нарисует рендер: у
+    // низкого селянина шаг короче, и ноги не должны при этом скользить.
+    reg.add(e, ecs::Gait{ 0.f, rigFor(typeId, look).strideLength });
+    reg.add(e, ecs::Locomotion{});
+    reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
+
+    ecs::Collider col;
+    col.halfExtents = glm::vec3(def.bodyRadius, def.bodyHeight * 0.5f,
+                                def.bodyRadius);
+    reg.add(e, col);
+
+    reg.add(e, ecs::Kind{ ecs::EntityKind::NPC });
+    reg.add(e, ecs::NPCTag{});
+
+    combat::Combatant cmb;
+    cmb.faction = combat::Faction::NPC;
+    cmb.radius  = def.bodyRadius;
+    cmb.height  = def.bodyHeight;
+    reg.add(e, cmb);
+    reg.add(e, combat::StatusEffects{});
+
+    NpcTag tag;
+    tag.id = typeId;
+    tag.persistKey = persistKey;
+    reg.add(e, tag);
+
+    // Оружие в руках — настоящее, из общего реестра.
+    if (def.weaponId != combat::WEAPON_NONE)
+        reg.add(e, combat::EquippedWeapon{ def.weaponId, {} });
+
+    NpcAI ai;
+    ai.homePos = spot;
+    ai.state   = NpcAI::Idle;
+    ai.moveParams.bodyHeight = def.bodyHeight;
+    ai.moveParams.allowJump  = true;
+    ai.moveParams.allowFall  = true;
+    ai.moveParams.allowWater = false;
+    reg.add(e, ai);
+
+    return e;
+}
+
 
 // generateVillageNpcs объявлена в заголовке: состав деревни —
 // факт о мире, и спрашивают его снаружи.
@@ -159,54 +240,16 @@ namespace {
 ecs::Entity spawnCourier(world::ChunkManager& world, ecs::Registry& reg,
                          const glm::vec3& at, const glm::vec3& target)
 {
-    (void)world;
-    const NpcDef& def = npcRegistry().get(NPC_COURIER);
-    if (def.maxHealth <= 0.f) return {};
+    const ecs::Entity e = spawnNpc(world, reg, NPC_COURIER, at, /*persistKey=*/0);
+    if (!e.valid()) return {};
 
-    const ecs::Entity e = reg.create();
-
-    ecs::Transform tf;
-    tf.position = at;
-    reg.add(e, tf);
-    reg.add(e, ecs::Velocity{});
-    reg.add(e, ecs::Facing{ 0.f, 0.f, 5.f });
-
-    // Облик — от места, где он встретился: два посыльных на разных
-    // дорогах не должны быть близнецами.
-    const u32 look = (u32)((i32)at.x * 73856093) ^ (u32)((i32)at.z * 19349663);
-    reg.add(e, ecs::Appearance{ look });
-    reg.add(e, ecs::Gait{ 0.f, rigFor(NPC_COURIER, look).strideLength });
-    reg.add(e, ecs::Locomotion{});
-    reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
-
-    ecs::Collider col;
-    col.halfExtents = glm::vec3(def.bodyRadius, def.bodyHeight * 0.5f,
-                                def.bodyRadius);
-    reg.add(e, col);
-
-    reg.add(e, ecs::Kind{ ecs::EntityKind::NPC });
-    reg.add(e, ecs::NPCTag{});
-
-    combat::Combatant cmb;
-    cmb.faction = combat::Faction::NPC;
-    cmb.radius  = def.bodyRadius;
-    cmb.height  = def.bodyHeight;
-    reg.add(e, cmb);
-    reg.add(e, combat::StatusEffects{});
-
-    NpcTag tag;
-    tag.id = NPC_COURIER;
-    // Постоянного ключа у посыльного нет: он не принадлежит деревне,
-    // и «не появляться снова» к нему не относится — он и так уходит.
-    tag.persistKey = 0;
-    reg.add(e, tag);
-
-    NpcAI ai;
-    ai.homePos      = at;
-    ai.travelTarget = target;
-    ai.state        = NpcAI::Travel;
-    reg.add(e, ai);
-
+    // Посыльный не принадлежит деревне: «не появляться снова» к нему
+    // не относится — он и так уходит. Отличается от жителя ровно
+    // двумя вещами: состоянием Travel и целью пути.
+    if (auto* ai = reg.get<NpcAI>(e)) {
+        ai->travelTarget = target;
+        ai->state        = NpcAI::Travel;
+    }
     return e;
 }
 
@@ -371,57 +414,9 @@ void NpcSpawner::update(world::ChunkManager& world,
                     const NpcDef& def = npcRegistry().get(s.typeId);
                     if (def.maxHealth <= 0.f) continue;
 
-                    ecs::Entity e = reg.create();
-
-                    ecs::Transform tf;
-                    tf.position = s.pos;
-                    reg.add(e, tf);
-
-                    reg.add(e, ecs::Velocity{});
-                    // Поворот — состояние сущности, а не вычисление
-                    // в рендере. NPC доворачивается спокойнее мобов.
-                    reg.add(e, ecs::Facing{ 0.f, 0.f, 5.f });
-
-                    // Облик особи — из ПОСТОЯННОГО ключа NPC, а не из
-                    // номера сущности: иначе селянин менял бы рост и
-                    // цвет рубахи всякий раз, как чанк выгружался и
-                    // загружался обратно.
-                    const u32 look = (u32)(key ^ (key >> 32));
-                    reg.add(e, ecs::Appearance{ look });
-
-                    // Длина шага — из ТОЙ ЖЕ оснастки, которую
-                    // нарисует рендер: у низкого селянина шаг короче,
-                    // и ноги не должны при этом скользить.
-                    reg.add(e, ecs::Gait{ 0.f, rigFor(s.typeId, look).strideLength });
-                    reg.add(e, ecs::Locomotion{});
-                    reg.add(e, ecs::Health{ def.maxHealth, def.maxHealth, 0.f, 0.f });
-
-                    ecs::Collider col;
-                    col.halfExtents = glm::vec3(def.bodyRadius,
-                                                def.bodyHeight * 0.5f,
-                                                def.bodyRadius);
-                    reg.add(e, col);
-
-                    reg.add(e, ecs::Kind{ ecs::EntityKind::NPC });
-                    reg.add(e, ecs::NPCTag{});
-
-                    combat::Combatant cmb;
-                    cmb.faction = combat::Faction::NPC;
-                    cmb.radius  = def.bodyRadius;
-                    cmb.height  = def.bodyHeight;
-                    reg.add(e, cmb);
-
-                    reg.add(e, combat::StatusEffects{});
-
-                    NpcTag tag;
-                    tag.id = s.typeId;
-                    tag.persistKey = key;
-                    reg.add(e, tag);
-
-                    NpcAI ai;
-                    ai.homePos = s.pos;
-                    ai.state   = NpcAI::Idle;
-                    reg.add(e, ai);
+                    const ecs::Entity e = spawnNpc(world, reg, s.typeId,
+                                                   s.pos, key);
+                    if (!e.valid()) continue;
 
                     // Торговцу — прилавок. Без него trade::buy и
                     // trade::sell всегда отвечали «нет такой позиции»:

@@ -23,6 +23,20 @@ namespace mobs {
 /// спавнера с его таймерами и счётчиками.
 u16 mobIdForBiome(world::BiomeId biome, bool night, u32 rng);
 
+/// Создать тварь в точке.
+///
+/// Свободная функция, а не метод спавнера: «как устроена тварь» — это
+/// факт о мире, и поставить одну на проверочную площадку должно быть
+/// можно, не заводя спавнера с его таймерами, счётчиками по чанкам и
+/// списком сработавших засад.
+///
+/// Возвращает пустую сущность, если тело в это место не помещается:
+/// место ищется по ВСЕМУ телу, а не по двум блокам воздуха.
+ecs::Entity spawnMob(world::ChunkManager& world,
+                     ecs::Registry& reg,
+                     u16 mobId,
+                     const glm::vec3& pos);
+
 class Spawner {
 public:
     /// day — игровые сутки: от них зависит, какие мобы появятся.
@@ -115,10 +129,6 @@ private:
     /// появляются только в темноте — требование ТЗ 4.5.
     static f32 lightAt(world::ChunkManager& world, const world::DayCycle& day,
                        i32 x, i32 y, i32 z);
-    ecs::Entity spawnMob(world::ChunkManager& world,
-                         ecs::Registry& reg,
-                         u16 mobId,
-                         const glm::vec3& pos);
 };
 
 } // namespace mobs

@@ -7,6 +7,7 @@
 #include "../ecs/registry.h"
 #include "../world/chunk_manager.h"
 #include "../world/ai/pathfinding.h"
+#include "../physics/creature_motion.h"
 #include <glm/glm.hpp>
 #include <vector>
 
@@ -36,9 +37,20 @@ struct MobAI {
     f32 deathTimer = 0.f;
     f32 damageFlash = 0.f;
 
-    /// Флаги
-    bool inWater = false;
-    bool onGround = false;
+    /// Ноги: опора, вода, подъём на ступень, застревание.
+    /// Считает physics::stepCreature — тем же кодом, что ходит игрок.
+    physics::CreatureMotion motion{};
+
+    bool inWater()  const { return motion.inWater; }
+    bool onGround() const { return motion.onGround; }
+
+    /// Сколько до следующего выбора цели. Перебор жителей и игрока
+    /// каждый кадр на каждую тварь — это шестьдесят проходов по пулу
+    /// в кадре; два раза в секунду хватает с запасом.
+    f32 targetCooldown = 0.f;
+    /// Откат прыжка: тварь, упёршаяся в стену, не должна долбиться
+    /// в неё прыжками каждый кадр.
+    f32 jumpCooldown = 0.f;
 
     /// Phase 12: лут выпал (защита от дублей)
     bool lootDropped = false;

@@ -129,6 +129,7 @@ add_library(native-lib SHARED
     # Физика
     src/physics/character_controller.cpp
     src/physics/collision.cpp
+    src/physics/creature_motion.cpp
     src/physics/raycast.cpp
 
     # Игрок

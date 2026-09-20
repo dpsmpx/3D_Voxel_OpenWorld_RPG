@@ -41,35 +41,19 @@ f32 frand(f32 lo, f32 hi) {
     return d(rng());
 }
 
-glm::vec3 moveMob(world::ChunkManager& world,
-                  const glm::vec3& pos,
-                  const glm::vec3& vel,
-                  f32 halfW, f32 height,
-                  f32 dt)
-{
-    glm::vec3 np = pos;
-    auto& reg = world::blocks();
-    world::VoxelReader rd(world);
-
-    auto blocked = [&](const glm::vec3& p) {
-        for (f32 h = 0.1f; h < height; h += 0.4f) {
-            i32 x = (i32)std::floor(p.x);
-            i32 y = (i32)std::floor(p.y + h);
-            i32 z = (i32)std::floor(p.z);
-            if (reg.isSolid(rd.at(x, y, z))) return true;
-        }
-        return false;
-    };
-
-    glm::vec3 tryX = { np.x + vel.x * dt, np.y, np.z };
-    if (!blocked(tryX)) np.x = tryX.x;
-
-    glm::vec3 tryZ = { np.x, np.y, np.z + vel.z * dt };
-    if (!blocked(tryZ)) np.z = tryZ.z;
-
-    np.y += vel.y * dt;
-    if (blocked(np)) np.y += 0.05f;
-    return np;
+/// Тело твари для движения. Составляется из её определения, чтобы
+/// ширина и высота брались там же, где их назначили.
+physics::CreatureBody bodyOf(const MobDef& def) {
+    physics::CreatureBody b;
+    b.halfWidth = def.bodyRadius;
+    b.height    = def.bodyHeight;
+    // Ступень в блок — базовая способность всех: без неё тварь
+    // останавливается у первой же грядки. Мелочь вроде курицы
+    // поднимается на свою высоту, не выше: курица, влезающая на
+    // метровый уступ, выглядит нелепо.
+    b.stepHeight = std::min(1.05f, std::max(0.6f, def.bodyHeight * 0.75f));
+    b.jumpSpeed  = 7.0f;
+    return b;
 }
 
 bool hasLOS(world::ChunkManager& world,
@@ -145,16 +129,65 @@ glm::vec3 followPath(const MobAI& ai, const glm::vec3& pos,
     return toT / d;
 }
 
-/// Удар моба по игроку.
+/// Кого тварь считает добычей.
+///
+/// Цель была ровно одна — игрок. Волк, забежавший в деревню, проходил
+/// сквозь жителей насквозь, а стража рубила его, не получая сдачи:
+/// «бой» был избиением в одну калитку и заканчивался всегда одинаково.
+/// Теперь добычей считается и житель, и стражник.
+struct Prey {
+    ecs::Entity e{};
+    glm::vec3   pos{0};
+    f32         dist = 1e9f;
+    bool valid() const { return e.valid(); }
+};
+
+Prey findPrey(ecs::Registry& reg,
+              ecs::Entity playerEntity,
+              const glm::vec3& playerPos,
+              const glm::vec3& from,
+              f32 maxDist)
+{
+    Prey best;
+    const f32 maxD2 = maxDist * maxDist;
+
+    auto consider = [&](ecs::Entity e, const glm::vec3& p) {
+        const glm::vec3 d = p - from;
+        const f32 d2 = glm::dot(d, d);
+        if (d2 > maxD2 || d2 >= best.dist * best.dist) return;
+        best.e = e; best.pos = p; best.dist = std::sqrt(d2);
+    };
+
+    if (playerEntity.valid()) {
+        auto* hp = reg.get<ecs::Health>(playerEntity);
+        if (hp && hp->current > 0.f) consider(playerEntity, playerPos);
+    }
+
+    // Жители. Их в деревне два десятка, а перебор идёт два раза в
+    // секунду на тварь — это дешевле, чем кажется, и без него
+    // деревню некому защищать ОТ КОГО.
+    auto& npcs = reg.pool<ecs::NPCTag>();
+    for (usize i = 0; i < npcs.size(); ++i) {
+        const ecs::Entity e = npcs.entityAt((u32)i);
+        auto* hp = reg.get<ecs::Health>(e);
+        auto* tf = reg.get<ecs::Transform>(e);
+        if (!hp || !tf || hp->current <= 0.f) continue;
+        consider(e, tf->position);
+    }
+    return best;
+}
+
+/// Удар моба по цели.
 ///
 /// `poisonDps`/`poisonTime` берутся из определения твари, а не из
 /// ветки по её имени: «особая способность» — это свойство, и вторая
 /// ядовитая тварь не должна требовать второй ветки.
-void mobAttackPlayer(ecs::Registry& reg, ecs::Entity target, f32 damage,
+void mobAttackPlayer(ecs::Registry& reg, ecs::Entity attacker,
+                     ecs::Entity target, f32 damage,
                      f32 poisonDps = 0.f, f32 poisonTime = 0.f)
 {
     auto* h = reg.get<ecs::Health>(target);
-    if (!h) return;
+    if (!h || h->current <= 0.f) return;
 
     const auto& d = progression::derivedOf(reg, target);
     if (d.dodgeChance > 0.f && combat::rollCritical(d.dodgeChance)) {
@@ -167,7 +200,9 @@ void mobAttackPlayer(ecs::Registry& reg, ecs::Entity target, f32 damage,
                                       : combat::DamageType::Physical;
     dmg.poisonDps  = poisonDps;
     dmg.poisonTime = poisonTime;
-    dmg.sourceEntity = 0;
+    // Кто ударил — теперь известно. Ноль стоял здесь всегда, и
+    // житель, которого грызёт волк, не мог узнать, кто его грызёт.
+    dmg.sourceEntity = (u32)attacker;
     dmg.targetEntity = (u32)target;
     combat::applyDamage(reg, target, dmg);
 }
@@ -217,15 +252,15 @@ void updateMobs(world::ChunkManager& world,
         ai->stateTime += dt;
 
         glm::vec3 pos = tf->position;
-        i32 feetY = (i32)std::floor(pos.y);
-        i32 fx = (i32)std::floor(pos.x), fz = (i32)std::floor(pos.z);
-        u16 below = world.getVoxel(fx, feetY - 1, fz);
-        u16 inside = world.getVoxel(fx, feetY, fz);
-        ai->inWater = (inside == world::WATER) || (below == world::WATER);
-        ai->onGround = (below != world::AIR) && (below != world::WATER);
-        // Признак опоры знает тот, кто двигает существо. Поза его
-        // только читает — иначе её пришлось бы угадывать по скорости.
-        if (auto* lo = reg.get<ecs::Locomotion>(e)) lo->grounded = ai->onGround;
+        const physics::CreatureBody body = bodyOf(def);
+        // Опору и воду считает physics::stepCreature в конце кадра:
+        // угадывать их по одному блоку под центром нельзя. Прежняя
+        // догадка объявляла тварь стоящей, пока она падала сквозь
+        // верхнюю половину блока, — скорость обнулялась, и тварь
+        // зависала в воздухе на полблока над землёй.
+        if (auto* lo = reg.get<ecs::Locomotion>(e)) lo->grounded = ai->onGround();
+        if (ai->jumpCooldown > 0.f) ai->jumpCooldown -= dt;
+        if (ai->targetCooldown > 0.f) ai->targetCooldown -= dt;
 
         if (agent->state == AIAgent::Dead) {
             ai->deathTimer += dt;
@@ -273,17 +308,55 @@ void updateMobs(world::ChunkManager& world,
             }
         }
 
-        if (!ai->onGround && !ai->inWater) {
-            vel->linear.y -= 22.f * dt;
-            if (vel->linear.y < -50.f) vel->linear.y = -50.f;
-        } else if (ai->onGround) {
-            vel->linear.y = 0.f;
-        } else if (ai->inWater) {
-            vel->linear.y = 1.5f;
-        }
-
         const bool isHostile = def.hostile;
-        const f32 distToPlayer = glm::length((playerPos - pos));
+
+        // ---- Кого преследуем ----
+        //
+        // Цель выбирается раз в полсекунды и живёт между кадрами:
+        // иначе волк, бегущий к жителю, каждый кадр переобувался бы
+        // на игрока и обратно и топтался бы между ними.
+        glm::vec3 targetPos = playerPos;
+        ecs::Entity targetEntity = playerEntity;
+        if (isHostile) {
+            // Сдача. Кто ударил — того и грызём: волк, которого рубит
+            // стражник, разворачивался обратно к жителю и подставлял
+            // спину. Теперь бой идёт в обе стороны.
+            if (se && se->lastAttacker != 0) {
+                const ecs::Entity atk = reg.fromId(se->lastAttacker);
+                auto* ahp = reg.get<Health>(atk);
+                auto* atf = reg.get<Transform>(atk);
+                if (ahp && atf && ahp->current > 0.f && atk != e &&
+                    glm::length(atf->position - pos) < def.aggroRange * 1.6f)
+                {
+                    ai->target = atk;
+                    ai->targetCooldown = 1.5f;
+                    if (agent->state == AIAgent::Idle ||
+                        agent->state == AIAgent::Patrol)
+                    {
+                        agent->state = AIAgent::Chase;
+                        ai->stateTime = 0.f;
+                        ai->repathCooldown = 0.f;
+                    }
+                }
+            }
+            if (ai->targetCooldown <= 0.f) {
+                const Prey p = findPrey(reg, playerEntity, playerPos, pos,
+                                        def.aggroRange * 1.6f);
+                ai->target = p.valid() ? p.e : ecs::Entity{};
+                ai->targetCooldown = 0.5f;
+            }
+            if (ai->target.valid()) {
+                auto* ttf = reg.get<Transform>(ai->target);
+                auto* thp = reg.get<Health>(ai->target);
+                if (ttf && thp && thp->current > 0.f) {
+                    targetPos = ttf->position;
+                    targetEntity = ai->target;
+                } else {
+                    ai->target = ecs::Entity{};
+                }
+            }
+        }
+        const f32 distToPlayer = glm::length(targetPos - pos);
 
         const bool wantFlee = isHostile &&
             (hp->current / def.maxHealth < FLEE_HEALTH_PCT) &&
@@ -333,7 +406,7 @@ void updateMobs(world::ChunkManager& world,
 
                 if (isHostile && distToPlayer < def.aggroRange) {
                     if (hasLOS(world, pos + glm::vec3(0, def.eyeHeight, 0),
-                                     playerPos + glm::vec3(0, 1.f, 0))) {
+                                     targetPos + glm::vec3(0, 1.f, 0))) {
                         agent->state = AIAgent::Chase;
                         ai->stateTime = 0.f;
                         ai->repathCooldown = 0.f;
@@ -358,7 +431,7 @@ void updateMobs(world::ChunkManager& world,
 
                 if (isHostile && distToPlayer < def.aggroRange) {
                     if (hasLOS(world, pos + glm::vec3(0, def.eyeHeight, 0),
-                                     playerPos + glm::vec3(0, 1.f, 0))) {
+                                     targetPos + glm::vec3(0, 1.f, 0))) {
                         agent->state = AIAgent::Chase;
                         ai->stateTime = 0.f;
                         ai->repathCooldown = 0.f;
@@ -391,13 +464,13 @@ void updateMobs(world::ChunkManager& world,
                 }
 
                 if (ai->repathCooldown <= 0.f) {
-                    repath(world, *ai, pos, playerPos);
+                    repath(world, *ai, pos, targetPos);
                     ai->repathCooldown = REPATH_INTERVAL * 0.6f;
                 }
                 bool end = false;
                 glm::vec3 dir = followPath(*ai, pos, end);
                 if (end) {
-                    glm::vec3 d = playerPos - pos; d.y = 0;
+                    glm::vec3 d = targetPos - pos; d.y = 0;
                     if (glm::length(d) > 0.1f) dir = glm::normalize(d);
                 }
                 vel->linear.x = dir.x * def.chaseSpeed * speedMult;
@@ -448,13 +521,13 @@ void updateMobs(world::ChunkManager& world,
                     if (canSlam) {
                         ai->slamCounter = 0;
                         if (distToPlayer < def.slamRadius) {
-                            mobAttackPlayer(reg, playerEntity,
+                            mobAttackPlayer(reg, e, targetEntity,
                                             def.slamDamage * dmgMult);
                         }
                         ai->attackAnim = 1.0f;
                         cooldown *= 1.6f;   // мощная атака дольше откатывается
                     } else if (distToPlayer < def.attackRange + 0.4f) {
-                        mobAttackPlayer(reg, playerEntity,
+                        mobAttackPlayer(reg, e, targetEntity,
                                         def.attackDamage * dmgMult,
                                         def.poisonDps, def.poisonTime);
                         if (def.isBoss) ++ai->slamCounter;
@@ -479,7 +552,7 @@ void updateMobs(world::ChunkManager& world,
                 break;
             }
             case AIAgent::Flee: {
-                glm::vec3 away = pos - playerPos; away.y = 0;
+                glm::vec3 away = pos - targetPos; away.y = 0;
                 f32 d = glm::length(away);
                 if (d > 0.1f) away /= d;
                 vel->linear.x = away.x * def.chaseSpeed * speedMult;
@@ -496,11 +569,31 @@ void updateMobs(world::ChunkManager& world,
             }
         }
 
-        glm::vec3 newPos = moveMob(world, pos, vel->linear,
-                                   def.bodyRadius, def.bodyHeight, dt);
-        tf->position = newPos;
+        // ---- Движение ----
+        //
+        // Тем же разрешением столкновений, каким ходит игрок:
+        // ширина тела, потолок, подъём на ступень, притягивание к
+        // земле при спуске. Своя копия «коллизии» у мобов проверяла
+        // один столбец в центре и ширину тела не знала вовсе.
+        const glm::vec2 wish{ vel->linear.x, vel->linear.z };
+        const bool wantsMove = glm::dot(wish, wish) > 0.04f;
+        physics::stepCreature(world, ai->motion, tf->position, vel->linear,
+                              body, dt, wantsMove);
 
-        if (newPos.y < -10.f) toRemove.push_back(e);
+        // Упёрлись и не идём — прыжок. Ступенью берётся один блок,
+        // прыжком — расщелина и забор в полтора. Без этого стая
+        // толпилась у первой же изгороди, пока игрок смотрел.
+        if (ai->motion.stuckTime > 0.6f && ai->jumpCooldown <= 0.f) {
+            if (physics::tryJump(ai->motion, vel->linear, body)) {
+                ai->jumpCooldown = 1.2f;
+                ai->motion.stuckTime = 0.f;
+            }
+            // Заодно ищем дорогу заново: упор — это чаще всего
+            // устаревший путь, а не забор.
+            ai->repathCooldown = 0.f;
+        }
+
+        if (tf->position.y < -10.f) toRemove.push_back(e);
     }
 
     for (ecs::Entity e : toRemove) {
