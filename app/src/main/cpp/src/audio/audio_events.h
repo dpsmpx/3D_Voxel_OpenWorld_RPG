@@ -55,6 +55,11 @@ public:
     void mobDeath(const glm::vec3& worldPos);
     void mobAttack(const glm::vec3& worldPos);
 
+    /// ---- Защита ----
+    void guardHit(const glm::vec3& worldPos);
+    void guardBreak(const glm::vec3& worldPos);
+    void parry(const glm::vec3& worldPos);
+
     /// ---- Погода ----
     ///
     /// Не событие, а СОСТОЯНИЕ: дождь не «случается», он идёт.

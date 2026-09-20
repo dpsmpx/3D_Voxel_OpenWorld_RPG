@@ -26,9 +26,15 @@ enum ButtonSlot : u8 {
     Btn_UseItem,
     Btn_Camera,
     Btn_Dash,
+    // Новые слоты добавляются В КОНЕЦ, а не по смыслу. Порядок здесь
+    // — это порядок ХРАНЕНИЯ: раскладка пишется в settings.cfg
+    // строками `button_<N>_offset`, и вставка в середину сдвинула бы
+    // все сохранённые сдвиги на один. У игрока, который двигал
+    // кнопки, разъехался бы весь экран.
+    Btn_Block,
     Btn_SlotCount,
 };
-static_assert((u32)Btn_SlotCount == 9, "BUTTON_SLOTS должен совпадать с Btn_SlotCount");
+static_assert((u32)Btn_SlotCount == 10, "BUTTON_SLOTS должен совпадать с Btn_SlotCount");
 
 enum class Language : u8 {
     English = 0,
@@ -73,7 +79,7 @@ struct Settings {
 
     /// Пользовательские сдвиги кнопок в NDC. Индекс — ButtonSlot,
     /// см. ниже; позволяет свободно раскладывать кнопки по экрану.
-    static constexpr u32 BUTTON_SLOTS = 9;
+    static constexpr u32 BUTTON_SLOTS = 10;
     f32  buttonOffsetX[BUTTON_SLOTS] = {};
     f32  buttonOffsetY[BUTTON_SLOTS] = {};
 

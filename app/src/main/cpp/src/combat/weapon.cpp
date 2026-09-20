@@ -20,6 +20,9 @@ WeaponRegistry::WeaponRegistry() {
     // это движение задаётся; «нет оружия» WEAPON_NONE остаётся во
     // всём остальном — урон, досягаемость и цена у него нулевые.
     defs_[WEAPON_NONE].shape = anim::AttackShape::Stab;
+    // Голыми руками тоже закрываются — предплечьем. Немного, но не
+    // ноль: иначе безоружный не мог бы ни блокировать, ни отбивать.
+    defs_[WEAPON_NONE].guardFraction = 0.15f;
 
     // -------------------- Iron Sword --------------------
     {
@@ -40,6 +43,8 @@ WeaponRegistry::WeaponRegistry() {
         d.windupTime        = 0.14f;
         d.recoveryTime      = 0.32f;
         d.shape             = anim::AttackShape::Slash;
+        // Меч держит удар лучше всех клинков: за него и берут.
+        d.guardFraction     = 0.70f;
         defs_[WEAPON_IRON_SWORD] = d;
     }
 
@@ -62,6 +67,8 @@ WeaponRegistry::WeaponRegistry() {
         d.windupTime        = 0.24f;
         d.recoveryTime      = 0.55f;
         d.shape             = anim::AttackShape::Chop;
+        // Топор тяжёл, но его не подставишь плашмя.
+        d.guardFraction     = 0.55f;
         defs_[WEAPON_IRON_AXE] = d;
     }
 
@@ -84,6 +91,8 @@ WeaponRegistry::WeaponRegistry() {
         d.windupTime        = 0.18f;
         d.recoveryTime      = 0.42f;
         d.shape             = anim::AttackShape::Thrust;
+        // Древком отбиваются, но держит оно немного.
+        d.guardFraction     = 0.45f;
         defs_[WEAPON_IRON_SPEAR] = d;
     }
 
@@ -106,6 +115,10 @@ WeaponRegistry::WeaponRegistry() {
         d.windupTime        = 0.08f;
         d.recoveryTime      = 0.22f;
         d.shape             = anim::AttackShape::Stab;
+        // Кинжалом закрыться нечем. Его игра — парирование,
+        // а не блок: окно у всех одно, а вот держать удар он
+        // не умеет.
+        d.guardFraction     = 0.25f;
         defs_[WEAPON_IRON_DAGGER] = d;
     }
 
@@ -128,6 +141,7 @@ WeaponRegistry::WeaponRegistry() {
         d.windupTime        = 0.40f;
         d.recoveryTime      = 0.20f;
         d.shape             = anim::AttackShape::Draw;
+        d.guardFraction     = 0.20f;
         defs_[WEAPON_HUNTING_BOW] = d;
     }
 
@@ -150,6 +164,8 @@ WeaponRegistry::WeaponRegistry() {
         d.windupTime        = 1.00f;
         d.recoveryTime      = 0.35f;
         d.shape             = anim::AttackShape::Draw;
+        // Ложе арбалета — хоть какая-то доска перед лицом.
+        d.guardFraction     = 0.30f;
         defs_[WEAPON_HEAVY_CROSSBOW] = d;
     }
 
@@ -172,6 +188,7 @@ WeaponRegistry::WeaponRegistry() {
         d.windupTime        = 0.10f;
         d.recoveryTime      = 0.15f;
         d.shape             = anim::AttackShape::Chop;
+        d.guardFraction     = 0.15f;
         defs_[WEAPON_THROWING_KNIFE] = d;
     }
 
@@ -194,6 +211,8 @@ WeaponRegistry::WeaponRegistry() {
         d.windupTime        = 0.35f;
         d.recoveryTime      = 0.35f;
         d.shape             = anim::AttackShape::Cast;
+        // Посох длинный: им закрываются, как шестом.
+        d.guardFraction     = 0.35f;
         defs_[WEAPON_FIRE_STAFF] = d;
     }
 
@@ -216,6 +235,7 @@ WeaponRegistry::WeaponRegistry() {
         d.windupTime        = 0.50f;
         d.recoveryTime      = 0.60f;
         d.shape             = anim::AttackShape::Cast;
+        d.guardFraction     = 0.30f;
         defs_[WEAPON_FROST_WAND] = d;
     }
 
@@ -238,6 +258,10 @@ WeaponRegistry::WeaponRegistry() {
         d.windupTime        = 0.60f;
         d.recoveryTime      = 0.40f;
         d.shape             = anim::AttackShape::Cast;
+        // Браслет не наносит урона вовсе — и держит лучше
+        // всего в игре. Это и есть его роль: не оружие, а оберег,
+        // и теперь у него она есть.
+        d.guardFraction     = 0.75f;
         defs_[WEAPON_ARCANE_BRACELET] = d;
     }
 

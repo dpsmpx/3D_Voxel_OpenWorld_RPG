@@ -84,6 +84,10 @@ enum class StrKey : u16 {
     Notif_VillageFarmstead, Notif_VillageStonemason,
     Notif_VillageGarrison,  Notif_VillageWoodland,
     Notif_Drowning,
+    // Парирование иначе не найти: блок объясняет себя сам —
+    // подставил и цел, — а вот что защита, поднятая в последний
+    // миг, ОТБИВАЕТ удар, по одной кнопке не угадать никак.
+    Hint_Parry,
 
     // --- Подсказка взаимодействия ---
     // Её не было вовсе, и это стоило игроку трёх экранов: близость

@@ -4,6 +4,7 @@
  */
 #include "status_effects.h"
 #include "projectile.h"
+#include "guard.h"
 #include "../ecs/components.h"
 #include "../mobs/mob_def.h"
 #include "../mobs/mob_ai.h"
@@ -97,9 +98,26 @@ f32 applyDamage(ecs::Registry& reg, ecs::Entity target, const DamageInstance& dm
         }
     }
 
+    // ---- Защита ----
+    //
+    // ДО уворота, и это не случайный порядок. Уворот — бросок
+    // кости, парирование — решение игрока; если сперва катить
+    // кость, точно отбитый удар иногда «уворачивался» бы вместо
+    // этого — без оглушения бьющего и без резонанса, то есть
+    // наградой за мастерство оказывалась бы её потеря.
+    //
+    // Ниже по тексту считается `incoming` — удар, каким он вышел
+    // ИЗ-ПОД защиты. Правило простое и одно: парирование снимает всё
+    // без остатка, блок урезает только урон, а статусы (поджог, яд)
+    // проходят — укус, принятый на клинок, всё равно остаётся
+    // укусом.
+    DamageInstance incoming = dmg;
+    if (resolveGuard(reg, target, incoming) == GuardResult::Parried)
+        return 0.f;
+
     // Уклонение
     bool dodged = false;
-    if (dmg.sourceEntity != 0) {
+    if (incoming.sourceEntity != 0) {
         const auto& derived = progression::derivedOf(reg, target);
         if (derived.dodgeChance > 0.f && rollCritical(derived.dodgeChance)) {
             dodged = true;
@@ -135,7 +153,7 @@ f32 applyDamage(ecs::Registry& reg, ecs::Entity target, const DamageInstance& dm
         effective.arcane = std::min(0.80f, effective.arcane + targetDerived.damageResistMagic);
     }
 
-    const f32 final = computeFinalDamage(dmg, effective);
+    const f32 final = computeFinalDamage(incoming, effective);
 
     h->current -= final;
     if (final > 0.f) {
@@ -143,7 +161,7 @@ f32 applyDamage(ecs::Registry& reg, ecs::Entity target, const DamageInstance& dm
     }
 
     auto* se = reg.get<StatusEffects>(target);
-    if (se) applyStatuses(*se, dmg);
+    if (se) applyStatuses(*se, incoming);
 
     // Звук попадания и смерти. Эти события были написаны и
     // синтезировались при запуске, но их никто не проигрывал: бой шёл
@@ -165,13 +183,13 @@ f32 applyDamage(ecs::Registry& reg, ecs::Entity target, const DamageInstance& dm
     if (killed) {
         auto* agent = reg.get<ecs::AIAgent>(target);
         if (agent) agent->state = ecs::AIAgent::Dead;
-        onTargetDeath(reg, target, dmg.sourceEntity);
+        onTargetDeath(reg, target, incoming.sourceEntity);
     }
 
     if (final > 0.f) {
         if (auto* tf = reg.get<ecs::Transform>(target)) {
             u32 color = 0xFFFF80FF;
-            switch (dmg.type) {
+            switch (incoming.type) {
                 case DamageType::Fire:   color = 0xFF8040FF; break;
                 case DamageType::Frost:  color = 0x80D0FFFF; break;
                 case DamageType::Shock:  color = 0xFFFF60FF; break;

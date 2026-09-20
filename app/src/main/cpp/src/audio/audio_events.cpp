@@ -168,6 +168,22 @@ void AudioEvents::mobAttack(const glm::vec3& worldPos) {
     engine_->play3D(SOUND_MOB_ATTACK, worldPos, 0.7f);
 }
 
+void AudioEvents::guardHit(const glm::vec3& worldPos) {
+    if (!engine_) return;
+    engine_->play3D(SOUND_GUARD_HIT, worldPos, 0.8f);
+}
+
+void AudioEvents::guardBreak(const glm::vec3& worldPos) {
+    if (!engine_) return;
+    engine_->play3D(SOUND_GUARD_BREAK, worldPos, 0.95f);
+}
+
+void AudioEvents::parry(const glm::vec3& worldPos) {
+    // Громче прочего: отбитый удар — событие, а не шорох.
+    if (!engine_) return;
+    engine_->play3D(SOUND_PARRY, worldPos, 1.0f);
+}
+
 void AudioEvents::setRain(f32 intensity) {
     if (!engine_) return;
 

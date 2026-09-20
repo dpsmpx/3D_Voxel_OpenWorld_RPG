@@ -161,6 +161,7 @@ add_library(native-lib SHARED
     src/combat/components.cpp
     src/combat/damage.cpp
     src/combat/enchantment.cpp
+    src/combat/guard.cpp
     src/combat/hit_detection.cpp
     src/combat/projectile.cpp
     src/combat/resonance.cpp

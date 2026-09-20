@@ -11,6 +11,7 @@
 #include "../npc/npc_rig.h"
 #include "../player/player_rig.h"
 #include "../combat/components.h"
+#include "../combat/guard.h"
 #include "../entity/locomotion.h"
 #include "../core/log.h"
 #include <cstring>
@@ -246,6 +247,11 @@ void NpcRenderer::appendPlayer(ecs::Registry& reg, f32 timeSec) {
         // движением с разными числами.
         if (const auto* eq = reg.get<combat::EquippedWeapon>(e))
             st.attackShape = combat::weapons().get(eq->weaponId).shape;
+        // Поднятая защита видна на модели: в третьем лице это
+        // единственное, по чему игрок понимает, что она и правда
+        // поднята, — и единственное, по чему это видит тварь.
+        if (const auto* g = reg.get<combat::GuardState>(e))
+            st.guard = g->pose;
 
         entity::Pose pose;
         anim::poseFor(rg, pose, st);
