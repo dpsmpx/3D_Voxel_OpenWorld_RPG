@@ -8,6 +8,7 @@
 #include "../core/orientation.h"
 #include "../core/log.h"
 #include <cstring>
+#include <cmath>
 #include <algorithm>
 #include <vector>
 
@@ -46,6 +47,45 @@ void precipInstances(const world::Precipitation& p, f32 snowMix,
             inst.colorGpu = packInstanceColor(rainColor);
             inst.rot = orient::dirQuat(d.vel);
         }
+        out.push_back(inst);
+    }
+}
+
+void particleInstances(const world::Particles& p,
+                       std::vector<MobInstance>& out)
+{
+    out.clear();
+    out.reserve(p.liveCount());
+
+    for (const world::Particle& q : p.items()) {
+        if (!q.alive) continue;
+
+        // Гаснет ПОД КОНЕЦ, а не с первого кадра: осколок, тающий
+        // всю свою жизнь, виден только как муть. Полную прозрачность
+        // он набирает за последнюю треть срока.
+        const f32 left = q.lifeTime > 0.f ? q.life / q.lifeTime : 0.f;
+        const f32 k = std::min(1.f, std::max(0.f, left * 3.f));
+        const u8 a = (u8)(255.f * k * (f32)(q.color & 0xFFu) / 255.f);
+
+        // Гасим ровно на столько, на сколько шейдер осветлит: осколок
+        // камня обязан быть цвета камня, а не цвета камня в полтора
+        // раза ярче.
+        auto dim = [](u32 c, u32 shift) {
+            const f32 v = (f32)((c >> shift) & 0xFFu) / PROJECTILE_FRAG_GAIN;
+            return (u32)std::min(255.f, std::max(0.f, v)) << shift;
+        };
+        const u32 rgba = dim(q.color, 24) | dim(q.color, 16) | dim(q.color, 8)
+                       | (u32)a;
+
+        MobInstance inst{};
+        inst.pos  = q.pos;
+        inst.size = glm::vec3(q.size);
+        inst.colorGpu = packInstanceColor(rgba);
+        // Кувыркается: куб, стоящий гранями по осям мира, читается
+        // как забытый в воздухе блок, а не как обломок.
+        inst.rot = orient::dirQuat({ std::cos(q.spin),
+                                     std::sin(q.spin * 1.7f),
+                                     std::sin(q.spin) });
         out.push_back(inst);
     }
 }
@@ -105,6 +145,11 @@ bool ProjectileRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptor
 void ProjectileRenderer::setPrecip(const MobInstance* data, u32 count) {
     precip_.assign(data, data + count);
     precipCount_ = count;
+}
+
+void ProjectileRenderer::setParticles(const MobInstance* data, u32 count) {
+    particles_.assign(data, data + count);
+    particleCount_ = count;
 }
 
 void ProjectileRenderer::rebuild(ecs::Registry& reg) {
@@ -167,6 +212,13 @@ void ProjectileRenderer::rebuild(ecs::Registry& reg) {
             cpu_.push_back(inst);
         }
     }
+
+    // --- Осколки ---
+    //
+    // После снарядов и вспышек, но ДО осадков: щепка сквозь дождь —
+    // это то, что нужно, дождь сквозь щепку — нет.
+    if (!particles_.empty())
+        cpu_.insert(cpu_.end(), particles_.begin(), particles_.end());
 
     // --- Осадки ---
     //

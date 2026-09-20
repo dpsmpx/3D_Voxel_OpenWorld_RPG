@@ -55,6 +55,7 @@
 #include "world/spawn.h"
 #include "world/weather.h"
 #include "world/precipitation.h"
+#include "world/particles.h"
 #include "world/world_spec.h"
 #include "save/save_export.h"
 #include "mobs/mob_ai.h"
@@ -202,6 +203,7 @@ struct Engine {
     /// Их же в виде инстансов — буфер живёт между кадрами, чтобы не
     /// выделять память шестьдесят раз в секунду.
     std::vector<render::MobInstance>       precipInstances;
+    std::vector<render::MobInstance>       particleInstances;
 
     cfg::PlaytimeTracker playtime;
     f32  autosaveTimer  = 0.f;
@@ -901,6 +903,7 @@ struct Engine {
         weather.init(seed);
         weather.snap(world->generator(), playerSpawn, dayCycle.worldSeconds());
         precip.reset();
+        world::particles().reset();
 
         // Имя по умолчанию — чтобы мир было чем назвать в списке.
         // Игрок переименует его на экране создания, если захочет.
@@ -1439,6 +1442,9 @@ struct Engine {
             precip.update(*world, eye, weather.precip(), weather.snowMix(),
                           weather.wind(), dt);
 
+            // Осколки живут в том же кадре и вокруг тех же глаз.
+            world::particles().update(*world, eye, dt);
+
             // Дождь слышно. Снег — нет: он и в жизни беззвучен, и
             // шипение под снегопадом читалось бы как дождь.
             audio::events().setRain(weather.precip() *
@@ -1735,6 +1741,10 @@ struct Engine {
                 physics::RayHit hit = player->targetBlock(*world);
                 if (player->tryBreakBlock(*world)) {
                     audio::events().blockBreak(hit.blockType, target);
+                    // Щепки цвета самого блока. Слом блока — самое
+                    // частое действие воксельной игры, и до сих пор
+                    // оно отвечало одним лишь звуком.
+                    world::blockBreakBurst(hit.block, hit.blockType);
                 } else if (hit.hit) {
                     // Удар пришёлся, но блок остался: коренная порода.
                     // Раньше это была полная тишина — неотличимая от
@@ -2039,7 +2049,11 @@ struct Engine {
         if (render && world && player) {
             const physics::RayHit hit = player->targetBlock(*world);
             render::precipInstances(precip, weather.snowMix(), precipInstances);
-        render->setPrecip(precipInstances.data(), (u32)precipInstances.size());
+            render->setPrecip(precipInstances.data(), (u32)precipInstances.size());
+
+            render::particleInstances(world::particles(), particleInstances);
+            render->setParticles(particleInstances.data(),
+                                 (u32)particleInstances.size());
 
         render->prepareFrame(vk, *world, registry, timeSec, dt,
                                  player.get(), hit, fps);

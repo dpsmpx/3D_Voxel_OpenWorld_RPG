@@ -108,6 +108,7 @@ add_library(native-lib SHARED
     src/world/hazards.cpp
     src/world/noise.cpp
     src/world/precipitation.cpp
+    src/world/particles.cpp
     src/world/spawn.cpp
     src/world/terrain.cpp
     src/world/weather.cpp
@@ -154,6 +155,7 @@ add_library(native-lib SHARED
     # Мобы
     src/mobs/mob_ai.cpp
     src/entity/beast_rig.cpp
+    src/entity/body_color.cpp
     src/entity/humanoid_rig.cpp
     src/entity/mob_rigs.cpp
     src/entity/showcase.cpp

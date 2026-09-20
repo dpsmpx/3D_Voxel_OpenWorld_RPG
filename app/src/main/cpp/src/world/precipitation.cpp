@@ -4,6 +4,7 @@
  */
 #include "precipitation.h"
 #include "block.h"
+#include "../core/math.h"
 #include <cmath>
 #include <algorithm>
 
@@ -47,11 +48,7 @@ void Precipitation::reset() {
 }
 
 f32 Precipitation::frand() {
-    // xorshift32: детерминированный, быстрый и без состояния снаружи.
-    rng_ ^= rng_ << 13;
-    rng_ ^= rng_ >> 17;
-    rng_ ^= rng_ << 5;
-    return (f32)(rng_ & 0xFFFFFFu) / (f32)0x1000000u;
+    return math::frand01(rng_);
 }
 
 bool Precipitation::respawn(VoxelReader& vr, Drop& d, const glm::vec3& eye,

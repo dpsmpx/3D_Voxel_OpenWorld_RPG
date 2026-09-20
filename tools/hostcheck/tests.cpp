@@ -48,6 +48,7 @@
 #include "world/spawn.h"
 #include "world/weather.h"
 #include "world/precipitation.h"
+#include "world/particles.h"
 #include "render/projectile_renderer.h"
 #include "world/world_spec.h"
 #include "save/save_export.h"
@@ -113,6 +114,7 @@
 #include "player/player_rig.h"
 #include "player/player.h"
 #include "entity/rig.h"
+#include "entity/body_color.h"
 #include "ui/ui_theme.h"
 #include "ui/ui_atlas.h"
 #include "ui/font_data.h"
@@ -9204,6 +9206,7 @@ void testIsoSnapshotIsTerrainOnlyAndTimeless() {
             { "ProjectileRenderer", "снаряды" },
             { "Skybox",             "небо" },
             { "setPrecip",          "осадки" },
+            { "Particles",          "осколки" },
             { "UiSystem",           "интерфейс" },
             { "DayCycle",           "время суток" },
             { "Weather",            "погода" },
@@ -20523,6 +20526,535 @@ void testHitsHaveWeight() {
 }
 
 // ------------------------------------------------------------
+// След от удара.
+//
+// До этой итерации самое частое действие игры кончалось ничем.
+// Обычное попадание давало звук и толчок камеры, слом блока — ОДИН
+// ЛИШЬ звук, смерть твари — позу и лут, приземление — ничего вовсе.
+// В точке, куда пришёлся удар, мир не отвечал.
+//
+// Проверяется здесь именно это: что осколки летят оттуда, куда
+// ударили, что цвет им даёт НАСТОЯЩИЙ блок и НАСТОЯЩАЯ оснастка, что
+// пул не растёт без края и что все четыре повода подключены к общему
+// расчёту, а не к одному месту в игроке.
+// ------------------------------------------------------------
+void testHitsLeaveAMark() {
+    group("след от удара: осколки попадания, слома и приземления");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    using world::Burst;
+    using world::Particle;
+    using world::Particles;
+
+    auto unitDot = [](const glm::vec3& a, const glm::vec3& b) {
+        const f32 la = glm::length(a), lb = glm::length(b);
+        if (la < 1e-6f || lb < 1e-6f) return 0.f;
+        return glm::dot(a, b) / (la * lb);
+    };
+    auto red   = [](u32 c) { return (i32)((c >> 24) & 0xFFu); };
+    auto green = [](u32 c) { return (i32)((c >> 16) & 0xFFu); };
+    auto blue  = [](u32 c) { return (i32)((c >>  8) & 0xFFu); };
+
+    // ---- 1. Разлёт слушается направления удара ----
+    {
+        Burst b{};
+        b.origin = { 10.f, 70.f, 10.f };
+        b.dir    = { 0.f, 0.f, 1.f };
+        b.count  = 32;
+        b.speed  = 5.f;
+        b.size   = 0.1f;
+        b.life   = 0.5f;
+        b.color  = 0xFF4020FFu;
+
+        Particles narrow;
+        b.spread = 0.f;
+        narrow.emit(b);
+
+        i32 along = 0, total = 0;
+        for (const Particle& q : narrow.items()) {
+            if (!q.alive) continue;
+            ++total;
+            if (unitDot(q.vel, b.dir) > 0.999f) ++along;
+        }
+        check(total == (i32)b.count,
+              "в горсти ровно столько осколков, сколько заказано");
+        check(along == total,
+              "при нулевом разбросе все летят строго вдоль удара");
+
+        Particles wide;
+        b.spread = 1.f;
+        wide.emit(b);
+        i32 back = 0, wideTotal = 0;
+        for (const Particle& q : wide.items()) {
+            if (!q.alive) continue;
+            ++wideTotal;
+            if (unitDot(q.vel, b.dir) < 0.f) ++back;
+        }
+        char m[160];
+        std::snprintf(m, sizeof(m), "при полном разбросе назад летит %d из %d",
+                      back, wideTotal);
+        check(back * 5 > wideTotal, m);
+    }
+
+    // ---- 2. Пул не растёт без края ----
+    {
+        Particles p;
+        Burst b{};
+        b.origin = { 0.f, 70.f, 0.f };
+        b.count = 24; b.speed = 4.f; b.size = 0.1f; b.life = 5.f;
+        b.color = 0xFFFFFFFFu;
+        for (i32 i = 0; i < 200; ++i) p.emit(b);
+
+        char m[170];
+        std::snprintf(m, sizeof(m),
+                      "после 200 горстей (%u осколков) в пуле %u при потолке %u",
+                      200u * 24u, (u32)p.items().size(), Particles::MAX);
+        check(p.items().size() == Particles::MAX, m);
+        check(p.liveCount() <= Particles::MAX, "и живых не больше потолка");
+        check(p.liveCount() > 0, "и они при этом есть");
+    }
+
+    // ---- 3. Цвет берёт настоящий блок ----
+    {
+        const world::BlockDef& stone = world::blocks().get(world::STONE);
+        const world::BlockDef& grass = world::blocks().get(world::GRASS);
+
+        world::particles().reset();
+        world::blockBreakBurst({ 4, 68, 7 }, world::STONE);
+
+        i32 n = 0, offColor = 0;
+        f32 sumR = 0.f, sumG = 0.f, sumB = 0.f;
+        for (const Particle& q : world::particles().items()) {
+            if (!q.alive) continue;
+            ++n;
+            sumR += (f32)red(q.color);
+            sumG += (f32)green(q.color);
+            sumB += (f32)blue(q.color);
+            // Каждый осколок — оттенок верха или бока ТОГО ЖЕ блока.
+            const i32 dTop = std::abs(red(q.color) - red(stone.colorTop));
+            const i32 dSide = std::abs(red(q.color) - red(stone.colorSide));
+            if (std::min(dTop, dSide) > 48) ++offColor;
+        }
+        check(n > 0, "слом блока рождает щепки");
+        check(offColor == 0, "и все они — оттенки этого самого блока");
+
+        const f32 stoneR = sumR / std::max(1, n);
+        const f32 stoneG = sumG / std::max(1, n);
+        const f32 stoneB = sumB / std::max(1, n);
+
+        world::particles().reset();
+        world::blockBreakBurst({ 4, 68, 7 }, world::GRASS);
+        f32 gR = 0.f, gG = 0.f, gB = 0.f; i32 gn = 0;
+        for (const Particle& q : world::particles().items()) {
+            if (!q.alive) continue;
+            ++gn;
+            gR += (f32)red(q.color); gG += (f32)green(q.color); gB += (f32)blue(q.color);
+        }
+        gR /= std::max(1, gn); gG /= std::max(1, gn); gB /= std::max(1, gn);
+
+        char m[220];
+        std::snprintf(m, sizeof(m),
+                      "щепки камня в среднем (%.0f %.0f %.0f), травы — (%.0f %.0f %.0f)",
+                      (double)stoneR, (double)stoneG, (double)stoneB,
+                      (double)gR, (double)gG, (double)gB);
+        // Если бы цвет был константой в коде частиц, эти два числа
+        // совпали бы. Разница и есть доказательство, что он взят из
+        // реестра блоков.
+        check(std::fabs(stoneG - gG) > 12.f || std::fabs(stoneR - gR) > 12.f ||
+              std::fabs(stoneB - gB) > 12.f, m);
+        (void)grass;
+    }
+
+    // ---- 4. Приземление: пыль поднимает только падение ----
+    {
+        world::particles().reset();
+        world::landingBurst({ 8.f, 64.f, 8.f }, world::GRASS, 3.f);
+        check(world::particles().liveCount() == 0,
+              "шаг со ступеньки пыли не поднимает");
+
+        world::landingBurst({ 8.f, 64.f, 8.f }, world::GRASS, 12.f);
+        const u32 soft = world::particles().liveCount();
+        world::particles().reset();
+        world::landingBurst({ 8.f, 64.f, 8.f }, world::GRASS, 30.f);
+        const u32 hard = world::particles().liveCount();
+
+        char m[170];
+        std::snprintf(m, sizeof(m),
+                      "падение с высоты поднимает %u пылинок, лёгкое — %u",
+                      hard, soft);
+        check(soft > 0 && hard > soft, m);
+
+        // Приземление в воздухе (ноги над пустотой) пыли не даёт:
+        // поднимать её неоткуда.
+        world::particles().reset();
+        world::landingBurst({ 8.f, 64.f, 8.f }, world::AIR, 30.f);
+        check(world::particles().liveCount() == 0,
+              "а из воздуха пыль не поднимается");
+    }
+
+    // ---- 5. Крит виден глазами, а не только числом ----
+    {
+        world::particles().reset();
+        world::woundBurst({ 3.f, 70.f, 3.f }, { 1.f, 0.f, 0.f },
+                          0x805030FFu, 0.3f, /*critical=*/false);
+        const u32 plain = world::particles().liveCount();
+
+        world::particles().reset();
+        world::woundBurst({ 3.f, 70.f, 3.f }, { 1.f, 0.f, 0.f },
+                          0x805030FFu, 0.3f, /*critical=*/true);
+        const u32 crit = world::particles().liveCount();
+
+        i32 golden = 0;
+        for (const Particle& q : world::particles().items()) {
+            if (!q.alive) continue;
+            if (red(q.color) > 180 && green(q.color) > 120 && blue(q.color) < 130)
+                ++golden;
+        }
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "крит даёт %u осколков против %u и %d золотых искр",
+                      crit, plain, golden);
+        check(crit > plain && golden > 0, m);
+
+        // Сила удара читается по густоте горсти.
+        world::particles().reset();
+        world::woundBurst({ 3.f, 70.f, 3.f }, { 1.f, 0.f, 0.f },
+                          0x805030FFu, 0.05f, false);
+        const u32 weak = world::particles().liveCount();
+        world::particles().reset();
+        world::woundBurst({ 3.f, 70.f, 3.f }, { 1.f, 0.f, 0.f },
+                          0x805030FFu, 1.0f, false);
+        const u32 strong = world::particles().liveCount();
+        std::snprintf(m, sizeof(m),
+                      "искр от слабого удара %u, от сильного %u", weak, strong);
+        check(strong > weak * 2, m);
+    }
+
+    // ---- 6. Цвет существа берётся у его оснастки ----
+    {
+        entity::Rig rig{};
+        rig.count = 3;
+        rig.parts[0].role = entity::PartRole::Root;
+        rig.parts[0].visible = false;
+        rig.parts[1].role = entity::PartRole::Head;
+        rig.parts[1].size = { 2.f, 2.f, 2.f };
+        rig.parts[1].color = 0x112233FFu;
+        rig.parts[2].role = entity::PartRole::Torso;
+        rig.parts[2].size = { 0.2f, 0.2f, 0.2f };
+        rig.parts[2].color = 0xAABBCCFFu;
+        check(entity::bodyColor(rig) == 0xAABBCCFFu,
+              "цвет существа — цвет торса, даже если голова крупнее");
+
+        // Без торса — самая крупная видимая часть: у слизня и у птицы
+        // торса в оснастке может не быть вовсе.
+        rig.parts[2].role = entity::PartRole::Tail;
+        check(entity::bodyColor(rig) == 0x112233FFu,
+              "а без торса — цвет самой крупной видимой части");
+
+        entity::Rig empty{};
+        check(entity::bodyColor(empty) != 0,
+              "пустая оснастка даёт нейтральный цвет, а не чёрную дыру");
+
+        // У разных тварей разный цвет — иначе «горсть цвета твари»
+        // ничего игроку не говорит.
+        u32 seen[mobs::MOB_COUNT] = {};
+        i32 distinct = 0;
+        for (u16 id = 1; id < mobs::MOB_COUNT; ++id) {
+            const u32 c = entity::bodyColor(mobs::rigFor(id));
+            bool dup = false;
+            for (i32 i = 0; i < distinct; ++i) if (seen[i] == c) { dup = true; break; }
+            if (!dup) seen[distinct++] = c;
+        }
+        char m[170];
+        std::snprintf(m, sizeof(m), "у %d видов %d различных цветов тела",
+                      (i32)mobs::MOB_COUNT - 1, distinct);
+        check(distinct > (i32)(mobs::MOB_COUNT - 1) / 2, m);
+    }
+
+    // ---- 7. Осколки родятся из НАСТОЯЩЕГО расчёта урона ----
+    {
+        ecs::Registry reg;
+        const ecs::Entity attacker = reg.create();
+        reg.add(attacker, ecs::Transform{ glm::vec3(0.f, 64.f, 0.f) });
+
+        auto spawnMob = [&](f32 hp) {
+            const ecs::Entity m = reg.create();
+            reg.add(m, ecs::Health{ hp, hp, 0.f, 0.f });
+            reg.add(m, ecs::AIAgent{});
+            reg.add(m, mobs::MobTag{ (u16)mobs::MOB_WOLF });
+            reg.add(m, combat::StatusEffects{});
+            reg.add(m, ecs::Transform{ glm::vec3(3.f, 64.f, 0.f) });
+            return m;
+        };
+
+        world::particles().reset();
+        const ecs::Entity m = spawnMob(100.f);
+        combat::DamageInstance light;
+        light.amount = 55.f;          // больше половины здоровья: горсть густая
+        light.sourceEntity = (u32)attacker;
+        combat::applyDamage(reg, m, light);
+        const u32 afterHit = world::particles().liveCount();
+        check(afterHit > 0, "обычное попадание оставляет след в точке удара");
+
+        // Летят ПРОЧЬ от бьющего: бьющий стоит в нуле, цель — в +X.
+        i32 away = 0, toward = 0;
+        for (const Particle& q : world::particles().items()) {
+            if (!q.alive) continue;
+            if (q.vel.x > 0.f) ++away; else ++toward;
+        }
+        char m2[170];
+        std::snprintf(m2, sizeof(m2), "прочь от бьющего летит %d осколков из %d",
+                      away, away + toward);
+        check(away + toward >= 6 && away > toward, m2);
+
+        // Смерть — своя, более густая горсть.
+        world::particles().reset();
+        const ecs::Entity victim = spawnMob(10.f);
+        combat::DamageInstance lethal;
+        lethal.amount = 999.f;
+        lethal.sourceEntity = (u32)attacker;
+        combat::applyDamage(reg, victim, lethal);
+        const u32 afterDeath = world::particles().liveCount();
+        std::snprintf(m2, sizeof(m2),
+                      "смерть твари рассыпает %u осколков против %u от удара",
+                      afterDeath, afterHit);
+        check(afterDeath > afterHit, m2);
+
+        // Добивание трупа второй горсти не даёт: иначе стая,
+        // молотящая павшего, засыпала бы экран.
+        const u32 before = world::particles().liveCount();
+        combat::DamageInstance again;
+        again.amount = 999.f;
+        again.sourceEntity = (u32)attacker;
+        combat::applyDamage(reg, victim, again);
+        check(world::particles().liveCount() <= before + 14,
+              "и добивание уже мёртвого второй раз его не рассыпает");
+    }
+
+    // ---- 8. Осколок падает, ложится на землю и не тонет ----
+    if (!jobs::gJobs.running()) jobs::gJobs.start(2);
+    {
+        constexpr u64 SEED = 0xBEE5Fu;
+        world::ChunkManager mgr(SEED, 2);
+        bool ready = false;
+        for (i32 i = 0; i < 900 && !ready; ++i) {
+            mgr.update({ 8.f, 70.f, 8.f });
+            ready = mgr.isReadyAt(8, 8) && mgr.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        const i32 ground = mgr.generator().surfaceHeight(8, 8);
+        const glm::vec3 eye{ 8.5f, (f32)ground + 1.6f, 8.5f };
+
+        Particles p;
+        Burst b{};
+        b.origin = { 8.5f, (f32)ground + 3.f, 8.5f };
+        b.dir = { 0.f, 1.f, 0.f };
+        b.count = 40; b.speed = 1.f; b.spread = 0.3f;
+        b.size = 0.12f; b.life = 6.f; b.gravity = 20.f;
+        b.color = 0x808080FFu;
+        p.emit(b);
+
+        f32 startY = 0.f; i32 n0 = 0;
+        for (const Particle& q : p.items()) if (q.alive) { startY += q.pos.y; ++n0; }
+        startY /= std::max(1, n0);
+
+        i32 sunk = 0, rested = 0;
+        for (i32 i = 0; i < 180; ++i) {
+            p.update(mgr, eye, 1.f / 60.f);
+            for (const Particle& q : p.items()) {
+                if (!q.alive || !q.probed) continue;
+                if (q.pos.y < q.restY - 0.001f) ++sunk;
+            }
+        }
+        for (const Particle& q : p.items()) if (q.alive && q.resting) ++rested;
+
+        f32 endY = 0.f; i32 n1 = 0;
+        for (const Particle& q : p.items()) if (q.alive) { endY += q.pos.y; ++n1; }
+        if (n1 > 0) endY /= (f32)n1;
+
+        char m[210];
+        std::snprintf(m, sizeof(m),
+                      "за три секунды ни один осколок не ушёл под землю "
+                      "(нарушений %d), поверхность на y=%d", sunk, ground);
+        check(sunk == 0, m);
+
+        // Догоревшие в список для рендера не попадают: к этому
+        // моменту часть горсти уже погасла.
+        {
+            std::vector<render::MobInstance> inst;
+            render::particleInstances(p, inst);
+            std::snprintf(m, sizeof(m),
+                          "в список рендера попали только живые: %u из %u в пуле",
+                          (u32)inst.size(), (u32)p.items().size());
+            check(inst.size() == p.liveCount() &&
+                  inst.size() < p.items().size(), m);
+        }
+        check(n1 == 0 || endY < startY, "и все они опустились");
+
+        // Осколок за спиной не занимает пул: то, чего не видно, не
+        // обратная связь.
+        Particles farAway;
+        b.origin = { 8.5f + Particles::CULL_RADIUS + 20.f, (f32)ground + 3.f, 8.5f };
+        b.life = 6.f;
+        farAway.emit(b);
+        check(farAway.liveCount() > 0, "далёкая горсть сперва рождается");
+        farAway.update(mgr, eye, 1.f / 60.f);
+        check(farAway.liveCount() == 0, "и тут же гаснет: её всё равно не видно");
+
+        // ---- Цена кадра ----
+        //
+        // Полный пул, каждый кадр: если бы осколки стоили дорого,
+        // направление выбиралось бы зря.
+        {
+            Particles full;
+            Burst fb{};
+            fb.origin = { 8.5f, (f32)ground + 2.f, 8.5f };
+            fb.count = 32; fb.speed = 4.f; fb.spread = 1.f;
+            fb.size = 0.12f; fb.life = 60.f; fb.gravity = 0.f;
+            fb.color = 0x808080FFu;
+            for (i32 i = 0; i < 40; ++i) full.emit(fb);
+            full.update(mgr, eye, 1.f / 60.f);   // прогрев: пробы опоры
+
+            const auto t0 = std::chrono::steady_clock::now();
+            constexpr i32 FRAMES = 600;
+            for (i32 i = 0; i < FRAMES; ++i) full.update(mgr, eye, 1.f / 60.f);
+            const auto t1 = std::chrono::steady_clock::now();
+            const f64 us = std::chrono::duration<f64, std::micro>(t1 - t0).count()
+                         / (f64)FRAMES;
+            std::snprintf(m, sizeof(m),
+                          "полный пул (%u осколков) стоит %.1f мкс на кадр",
+                          full.liveCount(), us);
+            check(us < 500.0, m);
+        }
+    }
+
+    // ---- 9. Осколки становятся инстансами куба ----
+    {
+        Particles p;
+        Burst b{};
+        b.origin = { 1.f, 70.f, 2.f };
+        b.count = 20; b.speed = 3.f; b.spread = 1.f;
+        b.size = 0.12f; b.life = 1.f; b.gravity = 0.f;
+        b.color = 0x40C080FFu;
+        p.emit(b);
+
+        std::vector<render::MobInstance> inst;
+        render::particleInstances(p, inst);
+        check(inst.size() == p.liveCount(),
+              "инстансов ровно столько, сколько живых осколков");
+        check(!inst.empty(), "и они есть");
+
+        if (!inst.empty()) {
+            // Куб, а не вытянутый штрих: осколок — это маленький
+            // блок, и все три его ребра равны.
+            check(std::fabs(inst[0].size.x - inst[0].size.z) < 1e-4f &&
+                  std::fabs(inst[0].size.x - inst[0].size.y) < 1e-4f,
+                  "осколок — куб, а не штрих");
+
+            // И повёрнут: гранями по осям мира стоял бы блок, а не
+            // обломок.
+            i32 axisAligned = 0;
+            for (const render::MobInstance& q : inst) {
+                const glm::vec3 fwd = orient::qrot(q.rot, glm::vec3(0, 0, 1));
+                if (std::fabs(fwd.z) > 0.999f) ++axisAligned;
+            }
+            char m[170];
+            std::snprintf(m, sizeof(m), "осколков, стоящих по осям мира: %d из %d",
+                          axisAligned, (i32)inst.size());
+            check(axisAligned * 4 < (i32)inst.size(), m);
+        }
+
+        // ---- Цвет доезжает до экрана таким, каким был у блока ----
+        //
+        // Конвейер снарядов писался под светящееся и осветляет цвет
+        // инстанса. Осколку это ни к чему: он обязан быть цвета того
+        // блока, от которого откололся. Число в шейдере и число в
+        // коде обязаны совпадать, иначе щепки камня выйдут белёсыми.
+        {
+            const std::string frag =
+                readSource("app/src/main/cpp/shaders/projectile.frag");
+            char want[64];
+            std::snprintf(want, sizeof(want), "vColor.rgb * %.1f",
+                          (double)render::PROJECTILE_FRAG_GAIN);
+            char m[210];
+            std::snprintf(m, sizeof(m),
+                          "шейдер снарядов осветляет ровно во столько, во сколько "
+                          "гасит код (%s)", want);
+            check(!frag.empty() && frag.find(want) != std::string::npos, m);
+
+            // И на выходе получается цвет исходного блока, а не его
+            // осветлённая копия.
+            world::particles().reset();
+            world::blockBreakBurst({ 2, 70, 2 }, world::STONE);
+            std::vector<render::MobInstance> chips;
+            render::particleInstances(world::particles(), chips);
+            const world::BlockDef& st = world::blocks().get(world::STONE);
+            const i32 wantR = (i32)((st.colorTop >> 24) & 0xFFu);
+            i32 sum = 0, n = 0;
+            for (const render::MobInstance& q : chips) {
+                // Обратно из порядка видеокарты: R — младший байт.
+                const i32 r = (i32)(q.colorGpu & 0xFFu);
+                sum += (i32)((f32)r * render::PROJECTILE_FRAG_GAIN);
+                ++n;
+            }
+            const i32 got = n ? sum / n : 0;
+            std::snprintf(m, sizeof(m),
+                          "на экране щепка камня даст красную составляющую %d "
+                          "при %d у самого камня", got, wantR);
+            check(n > 0 && std::abs(got - wantR) < 26, m);
+        }
+    }
+
+    // ---- 10. Все четыре повода подключены ----
+    //
+    // Проверка по исходникам, а не по поведению: она ловит ровно то,
+    // что поведенческой не поймать, — тихо отвалившийся вызов в
+    // месте, которое эти тесты не исполняют (main.cpp, player.cpp).
+    {
+        struct Wiring { const char* file; const char* call; const char* why; };
+        const Wiring wiring[] = {
+            { "app/src/main/cpp/src/combat/status_effects.cpp",
+              "woundBurst", "обычное попадание" },
+            { "app/src/main/cpp/src/combat/status_effects.cpp",
+              "deathBurst", "смерть существа" },
+            { "app/src/main/cpp/src/main.cpp",
+              "blockBreakBurst", "слом блока" },
+            { "app/src/main/cpp/src/player/player.cpp",
+              "landingBurst", "приземление" },
+            { "app/src/main/cpp/src/main.cpp",
+              "particles().update", "обновление осколков в кадре" },
+            { "app/src/main/cpp/src/main.cpp",
+              "setParticles", "передача осколков в рендер" },
+        };
+        char m[220];
+        for (const Wiring& w : wiring) {
+            const std::string src = readSource(w.file);
+            if (src.empty()) {
+                std::snprintf(m, sizeof(m), "исходник %s не найден", w.file);
+                check(false, m);
+                continue;
+            }
+            std::snprintf(m, sizeof(m), "%s оставляет след (%s)", w.why, w.call);
+            check(src.find(w.call) != std::string::npos, m);
+        }
+
+        // И ни одной собственной таблицы цветов: цвет обязан
+        // приходить из реестра блоков и из оснастки.
+        const std::string psrc =
+            readSource("app/src/main/cpp/src/world/particles.cpp");
+        check(!psrc.empty() &&
+              psrc.find("blocks().get") != std::string::npos,
+              "цвет щепок берётся из реестра блоков, а не из своей таблицы");
+    }
+}
+
+// ------------------------------------------------------------
 // Защита: блок, парирование, пробитие.
 //
 // До этой ревизии решение в бою было ровно одно — отойти. Замах
@@ -21419,6 +21951,7 @@ int main() {
     testWeaponsSwingDifferently();
     testHitsHaveWeight();
     testGuardBlocksParriesAndBreaks();
+    testHitsLeaveAMark();
     testLogCanBeTurnedOff();
     testCloudsAreNotOneColour();
 

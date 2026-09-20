@@ -16,6 +16,7 @@
 #include "../npc/npc_ai.h"
 #include "../world/block.h"
 #include "../audio/audio_events.h"
+#include "../world/particles.h"
 #include <cmath>
 #include <algorithm>
 #include <vector>
@@ -441,7 +442,23 @@ void Player::updateImpl(world::ChunkManager& world,
 
     // Land: если только что приземлились и до этого падали вниз
     if (!wasOnGround && isOnGround && prevVelY < -2.f) {
-        audio::events().land(controller.state().position, prevVelY);
+        const glm::vec3 feet = controller.state().position;
+        audio::events().land(feet, prevVelY);
+
+        // Пыль из-под ног — цветом ТОЙ ЗЕМЛИ, на которую упали.
+        //
+        // Приземление было единственным событием в игре, которое не
+        // оставляло вообще ничего: ни звука мира, ни следа. Падение с
+        // высоты и шаг со ступеньки выглядели одинаково.
+        //
+        // Проба на пять сантиметров ниже ступни, а не «блок под
+        // floor(y)»: контроллер ставит ноги ровно на границу блоков,
+        // и целая координата попадает то в опору, то в воздух над
+        // ней.
+        const i32 bx = (i32)std::floor(feet.x);
+        const i32 by = (i32)std::floor(feet.y - 0.05f);
+        const i32 bz = (i32)std::floor(feet.z);
+        world::landingBurst(feet, world.getVoxel(bx, by, bz), -prevVelY);
     }
 
     // ---- Удар о землю ----
