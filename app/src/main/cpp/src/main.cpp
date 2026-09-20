@@ -614,6 +614,13 @@ struct Engine {
 
             s.itemId = items::ITEM_IRON_INGOT; s.count = 8;
             inv->addStack(s);
+
+            // Факелы. Без них первая же ночь и первая же пещера —
+            // это чёрный экран: свет в игре теперь настоящий, и взять
+            // его в дорогу надо откуда-то. Дальше они крафтятся из
+            // полена, прямо в поле.
+            s.itemId = items::ITEM_TORCH; s.count = 16;
+            inv->addStack(s);
         }
 
         spawner        = std::make_unique<mobs::Spawner>();

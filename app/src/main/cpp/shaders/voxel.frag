@@ -59,9 +59,47 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     // wind: xy — ветер в блоках в секунду, z — время в секундах.
     vec4 weather;
     vec4 wind;
+
+    // ---- Точечные источники: факелы, фонари, огонь в руке ----
+    //
+    // У BlockDef с самого начала были isEmissive и lightLevel, и
+    // фонарь объявлен с уровнем 13. Читать их было некому: ночью и в
+    // пещере фонарь светил ровно столько же, сколько булыжник.
+    //
+    // lightInfo.x — сколько источников прислали. Ноль — цикл не
+    // выполняется ни разу, и днём в чистом поле это ничего не стоит.
+    vec4 lightInfo;
+    vec4 lightPos[8];    // xyz — где, w — радиус гашения
+    vec4 lightColor[8];  // rgb — цвет, линейный; w — яркость
 } cam;
 
 layout(location = 0) out vec4 outColor;
+
+// Свет от точечных источников в точке P с нормалью N.
+//
+// Затухание квадратичное по доле пройденного радиуса, без корня:
+// inversesqrt даёт и направление, и обратное расстояние за одну
+// операцию. Ламберт приподнят до 0.25 — факел светит и на грани,
+// отвёрнутые от него: иначе стена, вдоль которой он висит, остаётся
+// чёрной, хотя пламя в полуметре.
+vec3 pointLights(highp vec3 P, vec3 N, float occl) {
+    int n = int(cam.lightInfo.x + 0.5);
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < n; ++i) {
+        highp vec3 d = cam.lightPos[i].xyz - P;
+        highp float r = cam.lightPos[i].w;
+        highp float d2 = dot(d, d);
+        if (d2 >= r * r) continue;
+        highp float inv = inversesqrt(max(d2, 1e-6));
+        vec3 L = vec3(d * inv);
+        float att = clamp(1.0 - 1.0 / (inv * r), 0.0, 1.0);
+        att *= att;
+        float ndl = max(dot(N, L), 0.0) * 0.75 + 0.25;
+        sum += cam.lightColor[i].rgb * (cam.lightColor[i].w * att * ndl);
+    }
+    return sum * occl;
+}
+
 
 // Нормали граней в порядке world::FACES: +X, -X, +Y, -Y, +Z, -Z.
 const vec3 FACE_N[6] = vec3[6](
@@ -223,7 +261,12 @@ void main() {
     vec3 ambient = ambTint * (ambLvl * ao * sky);
     vec3 sun     = sunTint * (ndl * 0.46 * sunUp * aoSun * skySun);
 
-    vec3 lit = albedo * (ambient + sun);
+    // Точечные источники. Затенение углов гасит их так же, как
+    // рассеянный: в щель свет факела не попадает. Открытость неба —
+    // наоборот, не при чём: факел светит как раз там, где неба нет.
+    vec3 torch = pointLights(vWorldPos, N, ao);
+
+    vec3 lit = albedo * (ambient + sun + torch);
 
     // Блик на полупрозрачном. Вода и лёд отличаются от камня не
     // цветом, а тем, что отражают небо: без блика вода читается как

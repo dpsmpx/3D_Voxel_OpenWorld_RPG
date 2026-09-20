@@ -122,6 +122,7 @@ enum ItemId : u16 {
     ITEM_CLOTH        = 15,
     ITEM_CACTUS       = 16,
     ITEM_BRICK        = 17,
+    ITEM_TORCH        = 18,
 
     // --- Метательное ---
     ITEM_TRAMPOLINE   = 150,

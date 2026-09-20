@@ -4,6 +4,7 @@
  */
 #pragma once
 #include "../core/types.h"
+#include "lights.h"
 #include "../core/math.h"
 #include "../physics/raycast.h"
 #include "../world/chunk_manager.h"
@@ -57,7 +58,26 @@ struct CameraUbo {
     /// Ветер. xy — блоков в секунду, по которым едут тучи;
     /// z — время в секундах для их движения, w — запас.
     glm::vec4 wind;
+
+    /// Точечные источники: факелы, фонари, огонь в руке.
+    ///
+    /// x — сколько их сейчас. Остальное — запас; отдельное поле
+    /// вместо свободной компоненты чужого вектора потому, что число
+    /// источников читает КАЖДЫЙ фрагмент, и прятать его негде.
+    glm::vec4 lightInfo;
+    /// xyz — где источник, w — где его свет гаснет, блоков.
+    glm::vec4 lightPos[8];
+    /// rgb — цвет, линейный; w — яркость. Ноль — источника нет.
+    glm::vec4 lightColor[8];
 };
+
+// Размер массива записан числом, а не константой, и вот почему: тот
+// же блок слово в слово объявлен в восьми шейдерах, и проверка
+// сверяет их ПОТЕКСТОВО. Константы GLSL не знает, а разойтись этим
+// двум нельзя — смещения всех полей после массива уедут, и каждый
+// шейдер начнёт читать чужие байты.
+static_assert(MAX_GPU_LIGHTS == 8,
+              "число источников зашито в shaders/*: поправьте и там");
 
 class Camera {
 public:
@@ -65,6 +85,15 @@ public:
     void setViewport(u32 w, u32 h)        { screenW_ = w; screenH_ = h; }
     void setSunDir(const glm::vec3& d)    { sunDir_ = glm::normalize(d); }
     void setFog(f32 start, f32 end)       { fogStart_ = start; fogEnd_ = end; }
+
+    /// Точечные источники на этот кадр. Собирает render::LightField,
+    /// а камера только переводит цвет в линейное пространство — тем
+    /// же правилом, что и весь остальной свет.
+    void setLights(const PointLight* l, u32 n) {
+        lightCount_ = n < MAX_GPU_LIGHTS ? n : MAX_GPU_LIGHTS;
+        for (u32 i = 0; i < lightCount_; ++i) lights_[i] = l[i];
+    }
+    u32 lightCount() const { return lightCount_; }
 
     /// Погода: тучи, осадки, радуга, снег и ветер.
     /// Задаются раз в кадр из world::Weather.
@@ -268,6 +297,28 @@ public:
         u.skyLinear = glm::vec4(skyLin, above);
         u.weather   = glm::vec4(cloud_, precip_, rainbow_, snowMix_);
         u.wind      = glm::vec4(wind_.x, wind_.y, timeSec, 0.f);
+
+        // ---- точечные источники ----
+        //
+        // Цвет переводится в линейное здесь — там же, где цвет неба и
+        // солнца. Мерцание тоже здесь: восемь синусов раз в кадр
+        // против того же расчёта на каждый пиксель. Фаза разведена по
+        // месту источника, иначе все факелы в пещере вспыхивают в
+        // такт, как гирлянда.
+        u.lightInfo = glm::vec4((f32)lightCount_, 0.f, 0.f, 0.f);
+        for (u32 i = 0; i < MAX_GPU_LIGHTS; ++i) {
+            if (i >= lightCount_) {
+                u.lightPos[i]   = glm::vec4(0.f);
+                u.lightColor[i] = glm::vec4(0.f);
+                continue;
+            }
+            const PointLight& l = lights_[i];
+            const f32 phase = l.pos.x * 1.7f + l.pos.y * 2.3f + l.pos.z * 3.1f;
+            const f32 flick = 0.90f + 0.10f * std::sin(timeSec * 7.3f + phase)
+                                    * std::sin(timeSec * 2.9f + phase * 0.7f);
+            u.lightPos[i]   = glm::vec4(l.pos, l.radius);
+            u.lightColor[i] = glm::vec4(toLin(l.color), l.power * flick);
+        }
         return u;
     }
 
@@ -300,6 +351,8 @@ private:
     f32 fogStart_ = 150.f, fogEnd_ = 400.f;
     glm::vec3 skyColor_{0.55f, 0.72f, 0.92f};
     f32 skyLight_  = 1.f;
+    PointLight lights_[MAX_GPU_LIGHTS]{};
+    u32        lightCount_ = 0;
     f32 timeOfDay_ = 0.3f;
 
     bool firstPerson_ = false;

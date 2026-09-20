@@ -117,6 +117,7 @@ add_library(native-lib SHARED
     src/render/block_outline.cpp
     src/render/chunk_renderer.cpp
     src/render/item_renderer.cpp
+    src/render/lights.cpp
     src/render/mesh_builder.cpp
     src/render/pass_sweep.cpp
     src/render/mob_renderer.cpp

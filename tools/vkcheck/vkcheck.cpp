@@ -20,6 +20,7 @@
 #include "vk/vk_descriptors.h"
 #include "render/mesh_builder.h"
 #include "render/camera.h"
+#include "render/lights.h"
 #include "render/voxel_pipeline.h"
 #include "world/day_cycle.h"
 #include "world/debug_scene.h"
@@ -153,6 +154,9 @@ int main(int argc, char** argv) {
     // сам шейдер неба — самый дорогой в кадре и единственный, где
     // живут тучи и радуга, и посмотреть на него было нечем.
     bool  drawSky = false;
+    // Факел в руке. Светит из точки камеры; без ключа источников нет
+    // вовсе, и прежние снимки повторяются байт в байт.
+    float torch = 0.f;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : "0"; };
@@ -181,6 +185,8 @@ int main(int argc, char** argv) {
         else if (a == "--rain")    { rain = (float)atof(next()); weatherGiven = true; }
         else if (a == "--rainbow") { rainbow = (float)atof(next()); weatherGiven = true; }
         else if (a == "--wind")    { windX = (float)atof(next()); windZ = (float)atof(next()); weatherGiven = true; }
+        // Свет от факела видно только глазами, а глаза здесь — кадр.
+        else if (a == "--torch")   torch = (float)atof(next());
         else if (a == "--scene") {
             const std::string v = next();
             if (v == "minimal") minimalScene = true;
@@ -522,6 +528,18 @@ int main(int argc, char** argv) {
                     "ветер %.1f %.1f\n",
                     (double)cloud, (double)rain, (double)rainbow,
                     (double)windX, (double)windZ);
+    }
+
+    if (torch > 0.f) {
+        // Ровно тот же источник, что даёт игре факел в руке: берётся
+        // из определения блока, а не выписан числами заново.
+        render::PointLight l = render::LightField::heldLight(
+            world::TORCH, eye - glm::vec3(0.f, render::LightField::HAND_HEIGHT, 0.f));
+        l.power *= torch;
+        cam.setLights(&l, 1);
+        std::printf("vkcheck: факел — сила %.2f, радиус %.1f, цвет %.2f %.2f %.2f\n",
+                    (double)l.power, (double)l.radius,
+                    (double)l.color.r, (double)l.color.g, (double)l.color.b);
     }
 
     render::CameraUbo u = cam.toUbo(world::SCENE_TIME_SEC);

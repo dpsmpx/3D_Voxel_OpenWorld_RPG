@@ -65,6 +65,7 @@
 #include "core/file_picker.h"
 #include "config/settings.h"
 #include "render/camera.h"
+#include "render/lights.h"
 #include "render/mob_renderer.h"
 #include "physics/character_controller.h"
 #include "physics/creature_motion.h"
@@ -4396,6 +4397,40 @@ void testHudAndButtonsDoNotOverlap() {
     check(problems == 0,
           "на семи экранах: ни наложений, ни целей мельче 48 dp");
 
+    // Счётчик кадров — СЛЕВА и крупнее подписи.
+    //
+    // Стоял он по постоянной 180-й точке от верха и лежал прямо на
+    // полосе выносливости; потом переехал в верхнюю середину, а
+    // середина отведена важным уведомлениям. Теперь — левый край,
+    // сразу за столбцом полос, где пусто при любом размере экрана.
+    {
+        for (const auto& sz : sizes) {
+            const ui::HudLayout L(sz.w, sz.h,
+                                  ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                                  ui::SafeInsets{});
+            const ui::Rect d = L.debugLine(0);
+            const ui::Rect bar = L.resourceBar(0);
+            char msg[200];
+            std::snprintf(msg, sizeof(msg),
+                          "%s: счётчик слева (x %.0f при середине %.0f)",
+                          sz.name, (double)d.x, (double)(sz.w * 0.5f));
+            check(d.x < sz.w * 0.5f, msg);
+            // Не просто «левее середины», а ПРИЖАТ к столбцу полос.
+            // Плашка по центру верха тоже начинается левее середины,
+            // и одним этим условием их не различить.
+            const f32 limit = bar.x + bar.w + L.dp(ui::theme::SPACE_L_DP) * 2.f;
+            std::snprintf(msg, sizeof(msg),
+                          "%s: и прижат к столбцу полос (%.0f при пределе %.0f)",
+                          sz.name, (double)d.x, (double)limit);
+            check(d.x >= bar.x + bar.w && d.x <= limit, msg);
+        }
+        const std::string uis = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+        check(uis.find("drawDebugLine(0, buf, theme::TEXT_BODY") != std::string::npos,
+              "и набран основным кеглем, а не подписью");
+        check(ui::theme::TEXT_BODY > ui::theme::TEXT_LABEL,
+              "а основной кегль и правда крупнее подписи");
+    }
+
     // Низкий экран: доля от высоты и раскладка строк расходятся
     // сильнее всего именно там. На 1280x600 доля 0.28 даёт 168-ю
     // точку, а вторая служебная строка кончается на 200-й — плашка
@@ -6519,6 +6554,239 @@ TrackColour colourOf(const audio::Sound& s) {
 // над трупом до конца времён. Бежала она по прямой и утыкалась в угол
 // первого же дома. Оружия у неё не было вовсе — «урон 7» из воздуха.
 // ------------------------------------------------------------
+// ------------------------------------------------------------
+// Свет: факелы и фонари освещают мир на самом деле.
+//
+// У BlockDef с самого начала были isEmissive, emitsLight и
+// lightLevel; фонарь объявлен с уровнем 13, и деревни ставят его в
+// дома. Спрашивать эти поля было НЕКОМУ: ни один шейдер, ни один
+// расчёт освещения к ним не обращался. Ночью и в пещере фонарь
+// светил ровно столько же, сколько булыжник, — то есть никак.
+// ------------------------------------------------------------
+void testTorchesLightTheDark() {
+    group("свет: факелы и фонари");
+
+    world::blocks();
+    items::items();
+
+    char m[220];
+
+    // ---- 1. Факел есть и устроен как факел ----
+    {
+        const world::BlockDef& t = world::blocks().get(world::TORCH);
+        check(t.emitsLight && t.lightLevel > 0, "факел светит");
+        check(!t.isSolid && !t.hasCollision,
+              "и сквозь него ходят: поставленный в узком ходе он его не запирает");
+        check(t.isTransparent, "мешер не склеивает его грани с соседями");
+        check(t.hardness < 0.3f, "ломается с одного касания");
+
+        const world::BlockDef& l = world::blocks().get(world::LANTERN);
+        check(l.emitsLight && l.lightLevel > 0, "фонарь светит тоже");
+        check(!world::blocks().get(world::STONE).emitsLight,
+              "а камень — нет");
+    }
+
+    // ---- 2. Источник выводится из определения блока ----
+    {
+        const render::PointLight t =
+            render::LightField::lightOfBlock(world::TORCH, { 10, 20, 30 });
+        check(t.power > 0.f, "у факела есть яркость");
+        std::snprintf(m, sizeof(m), "светит на %.0f блоков", (double)t.radius);
+        check(t.radius > 10.f && t.radius <= 16.f, m);
+        check(std::fabs(t.pos.x - 10.5f) < 1e-4f &&
+              std::fabs(t.pos.y - 20.5f) < 1e-4f &&
+              std::fabs(t.pos.z - 30.5f) < 1e-4f,
+              "и из центра блока, а не из угла");
+
+        // Цвет — своего же пламени, а не белый.
+        std::snprintf(m, sizeof(m), "цвет пламени тёплый: %.2f %.2f %.2f",
+                      (double)t.color.r, (double)t.color.g, (double)t.color.b);
+        check(t.color.r > t.color.g && t.color.g > t.color.b, m);
+
+        const render::PointLight s =
+            render::LightField::lightOfBlock(world::STONE, { 0, 0, 0 });
+        check(s.power == 0.f, "камень источником не считается");
+        const render::PointLight a =
+            render::LightField::lightOfBlock(world::AIR, { 0, 0, 0 });
+        check(a.power == 0.f, "и воздух тоже");
+    }
+
+    // ---- 3. Факел в руке ----
+    {
+        const glm::vec3 feet{ 5.f, 64.f, -3.f };
+        const render::PointLight h =
+            render::LightField::heldLight(world::TORCH, feet);
+        check(h.power > 0.f, "несомый факел светит");
+        std::snprintf(m, sizeof(m), "из руки, а не из ступней: %.2f над опорой",
+                      (double)(h.pos.y - feet.y));
+        check(h.pos.y > feet.y + 1.f, m);
+        const render::PointLight ground =
+            render::LightField::lightOfBlock(world::TORCH, { 0, 0, 0 });
+        check(h.power < ground.power, "и чуть слабее вкопанного");
+
+        check(render::LightField::heldLight(world::STONE, feet).power == 0.f,
+              "булыжник в руке не светит");
+        check(render::LightField::heldLight(world::AIR, feet).power == 0.f,
+              "и пустая рука тоже");
+    }
+
+    // ---- 4. Обход мира находит светильники ----
+    jobs::gJobs.start(2);
+    {
+        constexpr u64 SEED = 0x11FEu;
+        world::ChunkManager world(SEED, 2);
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        const i32 F = world.generator().surfaceHeight(8, 8) + 6;
+        for (i32 z = -40; z <= 40; ++z)
+            for (i32 x = -40; x <= 40; ++x) {
+                world.setVoxel(x, F - 1, z, world::STONE);
+                for (i32 y = F; y < F + 6; ++y) world.setVoxel(x, y, z, world::AIR);
+            }
+
+        const glm::vec3 at{ 8.5f, (f32)F, 8.5f };
+        render::LightField lf;
+
+        lf.scan(world, at, 1.f);
+        check(lf.blockLightCount() == 0, "на пустой площадке источников нет");
+
+        // Три факела рядом и один далеко за радиусом обхода.
+        world.setVoxel(10, F, 8, world::TORCH);
+        world.setVoxel(6,  F, 8, world::TORCH);
+        world.setVoxel(8,  F, 12, world::TORCH);
+        const i32 farX = 8 + render::LightField::SCAN_RADIUS_XZ + 6;
+        world.setVoxel(farX, F, 8, world::TORCH);
+
+        lf.clear();
+        lf.scan(world, at, 1.f);
+        std::snprintf(m, sizeof(m), "обход нашёл %zu факела из трёх ближних",
+                      lf.blockLightCount());
+        check(lf.blockLightCount() == 3, m);
+
+        // ---- 5. На GPU уезжают БЛИЖНИЕ ----
+        {
+            render::PointLight got[render::MAX_GPU_LIGHTS];
+            const u32 n = lf.nearest(at, got, render::MAX_GPU_LIGHTS);
+            check(n == 3, "все три попали в список");
+            f32 prev = -1.f;
+            bool sorted = true;
+            for (u32 i = 0; i < n; ++i) {
+                const f32 d = glm::length(got[i].pos - at);
+                if (d < prev - 1e-3f) sorted = false;
+                prev = d;
+            }
+            check(sorted, "и идут от ближнего к дальнему");
+
+            // Больше, чем влезает, не уедет.
+            for (i32 k = 0; k < 12; ++k)
+                world.setVoxel(4 + k % 6, F + (k / 6), 6, world::TORCH);
+            lf.clear();
+            lf.scan(world, at, 1.f);
+            const u32 n2 = lf.nearest(at, got, render::MAX_GPU_LIGHTS);
+            std::snprintf(m, sizeof(m), "из %zu источников на GPU уехало %u",
+                          lf.blockLightCount(), n2);
+            check(lf.blockLightCount() > render::MAX_GPU_LIGHTS &&
+                  n2 == render::MAX_GPU_LIGHTS, m);
+        }
+
+        // ---- 6. Огонь в руке важнее стены факелов позади ----
+        {
+            render::PointLight hand =
+                render::LightField::heldLight(world::TORCH, at);
+            hand.pos = at + glm::vec3(0.f, 1.25f, 0.f);
+            lf.beginFrame();
+            lf.addTransient(hand);
+
+            render::PointLight got[render::MAX_GPU_LIGHTS];
+            const u32 n = lf.nearest(at + glm::vec3(30.f, 0.f, 0.f),
+                                     got, render::MAX_GPU_LIGHTS);
+            check(n > 0 && glm::length(got[0].pos - hand.pos) < 1e-3f,
+                  "подвижный огонь идёт первым, даже если он не ближайший");
+            lf.beginFrame();
+            check(lf.transientCount() == 0, "и живёт ровно один кадр");
+        }
+    }
+    jobs::gJobs.stop();
+
+    // ---- 7. Источники доезжают до шейдера ----
+    {
+        render::Camera cam;
+        render::PointLight l[2];
+        l[0] = render::LightField::lightOfBlock(world::TORCH, { 1, 2, 3 });
+        l[1] = render::LightField::lightOfBlock(world::LANTERN, { 9, 9, 9 });
+        cam.setLights(l, 2);
+        check(cam.lightCount() == 2, "камера приняла два источника");
+
+        const render::CameraUbo u = cam.toUbo(4.0f);
+        check((i32)(u.lightInfo.x + 0.5f) == 2, "и сказала шейдеру, сколько их");
+        check(std::fabs(u.lightPos[0].w - l[0].radius) < 1e-4f,
+              "радиус гашения уехал в w позиции");
+        check(u.lightColor[1].w > 0.f, "второй источник тоже светит");
+        check(u.lightColor[2].w == 0.f && u.lightPos[2].w == 0.f,
+              "а лишние слоты погашены, а не оставлены с мусором");
+
+        // Цвет переводится в линейное — там же, где цвет неба.
+        std::snprintf(m, sizeof(m), "цвет линейный: %.2f против %.2f в sRGB",
+                      (double)u.lightColor[0].g, (double)l[0].color.g);
+        check(u.lightColor[0].g < l[0].color.g - 0.02f, m);
+
+        // Мерцание: яркость гуляет, но остаётся яркостью.
+        f32 lo = 1e9f, hi = -1e9f;
+        for (int k = 0; k < 60; ++k) {
+            const render::CameraUbo t = cam.toUbo((f32)k * 0.05f);
+            lo = std::min(lo, t.lightColor[0].w);
+            hi = std::max(hi, t.lightColor[0].w);
+        }
+        std::snprintf(m, sizeof(m), "пламя дрожит: яркость гуляет %.3f..%.3f",
+                      (double)lo, (double)hi);
+        check(hi > lo && lo > l[0].power * 0.75f && hi <= l[0].power * 1.01f, m);
+    }
+
+    // ---- 8. Шейдеры и правда складывают этот свет ----
+    {
+        const std::string vox = readSource("app/src/main/cpp/shaders/voxel.frag");
+        const std::string mob = readSource("app/src/main/cpp/shaders/mob.frag");
+        check(!vox.empty() && !mob.empty(), "шейдеры прочитались");
+        for (const auto& [name, src] :
+             { std::pair<const char*, const std::string&>{ "террейн", vox },
+               std::pair<const char*, const std::string&>{ "существа", mob } })
+        {
+            std::snprintf(m, sizeof(m), "%s: точечные источники считаются", name);
+            check(src.find("cam.lightInfo.x") != std::string::npos &&
+                  src.find("cam.lightPos[i]") != std::string::npos, m);
+            std::snprintf(m, sizeof(m), "%s: и попадают в итоговый цвет", name);
+            check(src.find("+ torch)") != std::string::npos, m);
+        }
+    }
+
+    // ---- 9. Факел можно взять с собой ----
+    {
+        const items::ItemDef& d = items::items().get(items::ITEM_TORCH);
+        check(d.category == items::ItemCategory::Block,
+              "факел — ставящийся предмет");
+        check(d.payload.blockId == world::TORCH, "и ставит именно факел");
+        check(d.maxStack >= 32, "и носится пачкой");
+        check(items::items().blockToItem(world::TORCH) == items::ITEM_TORCH,
+              "сломанный факел возвращается предметом");
+
+        // Крафт без станции: темнота застаёт в пещере, а не в деревне.
+        const auto& all = crafting::recipes().all();
+        bool inField = false;
+        for (const auto& r : all)
+            if (r.output.itemId == items::ITEM_TORCH &&
+                r.station == crafting::StationType::None && r.output.count > 1)
+                inField = true;
+        check(inField, "и крафтится в поле, пачкой, без верстака");
+    }
+}
+
 void testGuardsDefendTheVillage() {
     group("деревня: защитники сражаются");
 
@@ -18448,6 +18716,7 @@ int main() {
     testVillageHousesAreBuildings();
     testVillagesDifferFromEachOther();
     testBlockEconomy();
+    testTorchesLightTheDark();
     testGuardsDefendTheVillage();
     testCreaturesWalkClimbAndDrop();
     testBiomeAndVillageMusic();

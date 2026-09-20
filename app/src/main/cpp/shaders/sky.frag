@@ -19,6 +19,14 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     // wind: xy — ветер в блоках в секунду, z — время в секундах.
     vec4 weather;
     vec4 wind;
+
+    // ---- Точечные источники: факелы, фонари, огонь в руке ----
+    //
+    // lightInfo.x — сколько источников прислали. Ноль — цикл в
+    // шейдере не выполняется ни разу.
+    vec4 lightInfo;
+    vec4 lightPos[8];    // xyz — где, w — радиус гашения
+    vec4 lightColor[8];  // rgb — цвет, линейный; w — яркость
 } cam;
 
 layout(location = 0) out vec4 outColor;

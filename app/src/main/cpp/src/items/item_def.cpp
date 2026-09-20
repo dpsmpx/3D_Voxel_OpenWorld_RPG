@@ -164,6 +164,8 @@ ItemRegistry::ItemRegistry() {
     blockItem(ITEM_GOLD_ORE, world::GOLD_ORE, "Gold Ore",  64, 15, ItemRarity::Rare);
     blockItem(ITEM_CACTUS,   world::CACTUS,   "Cactus",    64,  2, ItemRarity::Common);
     blockItem(ITEM_BRICK,    world::BRICK,    "Brick",     64,  3, ItemRarity::Common);
+    // Факел. Стопка большая: в пещеру их берут пачками.
+    blockItem(ITEM_TORCH,    world::TORCH,    "Torch",     64,  2, ItemRarity::Common);
 
     // ============ Материалы (не block) ============
     materialItem(ITEM_IRON_INGOT, "Iron Ingot", 25, ItemRarity::Uncommon, 20);

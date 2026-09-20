@@ -89,6 +89,9 @@ struct CameraUbo {
     glm::vec4 skyLinear;
     glm::vec4 weather;
     glm::vec4 wind;
+    glm::vec4 lightInfo;
+    glm::vec4 lightPos[8];
+    glm::vec4 lightColor[8];
 };
 
 u32 findMem(VkPhysicalDevice phys, u32 bits, VkMemoryPropertyFlags want) {
