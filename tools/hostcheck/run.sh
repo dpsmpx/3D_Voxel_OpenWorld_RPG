@@ -382,6 +382,41 @@ if [ -f /usr/share/vulkan/icd.d/lvp_icd.json ] || [ -n "${VK_ICD_FILENAMES:-}" ]
         exit 1
     fi
     grep -E "^vkcheck: (погода|кадр|пикселей)" "$OUT/vkweather.log" | sed 's/^/  /'
+
+    # ---- Третий кадр: НОЧЬ и факел ----
+    #
+    # У блоков с самого начала были isEmissive и lightLevel, а читать
+    # их было некому: ночью и в пещере фонарь светил ровно столько же,
+    # сколько булыжник. Проверить «светит» можно только светом — то
+    # есть двумя одинаковыми кадрами, в одном из которых факел есть.
+    echo "==> Ночь: без факела и с факелом..."
+    lumaOf() {   # $1 — лог кадра
+        grep -oE "средняя яркость нижней половины кадра: [0-9.]+" "$1" \
+            | grep -oE "[0-9.]+$"
+    }
+    VK_NIGHT_ARGS=(--time 0.0 --pitch -0.75 --height 3)
+    if "$PROJ/tools/vkcheck/run.sh" "${VK_NIGHT_ARGS[@]}" \
+            --out "$OUT/night.ppm" > "$OUT/vknight.log" 2>&1 &&
+       "$PROJ/tools/vkcheck/run.sh" "${VK_NIGHT_ARGS[@]}" --torch 1.0 \
+            --out "$OUT/torch.ppm" > "$OUT/vktorch.log" 2>&1
+    then
+        DARK=$(lumaOf "$OUT/vknight.log")
+        LIT=$(lumaOf "$OUT/vktorch.log")
+        grep -E "^vkcheck: факел" "$OUT/vktorch.log" | sed 's/^/  /'
+        echo "  vkcheck: ночь без факела $DARK, с факелом $LIT"
+        # Порог с запасом: замер даёт 0.213 против 0.353, то есть
+        # +66%. Требуем хотя бы +20% — меньше значило бы, что свет
+        # где-то по дороге потерялся.
+        if ! awk -v a="$DARK" -v b="$LIT" 'BEGIN{exit !(b > a * 1.20)}'; then
+            echo "✗ Факел не светит: ночью с ним не светлее, чем без него"
+            exit 1
+        fi
+        echo "✓ Факел освещает ночь"
+    else
+        echo "✗ Ночные кадры не нарисовались:"
+        tail -5 "$OUT/vknight.log" "$OUT/vktorch.log" 2>/dev/null | sed 's/^/    /'
+        exit 1
+    fi
 else
     echo "==> Кадр настоящим Vulkan: пропущено (нет программного драйвера;"
     echo "    apt-get install -y mesa-vulkan-drivers vulkan-validationlayers)"

@@ -65,8 +65,10 @@
 #include "core/file_picker.h"
 #include "config/settings.h"
 #include "render/camera.h"
+#include "render/lights.h"
 #include "render/mob_renderer.h"
 #include "physics/character_controller.h"
+#include "physics/creature_motion.h"
 #include "input/touch.h"
 #include <android/input.h>
 #include "vk/vk_buffer.h"
@@ -4395,6 +4397,40 @@ void testHudAndButtonsDoNotOverlap() {
     check(problems == 0,
           "на семи экранах: ни наложений, ни целей мельче 48 dp");
 
+    // Счётчик кадров — СЛЕВА и крупнее подписи.
+    //
+    // Стоял он по постоянной 180-й точке от верха и лежал прямо на
+    // полосе выносливости; потом переехал в верхнюю середину, а
+    // середина отведена важным уведомлениям. Теперь — левый край,
+    // сразу за столбцом полос, где пусто при любом размере экрана.
+    {
+        for (const auto& sz : sizes) {
+            const ui::HudLayout L(sz.w, sz.h,
+                                  ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                                  ui::SafeInsets{});
+            const ui::Rect d = L.debugLine(0);
+            const ui::Rect bar = L.resourceBar(0);
+            char msg[200];
+            std::snprintf(msg, sizeof(msg),
+                          "%s: счётчик слева (x %.0f при середине %.0f)",
+                          sz.name, (double)d.x, (double)(sz.w * 0.5f));
+            check(d.x < sz.w * 0.5f, msg);
+            // Не просто «левее середины», а ПРИЖАТ к столбцу полос.
+            // Плашка по центру верха тоже начинается левее середины,
+            // и одним этим условием их не различить.
+            const f32 limit = bar.x + bar.w + L.dp(ui::theme::SPACE_L_DP) * 2.f;
+            std::snprintf(msg, sizeof(msg),
+                          "%s: и прижат к столбцу полос (%.0f при пределе %.0f)",
+                          sz.name, (double)d.x, (double)limit);
+            check(d.x >= bar.x + bar.w && d.x <= limit, msg);
+        }
+        const std::string uis = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+        check(uis.find("drawDebugLine(0, buf, theme::TEXT_BODY") != std::string::npos,
+              "и набран основным кеглем, а не подписью");
+        check(ui::theme::TEXT_BODY > ui::theme::TEXT_LABEL,
+              "а основной кегль и правда крупнее подписи");
+    }
+
     // Низкий экран: доля от высоты и раскладка строк расходятся
     // сильнее всего именно там. На 1280x600 доля 0.28 даёт 168-ю
     // точку, а вторая служебная строка кончается на 200-й — плашка
@@ -6493,6 +6529,943 @@ TrackColour colourOf(const audio::Sound& s) {
     }
     c.rms = c.band[0];
     return c;
+}
+
+// ------------------------------------------------------------
+// Существа ходят, забираются на блоки и спрыгивают с них.
+//
+// Двигались они каждый своей копией «коллизии»: проба одного
+// вертикального столбца в центре тела. Ширина тела принималась
+// параметром и не использовалась НИ РАЗУ — волк радиусом в полблока
+// входил в стену дома по плечи. Потолка не было: прыгнув, существо
+// уезжало сквозь перекрытие. Опорой считался блок под центром ступней,
+// то есть тварь объявлялась стоящей, пока падала сквозь его верхнюю
+// половину, — скорость обнулялась, и она зависала над землёй. Ступени
+// не было вовсе: любая грядка останавливала стаю насмерть.
+// ------------------------------------------------------------
+// ------------------------------------------------------------
+// Защитники деревни и правда защищают деревню.
+//
+// Стояла пара несостыковок, из-за которых «бой» был невозможен в
+// принципе. Тварь знала ровно одну цель — игрока: волк, забежавший в
+// деревню, проходил сквозь жителей насквозь и не получал сдачи.
+// Стража искала врага только в Idle и Wander: войдя в бой, она не
+// видела ни второго волка, ни того, что первый давно мёртв, и стояла
+// над трупом до конца времён. Бежала она по прямой и утыкалась в угол
+// первого же дома. Оружия у неё не было вовсе — «урон 7» из воздуха.
+// ------------------------------------------------------------
+// ------------------------------------------------------------
+// Свет: факелы и фонари освещают мир на самом деле.
+//
+// У BlockDef с самого начала были isEmissive, emitsLight и
+// lightLevel; фонарь объявлен с уровнем 13, и деревни ставят его в
+// дома. Спрашивать эти поля было НЕКОМУ: ни один шейдер, ни один
+// расчёт освещения к ним не обращался. Ночью и в пещере фонарь
+// светил ровно столько же, сколько булыжник, — то есть никак.
+// ------------------------------------------------------------
+void testTorchesLightTheDark() {
+    group("свет: факелы и фонари");
+
+    world::blocks();
+    items::items();
+
+    char m[220];
+
+    // ---- 1. Факел есть и устроен как факел ----
+    {
+        const world::BlockDef& t = world::blocks().get(world::TORCH);
+        check(t.emitsLight && t.lightLevel > 0, "факел светит");
+        check(!t.isSolid && !t.hasCollision,
+              "и сквозь него ходят: поставленный в узком ходе он его не запирает");
+        check(t.isTransparent, "мешер не склеивает его грани с соседями");
+        check(t.hardness < 0.3f, "ломается с одного касания");
+
+        const world::BlockDef& l = world::blocks().get(world::LANTERN);
+        check(l.emitsLight && l.lightLevel > 0, "фонарь светит тоже");
+        check(!world::blocks().get(world::STONE).emitsLight,
+              "а камень — нет");
+    }
+
+    // ---- 2. Источник выводится из определения блока ----
+    {
+        const render::PointLight t =
+            render::LightField::lightOfBlock(world::TORCH, { 10, 20, 30 });
+        check(t.power > 0.f, "у факела есть яркость");
+        std::snprintf(m, sizeof(m), "светит на %.0f блоков", (double)t.radius);
+        check(t.radius > 10.f && t.radius <= 16.f, m);
+        check(std::fabs(t.pos.x - 10.5f) < 1e-4f &&
+              std::fabs(t.pos.y - 20.5f) < 1e-4f &&
+              std::fabs(t.pos.z - 30.5f) < 1e-4f,
+              "и из центра блока, а не из угла");
+
+        // Цвет — своего же пламени, а не белый.
+        std::snprintf(m, sizeof(m), "цвет пламени тёплый: %.2f %.2f %.2f",
+                      (double)t.color.r, (double)t.color.g, (double)t.color.b);
+        check(t.color.r > t.color.g && t.color.g > t.color.b, m);
+
+        const render::PointLight s =
+            render::LightField::lightOfBlock(world::STONE, { 0, 0, 0 });
+        check(s.power == 0.f, "камень источником не считается");
+        const render::PointLight a =
+            render::LightField::lightOfBlock(world::AIR, { 0, 0, 0 });
+        check(a.power == 0.f, "и воздух тоже");
+    }
+
+    // ---- 3. Факел в руке ----
+    {
+        const glm::vec3 feet{ 5.f, 64.f, -3.f };
+        const render::PointLight h =
+            render::LightField::heldLight(world::TORCH, feet);
+        check(h.power > 0.f, "несомый факел светит");
+        std::snprintf(m, sizeof(m), "из руки, а не из ступней: %.2f над опорой",
+                      (double)(h.pos.y - feet.y));
+        check(h.pos.y > feet.y + 1.f, m);
+        const render::PointLight ground =
+            render::LightField::lightOfBlock(world::TORCH, { 0, 0, 0 });
+        check(h.power < ground.power, "и чуть слабее вкопанного");
+
+        check(render::LightField::heldLight(world::STONE, feet).power == 0.f,
+              "булыжник в руке не светит");
+        check(render::LightField::heldLight(world::AIR, feet).power == 0.f,
+              "и пустая рука тоже");
+    }
+
+    // ---- 4. Обход мира находит светильники ----
+    jobs::gJobs.start(2);
+    {
+        constexpr u64 SEED = 0x11FEu;
+        world::ChunkManager world(SEED, 2);
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        const i32 F = world.generator().surfaceHeight(8, 8) + 6;
+        for (i32 z = -40; z <= 40; ++z)
+            for (i32 x = -40; x <= 40; ++x) {
+                world.setVoxel(x, F - 1, z, world::STONE);
+                for (i32 y = F; y < F + 6; ++y) world.setVoxel(x, y, z, world::AIR);
+            }
+
+        const glm::vec3 at{ 8.5f, (f32)F, 8.5f };
+        render::LightField lf;
+
+        lf.scan(world, at, 1.f);
+        check(lf.blockLightCount() == 0, "на пустой площадке источников нет");
+
+        // Три факела рядом и один далеко за радиусом обхода.
+        world.setVoxel(10, F, 8, world::TORCH);
+        world.setVoxel(6,  F, 8, world::TORCH);
+        world.setVoxel(8,  F, 12, world::TORCH);
+        const i32 farX = 8 + render::LightField::SCAN_RADIUS_XZ + 6;
+        world.setVoxel(farX, F, 8, world::TORCH);
+
+        lf.clear();
+        lf.scan(world, at, 1.f);
+        std::snprintf(m, sizeof(m), "обход нашёл %zu факела из трёх ближних",
+                      lf.blockLightCount());
+        check(lf.blockLightCount() == 3, m);
+
+        // ---- 5. На GPU уезжают БЛИЖНИЕ ----
+        {
+            render::PointLight got[render::MAX_GPU_LIGHTS];
+            const u32 n = lf.nearest(at, got, render::MAX_GPU_LIGHTS);
+            check(n == 3, "все три попали в список");
+            f32 prev = -1.f;
+            bool sorted = true;
+            for (u32 i = 0; i < n; ++i) {
+                const f32 d = glm::length(got[i].pos - at);
+                if (d < prev - 1e-3f) sorted = false;
+                prev = d;
+            }
+            check(sorted, "и идут от ближнего к дальнему");
+
+            // Больше, чем влезает, не уедет.
+            for (i32 k = 0; k < 12; ++k)
+                world.setVoxel(4 + k % 6, F + (k / 6), 6, world::TORCH);
+            lf.clear();
+            lf.scan(world, at, 1.f);
+            const u32 n2 = lf.nearest(at, got, render::MAX_GPU_LIGHTS);
+            std::snprintf(m, sizeof(m), "из %zu источников на GPU уехало %u",
+                          lf.blockLightCount(), n2);
+            check(lf.blockLightCount() > render::MAX_GPU_LIGHTS &&
+                  n2 == render::MAX_GPU_LIGHTS, m);
+        }
+
+        // ---- 6. Огонь в руке важнее стены факелов позади ----
+        {
+            render::PointLight hand =
+                render::LightField::heldLight(world::TORCH, at);
+            hand.pos = at + glm::vec3(0.f, 1.25f, 0.f);
+            lf.beginFrame();
+            lf.addTransient(hand);
+
+            render::PointLight got[render::MAX_GPU_LIGHTS];
+            const u32 n = lf.nearest(at + glm::vec3(30.f, 0.f, 0.f),
+                                     got, render::MAX_GPU_LIGHTS);
+            check(n > 0 && glm::length(got[0].pos - hand.pos) < 1e-3f,
+                  "подвижный огонь идёт первым, даже если он не ближайший");
+            lf.beginFrame();
+            check(lf.transientCount() == 0, "и живёт ровно один кадр");
+        }
+    }
+    jobs::gJobs.stop();
+
+    // ---- 7. Источники доезжают до шейдера ----
+    {
+        render::Camera cam;
+        render::PointLight l[2];
+        l[0] = render::LightField::lightOfBlock(world::TORCH, { 1, 2, 3 });
+        l[1] = render::LightField::lightOfBlock(world::LANTERN, { 9, 9, 9 });
+        cam.setLights(l, 2);
+        check(cam.lightCount() == 2, "камера приняла два источника");
+
+        const render::CameraUbo u = cam.toUbo(4.0f);
+        check((i32)(u.lightInfo.x + 0.5f) == 2, "и сказала шейдеру, сколько их");
+        check(std::fabs(u.lightPos[0].w - l[0].radius) < 1e-4f,
+              "радиус гашения уехал в w позиции");
+        check(u.lightColor[1].w > 0.f, "второй источник тоже светит");
+        check(u.lightColor[2].w == 0.f && u.lightPos[2].w == 0.f,
+              "а лишние слоты погашены, а не оставлены с мусором");
+
+        // Цвет переводится в линейное — там же, где цвет неба.
+        std::snprintf(m, sizeof(m), "цвет линейный: %.2f против %.2f в sRGB",
+                      (double)u.lightColor[0].g, (double)l[0].color.g);
+        check(u.lightColor[0].g < l[0].color.g - 0.02f, m);
+
+        // Мерцание: яркость гуляет, но остаётся яркостью.
+        f32 lo = 1e9f, hi = -1e9f;
+        for (int k = 0; k < 60; ++k) {
+            const render::CameraUbo t = cam.toUbo((f32)k * 0.05f);
+            lo = std::min(lo, t.lightColor[0].w);
+            hi = std::max(hi, t.lightColor[0].w);
+        }
+        std::snprintf(m, sizeof(m), "пламя дрожит: яркость гуляет %.3f..%.3f",
+                      (double)lo, (double)hi);
+        check(hi > lo && lo > l[0].power * 0.75f && hi <= l[0].power * 1.01f, m);
+    }
+
+    // ---- 8. Шейдеры и правда складывают этот свет ----
+    {
+        const std::string vox = readSource("app/src/main/cpp/shaders/voxel.frag");
+        const std::string mob = readSource("app/src/main/cpp/shaders/mob.frag");
+        check(!vox.empty() && !mob.empty(), "шейдеры прочитались");
+        for (const auto& [name, src] :
+             { std::pair<const char*, const std::string&>{ "террейн", vox },
+               std::pair<const char*, const std::string&>{ "существа", mob } })
+        {
+            std::snprintf(m, sizeof(m), "%s: точечные источники считаются", name);
+            check(src.find("cam.lightInfo.x") != std::string::npos &&
+                  src.find("cam.lightPos[i]") != std::string::npos, m);
+            std::snprintf(m, sizeof(m), "%s: и попадают в итоговый цвет", name);
+            check(src.find("+ torch)") != std::string::npos, m);
+        }
+    }
+
+    // ---- 9. Факел можно взять с собой ----
+    {
+        const items::ItemDef& d = items::items().get(items::ITEM_TORCH);
+        check(d.category == items::ItemCategory::Block,
+              "факел — ставящийся предмет");
+        check(d.payload.blockId == world::TORCH, "и ставит именно факел");
+        check(d.maxStack >= 32, "и носится пачкой");
+        check(items::items().blockToItem(world::TORCH) == items::ITEM_TORCH,
+              "сломанный факел возвращается предметом");
+
+        // Крафт без станции: темнота застаёт в пещере, а не в деревне.
+        const auto& all = crafting::recipes().all();
+        bool inField = false;
+        for (const auto& r : all)
+            if (r.output.itemId == items::ITEM_TORCH &&
+                r.station == crafting::StationType::None && r.output.count > 1)
+                inField = true;
+        check(inField, "и крафтится в поле, пачкой, без верстака");
+    }
+}
+
+void testGuardsDefendTheVillage() {
+    group("деревня: защитники сражаются");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+    npc::npcRegistry();
+
+    char m[220];
+
+    // ---- 1. Оружие есть у защитников и только у них ----
+    {
+        struct Case { u16 id; bool armed; const char* what; };
+        const Case cases[] = {
+            { npc::NPC_GUARD,       true,  "стражник" },
+            { npc::NPC_BLACKSMITH,  true,  "кузнец" },
+            { npc::NPC_VILLAGER,    false, "селянин" },
+            { npc::NPC_TRADER,      false, "торговец" },
+            { npc::NPC_QUEST_GIVER, false, "староста" },
+        };
+        for (const Case& c : cases) {
+            const npc::NpcDef& d = npc::npcRegistry().get(c.id);
+            const bool armed = d.weaponId != combat::WEAPON_NONE;
+            std::snprintf(m, sizeof(m), "%s %s оружие", c.what,
+                          armed ? "носит" : "не носит");
+            check(armed == c.armed, m);
+            std::snprintf(m, sizeof(m), "%s %s деревню", c.what,
+                          d.defender ? "защищает" : "не защищает");
+            check(d.defender == c.armed, m);
+        }
+    }
+
+    // ---- 2. Оружие видно на модели ----
+    //
+    // «Дали оружие» должно быть видно с порога, а не только в таблице
+    // урона.
+    {
+        const entity::Rig& guard = npc::rigFor(npc::NPC_GUARD, 0x1234u);
+        const entity::Rig& plain = npc::rigFor(npc::NPC_VILLAGER, 0x1234u);
+        auto props = [](const entity::Rig& r) {
+            int n = 0;
+            for (u8 i = 0; i < r.count; ++i)
+                if (r.parts[i].role == entity::PartRole::Prop && r.parts[i].visible) ++n;
+            return n;
+        };
+        std::snprintf(m, sizeof(m), "у стражника на модели %d предмет(а) в руке",
+                      props(guard));
+        check(props(guard) == 1, m);
+        check(props(plain) == 0, "у безоружного селянина — ничего");
+
+        // Клинок крепится к РУКЕ, а не к торсу: иначе при замахе рука
+        // уходит, а меч остаётся висеть.
+        bool onArm = false;
+        for (u8 i = 0; i < guard.count; ++i) {
+            if (guard.parts[i].role != entity::PartRole::Prop) continue;
+            const i8 par = guard.parts[i].parent;
+            if (par >= 0 && par < (i8)guard.count &&
+                guard.parts[par].role == entity::PartRole::LowerArmR) onArm = true;
+        }
+        check(onArm, "и держит его рукой, а не торсом");
+    }
+
+    // ---- 3. Настоящий бой на площадке ----
+    jobs::gJobs.start(2);
+    {
+        constexpr u64 SEED = 0xDEFEA7u;
+        world::ChunkManager world(SEED, 2);
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        const i32 F = world.generator().surfaceHeight(8, 8) + 6;
+        auto clearArena = [&]() {
+            for (i32 z = -40; z <= 40; ++z)
+                for (i32 x = -40; x <= 40; ++x) {
+                    world.setVoxel(x, F - 1, z, world::STONE);
+                    for (i32 y = F; y < F + 6; ++y)
+                        world.setVoxel(x, y, z, world::AIR);
+                }
+        };
+        clearArena();
+
+        const glm::vec3 nowhere{ 500.f, (f32)F, 500.f };   // игрока рядом нет
+        auto tick = [&](ecs::Registry& reg, f32 seconds) {
+            const f32 dt = 1.f / 60.f;
+            for (f32 t = 0.f; t < seconds; t += dt) {
+                npc::updateNpcs(world, reg, ecs::Entity{}, nowhere, dt);
+                mobs::updateMobs(world, reg, ecs::Entity{}, nowhere, dt);
+                combat::tickStatuses(reg, dt);
+            }
+        };
+
+        // ---- Стражник против волка ----
+        {
+            ecs::Registry reg;
+            const ecs::Entity guard = npc::spawnNpc(
+                world, reg, npc::NPC_GUARD, { 8.5f, (f32)F, 8.5f }, 1);
+            const ecs::Entity wolf = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF, { 18.5f, (f32)F, 8.5f });
+            check(guard.valid() && wolf.valid(), "стражник и волк на месте");
+            if (!guard.valid() || !wolf.valid()) { jobs::gJobs.stop(); return; }
+
+            auto* gHp = reg.get<ecs::Health>(guard);
+            const f32 guardFull = gHp->current;
+
+            tick(reg, 12.f);
+
+            const bool wolfDead = !reg.has<ecs::Health>(wolf) ||
+                                  reg.get<ecs::Health>(wolf)->current <= 0.f;
+            std::snprintf(m, sizeof(m), "волк получил своё: %s",
+                          wolfDead ? "убит" : "жив");
+            check(wolfDead, m);
+            check(guardFull > 0.f, "стражник при этом остался жив");
+        }
+
+        // ---- Бой идёт в ОБЕ стороны ----
+        //
+        // Одного волка стражник с мечом рубит, не подпуская: тот
+        // умирает раньше, чем достанет. Стая — другое дело, и вот на
+        // ней и видно, что тварь бьёт в ответ. Раньше не билась
+        // никакая: цель у мобов была ровно одна — игрок.
+        {
+            ecs::Registry reg;
+            const ecs::Entity guard = npc::spawnNpc(
+                world, reg, npc::NPC_GUARD, { 8.5f, (f32)F, 8.5f }, 11);
+            check(guard.valid(), "стражник против стаи");
+            int pack = 0;
+            for (int k = 0; k < 4; ++k) {
+                const f32 a = (f32)k * 1.5708f;
+                const glm::vec3 at{ 8.5f + std::cos(a) * 4.f, (f32)F,
+                                    8.5f + std::sin(a) * 4.f };
+                if (mobs::spawnMob(world, reg, mobs::MOB_WOLF, at).valid()) ++pack;
+            }
+            std::snprintf(m, sizeof(m), "стая из %d волков", pack);
+            check(pack >= 3, m);
+
+            const f32 guardFull = reg.get<ecs::Health>(guard)->current;
+            tick(reg, 10.f);
+
+            const f32 gLeft = reg.has<ecs::Health>(guard)
+                            ? reg.get<ecs::Health>(guard)->current : 0.f;
+            std::snprintf(m, sizeof(m), "стае стражник не достался даром: %.0f из %.0f",
+                          (double)gLeft, (double)guardFull);
+            check(gLeft < guardFull, m);
+
+            int alive = 0;
+            auto& mobPool = reg.pool<mobs::MobAI>();
+            for (usize k = 0; k < mobPool.size(); ++k) {
+                auto* h = reg.get<ecs::Health>(mobPool.entityAt((u32)k));
+                if (h && h->current > 0.f) ++alive;
+            }
+            std::snprintf(m, sizeof(m), "и стае тоже: живых волков %d из %d",
+                          alive, pack);
+            check(alive < pack, m);
+        }
+
+        // ---- Цель кончилась — берётся следующая, не отходя ----
+        //
+        // Врага искали ТОЛЬКО в Idle и Wander. Войдя в бой, защитник
+        // переставал смотреть по сторонам: ни второго волка, ни того,
+        // что первый уже мёртв, он не видел и стоял над трупом.
+        {
+            ecs::Registry reg;
+            const ecs::Entity guard = npc::spawnNpc(
+                world, reg, npc::NPC_GUARD, { 8.5f, (f32)F, 8.5f }, 12);
+            const ecs::Entity a = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF, { 11.5f, (f32)F, 8.5f });
+            const ecs::Entity b = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF, { 8.5f, (f32)F, 12.5f });
+            check(guard.valid() && a.valid() && b.valid(),
+                  "защитник и два волка на месте");
+
+            // Ставим бой с первым насильно, чтобы не гадать, кого он
+            // выберет сам.
+            auto* gAi = reg.get<npc::NpcAI>(guard);
+            gAi->guardTarget = (u32)a;
+            gAi->state = npc::NpcAI::Combat;
+            gAi->alertTimer = 6.f;
+            gAi->scanCooldown = 0.f;
+
+            // Первый падает замертво.
+            reg.get<ecs::Health>(a)->current = 0.f;
+            if (auto* ag = reg.get<ecs::AIAgent>(a)) ag->state = ecs::AIAgent::Dead;
+
+            // Смотрим по ходу: меч стражника сносит волка с одного
+            // удара, и к концу секунды целей уже не остаётся вовсе.
+            bool took = false;
+            {
+                const f32 dt = 1.f / 60.f;
+                for (f32 t = 0.f; t < 2.0f; t += dt) {
+                    npc::updateNpcs(world, reg, ecs::Entity{}, nowhere, dt);
+                    mobs::updateMobs(world, reg, ecs::Entity{}, nowhere, dt);
+                    combat::tickStatuses(reg, dt);
+                    if (reg.get<npc::NpcAI>(guard)->guardTarget == (u32)b) took = true;
+                }
+            }
+            check(took, "после смерти первого защитник взялся за второго");
+            const bool bDead = !reg.has<ecs::Health>(b) ||
+                               reg.get<ecs::Health>(b)->current <= 0.f;
+            check(bDead, "и добил его, не отходя от места");
+        }
+
+        // ---- Тварь идёт на жителя, а не только на игрока ----
+        {
+            ecs::Registry reg;
+            const ecs::Entity villager = npc::spawnNpc(
+                world, reg, npc::NPC_VILLAGER, { 8.5f, (f32)F, 8.5f }, 2);
+            const ecs::Entity wolf = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF, { 20.5f, (f32)F, 8.5f });
+            check(villager.valid() && wolf.valid(), "селянин и волк на месте");
+
+            const f32 startDist = 12.f;
+            tick(reg, 6.f);
+
+            auto* wtf = reg.get<ecs::Transform>(wolf);
+            auto* vtf = reg.get<ecs::Transform>(villager);
+            if (wtf && vtf) {
+                const f32 d = glm::length(glm::vec2{ wtf->position.x - vtf->position.x,
+                                                     wtf->position.z - vtf->position.z });
+                std::snprintf(m, sizeof(m), "волк подошёл к жителю: %.1f вместо %.1f",
+                              (double)d, (double)startDist);
+                check(d < startDist - 3.f, m);
+            } else {
+                check(false, "волк и житель остались в мире");
+            }
+
+            // Безоружный не стоит столбом: он убегает.
+            if (auto* ai = reg.get<npc::NpcAI>(villager)) {
+                std::snprintf(m, sizeof(m), "селянин не стоит на месте (состояние %u)",
+                              (unsigned)ai->state);
+                check(ai->state == npc::NpcAI::Flee, m);
+            }
+        }
+
+        // ---- Стражник не уходит за околицу ----
+        {
+            ecs::Registry reg;
+            const ecs::Entity guard = npc::spawnNpc(
+                world, reg, npc::NPC_GUARD, { 0.5f, (f32)F, 0.5f }, 3);
+            // Волк далеко за пределами круга обороны.
+            const ecs::Entity wolf = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF, { 0.5f, (f32)F, 39.5f });
+            check(guard.valid() && wolf.valid(), "стражник и дальний волк на месте");
+
+            tick(reg, 8.f);
+
+            auto* gtf = reg.get<ecs::Transform>(guard);
+            if (gtf) {
+                const f32 fromHome = glm::length(
+                    glm::vec2{ gtf->position.x - 0.5f, gtf->position.z - 0.5f });
+                std::snprintf(m, sizeof(m), "стражник отошёл от поста на %.1f блока",
+                              (double)fromHome);
+                check(fromHome < 30.f, m);
+            } else {
+                check(false, "стражник остался в мире");
+            }
+        }
+
+        // ---- Сквозь стену врага не видно ----
+        {
+            ecs::Registry reg;
+            const ecs::Entity guard = npc::spawnNpc(
+                world, reg, npc::NPC_GUARD, { 8.5f, (f32)F, 8.5f }, 4);
+            check(guard.valid(), "стражник у стены");
+            // Глухая стена между ними.
+            for (i32 y = F; y < F + 4; ++y)
+                for (i32 z = -10; z <= 26; ++z) world.setVoxel(13, y, z, world::STONE);
+            const ecs::Entity wolf = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF, { 17.5f, (f32)F, 8.5f });
+            check(wolf.valid(), "и волк за стеной");
+
+            // Полсекунды: ровно один осмотр, до того как волк
+            // вздумает обойти стену.
+            tick(reg, 0.6f);
+            if (auto* ai = reg.get<npc::NpcAI>(guard)) {
+                std::snprintf(m, sizeof(m),
+                              "сквозь стену стражник никого не увидел (состояние %u)",
+                              (unsigned)ai->state);
+                check(ai->state != npc::NpcAI::Combat, m);
+            }
+
+            // Убираем стену — и он его замечает.
+            for (i32 y = F; y < F + 4; ++y)
+                for (i32 z = -10; z <= 26; ++z) world.setVoxel(13, y, z, world::AIR);
+            tick(reg, 1.2f);
+            if (auto* ai = reg.get<npc::NpcAI>(guard)) {
+                std::snprintf(m, sizeof(m),
+                              "без стены — видит и идёт в бой (состояние %u)",
+                              (unsigned)ai->state);
+                check(ai->state == npc::NpcAI::Combat, m);
+            }
+            clearArena();
+        }
+
+        // ---- Стена обходится, а не проламывается лбом ----
+        //
+        // Бежали по прямой и утыкались в угол первого же дома: пока
+        // за стеной грызли жителя, защитник топтался у камня. Теперь
+        // и тварь, и защитник ходят по найденному пути.
+        {
+            ecs::Registry reg;
+
+            // Неподвижная приманка: сущность с здоровьем, которую
+            // тварь считает добычей. Живой защитник для этой проверки
+            // не годится — он сам бежит навстречу, и обходить стену
+            // оказывается незачем.
+            const ecs::Entity bait = reg.create();
+            reg.add(bait, ecs::Transform{ { 8.5f, (f32)F, 8.5f }, {}, {} });
+            reg.add(bait, ecs::Health{ 500.f, 500.f, 0.f, 0.f });
+            reg.add(bait, ecs::NPCTag{});
+
+            const ecs::Entity wolf = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF, { 20.5f, (f32)F, 8.5f });
+            check(wolf.valid(), "волк на площадке");
+
+            // Сначала волк ДОЛЖЕН увидеть добычу: сквозь стену её не
+            // видно, и без этого он честно не знал бы, куда идти.
+            // Потом между ними вырастает длинная стена.
+            {
+                const f32 dt = 1.f / 60.f;
+                for (f32 t = 0.f; t < 0.4f; t += dt)
+                    mobs::updateMobs(world, reg, ecs::Entity{}, nowhere, dt);
+            }
+            {
+                auto* w = reg.get<ecs::Transform>(wolf);
+                check(w && w->position.x > 15.f,
+                      "и к моменту постройки он ещё по ту сторону");
+            }
+            for (i32 y = F; y < F + 4; ++y)
+                for (i32 z = -20; z <= 15; ++z) world.setVoxel(13, y, z, world::STONE);
+
+            // Признак обхода — не «подошёл поближе», а «оказался по
+            // ЭТУ сторону стены там, где стена есть». Пройти напрямую
+            // туда нельзя: камень от z = -20 до z = 15.
+            f32 bestZ = 8.5f, nearest = 99.f;
+            bool crossed = false;
+            {
+                const f32 dt = 1.f / 60.f;
+                for (f32 t = 0.f; t < 60.f; t += dt) {
+                    mobs::updateMobs(world, reg, ecs::Entity{}, nowhere, dt);
+                    if (auto* w = reg.get<ecs::Transform>(wolf)) {
+                        bestZ = std::max(bestZ, w->position.z);
+                        nearest = std::min(nearest, glm::length(glm::vec2{
+                            w->position.x - 8.5f, w->position.z - 8.5f }));
+                        if (w->position.x < 12.5f && w->position.z < 14.f)
+                            crossed = true;
+                    }
+                }
+            }
+            std::snprintf(m, sizeof(m),
+                          "волк обошёл стену: дошёл до z=%.1f (стена до 15), "
+                          "оказался за ней=%d, подобрался на %.1f",
+                          (double)bestZ, crossed ? 1 : 0, (double)nearest);
+            check(bestZ > 15.f && crossed, m);
+            clearArena();
+        }
+
+        // ---- Защитник не упирается в стену, а ищет дорогу ----
+        {
+            ecs::Registry reg;
+            const ecs::Entity guard = npc::spawnNpc(
+                world, reg, npc::NPC_GUARD, { 8.5f, (f32)F, 8.5f }, 6);
+            const ecs::Entity wolf = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF, { 17.5f, (f32)F, 8.5f });
+            check(guard.valid() && wolf.valid(), "защитник и волк на площадке");
+
+            tick(reg, 0.5f);                 // увидел
+            for (i32 y = F; y < F + 4; ++y)
+                for (i32 z = -20; z <= 15; ++z) world.setVoxel(13, y, z, world::STONE);
+
+            bool planned = false;
+            {
+                const f32 dt = 1.f / 60.f;
+                for (f32 t = 0.f; t < 4.f && !planned; t += dt) {
+                    npc::updateNpcs(world, reg, ecs::Entity{}, nowhere, dt);
+                    mobs::updateMobs(world, reg, ecs::Entity{}, nowhere, dt);
+                    auto* ai = reg.get<npc::NpcAI>(guard);
+                    if (ai && ai->path.size() > 2) planned = true;
+                }
+            }
+            check(planned, "защитник проложил путь в обход, а не пошёл в камень");
+            clearArena();
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+void testCreaturesWalkClimbAndDrop() {
+    group("существа: ходьба, ступени, обрывы");
+
+    world::blocks();
+
+    jobs::gJobs.start(2);
+    {
+        constexpr u64 SEED = 0x5A1Fu;
+        world::ChunkManager world(SEED, 2);
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        // ---- Площадка: ровный каменный пол, воздух над ним ----
+        const i32 F = world.generator().surfaceHeight(8, 8) + 6;   // пол
+        for (i32 z = -8; z <= 24; ++z)
+            for (i32 x = -8; x <= 24; ++x) {
+                world.setVoxel(x, F - 1, z, world::STONE);
+                for (i32 y = F; y < F + 8; ++y) world.setVoxel(x, y, z, world::AIR);
+            }
+
+        physics::CreatureBody body;
+        body.halfWidth = 0.35f;
+        body.height    = 1.75f;
+
+        // Один прогон: ведём существо в заданную сторону N секунд.
+        struct Run { glm::vec3 pos; glm::vec3 vel; physics::CreatureMotion m; };
+        auto walk = [&](Run& r, glm::vec2 dir, f32 speed, f32 seconds) {
+            const f32 dt = 1.f / 60.f;
+            for (f32 t = 0.f; t < seconds; t += dt) {
+                r.vel.x = dir.x * speed;
+                r.vel.z = dir.y * speed;
+                physics::stepCreature(world, r.m, r.pos, r.vel, body, dt,
+                                      glm::dot(dir, dir) > 1e-6f);
+            }
+        };
+
+        char m[200];
+
+        // ---- 1. Ровный пол: идёт и не проваливается ----
+        {
+            Run r{ { 4.5f, (f32)F, 4.5f }, {0,0,0}, {} };
+            walk(r, { 1.f, 0.f }, 3.f, 2.0f);
+            std::snprintf(m, sizeof(m), "по ровному прошло %.1f блока",
+                          (double)(r.pos.x - 4.5f));
+            check(r.pos.x > 4.5f + 3.f, m);
+            std::snprintf(m, sizeof(m), "и осталось на полу: y=%.3f при полу %d",
+                          (double)r.pos.y, (int)F);
+            check(std::fabs(r.pos.y - (f32)F) < 0.05f, m);
+            check(r.m.onGround, "опора под ногами есть");
+        }
+
+        // ---- 2. Ступень в блок: забирается ----
+        //
+        // «Запрыгнуть на блок» — это базовая способность, а не умение
+        // отдельных видов.
+        {
+            // Уступ, а не одинокий блок: за одиноким существо честно
+            // спрыгивает обратно, и «поднялось» ничего не значило бы.
+            for (i32 z = -8; z <= 24; ++z)
+                for (i32 x = 10; x <= 24; ++x) world.setVoxel(x, F, z, world::STONE);
+            Run r{ { 4.5f, (f32)F, 4.5f }, {0,0,0}, {} };
+            walk(r, { 1.f, 0.f }, 3.f, 4.0f);
+            std::snprintf(m, sizeof(m), "поднялось на ступень: x=%.1f y=%.2f",
+                          (double)r.pos.x, (double)r.pos.y);
+            check(r.pos.x > 11.f && r.pos.y > (f32)F + 0.9f, m);
+            check(r.m.onGround, "и стоит на верхнем уровне, а не висит");
+            for (i32 z = -8; z <= 24; ++z)
+                for (i32 x = 10; x <= 24; ++x) world.setVoxel(x, F, z, world::AIR);
+        }
+
+        // ---- 3. Стена в два блока: НЕ забирается ----
+        //
+        // Иначе «ступень» превращается в способность ходить по
+        // отвесным стенам, и никакая ограда ничего не значит.
+        {
+            for (i32 z = -8; z <= 24; ++z) {
+                world.setVoxel(10, F, z, world::STONE);
+                world.setVoxel(10, F + 1, z, world::STONE);
+            }
+            Run r{ { 4.5f, (f32)F, 4.5f }, {0,0,0}, {} };
+            walk(r, { 1.f, 0.f }, 3.f, 4.0f);
+            std::snprintf(m, sizeof(m), "перед стеной в два блока встало на x=%.2f",
+                          (double)r.pos.x);
+            check(r.pos.x < 10.f && r.pos.y < (f32)F + 0.5f, m);
+            std::snprintf(m, sizeof(m), "и поняло, что застряло (%.2f с)",
+                          (double)r.m.stuckTime);
+            check(r.m.stuckTime > 0.5f, m);
+            for (i32 z = -8; z <= 24; ++z) {
+                world.setVoxel(10, F, z, world::AIR);
+                world.setVoxel(10, F + 1, z, world::AIR);
+            }
+        }
+
+        // ---- 4. Обрыв в блок: спускается, а не летит ----
+        {
+            for (i32 z = -8; z <= 24; ++z)
+                for (i32 x = 12; x <= 24; ++x) world.setVoxel(x, F - 1, z, world::AIR);
+            for (i32 z = -8; z <= 24; ++z)
+                for (i32 x = 12; x <= 24; ++x) world.setVoxel(x, F - 2, z, world::STONE);
+
+            Run r{ { 9.5f, (f32)F, 4.5f }, {0,0,0}, {} };
+            f32 lowest = 1e9f;
+            const f32 dt = 1.f / 60.f;
+            for (f32 t = 0.f; t < 3.0f; t += dt) {
+                r.vel.x = 3.f;
+                physics::stepCreature(world, r.m, r.pos, r.vel, body, dt, true);
+                lowest = std::min(lowest, r.pos.y);
+            }
+            std::snprintf(m, sizeof(m), "спустилось на нижний уровень: y=%.2f при %d",
+                          (double)r.pos.y, (int)F - 1);
+            check(std::fabs(r.pos.y - (f32)(F - 1)) < 0.06f, m);
+            std::snprintf(m, sizeof(m), "и не провалилось ниже пола (%.2f)",
+                          (double)lowest);
+            check(lowest > (f32)(F - 1) - 0.1f, m);
+            check(r.pos.x > 13.f, "и продолжило идти после спуска");
+
+            for (i32 z = -8; z <= 24; ++z)
+                for (i32 x = 12; x <= 24; ++x) {
+                    world.setVoxel(x, F - 1, z, world::STONE);
+                    world.setVoxel(x, F - 2, z, world::AIR);
+                }
+        }
+
+        // ---- 5. Падение с высоты: встаёт ровно на пол ----
+        //
+        // Прежняя опора считалась по блоку под центром ступней, и
+        // существо замирало в воздухе на пол-блока над землёй.
+        {
+            Run r{ { 4.5f, (f32)F + 5.f, 4.5f }, {0,0,0}, {} };
+            walk(r, { 0.f, 0.f }, 0.f, 3.0f);
+            std::snprintf(m, sizeof(m), "приземлилось на y=%.3f при полу %d",
+                          (double)r.pos.y, (int)F);
+            check(std::fabs(r.pos.y - (f32)F) < 0.03f, m);
+            check(r.m.onGround, "и стоит на земле, а не висит");
+        }
+
+        // ---- 5б. Опора — это то, НА ЧЁМ стоят ----
+        //
+        // Прежняя проверка читала один блок под центром ступней и
+        // объявляла существо стоящим, пока оно падало сквозь его
+        // верхнюю половину: скорость обнулялась, и тварь зависала в
+        // воздухе над землёй.
+        {
+            check(physics::grounded(world, { 4.5f, (f32)F, 4.5f }, body),
+                  "стоящее на полу — на опоре");
+            check(!physics::grounded(world, { 4.5f, (f32)F + 0.7f, 4.5f }, body),
+                  "а летящее в полуметре над полом — нет");
+        }
+
+        // ---- 6. Ширина тела: в щель уже себя не пролезает ----
+        //
+        // Ширина принималась параметром и не использовалась: тварь
+        // входила в стену по плечи и стояла в ней.
+        {
+            for (i32 y = F; y < F + 3; ++y)
+                for (i32 z = -8; z <= 24; ++z) {
+                    if (z == 4) continue;                  // щель в один блок
+                    world.setVoxel(10, y, z, world::STONE);
+                }
+            physics::CreatureBody fat = body;
+            fat.halfWidth = 0.9f;                          // шире прохода
+            Run r{ { 4.5f, (f32)F, 4.5f }, {0,0,0}, {} };
+            const f32 dt = 1.f / 60.f;
+            for (f32 t = 0.f; t < 3.0f; t += dt) {
+                r.vel.x = 3.f;
+                physics::stepCreature(world, r.m, r.pos, r.vel, fat, dt, true);
+            }
+            std::snprintf(m, sizeof(m), "широкое тело встало перед щелью: x=%.2f",
+                          (double)r.pos.x);
+            check(r.pos.x < 10.f, m);
+
+            // А узкое — проходит.
+            Run r2{ { 4.5f, (f32)F, 4.5f }, {0,0,0}, {} };
+            for (f32 t = 0.f; t < 3.0f; t += dt) {
+                r2.vel.x = 3.f;
+                physics::stepCreature(world, r2.m, r2.pos, r2.vel, body, dt, true);
+            }
+            std::snprintf(m, sizeof(m), "узкое прошло сквозь щель: x=%.2f",
+                          (double)r2.pos.x);
+            check(r2.pos.x > 11.f, m);
+
+            for (i32 y = F; y < F + 3; ++y)
+                for (i32 z = -8; z <= 24; ++z) world.setVoxel(10, y, z, world::AIR);
+        }
+
+        // ---- 7. Потолок: прыжок не пробивает перекрытие ----
+        {
+            for (i32 z = -8; z <= 24; ++z)
+                for (i32 x = -8; x <= 24; ++x) world.setVoxel(x, F + 2, z, world::STONE);
+            Run r{ { 4.5f, (f32)F, 4.5f }, {0,0,0}, {} };
+            walk(r, { 0.f, 0.f }, 0.f, 0.5f);              // встать на пол
+            check(physics::tryJump(r.m, r.vel, body), "прыжок со земли получается");
+            f32 highest = r.pos.y;
+            const f32 dt = 1.f / 60.f;
+            for (f32 t = 0.f; t < 2.0f; t += dt) {
+                physics::stepCreature(world, r.m, r.pos, r.vel, body, dt, false);
+                highest = std::max(highest, r.pos.y);
+            }
+            std::snprintf(m, sizeof(m), "выше потолка не поднялось: %.2f при потолке %d",
+                          (double)highest, (int)F + 2);
+            check(highest + body.height <= (f32)(F + 2) + 0.05f, m);
+            check(std::fabs(r.pos.y - (f32)F) < 0.05f, "и вернулось на пол");
+            for (i32 z = -8; z <= 24; ++z)
+                for (i32 x = -8; x <= 24; ++x) world.setVoxel(x, F + 2, z, world::AIR);
+        }
+
+        // ---- 8. В воздухе не прыгают ----
+        {
+            Run r{ { 4.5f, (f32)F + 4.f, 4.5f }, {0,0,0}, {} };
+            check(!physics::tryJump(r.m, r.vel, body),
+                  "с воздуха прыгнуть нельзя");
+        }
+
+        // ---- 9. Родились в камне — выбираются ----
+        {
+            for (i32 y = F; y < F + 3; ++y)
+                for (i32 z = 2; z <= 6; ++z)
+                    for (i32 x = 2; x <= 6; ++x) world.setVoxel(x, y, z, world::STONE);
+            // Над завалом — воздух, куда выбираться.
+            Run r{ { 4.5f, (f32)F, 4.5f }, {0,0,0}, {} };
+            walk(r, { 0.f, 0.f }, 0.f, 4.0f);
+            std::snprintf(m, sizeof(m), "выбралось из камня на y=%.2f (завал до %d)",
+                          (double)r.pos.y, (int)F + 3);
+            check(r.pos.y >= (f32)(F + 3) - 0.1f, m);
+            check(physics::fits(world, r.pos, body), "и стоит в свободном месте");
+            for (i32 y = F; y < F + 3; ++y)
+                for (i32 z = 2; z <= 6; ++z)
+                    for (i32 x = 2; x <= 6; ++x) world.setVoxel(x, y, z, world::AIR);
+        }
+
+        // ---- 10. Рождение: место обязано вмещать тело ----
+        {
+            // Коридор в два блока: человеку впору, трёхметровому
+            // боссу — нет.
+            for (i32 y = F + 2; y < F + 6; ++y)
+                for (i32 z = -8; z <= 24; ++z)
+                    for (i32 x = -8; x <= 24; ++x) world.setVoxel(x, y, z, world::STONE);
+
+            glm::vec3 spot{ 4.5f, (f32)F, 4.5f };
+            check(physics::settle(world, spot, body),
+                  "человеку в коридоре место находится");
+
+            physics::CreatureBody boss;
+            boss.halfWidth = 1.3f;
+            boss.height    = 3.4f;
+            glm::vec3 bossSpot{ 4.5f, (f32)F, 4.5f };
+            check(!physics::settle(world, bossSpot, boss),
+                  "а трёхметровому в двухблочном коридоре — нет");
+
+            for (i32 y = F + 2; y < F + 6; ++y)
+                for (i32 z = -8; z <= 24; ++z)
+                    for (i32 x = -8; x <= 24; ++x) world.setVoxel(x, y, z, world::AIR);
+        }
+
+        // ---- 11. Точку внутри блока поднимает на поверхность ----
+        {
+            for (i32 z = 2; z <= 6; ++z)
+                for (i32 x = 2; x <= 6; ++x) world.setVoxel(x, F, z, world::STONE);
+            glm::vec3 spot{ 4.5f, (f32)F, 4.5f };   // ступни внутри камня
+            check(!physics::fits(world, spot, body), "точка и правда внутри блока");
+            check(physics::settle(world, spot, body), "место нашлось");
+            std::snprintf(m, sizeof(m), "и оно над завалом: y=%.2f при верхе %d",
+                          (double)spot.y, (int)F + 1);
+            check(std::fabs(spot.y - (f32)(F + 1)) < 0.01f, m);
+            check(physics::fits(world, spot, body), "тело туда помещается");
+            for (i32 z = 2; z <= 6; ++z)
+                for (i32 x = 2; x <= 6; ++x) world.setVoxel(x, F, z, world::AIR);
+        }
+
+        // ---- 12. Полблока над землёй — это земля, а не небо ----
+        //
+        // Спавнеры дают то `y`, то `y + 0.5`. Перебор целыми шагами от
+        // дробной высоты не попадал на опору ни разу.
+        {
+            glm::vec3 spot{ 4.5f, (f32)F + 0.5f, 4.5f };
+            check(physics::settle(world, spot, body),
+                  "точке на полблока выше земли место находится");
+            check(std::fabs(spot.y - (f32)F) < 0.01f, "и это сама земля");
+        }
+    }
+    jobs::gJobs.stop();
 }
 
 void testBiomeAndVillageMusic() {
@@ -17743,6 +18716,9 @@ int main() {
     testVillageHousesAreBuildings();
     testVillagesDifferFromEachOther();
     testBlockEconomy();
+    testTorchesLightTheDark();
+    testGuardsDefendTheVillage();
+    testCreaturesWalkClimbAndDrop();
     testBiomeAndVillageMusic();
     testMixerResamples();
     testSettingsButtonsWork();

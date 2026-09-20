@@ -15,6 +15,7 @@
 #include "../player/player.h"
 #include "../world/chunk_manager.h"
 #include "camera.h"
+#include "lights.h"
 #include "pass_sweep.h"
 #include "chunk_renderer.h"
 #include "skybox.h"
@@ -56,6 +57,10 @@ public:
     }
 
     Camera& camera() { return camera_; }
+
+    /// Источники света вокруг игрока. Спрашивают проверки: «светит ли
+    /// факел» иначе можно узнать только глазами на устройстве.
+    const LightField& lights() const { return lights_; }
 
     /// Счётчики кадра по проходам. Время GPU лежит не здесь, а в
     /// vk::Context (метки ставит сам GPU); тут — то, что знает
@@ -106,6 +111,7 @@ private:
     ItemRenderer          itemRenderer_;
 
     Camera                camera_;
+    LightField            lights_;
 
     ui::UiSystem*         ui_ = nullptr;
 

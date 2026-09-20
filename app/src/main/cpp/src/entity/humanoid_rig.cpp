@@ -13,9 +13,9 @@ namespace {
 /// Верхнее звено вращается у своего сустава (плечо, бедро), нижнее —
 /// у сгиба. Коробка висит НИЖЕ сустава: так поворот на угол даёт дугу,
 /// а не параллельный сдвиг.
-void addLimb(Rig& rig, i8 parent, PartRole upper, PartRole lower,
-             const glm::vec3& joint, f32 upLen, f32 loLen,
-             f32 thick, u32 color)
+i8 addLimb(Rig& rig, i8 parent, PartRole upper, PartRole lower,
+           const glm::vec3& joint, f32 upLen, f32 loLen,
+           f32 thick, u32 color)
 {
     Part up;
     up.parent    = parent;
@@ -35,7 +35,7 @@ void addLimb(Rig& rig, i8 parent, PartRole upper, PartRole lower,
     // излом одной палки.
     lo.size      = glm::vec3(thick * 0.9f, loLen, thick * 0.9f);
     lo.color     = color;
-    rig.add(lo);
+    return (i8)rig.add(lo);
 }
 
 } // namespace
@@ -88,10 +88,29 @@ Rig humanoidRig(const HumanoidSpec& spec) {
     // Звено руки в половину торса: вся рука выходит длиной с торс и
     // достаёт кончиками до бедра — так силуэт читается как человек.
     const f32 armHalf = torsoLen * 0.5f;
-    addLimb(rig, iTorso, PartRole::UpperArmR, PartRole::LowerArmR,
-            glm::vec3( armX, armY, 0.f), armHalf, armHalf, limb, spec.accentColor);
+    const i8 iForearmR =
+        addLimb(rig, iTorso, PartRole::UpperArmR, PartRole::LowerArmR,
+                glm::vec3( armX, armY, 0.f), armHalf, armHalf, limb, spec.accentColor);
     addLimb(rig, iTorso, PartRole::UpperArmL, PartRole::LowerArmL,
             glm::vec3(-armX, armY, 0.f), armHalf, armHalf, limb, spec.accentColor);
+
+    // Оружие в правой руке. Крепится к ПРЕДПЛЕЧЬЮ, а не к торсу:
+    // иначе при замахе рука уходит, а клинок остаётся висеть.
+    if (spec.weaponFrac > 0.f) {
+        const f32 bladeLen = H * spec.weaponFrac;
+        const f32 bladeTh  = H * spec.weaponThickFrac;
+        Part w;
+        w.parent    = iForearmR;
+        w.role      = PartRole::Prop;
+        // Сустав — в кисти, то есть у нижнего конца предплечья.
+        w.pivot     = glm::vec3(0.f, -armHalf, 0.f);
+        // Клинок смотрит вперёд и вниз от кисти: так он виден с
+        // игровой камеры и не протыкает собственную ногу.
+        w.boxOffset = glm::vec3(0.f, -bladeLen * 0.35f, bladeLen * 0.42f);
+        w.size      = glm::vec3(bladeTh, bladeLen * 0.82f, bladeTh * 2.2f);
+        w.color     = spec.weaponColor;
+        rig.add(w);
+    }
 
     // Ноги: бёдра у низа торса, то есть в его собственном нуле.
     const f32 legX = shoulderW * 0.25f;

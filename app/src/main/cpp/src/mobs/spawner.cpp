@@ -3,6 +3,7 @@
  * @brief Мобы: определения, конечный автомат ИИ, спавн, боссы.
  */
 #include "spawner.h"
+#include "../physics/creature_motion.h"
 #include "../entity/mob_rigs.h"
 #include "mob_def.h"
 #include "mob_ai.h"
@@ -168,18 +169,34 @@ u16 Spawner::lairMobId(world::LairKind kind) {
     return MOB_NONE;
 }
 
-ecs::Entity Spawner::spawnMob(world::ChunkManager& /*world*/,
-                              ecs::Registry& reg,
-                              u16 mobId,
-                              const glm::vec3& pos)
+ecs::Entity spawnMob(world::ChunkManager& world,
+                     ecs::Registry& reg,
+                     u16 mobId,
+                     const glm::vec3& pos)
 {
     const MobDef& def = mobRegistry().get(mobId);
     if (def.maxHealth <= 0.f) return {};
 
+    // ---- Место должно вмещать тварь ЦЕЛИКОМ ----
+    //
+    // Место искали по двум блокам воздуха над твёрдым — и это всё,
+    // что проверялось, для кого угодно. Каменный страж ростом в три
+    // с половиной блока и шириной в два с половиной рождался внутри
+    // потолка зала, а босса в подземелье ставили вовсе без проверки
+    // свободного места: только «пол под ногами не воздух». Дальше
+    // спасательный подъём выдавливал его вверх сквозь этажи, и самый
+    // опасный противник игры встречал игрока, стоя на крыше.
+    physics::CreatureBody body;
+    body.halfWidth = def.bodyRadius;
+    body.height    = def.bodyHeight;
+
+    glm::vec3 at = pos;
+    if (!physics::settle(world, at, body)) return {};
+
     ecs::Entity e = reg.create();
 
     ecs::Transform tf;
-    tf.position = pos;
+    tf.position = at;
     reg.add(e, tf);
 
     reg.add(e, ecs::Velocity{});
@@ -201,7 +218,7 @@ ecs::Entity Spawner::spawnMob(world::ChunkManager& /*world*/,
     reg.add(e, MobTag{ mobId });
 
     MobAI ai;
-    ai.homePos = pos;
+    ai.homePos = at;
     ai.moveParams.bodyHeight  = def.bodyHeight;
     ai.moveParams.allowFall   = true;
     ai.moveParams.allowWater  = def.canSwim;

@@ -3,6 +3,7 @@
  * @brief NPC: роли, диалоги с ветвлением, поведение жителей.
  */
 #include "npc_def.h"
+#include "../combat/weapon.h"
 #include "../core/log.h"
 
 namespace npc {
@@ -87,10 +88,14 @@ NpcRegistry::NpcRegistry() {
         d.moveSpeed = 1.5f;
         d.attackDamage = 6.f;
         d.attackRange = 1.8f;
-        d.aggroRange = 6.f;
+        d.aggroRange = 10.f;
         d.bodyRadius = 0.40f;
         d.bodyHeight = 1.85f;
         d.hostile = false;
+        // Кузнец берётся за топор, когда в деревню лезут: он и так
+        // весь день им машет.
+        d.weaponId = combat::WEAPON_IRON_AXE;
+        d.defender = true;
         d.bodyColor   = rgb(60, 60, 70);
         d.headColor   = rgb(200, 170, 130);
         d.accentColor = rgb(180, 100, 60);
@@ -108,10 +113,14 @@ NpcRegistry::NpcRegistry() {
         d.moveSpeed = 2.5f;
         d.attackDamage = 7.f;
         d.attackRange = 2.0f;
-        d.aggroRange = 12.f;
+        d.aggroRange = 18.f;
         d.bodyRadius = 0.40f;
         d.bodyHeight = 1.85f;
         d.hostile = false;
+        // Меч. Стража стояла с пустыми руками и била «уроном 7» из
+        // воздуха — ни замаха, ни отбрасывания, ни клинка на виду.
+        d.weaponId = combat::WEAPON_IRON_SWORD;
+        d.defender = true;
         d.bodyColor   = rgb(70, 90, 130);
         d.headColor   = rgb(200, 170, 130);
         d.accentColor = rgb(220, 220, 220);

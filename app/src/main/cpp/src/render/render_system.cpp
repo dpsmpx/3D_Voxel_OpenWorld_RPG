@@ -123,6 +123,27 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
     // загрузки расходился с порядком отрисовки на половину чанка.
     world.setCameraPosition(camPos);
 
+    // ---- Источники света ----
+    //
+    // Собираются здесь, а не в шейдере и не в мире: шейдеру нужен
+    // готовый короткий список ближних, а мир о свете не знает вовсе.
+    // Блоки-светильники перебираются не каждый кадр — они не
+    // двигаются; факел в руке добавляется каждый кадр, потому что
+    // двигается он постоянно.
+    lights_.beginFrame();
+    lights_.scan(world, camPos, dt);
+
+    // Факел в руке: активная ячейка пояса, если в ней светильник.
+    if (player)
+        lights_.addTransient(LightField::heldLight(
+            player->selectedBlock(), player->controller.state().position));
+
+    {
+        PointLight chosen[MAX_GPU_LIGHTS];
+        const u32 n = lights_.nearest(camPos, chosen, MAX_GPU_LIGHTS);
+        camera_.setLights(chosen, n);
+    }
+
     // Камера в буфер здесь НЕ пишется — см. render(). Эта функция
     // выполняется до vkWaitForFences на заборе текущего кадра, то есть
     // в момент, когда GPU ещё может читать буфер этого же слота из

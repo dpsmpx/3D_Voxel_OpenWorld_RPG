@@ -335,12 +335,13 @@ void UiSystem::drawLoadingOverlay() {
         ui_.rect(r.x + pad, barY, barW * p, barH, hudTint(theme::Success));
 }
 
-// Служебная строка: по центру отведённого раскладкой места.
+// Служебная строка: от левого края отведённого раскладкой места.
+//
+// Не по центру: строки разной длины («FPS 60» и «POS -1234.5 …»)
+// прыгали бы друг относительно друга, а читаются они столбиком.
 void UiSystem::drawDebugLine(u32 line, const char* text, f32 scale, UiColor c) {
     const Rect r = layout_.debugLine(line);
-    const f32 tw = ui_.textWidth(text, scale);
-    ui_.text(text, r.x + (r.w - tw) * 0.5f,
-             r.y + (r.h - ui_.textHeight(scale)) * 0.5f, scale, c);
+    ui_.text(text, r.x, r.y + (r.h - ui_.textHeight(scale)) * 0.5f, scale, c);
 }
 
 void UiSystem::drawHud(player::Player& player,
@@ -386,7 +387,7 @@ void UiSystem::drawHud(player::Player& player,
     if (showFps) {
         char buf[64];
         std::snprintf(buf, sizeof(buf), "FPS %d", (int)fps);
-        drawDebugLine(0, buf, theme::TEXT_LABEL, COL_YELLOW);
+        drawDebugLine(0, buf, theme::TEXT_BODY, COL_YELLOW);
     }
 
     if (player.cameraMode == player::CameraMode::FirstPerson) {
@@ -406,7 +407,7 @@ void UiSystem::drawHud(player::Player& player,
         char dbg[96];
         std::snprintf(dbg, sizeof(dbg), "POS %.1f %.1f %.1f",
                       st.position.x, st.position.y, st.position.z);
-        drawDebugLine(1, dbg, theme::TEXT_CAPTION, COL_WHITE);
+        drawDebugLine(1, dbg, theme::TEXT_LABEL, COL_WHITE);
     }
 }
 
