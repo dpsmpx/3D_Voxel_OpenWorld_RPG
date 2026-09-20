@@ -1832,6 +1832,13 @@ struct Engine {
         cam.setSky(dayCycle.skyColor(), dayCycle.skyLight(), dayCycle.timeOfDay());
         cam.setWeather(weather.cloud(), weather.precip(), weather.rainbow(),
                        weather.snowMix(), weather.wind());
+        // Зерно мира — каждый кадр, а не в makeWorld.
+        //
+        // Мир меняется двумя путями: созданием нового и загрузкой
+        // сохранения, и каждый из них пришлось бы помнить отдельно.
+        // Присваивание float'а раз в кадр стоит ровно ничего, а
+        // разойтись с текущим миром уже не может.
+        cam.setWorldSeed(worldSeed);
 
         // Минимальная детерминированная сцена: камера, солнце и небо
         // прибиты к числам из world/debug_scene.h — тем самым, по

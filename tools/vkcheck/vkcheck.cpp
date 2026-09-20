@@ -124,6 +124,16 @@ int main(int argc, char** argv) {
     const char* cull = "";
     int   oneTri = -1;
     bool  assertSolid = false;
+    // Зерно крапчатости блоков. По умолчанию — зерно мира, как в
+    // игре. Отдельным ключом его можно развести с зерном мира и
+    // получить ТОТ ЖЕ рельеф с другой крапчатостью: иначе «цвет
+    // зависит от зерна» не отличить от «мир стал другим».
+    u64   tintSeed = 0;
+    bool  tintGiven = false;
+    // С чем сверить получившийся кадр. Утверждения вида «два кадра
+    // совпадают» и «два кадра различаются чуть-чуть» — про пару
+    // кадров, и проверяются только попиксельно.
+    const char* diffPath = nullptr;
     // Мобильный GPU исполняет mediump как 16-битное число, а
     // программная реализация — как 32-битное. Ключ включает настоящую
     // половинную точность: шейдеры подсовываются пропущенные через
@@ -174,6 +184,8 @@ int main(int argc, char** argv) {
         else if (a == "--cull")  cull = next();
         else if (a == "--onetri") oneTri = atoi(next());
         else if (a == "--assert-solid") assertSolid = true;
+        else if (a == "--tintseed") { tintSeed = (u64)strtoull(next(), nullptr, 10); tintGiven = true; }
+        else if (a == "--diff")     diffPath = next();
         else if (a == "--fp16") fp16 = true;
         else if (a == "--shading") shading = atoi(next());
         else if (a == "--time")    { timeOfDay = (float)atof(next()); timeGiven = true; }
@@ -471,6 +483,9 @@ int main(int argc, char** argv) {
 
     // ---- камера: тот же класс, что в игре ----
     render::Camera cam;
+    // То же, что делает игра каждый кадр: крапчатость блоков берётся
+    // из зерна мира.
+    cam.setWorldSeed(tintGiven ? tintSeed : seed);
     cam.setAspect((float)W / (float)H);
     cam.setViewport((u32)W, (u32)H);
     // Те же числа, что ставит RenderSystem::prepareFrame при дальности
@@ -785,7 +800,55 @@ int main(int argc, char** argv) {
     std::fprintf(f, "P6\n%d %d\n255\n", W, H);
     for (int i = 0; i < W * H; ++i) std::fwrite(pix + (usize)i * 4, 1, 3, f);
     std::fclose(f);
-    vkUnmapMemory(dev, readMem);
+
+    // Сверка с другим кадром: ключ --diff.
+    //
+    // «Один и тот же мир красится одинаково» и «другое зерно красит
+    // иначе, но чуть-чуть» — утверждения о ПАРЕ кадров. Ни одно из
+    // них нельзя проверить по одному кадру, поэтому сравнение живёт
+    // здесь, рядом с пикселями, а не в скрипте поверх PNG.
+    if (diffPath && *diffPath) {
+        std::FILE* rf = std::fopen(diffPath, "rb");
+        if (!rf) {
+            std::printf("vkcheck: ПРОВАЛ — не открыть эталон %s\n", diffPath);
+            return 1;
+        }
+        int rw = 0, rh = 0, rmax = 0;
+        if (std::fscanf(rf, "P6 %d %d %d", &rw, &rh, &rmax) != 3 ||
+            rw != W || rh != H) {
+            std::printf("vkcheck: ПРОВАЛ — эталон %dx%d, а кадр %dx%d\n",
+                        rw, rh, W, H);
+            std::fclose(rf);
+            return 1;
+        }
+        std::fgetc(rf);   // один разделитель после максимума
+        usize diff = 0, total = (usize)W * (usize)H;
+        double sumAbs = 0.0;
+        int maxAbs = 0;
+        for (usize i = 0; i < total; ++i) {
+            u8 ref[3];
+            if (std::fread(ref, 1, 3, rf) != 3) {
+                std::printf("vkcheck: ПРОВАЛ — эталон %s оборван\n", diffPath);
+                std::fclose(rf);
+                return 1;
+            }
+            const u8* p2 = pix + i * 4;
+            int d = 0;
+            for (int c = 0; c < 3; ++c) {
+                const int dc = (int)p2[c] - (int)ref[c];
+                const int ad = dc < 0 ? -dc : dc;
+                if (ad > d) d = ad;
+            }
+            if (d) ++diff;
+            sumAbs += (double)d;
+            if (d > maxAbs) maxAbs = d;
+        }
+        std::printf("vkcheck: сверка с %s: отличается пикселей %zu из %zu "
+                    "(%.3f), среднее |д| %.4f, наибольшее |д| %d\n",
+                    diffPath, diff, total,
+                    total ? (double)diff / (double)total : 0.0,
+                    total ? sumAbs / (double)total : 0.0, maxAbs);
+    }
 
     // Признак вывернутого наизнанку мира — не дыры, а темнота.
     //
@@ -812,6 +875,10 @@ int main(int argc, char** argv) {
         std::printf("vkcheck: пикселей отличных от фона: %zu; средняя яркость "
                     "нижней половины кадра: %.3f\n", drawn, lumaBelow);
     }
+    // Отображение снимается здесь, после ПОСЛЕДНЕГО чтения пикселей.
+    // Стояло выше, сразу за записью файла, — и вся статистика ниже
+    // читала память по указателю, отданному драйверу обратно.
+    vkUnmapMemory(dev, readMem);
     std::printf("vkcheck: кадр -> %s (%dx%d), сообщений слоя проверки: %d\n",
                 out, W, H, g_validationErrors);
     vkDeviceWaitIdle(dev);

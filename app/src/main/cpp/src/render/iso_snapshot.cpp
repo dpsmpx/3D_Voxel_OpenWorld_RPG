@@ -65,7 +65,8 @@ u32 memType(VkPhysicalDevice phys, u32 bits, VkMemoryPropertyFlags want) {
 //     проекцию это не влияет (она ортографическая), но шейдер берёт
 //     из cameraPos направление на зрителя для блика на воде — а при
 //     ортографии оно обязано быть одним на весь кадр.
-CameraUbo IsoSnapshot::fixedLightUbo(const iso::Camera& cam, iso::View view) {
+CameraUbo IsoSnapshot::fixedLightUbo(const iso::Camera& cam, iso::View view,
+                                     f32 tintSeed) {
     CameraUbo u{};
 
     u.viewProj    = cam.viewProj();
@@ -88,7 +89,8 @@ CameraUbo IsoSnapshot::fixedLightUbo(const iso::Camera& cam, iso::View view) {
     u.ambLight  = glm::vec4(0.62f, 0.70f, 0.85f, 0.42f);
 
     u.weather   = glm::vec4(0.f);                        // ни туч, ни осадков
-    u.wind      = glm::vec4(0.f);
+    // Ветра нет, зерно крапчатости есть: см. объявление.
+    u.wind      = glm::vec4(0.f, 0.f, 0.f, tintSeed);
     u.lightInfo = glm::vec4(0.f);                        // ни одного факела
     for (u32 i = 0; i < MAX_GPU_LIGHTS; ++i) {
         u.lightPos[i]   = glm::vec4(0.f);
@@ -591,6 +593,10 @@ bool IsoSnapshot::buildOneMesh(world::ChunkManager& world, usize index) {
 }
 
 bool IsoSnapshot::step(world::ChunkManager& world) {
+    // Зерно мира — отсюда: снимок обязан красить блоки ровно так же,
+    // как игровой кадр, а крапчатость считается из зерна. Мир здесь
+    // первый и единственный раз оказывается под рукой.
+    tintSeed_ = tintSeedOf(world.seed());
     switch (stage_) {
         case IsoStage::Idle:
         case IsoStage::Ready:
@@ -694,7 +700,7 @@ bool IsoSnapshot::renderTile(const Tile& t) {
     win[0][0] = ax; win[1][1] = ay;
     win[3][0] = bx; win[3][1] = by;
 
-    CameraUbo u = fixedLightUbo(cam_, req_.view);
+    CameraUbo u = fixedLightUbo(cam_, req_.view, tintSeed_);
     u.viewProj    = win * cam_.viewProj();
     u.invViewProj = glm::inverse(u.viewProj);
     u.screenSize  = glm::vec4((f32)t.w, (f32)t.h, 0.f, 0.f);
