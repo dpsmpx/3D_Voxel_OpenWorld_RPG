@@ -488,6 +488,12 @@ void Player::updateImpl(world::ChunkManager& world,
         // Phase 14: звук попадания.
         if (lastAction.didMeleeHit && lastAction.hitCount > 0) {
             audio::events().hitFlesh(lastAction.hitPoint);
+
+            // Толчок камеры по ВЕСУ оружия. Кинжал едва задевает
+            // кадр, топор бьёт заметно — оружие отличается не только
+            // числом урона, но и тем, как отзывается экран.
+            const auto& wd = combat::weapons().get(equipped.weaponId);
+            cameraShake_ += 0.10f + std::min(0.20f, wd.knockback * 0.045f);
         }
 
         if (lastAction.didShoot) {
@@ -534,6 +540,9 @@ void Player::updateImpl(world::ChunkManager& world,
                 combat::spawnHitFx(*reg_, attackOrigin,
                                    0xFFCC00FF, 0.6f, 3.5f, 0.45f);
                 lastAction.hitCount = (i32)hits.size();
+                // Добивание — самый сильный удар в игре, и кадр
+                // обязан это сказать.
+                cameraShake_ += 0.55f;
             }
         }
     }
@@ -596,6 +605,10 @@ void Player::updateImpl(world::ChunkManager& world,
     } else {
         bobAmount *= std::exp(-dt * 8.f);
     }
+
+    // Последним: к этому месту за кадр случилось всё, отчего бывает
+    // больно, — удар твари, урон от падения, тик яда.
+    noticeImpacts();
 }
 
 // ============================================================
@@ -850,6 +863,38 @@ void Player::tickDeath(world::ChunkManager& world, f32 dt) {
     dead          = false;
     deathTimer    = 0.f;
     justRespawned = true;
+}
+
+void Player::resyncImpactBaseline() {
+    prevHealth_ = -1.f;
+}
+
+/// Накопить отдачу камеры от того, что случилось с игроком.
+///
+/// Считается по РАЗНИЦЕ здоровья, а не по перечню источников. Урон
+/// приходит из пяти разных мест — тварь, яд, падение, утопление,
+/// лава, — и шестое место, где они перечислены заново, разошлось бы
+/// с ними при первом же новом источнике. Разница же верна для всех
+/// сразу, включая те, которых ещё нет.
+///
+/// Заодно из этого само собой выходит нужное соотношение: тик яда
+/// снимает доли единицы и кадр не трогает, удар Стража снимает
+/// четверть полосы и бьёт по экрану заметно.
+void Player::noticeImpacts() {
+    if (!reg_) return;
+    const auto* hp = reg_->get<ecs::Health>(entity_);
+    if (!hp) return;
+
+    const f32 now = hp->current;
+    const f32 was = prevHealth_;
+    prevHealth_ = now;
+
+    if (was < 0.f) return;              // первый кадр или после загрузки
+    const f32 taken = was - now;
+    if (taken <= 0.f) return;           // лечение камеру не трясёт
+
+    const f32 maxHp = hp->max > 1.f ? hp->max : 1.f;
+    cameraShake_ += std::min(0.65f, taken / maxHp * 2.2f);
 }
 
 void Player::noticeReputationChange() {

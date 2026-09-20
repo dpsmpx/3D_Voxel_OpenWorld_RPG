@@ -219,19 +219,33 @@ struct Swing {
     f32 damage;
     f32 reach;
     f32 period;      ///< сколько между ударами
+    f32 windup;      ///< сколько длится замах до попадания
     f32 knockback;
     f32 critChance;
     f32 critMult;
 };
 
+/// Замах безоружного, секунды. Кулаком бьют коротко — но не
+/// мгновенно: мгновенных ударов в игре не осталось ни у кого.
+constexpr f32 BARE_HAND_WINDUP = 0.30f;
+
 Swing swingOf(const NpcDef& def) {
     if (def.weaponId == combat::WEAPON_NONE)
-        return { def.attackDamage, def.attackRange, 1.4f, 0.f, 0.f, 1.f };
+        return { def.attackDamage, def.attackRange, 1.4f,
+                 BARE_HAND_WINDUP, 0.f, 0.f, 1.f };
 
+    // Замах берётся из ОРУЖИЯ, тот же, каким замахивается игрок.
+    // Стражник с мечом и игрок с мечом бьют по одним правилам — это
+    // и делает бой читаемым: увиденное на себе работает и на них.
+    //
+    // Дуга здесь не нужна: рендер берёт её из того же реестра
+    // оружия. Поле, в которое пишут и которое не читают, — ровно то,
+    // за чем тут следят.
     const combat::WeaponDef& w = combat::weapons().get(def.weaponId);
     return { def.attackDamage + w.baseDamage,
              std::max(def.attackRange, w.reach),
              w.windupTime + w.recoveryTime + 0.35f,
+             w.windupTime,
              w.knockback, w.critChance, w.critMult };
 }
 
@@ -326,8 +340,17 @@ void updateNpcs(world::ChunkManager& world,
 
         if (ai->repathCooldown > 0.f) ai->repathCooldown -= dt;
         if (ai->scanCooldown > 0.f)   ai->scanCooldown -= dt;
+
         if (ai->jumpCooldown > 0.f)   ai->jumpCooldown -= dt;
         if (ai->alertTimer > 0.f)     ai->alertTimer -= dt;
+
+        // ---- Замах: ровно один тик за кадр ----
+        //
+        // Вне боя замаха быть не может: у жителя, вернувшегося к
+        // делам, рука не должна остаться занесённой, а удар —
+        // прилететь из состояния «идёт домой».
+        if (ai->state != NpcAI::Combat) ai->swing.cancel();
+        const bool swingStruck = ai->swing.tick(dt);
 
         const glm::vec3 pos = tf->position;
         const physics::CreatureBody body = bodyOf(def);
@@ -498,9 +521,11 @@ void updateNpcs(world::ChunkManager& world,
                 vel->linear.z *= std::exp(-4.f * dt);
                 ai->path.clear();
                 ai->pathIndex = 0;
-                if (ai->attackCooldown <= 0.f) {
-                    npcAttack(reg, e, target, swing);
-                    ai->attackCooldown = swing.period;
+                if (!ai->swing.winding() && ai->attackCooldown <= 0.f) {
+                    ai->swing.begin(swing.windup);
+                    // Звук — В НАЧАЛЕ замаха. Раньше он приходил
+                    // вместе с уроном и потому не предупреждал ни о
+                    // чём.
                     audio::events().mobAttack(tf->position);
                 }
             } else {
@@ -511,6 +536,15 @@ void updateNpcs(world::ChunkManager& world,
                 const f32 speed = def.moveSpeed * 1.35f;
                 vel->linear.x = dir.x * speed;
                 vel->linear.z = dir.z * speed;
+            }
+
+            // Замах дошёл до цели. Досягаемость проверяется ЗДЕСЬ, в
+            // момент попадания: волк, успевший отскочить за время
+            // замаха, уходит из-под удара — и стражник рубит воздух.
+            if (swingStruck) {
+                if (dist < swing.reach) npcAttack(reg, e, target, swing);
+                else                    audio::events().swingLight(tf->position);
+                ai->attackCooldown = swing.period;
             }
 
             // Смотреть надо на того, кого бьёшь, — даже стоя на

@@ -8,6 +8,7 @@
 #include "../world/chunk_manager.h"
 #include "../world/ai/pathfinding.h"
 #include "../physics/creature_motion.h"
+#include "../combat/swing.h"
 #include <glm/glm.hpp>
 #include <vector>
 
@@ -32,8 +33,15 @@ struct MobAI {
     i32         pathIndex = 0;
     world::ai::MoveParams moveParams{};
 
+    /// Замах: удар начинается раньше, чем попадает. Ту же структуру
+    /// носят жители — правило одно на всех, кто бьёт.
+    combat::SwingState swing{};
+    /// Этот замах — удар по площади (только у боссов). Решается в
+    /// начале замаха, а не в момент попадания: иначе телеграф не
+    /// может быть длиннее у большого удара.
+    bool swingIsSlam = false;
+
     /// Анимация
-    f32 attackAnim = 0.f;
     f32 deathTimer = 0.f;
     f32 damageFlash = 0.f;
 

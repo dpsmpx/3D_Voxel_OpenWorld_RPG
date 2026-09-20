@@ -6,6 +6,7 @@
 #include "../core/types.h"
 #include "../factions/faction.h"
 #include "../physics/creature_motion.h"
+#include "../combat/swing.h"
 #include "../world/ai/pathfinding.h"
 #include <vector>
 #include <glm/glm.hpp>
@@ -121,6 +122,14 @@ struct NpcAI {
     f32   attackCooldown = 0.f;
     f32   damageFlash = 0.f;
     f32   deathTimer = 0.f;
+
+    /// Замах. Та же структура, что у тварей: правило «удар
+    /// начинается раньше, чем попадает» одно на всех, кто бьёт.
+    ///
+    /// Раньше у жителя не было ни замаха, ни позы удара вообще:
+    /// стражник рубил волка, не шевельнув рукой, и урон приходил в
+    /// тот кадр, когда истекал откат.
+    combat::SwingState swing{};
 
     /// Ноги. Считает physics::stepCreature — тем же кодом, что ходит
     /// игрок. Своей копии «коллизии» у NPC больше нет: та проверяла

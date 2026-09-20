@@ -137,6 +137,40 @@ public:
         bobPhase_ = phase; bobAmount_ = amount;
     }
 
+    /// ---- Отдача камеры ----
+    ///
+    /// Толчок от удара: своего, полученного, падения с обрыва.
+    /// Копится в одну величину («травму») и гаснет; смещение считается
+    /// от её КВАДРАТА — слабый укус почти не виден, удар Стража бьёт
+    /// заметно, и разницу видно без чтения цифр.
+    ///
+    /// Двигается только ПОЛОЖЕНИЕ глаза, не yaw и не pitch. Тряска
+    /// прицела сделала бы бой менее читаемым ровно там, где он должен
+    /// стать более читаемым, и увела бы удар мимо цели без вины
+    /// игрока.
+    void addShake(f32 amount) {
+        if (amount <= 0.f) return;
+        shakeTrauma_ = std::min(1.f, shakeTrauma_ + amount);
+    }
+    void tickShake(f32 dt) {
+        shakeTime_ += dt;
+        shakeTrauma_ = std::max(0.f, shakeTrauma_ - dt * SHAKE_DECAY);
+    }
+    f32 shakeTrauma() const { return shakeTrauma_; }
+
+    /// Смещение глаза от тряски, метры. Отдельным методом — чтобы
+    /// проверке было что спросить, не собирая кадр.
+    glm::vec3 shakeOffset() const {
+        if (shakeTrauma_ <= 0.f) return glm::vec3(0.f);
+        const f32 k = shakeTrauma_ * shakeTrauma_ * SHAKE_METERS;
+        const f32 t = shakeTime_;
+        // Три несоизмеримые частоты: сумма не повторяется на глаз и
+        // не стоит ни одного случайного числа.
+        return { std::sin(t * 37.1f)          * k,
+                 std::sin(t * 43.7f + 1.7f)   * k,
+                 std::sin(t * 31.3f + 3.1f)   * k };
+    }
+
     /// Прибивает камеру намертво: ни followTarget, ни покачивание
     /// головы, ни ввод её больше не двигают.
     ///
@@ -155,6 +189,7 @@ public:
         bobAmount_   = 0.f;
         firstEyeH_   = 0.f;
         firstPerson_ = true;
+        shakeTrauma_ = 0.f;
     }
     bool debugCamera() const { return debugCamera_; }
 
@@ -190,6 +225,12 @@ public:
             }
             position_ = desired;
         }
+
+        // Тряска кладётся ПОСЛЕ разрешения коллизии и намеренно мала
+        // (см. SHAKE_METERS): смещение в считанные сантиметры не может
+        // протащить камеру сквозь стену, а пересчитывать луч ради него
+        // значило бы платить лучом за каждый удар.
+        position_ += shakeOffset();
     }
 
     /// Направления (используются игроком и UBO)
@@ -356,6 +397,15 @@ private:
     f32 timeOfDay_ = 0.3f;
 
     bool firstPerson_ = false;
+
+    /// За сколько гаснет полная травма: примерно полсекунды.
+    static constexpr f32 SHAKE_DECAY  = 2.2f;
+    /// Размах при полной травме, метры. Двенадцать сантиметров:
+    /// заметно на кадре и не мешает целиться.
+    static constexpr f32 SHAKE_METERS = 0.12f;
+
+    f32 shakeTrauma_ = 0.f;
+    f32 shakeTime_   = 0.f;
     f32  firstEyeH_   = 1.62f;
     f32  thirdDist_   = 5.5f;
     f32  thirdOff_    = 1.10f;

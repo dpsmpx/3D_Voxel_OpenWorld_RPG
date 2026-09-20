@@ -122,7 +122,6 @@ void MobRenderer::rebuild(ecs::Registry& reg, f32 timeSec) {
         const f32 yaw = fc ? fc->yaw : orient::yawFromDirection(velXZ.x, velXZ.y);
 
         const f32 speedNorm = glm::min(1.f, glm::length(velXZ) / std::max(0.1f, def.chaseSpeed));
-        const bool attacking = (ai->attackAnim > 0.01f);
         const bool dying = (ai->deathTimer > 0.f);
 
         // Оснастка вместо плоского списка коробок.
@@ -147,7 +146,11 @@ void MobRenderer::rebuild(ecs::Registry& reg, f32 timeSec) {
             st.rise = lo->rise;
         }
         st.speedNorm = speedNorm;
-        st.attack    = attacking ? ai->attackAnim : 0.f;
+        // Замах и удар — одно знаковое число: −1 рука (пасть, корпус)
+        // отведена, +1 прошла сквозь цель. Дугу выбирает вид: зверь
+        // бросается, двуногий рубит.
+        st.attack      = dying ? 0.f : ai->swing.pose();
+        st.attackShape = def.attackShape;
         st.death     = dying ? ai->deathTimer : 0.f;
 
         entity::Pose pose;

@@ -174,11 +174,45 @@ inline void idlePose(const entity::Rig& rig, entity::Pose& pose, f32 t) {
 /// ею не могли — у них своя структура состояния. Отсюда и брались
 /// самодельные `sin(walkPhase)` в рендере NPC, двигавшие ногу
 /// параллельно себе.
+/// Каким движением существо бьёт.
+///
+/// Десять классов оружия делали одно и то же движение — обе руки
+/// одинаково вперёд, — и отличались только длительностью. В третьем
+/// лице, где модель занимает середину экрана, это и есть главный
+/// признак прототипа: по кинжалу и двуручному топору не видно, что
+/// это разное оружие.
+///
+/// Форма — свойство ОРУЖИЯ и ВИДА, а не ветка в рендере: она лежит в
+/// WeaponDef и MobDef, и одиннадцатое оружие не требует одиннадцатой
+/// ветки.
+enum class AttackShape : u8 {
+    None = 0,
+    Slash,    ///< меч: за плечо и наотмашь поперёк тела
+    Chop,     ///< топор: над головой вниз, всем корпусом
+    Thrust,   ///< копьё: локоть назад, выпад прямо вперёд
+    Stab,     ///< кинжал: короткий тычок от бедра
+    Draw,     ///< лук и арбалет: держать цевьё, тянуть тетиву
+    Cast,     ///< посох и жезл: поднять ладонь, толчок вперёд
+    Bite,     ///< зверь: осесть на задние, бросок пастью вперёд
+};
+
 struct AnimState {
     f32 phase     = 0.f;   ///< фаза шага, радианы; идёт ПУТЁМ
     f32 time      = 0.f;   ///< монотонное время, секунды; для дыхания
     f32 speedNorm = 0.f;   ///< скорость к максимальной, 0..1
-    f32 attack    = 0.f;   ///< 0..1, замах
+
+    /// Где сейчас удар: −1 рука отведена в замахе, 0 покой,
+    /// +1 рука прошла сквозь цель.
+    ///
+    /// ЗНАКОВОЕ, и это главное. Раньше здесь была доля 0..1, а весь
+    /// удар был «рука вперёд и обратно»: замаха не существовало ни в
+    /// позе, ни во времени. Замах — это ПРОТИВОХОД: сперва назад,
+    /// потом сквозь. Одним числом, потому что это одна величина —
+    /// положение руки на дуге удара.
+    f32 attack    = 0.f;
+
+    /// По какой дуге. Значимо только при attack != 0.
+    AttackShape attackShape = AttackShape::None;
     f32 death     = 0.f;   ///< секунды с момента смерти, 0 — жив
     f32 air       = 0.f;   ///< доля воздушной позы, 0..1
     f32 land      = 0.f;   ///< доля посадочной позы, 0..1
@@ -272,6 +306,123 @@ inline void advanceGait(GaitT& g, const glm::vec3& velocity, f32 dt) {
     if (g.phase >= TAU) g.phase = std::fmod(g.phase, TAU);
 }
 
+/// Правая рука бьющая: к её предплечью крепится оружие (см.
+/// humanoidRig). Левая работает противовесом.
+inline bool isRightArm(entity::PartRole r) {
+    return r == entity::PartRole::UpperArmR ||
+           r == entity::PartRole::LowerArmR ||
+           r == entity::PartRole::HandR;
+}
+inline bool isLeftArm(entity::PartRole r) {
+    return r == entity::PartRole::UpperArmL ||
+           r == entity::PartRole::LowerArmL ||
+           r == entity::PartRole::HandL;
+}
+inline bool isFrontLeg(entity::PartRole r) {
+    return r == entity::PartRole::UpperLegFL ||
+           r == entity::PartRole::UpperLegFR;
+}
+
+/// Дуга удара, положенная поверх позы.
+///
+/// Оси проверены численно на humanoidRig и означают буквально
+/// следующее (сустав плеча, рука висит вниз):
+///
+///   * `x > 0` — кисть уходит НАЗАД (−Z), `x < 0` — ВПЕРЁД (+Z);
+///   * `z > 0` — кисть уходит НАРУЖУ (+X, вправо от тела),
+///     `z < 0` — ПОПЕРЁК тела, влево;
+///   * `y` у висящей руки не делает ничего: ось вращения совпадает
+///     с самой рукой. Поэтому горизонтальный замах строится из X и
+///     Z, а не из Y.
+///
+/// `a` — положение на дуге, −1 отведено, +1 прошло сквозь цель.
+inline void attackPose(const entity::Rig& rig, entity::Pose& pose,
+                       f32 a, AttackShape shape)
+{
+    if (shape == AttackShape::None) return;
+    const f32 draw   = a < 0.f ? -a : 0.f;   // отведено под удар
+    const f32 strike = a > 0.f ?  a : 0.f;   // прошло сквозь цель
+    if (draw < 0.01f && strike < 0.01f) return;
+    const f32 hold = draw + strike;          // «рука занята ударом»
+
+    for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i) {
+        const entity::PartRole r = rig.parts[i].role;
+        glm::vec3& e = pose.euler[i];
+        const bool right = isRightArm(r);
+        const bool left  = isLeftArm(r);
+        const bool torso = (r == entity::PartRole::Torso);
+        const bool head  = (r == entity::PartRole::Head);
+
+        switch (shape) {
+
+        // Меч: рука уходит за правое плечо и проносится поперёк тела.
+        case AttackShape::Slash:
+            if (right)      { e.x += 0.50f * draw - 0.70f * strike;
+                              e.z += 1.15f * draw - 0.95f * strike; }
+            else if (left)  { e.x -= 0.30f * draw - 0.20f * strike; }
+            else if (torso) { e.y += 0.28f * draw - 0.42f * strike; }
+            break;
+
+        // Топор: над головой и вниз. Корпус отклоняется назад в
+        // замахе и падает вперёд вместе с ударом — вес виден в
+        // корпусе, а не в руке.
+        case AttackShape::Chop:
+            if (right)      { e.x += 1.55f * draw - 1.15f * strike; }
+            else if (left)  { e.x += 0.70f * draw - 0.45f * strike; }
+            else if (torso) { e.x -= 0.18f * draw - 0.34f * strike; }
+            else if (head)  { e.x -= 0.10f * draw - 0.18f * strike; }
+            break;
+
+        // Копьё: локоть уходит далеко назад, корпус поворачивается
+        // боком, выпад идёт по прямой и дальше всех.
+        case AttackShape::Thrust:
+            if (right)      { e.x += 0.90f * draw - 1.30f * strike; }
+            else if (left)  { e.x -= 0.55f * hold; }
+            else if (torso) { e.y += 0.34f * draw - 0.30f * strike;
+                              e.x -= 0.22f * strike; }
+            break;
+
+        // Кинжал: коротко и близко. Замах едва заметен — это и есть
+        // его характер: бьёт раньше, чем видно.
+        case AttackShape::Stab:
+            if (right)      { e.x += 0.32f * draw - 0.85f * strike; }
+            else if (left)  { e.x -= 0.25f * hold; }
+            else if (torso) { e.x -= 0.14f * strike; }
+            break;
+
+        // Лук: левая держит цевьё вытянутой ВСЁ время выстрела,
+        // правая тянет тетиву к щеке и срывается с неё.
+        case AttackShape::Draw:
+            if (left)       { e.x -= 1.30f * hold; }
+            else if (right) { e.x -= 0.90f * hold;
+                              e.z -= 0.55f * draw - 0.15f * strike; }
+            else if (torso) { e.y += 0.30f * hold; }
+            break;
+
+        // Посох: ладонь поднимается вверх-наружу и толкает вперёд.
+        case AttackShape::Cast:
+            if (right)      { e.x -= 0.35f * draw + 0.95f * strike;
+                              e.z += 1.25f * draw - 0.60f * strike; }
+            else if (left)  { e.x -= 0.30f * hold; }
+            else if (torso) { e.x -= 0.12f * draw - 0.16f * strike; }
+            break;
+
+        // Зверь: приседает на передние, потом бросок всем телом.
+        // Рук у него нет — работают голова, корпус и передние ноги.
+        case AttackShape::Bite:
+            if (head)            { e.x += 0.40f * draw - 0.60f * strike; }
+            else if (torso)      { e.x -= 0.16f * draw - 0.30f * strike; }
+            else if (isFrontLeg(r)) { e.x -= 0.55f * draw - 0.30f * strike; }
+            else if (right || left) { e.x += 0.45f * draw - 0.80f * strike; }
+            break;
+
+        case AttackShape::None:
+        default:
+            break;
+        }
+    }
+}
+
 /// Поза сущности: покой смешивается с шагом по нормированной скорости.
 ///
 /// Смешивание, а не переключение: иначе при трогании поза прыгает.
@@ -343,11 +494,7 @@ inline void poseFor(const entity::Rig& rig, entity::Pose& pose,
         }
     }
 
-    if (st.attack > 0.01f) {
-        for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i)
-            if (isArm(rig.parts[i].role))
-                pose.euler[i].x -= st.attack * 1.1f;
-    }
+    attackPose(rig, pose, st.attack, st.attackShape);
     if (st.death > 0.f) {
         // Заваливается набок, а не тонет в земле.
         const f32 t = st.death / 1.6f;
