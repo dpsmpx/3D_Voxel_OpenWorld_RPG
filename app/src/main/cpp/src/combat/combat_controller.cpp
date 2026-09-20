@@ -55,25 +55,35 @@ f32 applyHits(ecs::Registry& reg,
               u32 attackerFaction,
               const std::vector<HitTarget>& hits,
               const WeaponDef& def,
-              const DamageInstance& baseDamage,
               const EnchantResult& enchResult,
               f32 damageMult,
               f32 knockbackMult,
+              f32 critChance,
+              f32 critMult,
               CombatAction& out)
 {
     f32 total = 0.f;
     i32 count = 0;
 
     for (const HitTarget& h : hits) {
-        DamageInstance d = baseDamage;
+        // Крит берётся НАСЧИТАННЫЙ, а не «голый» из таблицы оружия.
+        // Здесь стояло def.critChance/def.critMult — то есть бонусы
+        // Древа (critChanceBonus, critDamageBonus) и ступени
+        // Резонанса (critBonus) в ближнем бою и в АоЕ не участвовали
+        // вовсе: очки в них уходили впустую, а накопленный резонанс
+        // прибавлял только урон и скорость.
+        //
+        // Основа удара — ЗАЧАРОВАННАЯ. Раньше следующей строкой шло
+        // `enchThis.primary = d`, где d — незачарованная база: и
+        // Sharpness, единственное зачарование, которое усиливает сам
+        // удар, в ближнем бою не делало ничего.
+        EnchantResult enchThis = enchResult;
+        DamageInstance& d = enchThis.primary;
         d.amount *= damageMult;
-        d.isCritical = rollCritical(def.critChance);
-        d.criticalMult = def.critMult;
+        d.isCritical   = rollCritical(critChance);
+        d.criticalMult = critMult;
         d.sourceEntity = (u32)attacker;
         d.targetEntity = (u32)h.entity;
-
-        EnchantResult enchThis = enchResult;
-        enchThis.primary = d;
 
         const f32 dmgMain = applyDamage(reg, h.entity, enchThis.primary);
         total += dmgMain;
@@ -191,7 +201,15 @@ void updateCombat(world::ChunkManager& world,
     switch (wstate->phase) {
 
     case WeaponState::Idle: {
-        wstate->swingAnim = std::max(0.f, wstate->swingAnim - dt * 4.f);
+        // Рука возвращается к покою С ЛЮБОЙ стороны дуги: после
+        // оборванного замаха она отведена назад (swingAnim < 0),
+        // после удара — вынесена вперёд.
+        {
+            const f32 step = dt * 4.f;
+            if (wstate->swingAnim >  step)      wstate->swingAnim -= step;
+            else if (wstate->swingAnim < -step) wstate->swingAnim += step;
+            else                                wstate->swingAnim = 0.f;
+        }
         wstate->inputConsumed = false;
 
         if (stunned) break;
@@ -208,7 +226,20 @@ void updateCombat(world::ChunkManager& world,
 
     case WeaponState::Windup: {
         wstate->phaseTime += dt;
-        wstate->swingAnim = std::min(1.f, wstate->phaseTime / std::max(0.01f, windupDur));
+        // Замах ОТВОДИТ руку: знак отрицательный. Раньше рука на
+        // замахе шла вперёд и на возврате — назад, то есть удар
+        // выглядел проигранным задом наперёд, и предупреждения о
+        // нём не было вовсе.
+        //
+        // С замедлением: рука быстро уходит назад и там ЖДЁТ. Это
+        // ожидание и есть телеграф — по равномерному отводу момент
+        // удара не прочитать, по «отвёл и держит» прочитать можно.
+        {
+            const f32 t = std::min(1.f, wstate->phaseTime /
+                                        std::max(0.01f, windupDur));
+            const f32 left = 1.f - t;
+            wstate->swingAnim = -(1.f - left * left);
+        }
 
         if (wstate->phaseTime >= windupDur) {
             if (def.style == AttackStyle::Melee) {
@@ -222,8 +253,9 @@ void updateCombat(world::ChunkManager& world,
 
                 if (!hits.empty()) {
                     applyHits(reg, entity, Faction::of(reg, entity),
-                              hits, def, base, enchResult,
-                              damageMult, knockbackMult, out);
+                              hits, def, enchResult,
+                              damageMult, knockbackMult,
+                              critChance, critMult, out);
                     out.didMeleeHit = true;
                     if (res) res->onHit(false, derived.resonanceGainMult);
                 } else {
@@ -282,8 +314,9 @@ void updateCombat(world::ChunkManager& world,
                            hits);
                 if (!hits.empty()) {
                     applyHits(reg, entity, Faction::of(reg, entity),
-                              hits, def, base, enchResult,
-                              damageMult, knockbackMult, out);
+                              hits, def, enchResult,
+                              damageMult, knockbackMult,
+                              critChance, critMult, out);
                     if (res) res->onHit(false, derived.resonanceGainMult);
                 } else {
                     if (res) res->onMiss();
@@ -294,14 +327,18 @@ void updateCombat(world::ChunkManager& world,
                 out.didCastSpell = true;
             }
 
+            // Рука проносится СКВОЗЬ цель в тот же кадр, в который
+            // приходит урон. Иначе один кадр модель ещё держит руку
+            // отведённой, когда попадание уже состоялось.
             enterPhase(*wstate, WeaponState::Active);
+            wstate->swingAnim = 1.f;
         }
         break;
     }
 
     case WeaponState::Active: {
         wstate->phaseTime += dt;
-        wstate->swingAnim = 1.f;
+        wstate->swingAnim = 1.f;   // рука прошла сквозь цель
         if (wstate->phaseTime >= 0.05f) {
             enterPhase(*wstate, WeaponState::Recovery);
         }

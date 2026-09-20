@@ -942,6 +942,9 @@ struct Engine {
             // Загруженная репутация — не событие: объявлять смену тира
             // за прошлую жизнь незачем.
             player->resyncReputationBaseline();
+            // Здоровье из сейва — тоже не событие: трясти камеру за
+            // урон прошлой жизни незачем.
+            player->resyncImpactBaseline();
             if (ui) {
                 char buf[96];
                 std::snprintf(buf, sizeof(buf), "%s P%u S%u",
@@ -1601,6 +1604,10 @@ struct Engine {
         cam.setThirdPersonDistance(player->thirdPersonDistance);
         cam.setThirdPersonHeight(player->thirdPersonHeight);
         cam.setHeadBob(player->bobPhase, player->bobAmount);
+        // Отдача камеры: игрок за кадр уже узнал и о своём попадании,
+        // и о своей боли — камере остаётся забрать накопленное.
+        cam.addShake(player->takeCameraShake());
+        cam.tickShake(dt);
         cam.setYawPitch(cameraYawPitch.x, cameraYawPitch.y);
         cam.setSunDir(dayCycle.sunDirection());
         cam.setSky(dayCycle.skyColor(), dayCycle.skyLight(), dayCycle.timeOfDay());

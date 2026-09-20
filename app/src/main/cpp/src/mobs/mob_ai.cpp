@@ -368,6 +368,16 @@ void updateMobs(world::ChunkManager& world,
             ai->repathCooldown = 0.f;
         }
 
+        // ---- Замах: ровно один тик за кадр ----
+        //
+        // Вне состояния Attack замаха быть не может: у сбежавшей или
+        // отвлёкшейся твари рука не должна остаться занесённой, а
+        // удар — прилететь из другого состояния. Оглушённый удара не
+        // доводит тем более: иначе стан ничего не решал бы — тварь
+        // замерла бы и всё равно ударила, когда замах дотикает.
+        if (stunned || agent->state != AIAgent::Attack) ai->swing.cancel();
+        const bool swingStruck = ai->swing.tick(dt);
+
         if (stunned) {
             vel->linear.x *= std::exp(-8.f * dt);
             vel->linear.z *= std::exp(-8.f * dt);
@@ -454,7 +464,6 @@ void updateMobs(world::ChunkManager& world,
                 if (distToPlayer < def.attackRange) {
                     agent->state = AIAgent::Attack;
                     ai->stateTime = 0.f;
-                    ai->attackAnim = 1.0f;
                     break;
                 }
                 if (distToPlayer > def.aggroRange * 1.6f) {
@@ -486,25 +495,38 @@ void updateMobs(world::ChunkManager& world,
             case AIAgent::Attack: {
                 vel->linear.x *= std::exp(-4.f * dt);
                 vel->linear.z *= std::exp(-4.f * dt);
-                if (ai->attackAnim > 0.f)
-                    ai->attackAnim = std::max(0.f, ai->attackAnim - dt * 3.f);
+
+                // Смотреть надо на того, кого бьёшь. moveYaw при
+                // остановке держит прежнее направление, и тварь,
+                // остановившаяся у цели, замахивалась вполоборота:
+                // по такому замаху не понять, куда придётся удар.
+                if (auto* fc = reg.get<ecs::Facing>(e)) {
+                    const glm::vec3 toTarget = targetPos - pos;
+                    if (toTarget.x * toTarget.x + toTarget.z * toTarget.z > 1e-4f)
+                        fc->moveYaw = std::atan2(toTarget.x, toTarget.z);
+                }
 
                 // ---- Босс: смена фазы по порогу здоровья ----
                 f32 dmgMult   = 1.f;
                 f32 cooldown  = 1.2f;
+                f32 windup    = def.windupTime;
                 if (def.isBoss) {
                     const u8 phase = bossPhaseFor(hp->current / def.maxHealth,
                                                   def.phaseCount);
                     if (phase > ai->bossPhase) {
                         ai->bossPhase = phase;
                         ai->phaseRoarTimer = 1.2f;   // пауза на переход
-                        ai->attackAnim = 1.0f;
+                        ai->swing.cancel();          // рёв обрывает замах
                         LOGI("Босс %s переходит в фазу %u", def.name, (u32)phase + 1);
                     }
                     // На последней фазе — ярость: быстрее и больнее.
+                    // Замах укорачивается вместе с откатом: иначе
+                    // «быстрее» значило бы только «чаще», а между
+                    // ударами игрок имел бы прежний запас времени.
                     if (ai->bossPhase + 1 >= def.phaseCount) {
                         dmgMult  = def.enrageMult;
                         cooldown = 1.2f / def.enrageMult;
+                        windup  /= def.enrageMult;
                     }
                 }
 
@@ -513,41 +535,83 @@ void updateMobs(world::ChunkManager& world,
                     break;   // во время перехода босс не бьёт
                 }
 
-                if (ai->attackCooldown <= 0.f) {
-                    // Со второй фазы каждый третий удар — по площади.
-                    const bool canSlam = def.isBoss && def.slamRadius > 0.f
-                                      && ai->bossPhase >= 1
-                                      && ai->slamCounter >= 2;
-                    if (canSlam) {
-                        ai->slamCounter = 0;
-                        if (distToPlayer < def.slamRadius) {
+                // ---- Замах дошёл до цели ----
+                //
+                // Досягаемость проверяется ЗДЕСЬ, в момент попадания,
+                // а не в момент начала замаха. В этом вся суть: шаг
+                // назад или рывок за время замаха уводит из-под
+                // удара, и тварь бьёт воздух. Раньше урон приходил в
+                // тот же кадр, когда истекал откат, — отойти было
+                // физически не от чего.
+                if (swingStruck) {
+                    const f32 reach = ai->swingIsSlam
+                                    ? def.slamRadius
+                                    : def.attackRange + 0.4f;
+                    if (distToPlayer < reach) {
+                        if (ai->swingIsSlam) {
                             mobAttackPlayer(reg, e, targetEntity,
                                             def.slamDamage * dmgMult);
+                        } else {
+                            mobAttackPlayer(reg, e, targetEntity,
+                                            def.attackDamage * dmgMult,
+                                            def.poisonDps, def.poisonTime);
                         }
-                        ai->attackAnim = 1.0f;
-                        cooldown *= 1.6f;   // мощная атака дольше откатывается
-                    } else if (distToPlayer < def.attackRange + 0.4f) {
-                        mobAttackPlayer(reg, e, targetEntity,
-                                        def.attackDamage * dmgMult,
-                                        def.poisonDps, def.poisonTime);
-                        if (def.isBoss) ++ai->slamCounter;
+                    } else {
+                        // Промах слышно: свист вхолостую — это и есть
+                        // награда за уклонение. Тяжёлое и лёгкое
+                        // различаются по той же мерке, что у игрока,
+                        // — по длине замаха.
+                        if (windup > 0.40f) audio::events().swingHeavy(tf->position);
+                        else                audio::events().swingLight(tf->position);
                     }
-                    ai->attackCooldown = cooldown;
-                    ai->attackAnim = 1.0f;
-                    // Замах моба был беззвучным: mobAttack() написан и
-                    // ни разу не позван. Игрок слышал только свой удар
-                    // и собственную боль — между ними ничего.
-                    audio::events().mobAttack(tf->position);
+                    if (def.isBoss && !ai->swingIsSlam) ++ai->slamCounter;
+                    ai->attackCooldown = cooldown *
+                                         (ai->swingIsSlam ? 1.6f : 1.f);
+                    ai->swingIsSlam = false;
                 }
 
-                if (ai->stateTime > 1.5f) {
-                    if (distToPlayer > def.attackRange) {
-                        agent->state = AIAgent::Chase;
-                        ai->stateTime = 0.f;
-                        ai->repathCooldown = 0.f;
-                    } else {
-                        ai->stateTime = 0.f;
+                // ---- Начало замаха ----
+                if (!ai->swing.winding() && ai->attackCooldown <= 0.f) {
+                    // Со второй фазы каждый третий удар — по площади.
+                    const bool slam = def.isBoss && def.slamRadius > 0.f
+                                   && ai->bossPhase >= 1
+                                   && ai->slamCounter >= 2;
+                    // Замахиваться на того, до кого заведомо не
+                    // достаёшь, незачем: теперь промах означает, что
+                    // цель УШЛА из-под удара, а не что тварь машет в
+                    // пустоту от нечего делать.
+                    const f32 reach = slam ? def.slamRadius
+                                           : def.attackRange + 0.4f;
+                    if (distToPlayer < reach) {
+                        ai->swingIsSlam = slam;
+                        if (slam) {
+                            ai->slamCounter = 0;
+                            // Большой удар объявляется крупно: иначе
+                            // выйти из круга в пять метров нельзя, и
+                            // «особая атака» отличалась бы только
+                            // числом урона.
+                            windup *= def.slamWindupMult;
+                        }
+                        ai->swing.begin(windup);
+                        // Звук — В НАЧАЛЕ замаха, а не в момент урона.
+                        // Раньше он приходил вместе с уроном, то есть
+                        // не предупреждал ни о чём; теперь это
+                        // единственное, что предупреждает об ударе со
+                        // спины.
+                        audio::events().mobAttack(tf->position);
                     }
+                }
+
+                // Не достаёт и не замахивается — значит, надо
+                // догонять, а не стоять до истечения полутора секунд.
+                // Пока замах идёт, тварь стои́т: удар начат, и
+                // доводить его она обязана с места.
+                if (!ai->swing.busy() && distToPlayer > def.attackRange) {
+                    agent->state = AIAgent::Chase;
+                    ai->stateTime = 0.f;
+                    ai->repathCooldown = 0.f;
+                } else if (ai->stateTime > 1.5f) {
+                    ai->stateTime = 0.f;
                 }
                 break;
             }

@@ -89,6 +89,10 @@ MobRegistry::MobRegistry() {
         // Волк охотится и днём. Он зверь, а не нежить: прятаться от
         // солнца ему незачем.
         d.dayActive = true;
+        // Волк бьёт коротко: это его характер — успеть отойти можно,
+        // но только если смотришь на него.
+        d.windupTime   = 0.30f;
+        d.attackShape  = anim::AttackShape::Bite;
         defs_[MOB_WOLF] = d;
     }
 
@@ -109,6 +113,8 @@ MobRegistry::MobRegistry() {
         d.hostile = true;
         d.canSwim = false;
         d.xpReward = 55;
+        d.windupTime   = 0.45f;
+        d.attackShape  = anim::AttackShape::Slash;
         defs_[MOB_SKELETON] = d;
     }
 
@@ -129,6 +135,10 @@ MobRegistry::MobRegistry() {
         d.hostile = true;
         d.canSwim = true;
         d.xpReward = 35;
+        // Гоблин мельче и быстрее всех: замах едва заметен. Против него
+        // помогает не уклонение, а то, чтобы не подпускать.
+        d.windupTime   = 0.26f;
+        d.attackShape  = anim::AttackShape::Stab;
         defs_[MOB_GOBLIN] = d;
     }
 
@@ -149,6 +159,9 @@ MobRegistry::MobRegistry() {
         d.hostile = true;
         d.canSwim = true;
         d.xpReward = 50;
+        // Слизень собирается в комок и прыгает: долго и очень заметно.
+        d.windupTime   = 0.55f;
+        d.attackShape  = anim::AttackShape::Bite;
         defs_[MOB_SLIME] = d;
     }
 
@@ -182,6 +195,10 @@ MobRegistry::MobRegistry() {
         d.healAmount = 8.f;
         d.healPeriod = 6.f;
         d.healBelow  = 0.6f;
+        // Ведьма читает заклинание — самый длинный замах среди обычных
+        // тварей, и единственная, от кого уклониться проще всего.
+        d.windupTime   = 0.65f;
+        d.attackShape  = anim::AttackShape::Cast;
         defs_[MOB_WITCH] = d;
     }
 
@@ -207,6 +224,9 @@ MobRegistry::MobRegistry() {
         d.canSwim = true;
         d.dayActive = true;
         d.xpReward = 60;
+        // Кабан разгоняется всем телом: тяжело и небыстро.
+        d.windupTime   = 0.50f;
+        d.attackShape  = anim::AttackShape::Bite;
         defs_[MOB_BOAR] = d;
     }
 
@@ -232,6 +252,8 @@ MobRegistry::MobRegistry() {
         d.canSwim = true;
         d.dayActive = true;
         d.xpReward = 90;
+        d.windupTime   = 0.38f;
+        d.attackShape  = anim::AttackShape::Slash;
         defs_[MOB_BANDIT] = d;
     }
 
@@ -260,6 +282,11 @@ MobRegistry::MobRegistry() {
         d.enrageMult = 1.7f;
         d.slamRadius = 5.0f;
         d.slamDamage = 26.f;
+        // Страж бьёт каменной рукой сверху вниз. Замах вдвое длиннее
+        // волчьего, и это не поблажка: под удар по площади (ещё
+        // вдвое дольше) надо успеть выйти из круга в пять метров.
+        d.windupTime   = 0.80f;
+        d.attackShape  = anim::AttackShape::Chop;
         defs_[MOB_BOSS_WARDEN] = d;
     }
 
@@ -287,6 +314,10 @@ MobRegistry::MobRegistry() {
         d.enrageMult = 2.0f;
         d.slamRadius = 0.f;       // без АоЕ: берёт скоростью
         d.slamDamage = 0.f;
+        // Владыка берёт скоростью: замах вдвое короче, чем у Стража, и
+        // на последней фазе укорачивается ещё.
+        d.windupTime   = 0.42f;
+        d.attackShape  = anim::AttackShape::Slash;
         defs_[MOB_BOSS_HOLLOW] = d;
     }
 

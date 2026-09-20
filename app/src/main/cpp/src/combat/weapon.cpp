@@ -15,6 +15,12 @@ constexpr DamageType ARCANE = DamageType::Arcane;
 }
 
 WeaponRegistry::WeaponRegistry() {
+    // Пустая рука тоже бьёт: голыми руками дерутся безоружные NPC, и
+    // движение им нужно такое же настоящее. Заполнено только то, чем
+    // это движение задаётся; «нет оружия» WEAPON_NONE остаётся во
+    // всём остальном — урон, досягаемость и цена у него нулевые.
+    defs_[WEAPON_NONE].shape = anim::AttackShape::Stab;
+
     // -------------------- Iron Sword --------------------
     {
         WeaponDef d{};
@@ -33,6 +39,7 @@ WeaponRegistry::WeaponRegistry() {
         d.knockback         = 1.5f;
         d.windupTime        = 0.14f;
         d.recoveryTime      = 0.32f;
+        d.shape             = anim::AttackShape::Slash;
         defs_[WEAPON_IRON_SWORD] = d;
     }
 
@@ -54,6 +61,7 @@ WeaponRegistry::WeaponRegistry() {
         d.knockback         = 2.8f;
         d.windupTime        = 0.24f;
         d.recoveryTime      = 0.55f;
+        d.shape             = anim::AttackShape::Chop;
         defs_[WEAPON_IRON_AXE] = d;
     }
 
@@ -75,6 +83,7 @@ WeaponRegistry::WeaponRegistry() {
         d.knockback         = 2.0f;
         d.windupTime        = 0.18f;
         d.recoveryTime      = 0.42f;
+        d.shape             = anim::AttackShape::Thrust;
         defs_[WEAPON_IRON_SPEAR] = d;
     }
 
@@ -96,6 +105,7 @@ WeaponRegistry::WeaponRegistry() {
         d.knockback         = 0.8f;
         d.windupTime        = 0.08f;
         d.recoveryTime      = 0.22f;
+        d.shape             = anim::AttackShape::Stab;
         defs_[WEAPON_IRON_DAGGER] = d;
     }
 
@@ -117,6 +127,7 @@ WeaponRegistry::WeaponRegistry() {
         d.knockback         = 1.0f;
         d.windupTime        = 0.40f;
         d.recoveryTime      = 0.20f;
+        d.shape             = anim::AttackShape::Draw;
         defs_[WEAPON_HUNTING_BOW] = d;
     }
 
@@ -138,6 +149,7 @@ WeaponRegistry::WeaponRegistry() {
         d.knockback         = 2.5f;
         d.windupTime        = 1.00f;
         d.recoveryTime      = 0.35f;
+        d.shape             = anim::AttackShape::Draw;
         defs_[WEAPON_HEAVY_CROSSBOW] = d;
     }
 
@@ -159,6 +171,7 @@ WeaponRegistry::WeaponRegistry() {
         d.knockback         = 0.6f;
         d.windupTime        = 0.10f;
         d.recoveryTime      = 0.15f;
+        d.shape             = anim::AttackShape::Chop;
         defs_[WEAPON_THROWING_KNIFE] = d;
     }
 
@@ -180,6 +193,7 @@ WeaponRegistry::WeaponRegistry() {
         d.knockback         = 0.5f;
         d.windupTime        = 0.35f;
         d.recoveryTime      = 0.35f;
+        d.shape             = anim::AttackShape::Cast;
         defs_[WEAPON_FIRE_STAFF] = d;
     }
 
@@ -201,6 +215,7 @@ WeaponRegistry::WeaponRegistry() {
         d.knockback         = 1.0f;
         d.windupTime        = 0.50f;
         d.recoveryTime      = 0.60f;
+        d.shape             = anim::AttackShape::Cast;
         defs_[WEAPON_FROST_WAND] = d;
     }
 
@@ -222,6 +237,7 @@ WeaponRegistry::WeaponRegistry() {
         d.knockback         = 0.f;
         d.windupTime        = 0.60f;
         d.recoveryTime      = 0.40f;
+        d.shape             = anim::AttackShape::Cast;
         defs_[WEAPON_ARCANE_BRACELET] = d;
     }
 

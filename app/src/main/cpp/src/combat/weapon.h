@@ -4,6 +4,7 @@
  */
 #pragma once
 #include "../core/types.h"
+#include "../entity/locomotion.h"
 #include "damage.h"
 #include <glm/glm.hpp>
 
@@ -38,6 +39,13 @@ struct WeaponDef {
 
     f32          windupTime;       // сек до активной фазы
     f32          recoveryTime;     // сек после активной фазы
+
+    /// Каким движением бьют. Отличает оружие НА ВЗГЛЯД: по дуге
+    /// видно, что в руках, без чтения полоски в углу.
+    ///
+    /// Поле, а не ветка по WeaponId: одиннадцатое оружие не должно
+    /// требовать одиннадцатой ветки в анимации.
+    anim::AttackShape shape;
 };
 
 /// Реестр. Singleton, создаётся при первом обращении.

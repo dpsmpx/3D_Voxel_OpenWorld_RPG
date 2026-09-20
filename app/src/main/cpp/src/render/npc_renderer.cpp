@@ -131,6 +131,10 @@ void NpcRenderer::rebuild(ecs::Registry& reg, f32 timeSec, bool showPlayer) {
         }
         st.speedNorm = speedNorm;
         st.death     = (ai->state == npc::NpcAI::Dead) ? ai->deathTimer : 0.f;
+        // Замах жителя. Раньше st.attack здесь не выставлялся вовсе:
+        // стражник рубил волка, не шевельнув рукой.
+        st.attack      = (st.death > 0.f) ? 0.f : ai->swing.pose();
+        st.attackShape = combat::weapons().get(def.weaponId).shape;
 
         entity::Pose pose;
         anim::poseFor(rig, pose, st);
@@ -233,12 +237,15 @@ void NpcRenderer::appendPlayer(ecs::Registry& reg, f32 timeSec) {
             st.rise = lo->rise;
         }
         st.speedNorm = speedNorm;
-        st.attack    = ws ? glm::clamp(ws->swingAnim, 0.f, 1.f) : 0.f;
-        if (const auto* lo = reg.get<ecs::Locomotion>(e)) {
-            st.air  = lo->air;
-            st.land = lo->land;
-            st.rise = lo->rise;
-        }
+        // Знаковое: −1 рука отведена в замахе, +1 прошла сквозь цель.
+        // clamp к [0,1] здесь срезал бы ровно ту половину дуги,
+        // которая и предупреждает об ударе.
+        st.attack    = ws ? glm::clamp(ws->swingAnim, -1.f, 1.f) : 0.f;
+        // Дуга — из оружия в руке. Меч рубит поперёк, топор сверху,
+        // копьё колет: десять классов оружия перестали быть одним
+        // движением с разными числами.
+        if (const auto* eq = reg.get<combat::EquippedWeapon>(e))
+            st.attackShape = combat::weapons().get(eq->weaponId).shape;
 
         entity::Pose pose;
         anim::poseFor(rg, pose, st);

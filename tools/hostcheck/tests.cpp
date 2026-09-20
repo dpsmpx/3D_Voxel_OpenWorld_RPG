@@ -30,6 +30,8 @@
 #include "crafting/recipe.h"
 #include "items/item_use.h"
 #include "combat/resonance.h"
+#include "combat/swing.h"
+#include "combat/weapon.h"
 #include "factions/faction.h"
 #include "quests/quest.h"
 #include "quests/quest_generator.h"
@@ -18606,6 +18608,584 @@ void testQuestProgress() {
     }
 }
 
+// ------------------------------------------------------------
+// Удар начинается раньше, чем попадает.
+//
+// Так выглядел удар твари до этой ревизии, дословно: откат истёк —
+// урон применён — звук — поза, всё в одном кадре. Между «тварь
+// решила ударить» и «игрок потерял здоровье» не проходило ни
+// секунды. У жителей было то же самое, и там вдобавок не было позы
+// удара вовсе: стражник рубил волка, не шевельнув рукой.
+//
+// Отсюда следовало главное: уклоняться было не от чего. Рывок,
+// выносливость, отбрасывание, кадры неуязвимости и станы написаны и
+// работают — пользоваться ими незачем, если удар нельзя увидеть
+// заранее, потому что заранее его не существует.
+// ------------------------------------------------------------
+void testAttacksAnnounceThemselves() {
+    group("бой: удар объявляется заранее");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+    npc::npcRegistry();
+
+    char m[220];
+
+    // ---- 1. Замах есть у КАЖДОГО, кто бьёт ----
+    //
+    // Ноль здесь означал бы «бьёт мгновенно» — ровно то, что чинится.
+    // Проверяется по всему реестру, а не по списку: дыру создаёт как
+    // раз тварь, которую забыли внести в список.
+    {
+        u32 instant = 0;
+        const char* firstBad = nullptr;
+        for (u16 id = mobs::MOB_NONE + 1; id < mobs::MOB_COUNT; ++id) {
+            const mobs::MobDef& d = mobs::mobRegistry().get(id);
+            if (d.attackDamage <= 0.f && d.slamDamage <= 0.f) continue;
+            if (d.windupTime > 0.05f) continue;
+            ++instant;
+            if (!firstBad) firstBad = d.name;
+        }
+        std::snprintf(m, sizeof(m),
+                      "ни одна тварь не бьёт мгновенно%s%s",
+                      firstBad ? ", а бьёт: " : "",
+                      firstBad ? firstBad : "");
+        check(instant == 0, m);
+
+        // Замахи РАЗНЫЕ: по длительности видно, с кем имеешь дело.
+        const f32 wolf   = mobs::mobRegistry().get(mobs::MOB_WOLF).windupTime;
+        const f32 warden = mobs::mobRegistry().get(mobs::MOB_BOSS_WARDEN).windupTime;
+        const f32 goblin = mobs::mobRegistry().get(mobs::MOB_GOBLIN).windupTime;
+        check(goblin < wolf && wolf < warden,
+              "мелкое бьёт быстрее тяжёлого: гоблин < волк < Страж");
+        check(mobs::mobRegistry().get(mobs::MOB_BOSS_WARDEN).slamWindupMult > 1.f,
+              "удар по площади объявляется дольше обычного");
+    }
+
+    // ---- 2. Замах отводит руку НАЗАД, удар проносит вперёд ----
+    //
+    // Знак и есть вся разница между «предупреждением» и «сообщением
+    // об уже случившемся».
+    {
+        combat::SwingState sw;
+        check(sw.pose() == 0.f && !sw.winding(), "в покое замаха нет");
+
+        sw.begin(0.40f);
+        check(sw.winding(), "замах начался");
+        sw.tick(0.10f);
+        const f32 early = sw.pose();
+        sw.tick(0.20f);
+        const f32 late = sw.pose();
+        check(early < 0.f && late < 0.f, "во время замаха рука отведена НАЗАД");
+        check(late < early, "и отводится дальше по мере приближения удара");
+        // Замедление: к середине замаха рука отведена уже на три
+        // четверти и остаток срока почти стои́т. Это ожидание в
+        // отведённом положении и есть телеграф — по равномерному
+        // отводу момент удара не прочитать.
+        combat::SwingState ease;
+        ease.begin(1.0f);
+        ease.tick(0.50f);
+        const f32 atHalf = -ease.pose();
+        ease.tick(0.25f);
+        const f32 atThreeQuarters = -ease.pose();
+        std::snprintf(m, sizeof(m),
+                      "к середине замаха рука отведена на %.0f%%, "
+                      "а не на половину", (double)atHalf * 100.0);
+        check(atHalf > 0.65f, m);
+        check(atThreeQuarters - atHalf < atHalf,
+              "и дальше почти стои́т: рука ЖДЁТ, а не ползёт равномерно");
+
+        check(!sw.tick(0.09f), "до конца замаха попадания нет");
+        check(sw.tick(0.05f),  "попадание приходит по истечении замаха");
+        check(sw.pose() > 0.f, "после попадания рука идёт СКВОЗЬ цель");
+        check(!sw.winding(),   "и замах закончен");
+
+        // Ровно один раз: удар не должен приходить каждый кадр.
+        check(!sw.tick(0.05f), "второй раз тот же замах не попадает");
+
+        // Проводка гаснет сама.
+        for (int i = 0; i < 120; ++i) sw.tick(1.f / 60.f);
+        check(sw.pose() == 0.f && !sw.busy(), "рука возвращается в покой");
+
+        // Оборванный замах не попадает НИКОГДА.
+        combat::SwingState cut;
+        cut.begin(0.20f);
+        cut.tick(0.15f);
+        cut.cancel();
+        bool everStruck = false;
+        for (int i = 0; i < 120; ++i) everStruck |= cut.tick(1.f / 60.f);
+        check(!everStruck, "оборванный замах не доходит до цели");
+    }
+
+    // ---- 3. Настоящий бой: отойти за время замаха ----
+    jobs::gJobs.start(2);
+    {
+        constexpr u64 SEED = 0x5717Au;
+        world::ChunkManager world(SEED, 2);
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        const i32 F = world.generator().surfaceHeight(8, 8) + 6;
+        for (i32 z = -40; z <= 40; ++z)
+            for (i32 x = -40; x <= 40; ++x) {
+                world.setVoxel(x, F - 1, z, world::STONE);
+                for (i32 y = F; y < F + 6; ++y)
+                    world.setVoxel(x, y, z, world::AIR);
+            }
+
+        // Чучело: всё, что нужно, чтобы быть добычей и получать урон.
+        auto makeDummy = [&](ecs::Registry& reg, const glm::vec3& at) {
+            const ecs::Entity e = reg.create();
+            ecs::Transform tf; tf.position = at;        reg.add(e, tf);
+            ecs::Velocity  v{};                          reg.add(e, v);
+            ecs::Health    h; h.max = 1000.f; h.current = 1000.f; reg.add(e, h);
+            reg.add(e, ecs::PlayerTag{});
+            reg.add(e, combat::StatusEffects{});
+            reg.add(e, combat::Combatant{});
+            return e;
+        };
+
+        const glm::vec3 dummyAt { 8.5f, (f32)F, 8.5f };
+        const mobs::MobDef& wolfDef = mobs::mobRegistry().get(mobs::MOB_WOLF);
+
+        // ---- 3a. Стоящему достаётся ----
+        f32 hitAfter = -1.f;
+        {
+            ecs::Registry reg;
+            const ecs::Entity dummy = makeDummy(reg, dummyAt);
+            const ecs::Entity wolf  = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF,
+                dummyAt + glm::vec3(1.0f, 0.f, 0.f));
+            check(wolf.valid(), "волк на месте");
+            if (!wolf.valid()) { jobs::gJobs.stop(); return; }
+
+            auto* dh = reg.get<ecs::Health>(dummy);
+            const f32 dt = 1.f / 60.f;
+            for (int i = 0; i < 60 * 6 && hitAfter < 0.f; ++i) {
+                auto* dtf = reg.get<ecs::Transform>(dummy);
+                mobs::updateMobs(world, reg, dummy, dtf->position, dt);
+                combat::tickStatuses(reg, dt);
+                if (dh->current < 1000.f) hitAfter = (f32)i * dt;
+            }
+            check(hitAfter > 0.f, "волк добирается до неподвижной цели");
+        }
+
+        // ---- 3b. Замах слышно и видно ДО урона ----
+        //
+        // Главная проверка. Между началом замаха (тварь встала,
+        // рука отведена) и попаданием обязан пройти ровно замах, а не
+        // ноль кадров.
+        {
+            ecs::Registry reg;
+            const ecs::Entity dummy = makeDummy(reg, dummyAt);
+            const ecs::Entity wolf  = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF,
+                dummyAt + glm::vec3(1.0f, 0.f, 0.f));
+            if (!wolf.valid()) { jobs::gJobs.stop(); return; }
+
+            auto* dh  = reg.get<ecs::Health>(dummy);
+            auto* wai = reg.get<mobs::MobAI>(wolf);
+            const f32 dt = 1.f / 60.f;
+
+            f32 warnedAt = -1.f, hurtAt = -1.f;
+            for (int i = 0; i < 60 * 6 && hurtAt < 0.f; ++i) {
+                auto* dtf = reg.get<ecs::Transform>(dummy);
+                mobs::updateMobs(world, reg, dummy, dtf->position, dt);
+                combat::tickStatuses(reg, dt);
+                if (warnedAt < 0.f && wai->swing.winding()) warnedAt = (f32)i * dt;
+                if (dh->current < 1000.f) hurtAt = (f32)i * dt;
+            }
+            check(warnedAt >= 0.f, "волк сперва замахивается");
+            const f32 warning = hurtAt - warnedAt;
+            std::snprintf(m, sizeof(m),
+                          "на реакцию даётся %.0f мс (замах волка %.0f мс)",
+                          (double)warning * 1000.0,
+                          (double)wolfDef.windupTime * 1000.0);
+            check(warning > wolfDef.windupTime * 0.8f, m);
+        }
+
+        // ---- 3c. Кто отошёл за время замаха — цел ----
+        //
+        // То, ради чего всё и делалось: рывок и шаг назад впервые
+        // что-то значат.
+        {
+            ecs::Registry reg;
+            const ecs::Entity dummy = makeDummy(reg, dummyAt);
+            const ecs::Entity wolf  = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF,
+                dummyAt + glm::vec3(1.0f, 0.f, 0.f));
+            if (!wolf.valid()) { jobs::gJobs.stop(); return; }
+
+            auto* dh  = reg.get<ecs::Health>(dummy);
+            auto* dtf = reg.get<ecs::Transform>(dummy);
+            auto* wai = reg.get<mobs::MobAI>(wolf);
+            const f32 dt = 1.f / 60.f;
+
+            bool dodgedOnce = false;
+            for (int i = 0; i < 60 * 8; ++i) {
+                // Увидел замах — отскочил. Ровно то, что делает игрок.
+                if (wai->swing.winding() && !dodgedOnce) {
+                    dtf->position = dummyAt + glm::vec3(0.f, 0.f, 14.f);
+                    dodgedOnce = true;
+                }
+                mobs::updateMobs(world, reg, dummy, dtf->position, dt);
+                combat::tickStatuses(reg, dt);
+                if (dodgedOnce) break;
+            }
+            check(dodgedOnce, "замах удалось заметить");
+
+            // Досчитываем замах до конца, оставаясь далеко.
+            f32 tookDamage = 0.f;
+            for (int i = 0; i < 60; ++i) {
+                mobs::updateMobs(world, reg, dummy, dtf->position, dt);
+                combat::tickStatuses(reg, dt);
+                tookDamage = 1000.f - dh->current;
+                if (!wai->swing.busy()) break;
+            }
+            check(tookDamage <= 0.f,
+                  "отскочивший за время замаха урона не получает");
+            // И новый замах на пустое место не начинается: промах
+            // обязан означать «цель ушла», а не «тварь машет в
+            // воздух от нечего делать».
+            check(!wai->swing.winding(),
+                  "и на цель в четырнадцати метрах волк не замахивается");
+        }
+
+        // ---- 3d. Оглушение обрывает занесённый удар ----
+        {
+            ecs::Registry reg;
+            const ecs::Entity dummy = makeDummy(reg, dummyAt);
+            const ecs::Entity wolf  = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF,
+                dummyAt + glm::vec3(1.0f, 0.f, 0.f));
+            if (!wolf.valid()) { jobs::gJobs.stop(); return; }
+
+            auto* dh  = reg.get<ecs::Health>(dummy);
+            auto* dtf = reg.get<ecs::Transform>(dummy);
+            auto* wai = reg.get<mobs::MobAI>(wolf);
+            auto* wse = reg.get<combat::StatusEffects>(wolf);
+            const f32 dt = 1.f / 60.f;
+
+            bool stunnedIt = false;
+            for (int i = 0; i < 60 * 8 && !stunnedIt; ++i) {
+                mobs::updateMobs(world, reg, dummy, dtf->position, dt);
+                combat::tickStatuses(reg, dt);
+                if (wai->swing.winding() && wse) {
+                    wse->stunTime = 0.8f;
+                    stunnedIt = true;
+                }
+            }
+            check(stunnedIt, "волка удалось оглушить в замахе");
+            const f32 before = dh->current;
+            for (int i = 0; i < 40; ++i) {
+                mobs::updateMobs(world, reg, dummy, dtf->position, dt);
+                combat::tickStatuses(reg, dt);
+            }
+            check(dh->current >= before,
+                  "оглушённый в замахе не доводит удар");
+        }
+
+        // ---- 4. Житель бьёт по тому же правилу ----
+        //
+        // Одно правило на всех, кто бьёт, а не два похожих.
+        {
+            ecs::Registry reg;
+            const ecs::Entity guard = npc::spawnNpc(
+                world, reg, npc::NPC_GUARD, { 8.5f, (f32)F, 8.5f }, 1);
+            const ecs::Entity wolf = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF, { 11.0f, (f32)F, 8.5f });
+            check(guard.valid() && wolf.valid(), "стражник и волк на месте");
+            if (!guard.valid() || !wolf.valid()) { jobs::gJobs.stop(); return; }
+
+            auto* gai = reg.get<npc::NpcAI>(guard);
+            auto* whp = reg.get<ecs::Health>(wolf);
+            const f32 full = whp->current;
+            const glm::vec3 nowhere { 500.f, (f32)F, 500.f };
+            const f32 dt = 1.f / 60.f;
+
+            bool sawWindup = false;
+            f32  hurtAt = -1.f, warnedAt = -1.f;
+            for (int i = 0; i < 60 * 8 && hurtAt < 0.f; ++i) {
+                npc::updateNpcs(world, reg, ecs::Entity{}, nowhere, dt);
+                mobs::updateMobs(world, reg, ecs::Entity{}, nowhere, dt);
+                combat::tickStatuses(reg, dt);
+                if (!sawWindup && gai->swing.winding()) {
+                    sawWindup = true;
+                    warnedAt = (f32)i * dt;
+                }
+                if (whp->current < full) hurtAt = (f32)i * dt;
+            }
+            check(sawWindup, "стражник замахивается, а не бьёт мгновенно");
+            check(hurtAt < 0.f || hurtAt > warnedAt,
+                  "и урон приходит ПОСЛЕ замаха, а не вместе с ним");
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+// Десять оружий — десять движений.
+//
+// anim::poseFor на любую атаку делала ровно одно: обе руки одинаково
+// вперёд. Кинжал, двуручный топор, копьё, лук и посох были одним
+// движением, отличавшимся только длительностью. По ТЗ у игры десять
+// классов оружия; фактически был один, у которого десять таблиц
+// чисел.
+// ------------------------------------------------------------
+void testWeaponsSwingDifferently() {
+    group("бой: у каждого оружия своя дуга");
+
+    combat::weapons();
+    char m[220];
+
+    const entity::Rig& rig = player::rig();
+
+    // Кисть бьющей руки в заданной точке дуги.
+    auto handAt = [&](anim::AttackShape shape, f32 a) {
+        anim::AnimState st;
+        st.attack = a;
+        st.attackShape = shape;
+        entity::Pose pose;
+        anim::poseFor(rig, pose, st);
+        entity::ResolvedPart p[entity::MAX_PARTS];
+        const u8 n = entity::resolve(rig, pose, glm::vec3(0.f), 0.f,
+                                     p, entity::MAX_PARTS);
+        glm::vec3 hand{0.f};
+        u8 w = 0;
+        for (u8 i = 0; i < rig.count && w < n; ++i) {
+            if (!rig.parts[i].visible) continue;
+            if (rig.parts[i].role == entity::PartRole::LowerArmR) hand = p[w].center;
+            ++w;
+        }
+        return hand;
+    };
+
+    // ---- 1. Каждое оружие несёт форму ----
+    {
+        u32 shapeless = 0;
+        const char* firstBad = nullptr;
+        for (u16 id = combat::WEAPON_NONE + 1; id < combat::WEAPON_COUNT; ++id) {
+            const combat::WeaponDef& d = combat::weapons().get(id);
+            if (d.shape != anim::AttackShape::None) continue;
+            ++shapeless;
+            if (!firstBad) firstBad = d.name;
+        }
+        std::snprintf(m, sizeof(m), "у каждого оружия есть своя дуга%s%s",
+                      firstBad ? ", а нет у: " : "", firstBad ? firstBad : "");
+        check(shapeless == 0, m);
+        check(combat::weapons().get(combat::WEAPON_NONE).shape
+                  != anim::AttackShape::None,
+              "и у пустой руки тоже: безоружный бьёт кулаком");
+    }
+
+    // ---- 2. Меч, топор и копьё — три РАЗНЫХ движения ----
+    //
+    // Не «разные числа в таблице», а разное положение руки: именно
+    // его видит игрок, и именно по нему отличает оружие, не читая
+    // подписи.
+    {
+        const anim::AttackShape kinds[] = {
+            anim::AttackShape::Slash, anim::AttackShape::Chop,
+            anim::AttackShape::Thrust, anim::AttackShape::Stab,
+            anim::AttackShape::Draw,  anim::AttackShape::Cast,
+        };
+        constexpr u32 N = sizeof(kinds) / sizeof(kinds[0]);
+        u32 tooAlike = 0;
+        f32 closest = 1e9f;
+        for (u32 i = 0; i < N; ++i)
+            for (u32 j = i + 1; j < N; ++j) {
+                // Сравниваем ВСЮ дугу, а не одну точку: два движения
+                // могут сойтись в замахе и разойтись в ударе.
+                f32 apart = 0.f;
+                for (int k = -1; k <= 1; k += 2) {
+                    const f32 a = (f32)k;
+                    apart = std::max(apart,
+                        glm::length(handAt(kinds[i], a) - handAt(kinds[j], a)));
+                }
+                closest = std::min(closest, apart);
+                if (apart < 0.12f) ++tooAlike;
+            }
+        std::snprintf(m, sizeof(m),
+                      "ни одна пара дуг не совпадает (ближайшие — %.0f см)",
+                      (double)closest * 100.0);
+        check(tooAlike == 0, m);
+    }
+
+    // ---- 3. Дуга идёт НАЗАД, потом ВПЕРЁД ----
+    //
+    // Модель смотрит в +Z. Замах уводит кисть назад, удар проносит
+    // вперёд; обратный порядок — это и был прежний код, где удар
+    // проигрывался задом наперёд.
+    {
+        struct Case { anim::AttackShape s; const char* name; };
+        const Case cases[] = {
+            { anim::AttackShape::Slash,  "меч"    },
+            { anim::AttackShape::Chop,   "топор"  },
+            { anim::AttackShape::Thrust, "копьё"  },
+            { anim::AttackShape::Stab,   "кинжал" },
+        };
+        for (const Case& c : cases) {
+            const f32 back  = handAt(c.s, -1.f).z;
+            const f32 rest  = handAt(c.s,  0.f).z;
+            const f32 front = handAt(c.s, +1.f).z;
+            std::snprintf(m, sizeof(m),
+                          "%s: замах уводит кисть назад, удар — вперёд",
+                          c.name);
+            check(back < rest && front > rest, m);
+        }
+        // Копьё достаёт дальше всех — на то оно и копьё.
+        check(handAt(anim::AttackShape::Thrust, 1.f).z >
+              handAt(anim::AttackShape::Stab,   1.f).z,
+              "копьём выпад длиннее, чем кинжалом");
+        // Топор приходит сверху: в замахе кисть выше всего.
+        check(handAt(anim::AttackShape::Chop, -1.f).y >
+              handAt(anim::AttackShape::Slash, -1.f).y,
+              "топор заносится выше меча");
+    }
+
+    // ---- 4. Покой остаётся покоем ----
+    {
+        anim::AnimState idle;
+        entity::Pose a, b;
+        anim::poseFor(rig, a, idle);
+        idle.attackShape = anim::AttackShape::Chop;   // формы мало, нужен замах
+        anim::poseFor(rig, b, idle);
+        f32 diff = 0.f;
+        for (u8 i = 0; i < rig.count; ++i)
+            diff = std::max(diff, glm::length(a.euler[i] - b.euler[i]));
+        check(diff < 1e-5f, "без удара форма оружия позу не трогает");
+    }
+
+    // ---- 5. Замах игрока отводит руку, а не выносит вперёд ----
+    //
+    // Проверяется машина состояний оружия: swingAnim знаковый, и на
+    // фазе замаха он ОТРИЦАТЕЛЕН.
+    {
+        const std::string src =
+            readSource("app/src/main/cpp/src/combat/combat_controller.cpp");
+        check(!src.empty(), "исходник боя прочитан");
+        check(src.find("wstate->swingAnim = -(1.f - left * left);")
+                  != std::string::npos,
+              "на замахе рука отводится назад (знак минус)");
+        const std::string ren =
+            readSource("app/src/main/cpp/src/render/npc_renderer.cpp");
+        check(ren.find("glm::clamp(ws->swingAnim, -1.f, 1.f)")
+                  != std::string::npos,
+              "рендер не срезает половину дуги обрезкой в [0,1]");
+    }
+}
+
+// ------------------------------------------------------------
+// Попадание чувствуется, и бонусы за крит доходят до ближнего боя.
+//
+// Толчка камеры в проекте не было вовсе: попадание, крит, добивание,
+// удар по игроку и падение с обрыва не двигали кадр ни на пиксель.
+//
+// А ещё applyHits считал крит по «голому» def.critChance: бонусы
+// Древа и ступени Резонанса в ближнем бою не участвовали, и там же
+// затиралось зачарование Sharpness. Игрок вкладывал очки и ресурсы в
+// то, что не работает.
+// ------------------------------------------------------------
+void testHitsHaveWeight() {
+    group("бой: попадание имеет вес");
+
+    combat::weapons();
+
+    // ---- 1. Отдача камеры ----
+    {
+        render::Camera cam;
+        check(cam.shakeTrauma() == 0.f, "в покое камеру не трясёт");
+        check(glm::length(cam.shakeOffset()) == 0.f, "и не смещает");
+
+        cam.addShake(1.f);
+        check(cam.shakeTrauma() > 0.99f, "удар копит отдачу");
+        const f32 strong = glm::length(cam.shakeOffset());
+        check(strong > 0.f, "и смещает глаз");
+        check(strong < 0.5f, "но не настолько, чтобы мешать целиться");
+
+        // От КВАДРАТА: слабый удар почти не виден, сильный бьёт
+        // заметно. Линейная зависимость сделала бы укус овцы таким же
+        // событием, как удар Стража.
+        render::Camera half;
+        half.addShake(0.5f);
+        half.tickShake(0.001f);
+        const f32 weak = glm::length(half.shakeOffset());
+        check(weak * 3.f < strong,
+              "вдвое слабее удар — заметно слабее четверти отдачи");
+
+        // Гаснет сама, и за разумное время.
+        for (int i = 0; i < 60; ++i) cam.tickShake(1.f / 60.f);
+        check(cam.shakeTrauma() == 0.f, "за секунду отдача гаснет полностью");
+        check(glm::length(cam.shakeOffset()) == 0.f, "и смещение вместе с ней");
+
+        // Больше единицы не копится: сотня ударов подряд не должна
+        // выбрасывать камеру из головы.
+        render::Camera many;
+        for (int i = 0; i < 100; ++i) many.addShake(0.5f);
+        check(many.shakeTrauma() <= 1.f, "отдача ограничена сверху");
+
+        // Прицел НЕ трясётся: иначе бой станет менее читаемым ровно
+        // там, где должен стать более читаемым.
+        render::Camera aim;
+        aim.setYawPitch(0.7f, 0.2f);
+        const glm::vec3 before = aim.forward();
+        aim.addShake(1.f);
+        aim.tickShake(0.016f);
+        check(glm::length(aim.forward() - before) < 1e-6f,
+              "тряска не уводит прицел");
+    }
+
+    // ---- 2. Отдача копится от УРОНА, а не от числа источников ----
+    {
+        const std::string src =
+            readSource("app/src/main/cpp/src/player/player.cpp");
+        check(!src.empty(), "исходник игрока прочитан");
+        check(src.find("void Player::noticeImpacts") != std::string::npos,
+              "боль игрока замечается в одном месте");
+        check(src.find("taken / maxHp") != std::string::npos,
+              "и меряется долей полосы, а не перечнем источников");
+        const std::string mn = readSource("app/src/main/cpp/src/main.cpp");
+        check(mn.find("cam.addShake(player->takeCameraShake());")
+                  != std::string::npos,
+              "накопленное доходит до камеры");
+        check(mn.find("player->resyncImpactBaseline();") != std::string::npos,
+              "а здоровье из сейва за урон не считается");
+    }
+
+    // ---- 3. Крит и Sharpness доходят до ближнего боя ----
+    {
+        const std::string src =
+            readSource("app/src/main/cpp/src/combat/combat_controller.cpp");
+        check(src.find("d.isCritical   = rollCritical(critChance);")
+                  != std::string::npos,
+              "крит считается по НАСЧИТАННОМУ шансу, а не по таблице оружия");
+        check(src.find("d.criticalMult = critMult;") != std::string::npos,
+              "и множитель крита — тоже");
+        check(src.find("enchThis.primary = d;") == std::string::npos,
+              "основа удара больше не затирается незачарованной");
+        check(src.find("DamageInstance& d = enchThis.primary;")
+                  != std::string::npos,
+              "урон считается ОТ зачарованной основы");
+    }
+
+    // ---- 4. Sharpness и правда прибавляет ----
+    {
+        combat::DamageInstance base{};
+        base.amount = 10.f;
+        combat::Enchantment sharp{ combat::EnchantmentId::Sharpness, 3 };
+        const combat::EnchantResult r = combat::applyEnchantment(base, sharp);
+        check(r.primary.amount > base.amount * 1.2f,
+              "Sharpness III заметно усиливает основной урон");
+    }
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -18749,6 +19329,10 @@ int main() {
     testInventoryInvariants();
     testTrade();
     testDialogueOpensScreens();
+
+    testAttacksAnnounceThemselves();
+    testWeaponsSwingDifferently();
+    testHitsHaveWeight();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);
     if (g_failed) {
