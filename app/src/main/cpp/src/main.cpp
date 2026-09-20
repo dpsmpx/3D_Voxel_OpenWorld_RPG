@@ -43,6 +43,8 @@
 #include "world/day_cycle.h"
 
 #include "render/render_system.h"
+#include "render/iso_snapshot.h"
+#include "render/iso_save.h"
 
 #include "player/player.h"
 #include "physics/raycast.h"
@@ -121,6 +123,21 @@ using namespace ecs;
 namespace cfg = config;
 
 
+/// Разрешение снимка: предпросмотр и итог.
+///
+/// Разведены намеренно. Предпросмотр обязан быть быстрым — его
+/// пересобирают на каждое нажатие; итог обязан быть подробным — его
+/// потом рассматривают. Двенадцать пикселей на блок дают для сотни
+/// блоков картинку около 1700x1900: воксель читается, а файл не
+/// разрастается до десятков мегабайт.
+constexpr f32 ISO_PREVIEW_PX_PER_BLOCK = 3.f;
+constexpr u32 ISO_PREVIEW_MAX_SIDE     = 512;
+constexpr f32 ISO_FINAL_PX_PER_BLOCK   = 12.f;
+/// Потолок стороны итоговой картинки. Больше 8192 не даёт ни один
+/// разумный телефон (maxImageDimension2D), да и PNG такого размера
+/// уже неудобен; при превышении уменьшается масштаб, а не область.
+constexpr u32 ISO_FINAL_MAX_SIDE       = 8192;
+
 struct Engine {
     vk::Context                            vk;
     input::TouchInput                      touch;
@@ -150,6 +167,21 @@ struct Engine {
 
     // Phase 15: spatial hash
     combat::SpatialHash                    spatialHash;
+
+    // ---- Изометрический снимок мира ----
+    //
+    // Живёт рядом с рендером, но не внутри него: у снимка своя цель,
+    // свой командный буфер и своя очередь работ, и в кадровый путь
+    // он не встраивается (см. render/iso_snapshot.h).
+    render::IsoSnapshot                    isoSnap;
+    bool                                   isoReady_ = false;
+    /// Текстура предпросмотра: картинка снимка, показанная в
+    /// интерфейсе. Пересоздаётся при каждом новом предпросмотре —
+    /// она маленькая, и держать под неё отдельный путь обновления
+    /// дороже, чем создать заново.
+    vk::Texture2D                          isoPreviewTex;
+    /// Что заказано сейчас: предпросмотр или итоговый снимок.
+    bool                                   isoCapturing_ = false;
 
     /// Зерно текущего мира. Настоящее значение берётся при входе в
     /// мир: до него мира нет, а ноль — честное «никакого».
@@ -366,6 +398,14 @@ struct Engine {
 
         crash::step("интерфейс");
         ui = std::make_unique<ui::UiSystem>();
+        // Подсистема снимка. Не встаёт — игра работает дальше: это
+        // возможность, а не условие запуска.
+        isoReady_ = isoSnap.init(vk.device(), vk.physicalDevice(),
+                                 vk.gfxQueue(), vk.gfxFamily(),
+                                 vk.depthFormat(),
+                                 app->activity->assetManager);
+        if (!isoReady_) LOGW("снимок мира недоступен");
+
         if (!ui->init(vk, app->activity->assetManager)) {
             LOGE("UI init failed");
             return;
@@ -465,6 +505,36 @@ struct Engine {
         ui->onCloseDialogue = [this]() {
             if (!player) return;
             npc::endDialogue(registry, (u32)player->entity());
+        };
+
+        // ---- Изометрический снимок мира ----
+        //
+        // Интерфейс задаёт ЧТО снять, здесь решается КАК. Обе стороны
+        // не знают друг о друге ничего лишнего: экран не видит
+        // Vulkan, снимок не видит интерфейса.
+        ui->onIsoParamsChanged = [this]() {
+            if (!isoReady_ || !ui || !player) return;
+            isoCapturing_ = false;
+            ui->iso.capturing = false;
+            ui->iso.savedPath.clear();
+            startIsoJob(false);
+        };
+        ui->onIsoCapture = [this]() {
+            if (!isoReady_ || !ui || !player) return;
+            isoCapturing_ = true;
+            ui->iso.capturing = true;
+            ui->iso.savedPath.clear();
+            startIsoJob(true);
+        };
+        ui->onIsoCancel = [this]() {
+            if (!isoReady_) return;
+            isoCapturing_ = false;
+            isoSnap.cancel();
+            if (ui) {
+                ui->iso.capturing = false;
+                ui->iso.stage = 0;
+                ui->iso.progress = 0.f;
+            }
         };
 
         ui->onSettingsChanged = [this]() {
@@ -745,6 +815,12 @@ struct Engine {
         // пользуется.
         vk.waitIdle();
 
+        // Снимок держит свою цель рендера, конвейеры и текстуру
+        // предпросмотра — их тоже освобождаем сами, до vk.shutdown().
+        if (ui) ui->setPreviewImage(VK_NULL_HANDLE, VK_NULL_HANDLE);
+        isoPreviewTex.destroy();
+        if (isoReady_) { isoSnap.destroy(); isoReady_ = false; }
+
         if (render) {
             render->setUiSystem(nullptr);
             render->shutdown();
@@ -979,6 +1055,116 @@ struct Engine {
     /// открыто ли меню, и ровно тогда же меняется их доступность
     /// для касания.
     bool padButtonsVisible_ = true;
+
+    // ============================================================
+    // Изометрический снимок мира
+    // ============================================================
+    //
+    // Два заказа на одном движке: предпросмотр и итоговый снимок.
+    // Отличаются ТОЛЬКО разрешением — путь, геометрия, проекция,
+    // порядок рисования, материалы и свет у них общие. Если бы
+    // предпросмотр рисовало что-то своё, игрок выбирал бы по одной
+    // картинке, а получал другую.
+    void startIsoJob(bool finalShot) {
+        if (!isoReady_ || !ui || !player) return;
+
+        const glm::vec3 pos = player->controller.state().position;
+        render::IsoRequest req;
+        req.area = render::iso::areaAround(pos, ui->iso.size);
+        req.view = (render::iso::View)(ui->iso.view & 3u);
+
+        if (finalShot) {
+            // Итоговое разрешение НЕ привязано к экрану телефона:
+            // снимок 512 блоков на экране 2306x1080 всё равно должен
+            // быть картой, а не скриншотом.
+            req.pixelsPerBlock = ISO_FINAL_PX_PER_BLOCK;
+            req.maxSide        = ISO_FINAL_MAX_SIDE;
+        } else {
+            req.pixelsPerBlock = ISO_PREVIEW_PX_PER_BLOCK;
+            req.maxSide        = ISO_PREVIEW_MAX_SIDE;
+        }
+
+        // Территорию уже подготовили и меши построили — тогда смена
+        // стороны или разрешения это просто перерисовка.
+        if (!isoSnap.rerender(req)) isoSnap.begin(req);
+
+        ui->iso.centerX = req.area.x0 + req.area.size / 2;
+        ui->iso.centerZ = req.area.z0 + req.area.size / 2;
+        ui->iso.stage    = (u8)isoSnap.stage();
+        ui->iso.error    = (u8)isoSnap.error();
+        ui->iso.progress = isoSnap.progress();
+    }
+
+    /// Шаг снимка. Зовётся раз в кадр, пока открыт его экран.
+    void tickIso() {
+        if (!isoReady_ || !ui || !world) return;
+        if (ui->screen != ui::Screen::IsoSnapshot) return;
+
+        const render::IsoStage before = isoSnap.stage();
+        isoSnap.step(*world);
+
+        ui->iso.stage    = (u8)isoSnap.stage();
+        ui->iso.error    = (u8)isoSnap.error();
+        ui->iso.progress = isoSnap.progress();
+        ui->iso.outW     = isoSnap.width();
+        ui->iso.outH     = isoSnap.height();
+
+        if (isoSnap.stage() != render::IsoStage::Ready) return;
+        if (before == render::IsoStage::Ready) return;      // уже разобрали
+
+        // ---- Готово: показать и, если просили, сохранить ----
+        showIsoPreview();
+
+        if (!isoCapturing_) return;
+        isoCapturing_ = false;
+        ui->iso.capturing = false;
+
+        const std::string path = render::saveIsoSnapshot(
+            internalDataPath.c_str(), externalDataPath.c_str(),
+            ui->iso.centerX, ui->iso.centerZ, isoSnap.request().area.size,
+            isoSnap.request().view, (i64)std::time(nullptr),
+            isoSnap.pixels().data(), isoSnap.width(), isoSnap.height());
+
+        if (path.empty()) {
+            // Не сохранили — это ошибка сохранения, а не рендера, и
+            // сказать надо именно так.
+            ui->iso.stage = (u8)render::IsoStage::Failed;
+            ui->iso.error = 4;                       // Iso_ErrSave
+            LOGE("снимок: не удалось сохранить файл");
+            return;
+        }
+        ui->iso.savedPath = path;
+        ui->setStatus(cfg::L().get(cfg::StrKey::Iso_Saved));
+    }
+
+    /// Кладёт готовую картинку в текстуру интерфейса.
+    void showIsoPreview() {
+        if (!ui) return;
+        const auto& px = isoSnap.pixels();
+        const u32 w = isoSnap.width(), h = isoSnap.height();
+        if (px.empty() || w == 0 || h == 0) return;
+
+        // Текстура интерфейса четырёхканальная, а снимок трёхканальный:
+        // альфа у карты одна на всю картинку и хранить её незачем.
+        std::vector<u8> rgba((usize)w * h * 4);
+        for (usize i = 0, n = (usize)w * h; i < n; ++i) {
+            rgba[i * 4 + 0] = px[i * 3 + 0];
+            rgba[i * 4 + 1] = px[i * 3 + 1];
+            rgba[i * 4 + 2] = px[i * 3 + 2];
+            rgba[i * 4 + 3] = 255;
+        }
+
+        isoPreviewTex.destroy();
+        if (!isoPreviewTex.create(vk.device(), vk.physicalDevice(),
+                                  vk.gfxQueue(), vk.gfxFamily(),
+                                  w, h, VK_FORMAT_R8G8B8A8_UNORM,
+                                  rgba.data(), rgba.size(),
+                                  VK_FILTER_LINEAR)) {
+            LOGW("снимок: текстура предпросмотра не создана");
+            return;
+        }
+        ui->setPreviewImage(isoPreviewTex.view(), isoPreviewTex.sampler());
+    }
 
     void setupButtons() {
         // Положения и размеры — в ui/hud_layout.h, вместе со всей
@@ -1800,6 +1986,10 @@ struct Engine {
             }
             ui->loadProgress = total ? (f32)ready / (f32)total : 1.f;
         }
+
+        // Снимок мира двигается по шагу в кадр: подготовка
+        // территории и рендер тайлов не должны съедать кадр целиком.
+        tickIso();
 
         if (ui) ui->tickUi(dt);
 

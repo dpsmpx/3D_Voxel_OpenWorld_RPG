@@ -65,6 +65,18 @@ void UiContext::rect(float x, float y, float w, float h, UiColor c) {
     r_->pushQuad({ nx, ny }, { nw, nh }, -1.f, -1.f, -1.f, -1.f, c);
 }
 
+void UiContext::imageQuad(float x, float y, float w, float h, UiColor c) {
+    if (!r_) return;
+    r_->pushImageQuad({ toNdcX(x, screenW_), toNdcY(y, screenH_) },
+                      { toNdcW(w, screenW_), toNdcH(h, screenH_) }, c);
+}
+
+bool UiContext::hasImage() const { return r_ && r_->hasImage(); }
+
+void UiContext::setImage(VkImageView view, VkSampler sampler) {
+    if (r_) r_->setImage(view, sampler);
+}
+
 void UiContext::rectOutline(float x, float y, float w, float h, float th, UiColor c) {
     rect(x, y, w, th, c);
     rect(x, y + h - th, w, th, c);
