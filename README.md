@@ -898,6 +898,8 @@ export RELEASE_KEY_PASSWORD=...
 | [docs/UI_DESIGN_SYSTEM.md](docs/UI_DESIGN_SYSTEM.md), [docs/UI_UX_AUDIT.md](docs/UI_UX_AUDIT.md) | правила интерфейса и их нарушения |
 | [docs/ANIMATION_SYSTEM.md](docs/ANIMATION_SYSTEM.md), [docs/ENTITY_VISUAL_ARCHITECTURE.md](docs/ENTITY_VISUAL_ARCHITECTURE.md) | оснастка, поза, походка |
 | [docs/CHARACTER_STYLE_GUIDE.md](docs/CHARACTER_STYLE_GUIDE.md), [docs/VILLAGE_STYLE_GUIDE.md](docs/VILLAGE_STYLE_GUIDE.md) | как должны выглядеть существа и деревни |
+| [docs/AAA_DIRECTION.md](docs/AAA_DIRECTION.md), [docs/AI_ITERATIONS.md](docs/AI_ITERATIONS.md) | куда игре расти и что по этому списку уже сделано |
+| [docs/CUBE_WORLD_COMPARISON.md](docs/CUBE_WORLD_COMPARISON.md) | сравнение с Cube World: визуальный стиль и перемещение |
 
 ---
 
