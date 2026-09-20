@@ -20779,6 +20779,7 @@ void testHitsLeaveAMark() {
         ecs::Registry reg;
         const ecs::Entity attacker = reg.create();
         reg.add(attacker, ecs::Transform{ glm::vec3(0.f, 64.f, 0.f) });
+        reg.add(attacker, progression::Progression{});
 
         auto spawnMob = [&](f32 hp) {
             const ecs::Entity m = reg.create();
@@ -20823,15 +20824,35 @@ void testHitsLeaveAMark() {
                       afterDeath, afterHit);
         check(afterDeath > afterHit, m2);
 
-        // Добивание трупа второй горсти не даёт: иначе стая,
-        // молотящая павшего, засыпала бы экран.
+        // ---- Умереть можно один раз ----
+        //
+        // Труп лежит полторы секунды и всё это время остаётся целью
+        // для поиска попаданий: у него есть и тело, и здоровье.
+        // Кадры неуязвимости от смертельного удара надо СНЯТЬ, иначе
+        // второй удар не дойдёт до расчёта вовсе и проверка окажется
+        // пустой — ровно на этом её и поймала мутация.
+        if (auto* vh = reg.get<ecs::Health>(victim)) vh->invulnTime = 0.f;
+
+        auto* prog = reg.get<progression::Progression>(attacker);
+        const u64 xpAfterKill = prog ? prog->xp : 0;
+        check(xpAfterKill > 0, "за убийство начислен опыт");
+
         const u32 before = world::particles().liveCount();
         combat::DamageInstance again;
         again.amount = 999.f;
         again.sourceEntity = (u32)attacker;
         combat::applyDamage(reg, victim, again);
-        check(world::particles().liveCount() <= before + 14,
-              "и добивание уже мёртвого второй раз его не рассыпает");
+
+        char m3[190];
+        std::snprintf(m3, sizeof(m3),
+                      "добивание трупа прибавило %u осколков (горсть смерти — %u)",
+                      world::particles().liveCount() - before, 22u);
+        check(world::particles().liveCount() <= before + 14, m3);
+        std::snprintf(m3, sizeof(m3),
+                      "и опыта за него не прибавилось: было %llu, стало %llu",
+                      (unsigned long long)xpAfterKill,
+                      (unsigned long long)(prog ? prog->xp : 0));
+        check(prog && prog->xp == xpAfterKill, m3);
     }
 
     // ---- 8. Осколок падает, ложится на землю и не тонет ----
