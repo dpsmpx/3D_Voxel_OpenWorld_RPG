@@ -1271,11 +1271,15 @@ void testVoxelColorIsPlaceIndependent() {
     check(t != std::string::npos, "подкраска блока вынесена в отдельную функцию");
     if (t != std::string::npos) {
         const std::string body = src.substr(t, src.find("\n}", t) - t);
-        // Главное. Аргументом хэша идут ЦЕЛЫЕ координаты клетки —
-        // иначе оттенок потечёт по грани, и это снова будет градиент.
-        check(body.find("ivec3") != std::string::npos &&
-              body.find("floor(") != std::string::npos,
+        // Главное. В хэш идут ЦЕЛЫЕ координаты клетки — иначе
+        // оттенок потечёт по грани, и это снова будет градиент.
+        check(body.find("floor(") != std::string::npos,
               "хэш берёт ЦЕЛУЮ клетку вокселя, а не позицию фрагмента");
+        // И сводятся к 0..255 ещё во float: дальше ни одно целое не
+        // выходит за восемь бит, и ширина целого у драйвера перестаёт
+        // значить что бы то ни было. См. ниже, пункт 4.
+        check(body.find("mod(cell.x, 256.0)") != std::string::npos,
+              "и сводит её к 0..255 до перехода в целые");
         // Полшага против нормали: точки грани +X лежат ровно на целом
         // x, и без смещения floor отдал бы соседний блок. Тогда две
         // соседние грани одного куба красились бы по-разному.
@@ -1292,25 +1296,92 @@ void testVoxelColorIsPlaceIndependent() {
         // экране.
         check(src.find("toLinear(base)") != std::string::npos,
               "отклонение накладывается до перевода в линейное пространство");
+
+        // ---- И ОГРАНИЧЕНО СВОИМ РАЗМАХОМ ----
+        //
+        // Ровно этой строки не хватило, и цена была видна на экране.
+        // Хэш считался 32-битными вращениями, драйвер устройства
+        // посчитал их по-своему, значение ушло далеко за [-1, 1) — и
+        // блоки покрасились в чёрное и добела: множитель цвета от
+        // 0.17 до 2.05 вместо 0.96..1.04. Ни одна проверка этого не
+        // поймала, потому что на хосте программный Vulkan считает всё
+        // в 32 битах и рисует правильную картинку.
+        //
+        // Вывод не «починить хэш», а «связать результат»: что бы ни
+        // вернул хэш, цвет блока не имеет права уехать дальше размаха
+        // своего класса. Это утверждение проверяемо здесь, а не на
+        // устройстве.
+        check(body.find("clamp(1.0 + j * amp, 1.0 - amp, 1.0 + amp)")
+              != std::string::npos,
+              "и результат ограничен размахом своего класса");
     }
 
-    // ---- 4. хэш целочисленный и highp ----
+    // ---- 4. хэш не зависит от ширины целого у драйвера ----
     //
-    // Файл начинается с precision mediump int, а mediump int
-    // стандарт разрешает делать шестнадцатибитным. Хэш в нём дал бы
-    // на разных драйверах разные числа — один мир пестрил бы
-    // по-разному на разных телефонах.
+    // Файл начинается с precision mediump int. Стандарт разрешает
+    // драйверу сделать mediump int шестнадцатибитным И ОСОБО
+    // оговаривает, что сдвиг на ширину типа и больше даёт
+    // НЕОПРЕДЕЛЁННЫЙ результат.
+    //
+    // По бумаге это не должно было касаться хэша: highp int обязан
+    // быть 32-битным, и локальные переменные были объявлены highp.
+    // На устройстве не помогло — картинка это показала, а хост нет.
+    // Поэтому проверяется не объявленная точность, а то, что от неё
+    // ничего не зависит: ни сдвигов на 16 и больше, ни констант шире
+    // шестнадцати бит, ни промежуточных значений за 65535.
     const usize h = src.find("uint jitterHash(");
     check(h != std::string::npos, "хэш крапчатости объявлен");
     if (h != std::string::npos) {
-        const std::string sig = src.substr(h - 6, 6);
-        check(sig.find("highp") != std::string::npos, "хэш возвращает highp uint");
         const std::string body = src.substr(h, src.find("\n}", h) - h);
-        check(body.find("highp ivec3") != std::string::npos &&
-              body.find("highp uint") != std::string::npos,
-              "и считает всё в highp");
         check(body.find("float") == std::string::npos,
-              "и целыми числами: float в хэше — разные числа на разных драйверах");
+              "хэш целочисленный: float в нём — разные числа на разных драйверах");
+    }
+
+    // Сдвиги по всему шейдеру: ни одного на 16 и больше.
+    {
+        bool wide = false;
+        for (usize i = 0; (i = src.find(">>", i)) != std::string::npos; ++i) {
+            usize j = i + 2;
+            while (j < src.size() && (src[j] == ' ' || src[j] == '\t')) ++j;
+            usize k = j;
+            while (k < src.size() && std::isdigit((unsigned char)src[k])) ++k;
+            if (k == j) continue;
+            const int n = std::atoi(src.substr(j, k - j).c_str());
+            if (n >= 16) {
+                std::printf("       сдвиг вправо на %d — не определён при 16-битном int\n", n);
+                wide = true;
+            }
+        }
+        for (usize i = 0; (i = src.find("<<", i)) != std::string::npos; ++i) {
+            usize j = i + 2;
+            while (j < src.size() && (src[j] == ' ' || src[j] == '\t')) ++j;
+            usize k = j;
+            while (k < src.size() && std::isdigit((unsigned char)src[k])) ++k;
+            if (k == j) continue;
+            const int n = std::atoi(src.substr(j, k - j).c_str());
+            if (n >= 16) {
+                std::printf("       сдвиг влево на %d — не определён при 16-битном int\n", n);
+                wide = true;
+            }
+        }
+        check(!wide, "в террейне нет сдвигов на 16 и больше");
+    }
+
+    // Шестнадцатеричных констант шире четырёх цифр быть не должно:
+    // такая константа и есть «я рассчитываю на 32 бита».
+    {
+        bool wide = false;
+        for (usize i = 0; (i = src.find("0x", i)) != std::string::npos; ++i) {
+            usize k = i + 2;
+            while (k < src.size() && std::isxdigit((unsigned char)src[k])) ++k;
+            if (k - i - 2 > 4) {
+                std::printf("       константа %s шире шестнадцати бит\n",
+                            src.substr(i, k - i).c_str());
+                wide = true;
+            }
+            i = k;
+        }
+        check(!wide, "и нет целых констант шире шестнадцати бит");
     }
 
     // ---- 5. размах один и тот же в шейдере и в C++ ----
@@ -1361,8 +1432,14 @@ void testVoxelColorIsPlaceIndependent() {
         // объяснении рядом, а проверяется объявление.
         check(stripComments(v).find("precision ") == std::string::npos,
               "вершинный шейдер точность не понижает — он весь highp");
-        check(v.find("vSeed     = uint(cam.wind.w);") != std::string::npos,
+        check(v.find("uint seed = uint(cam.wind.w);") != std::string::npos,
               "и именно он переводит зерно в целое");
+        // Свёртка складывает ВСЕ биты зерна, а не берёт младшие: два
+        // мира, различающиеся только старшими битами, обязаны
+        // выглядеть по-разному.
+        check(v.find("(seed ^ (seed / 1024u) ^ (seed / 1048576u)) & 1023u")
+              != std::string::npos,
+              "и сворачивает его целиком, а не берёт младшие биты");
         check(v.find("out flat uint vSeed;") != std::string::npos,
               "и отдаёт его плоско, без интерполяции");
         // Класс крапчатости распаковывается из тех же битов, в
@@ -1370,6 +1447,161 @@ void testVoxelColorIsPlaceIndependent() {
         check(v.find("(inPacked >> 28) & 3u") != std::string::npos,
               "класс крапчатости читается из битов 28..29");
     }
+}
+
+// ------------------------------------------------------------
+// Начало пути: где игрок появляется впервые
+// ------------------------------------------------------------
+//
+// Это была настоящая поломка, и видно её было только глазами.
+//
+// Зерно мира перемешивало таблицу перестановок шума, но НЕ смещало
+// точку выборки. У симплекс-шума в узле решётки вклад этого узла
+// равен нулю по построению, а решётка у всех миров стояла началом в
+// нуле — значит sample3D(0,0,0) == 0 при любом зерне. Все шесть
+// климатических полей читались в начале координат нулём, а «хребет»
+// ставится по узкой полосе ВОКРУГ НУЛЯ шума и получал ровно единицу.
+//
+// Замер до правки: восемь зёрен из восьми давали в точке (0,0)
+// uplift 1.000, высоту 78 и биом Mountains. Игрок появлялся на
+// гребне максимального хребта в КАЖДОМ мире.
+//
+// Смещение решётки это чинит, но начало пути после него достаётся
+// жребию: по тремстам зёрнам вышло 34 % океана, 8 % гор, 5 % Чёрного
+// леса, 1.7 % вулкана. Поэтому климат у начала координат ещё и
+// подтягивается к пригодному для жизни — см. HOME_WEIGHT в biome.h.
+void testHomeIsLivable() {
+    group("начало пути: игрок просыпается там, где живётся");
+
+    // ---- 1. Шум больше не прибит к началу координат ----
+    {
+        bool allZero = true, allSame = true;
+        f32 first = 0.f;
+        for (u64 k = 0; k < 16; ++k) {
+            const world::SimplexNoise n(k * 2654435761ull + 17ull);
+            const f32 v = n.sample3D(0.f, 0.f, 0.f);
+            if (std::fabs(v) > 1e-6f) allZero = false;
+            if (k == 0) first = v;
+            else if (std::fabs(v - first) > 1e-6f) allSame = false;
+        }
+        check(!allZero, "шум в начале координат не ноль");
+        check(!allSame, "и у разных зёрен он разный");
+    }
+
+    // ---- 2. Подтяжка околицы сходит на нет, а не обрывается ----
+    {
+        check(world::homeWeight(0.f) == world::HOME_WEIGHT,
+              "в самом начале подтяжка полная");
+        check(world::homeWeight(world::HOME_FULL_RADIUS) == world::HOME_WEIGHT,
+              "и держится до конца ближнего круга");
+        check(world::homeWeight(world::HOME_FADE_RADIUS) == 0.f,
+              "за дальним кругом её нет вовсе");
+        check(world::homeWeight(world::HOME_FADE_RADIUS + 1000.f) == 0.f,
+              "и дальше тоже");
+        // Монотонно и без ступеньки: иначе околица видна кольцом.
+        f32 prev = world::HOME_WEIGHT + 1.f;
+        bool monotone = true, smooth = true;
+        for (f32 d = 0.f; d <= world::HOME_FADE_RADIUS + 64.f; d += 4.f) {
+            const f32 w = world::homeWeight(d);
+            if (w > prev + 1e-6f) monotone = false;
+            if (prev <= world::HOME_WEIGHT && prev - w > 0.02f) smooth = false;
+            prev = w;
+        }
+        check(monotone, "подтяжка только убывает");
+        check(smooth, "и убывает плавно, без ступеньки");
+    }
+
+    // ---- 3. Место появления пригодно для жизни. Во ВСЕХ мирах ----
+    //
+    // Проверяется не «часто», а «всегда»: безопасность начала — это
+    // свойство генерации, и держаться оно обязано на построении, а
+    // не на вероятности.
+    constexpr i32 WORLDS = 48;
+    i32 homeKinds[(u32)world::HomeKind::Count] = {};
+    i32 villages = 0, notFound = 0, badBiome = 0, tooHigh = 0, lairs = 0;
+    i32 minSurf = 1000, maxSurf = -1000;
+
+    for (i32 k = 0; k < WORLDS; ++k) {
+        const u64 seed = (u64)(k + 1) * 6364136223846793005ull + 1442695040888963407ull;
+        world::TerrainGenerator gen(seed);
+
+        const world::SpawnSearch r = world::findSpawn(gen, seed, 0, 0);
+        if (!r.found) { ++notFound; continue; }
+
+        const auto col = gen.column(r.point.x, r.point.z);
+        const world::BiomeId b = col.climate.biome;
+        if (b != world::Plains && b != world::Forest &&
+            b != world::Savanna && b != world::Taiga) {
+            ++badBiome;
+            std::printf("       зерно %llu: появление в биоме %d\n",
+                        (unsigned long long)seed, (int)b);
+        }
+        if (col.surface > 70) ++tooHigh;
+        minSurf = std::min(minSurf, col.surface);
+        maxSurf = std::max(maxSurf, col.surface);
+
+        // Логово рядом с точкой появления — это стая волков в поле.
+        if (world::lairCovering(r.point.x, r.point.z, seed, &gen).exists) ++lairs;
+
+        // Какая околица досталась миру и стоит ли рядом деревня.
+        world::BiomeField bf(seed);
+        homeKinds[(u32)bf.home()]++;
+        if (world::villageAt(0, 0, seed, &gen).exists) ++villages;
+    }
+
+    char m[220];
+    std::snprintf(m, sizeof(m),
+                  "миров %d: не нашлось места %d, опасный биом %d, "
+                  "выше 70 блоков %d, логово рядом %d; высота %d..%d",
+                  WORLDS, notFound, badBiome, tooHigh, lairs, minSurf, maxSurf);
+    check(true, m);
+
+    check(notFound == 0, "место находится в каждом мире");
+    check(badBiome == 0, "и всегда в пригодном для жизни биоме");
+    check(tooHigh == 0, "и никогда на вершине");
+    check(lairs == 0, "и никогда в логове");
+    check(minSurf > world::TerrainGenerator::SEA_LEVEL + 1,
+          "и всегда над водой");
+
+    // ---- 4. Но не одинаково: миры отличаются друг от друга ----
+    //
+    // Безопасно — не значит «одно и то же поле в каждом мире».
+    // Околиц четыре, и встречаться обязаны все.
+    std::snprintf(m, sizeof(m), "околицы: поле %d, лес %d, редколесье %d, сосняк %d",
+                  homeKinds[0], homeKinds[1], homeKinds[2], homeKinds[3]);
+    check(true, m);
+    bool allKinds = true;
+    for (i32 n : homeKinds) if (n == 0) allKinds = false;
+    check(allKinds, "все четыре околицы попадаются");
+
+    std::snprintf(m, sizeof(m), "деревня у начала пути в %d мирах из %d",
+                  villages, WORLDS);
+    check(true, m);
+    check(villages > 0, "иногда игра начинается у деревни");
+    check(villages < WORLDS, "но не всегда");
+
+    // ---- 5. В ближних ячейках сетки нет ничего опасного ----
+    //
+    // Подземелье, руина, алтарь и дерево-подземелье — места, куда
+    // ходят, а не места, где просыпаются.
+    i32 dungeons = 0, sinks = 0, nearLairs = 0;
+    for (i32 k = 0; k < WORLDS; ++k) {
+        const u64 seed = (u64)(k + 1) * 1099511628211ull + 14695981039346656037ull;
+        world::TerrainGenerator gen(seed);
+        for (i32 sx = -1; sx <= 0; ++sx)
+            for (i32 sz = -1; sz <= 0; ++sz) {
+                if (world::dungeonAt(sx, sz, seed).exists) ++dungeons;
+                if (world::sinkholeAt(sx, sz, seed, &gen).exists) ++sinks;
+                if (world::lairAt(sx, sz, seed, &gen).exists) ++nearLairs;
+            }
+    }
+    std::snprintf(m, sizeof(m),
+                  "в ближних ячейках %d миров: подземелий %d, провалов %d, логовищ %d",
+                  WORLDS, dungeons, sinks, nearLairs);
+    check(true, m);
+    check(dungeons == 0, "подземелий у начала пути нет");
+    check(sinks == 0, "провалов тоже");
+    check(nearLairs == 0, "и логовищ");
 }
 
 // ------------------------------------------------------------
@@ -11633,11 +11865,24 @@ void testSwampsAndWitches() {
         world::ChunkManager mgr(SEED, 1);
         const auto& gen = mgr.generator();
 
+        // Ищется СЕРЕДИНА болота, а не первая его колонка.
+        //
+        // Раньше брали первую попавшуюся: она почти всегда на кромке,
+        // и чанк вокруг неё наполовину не болото. Проверка держалась
+        // на том, что у прежнего шума кромка в этом месте приходилась
+        // удачно, — то есть на совпадении, а не на свойстве мира.
         i32 swx = 0, swz = 0;
         bool found = false;
+        auto swampAt = [&](i32 x, i32 z) {
+            return gen.biomeAt(x, z) == world::Swamp;
+        };
         for (i32 z = -3000; z <= 3000 && !found; z += 32)
-            for (i32 x = -3000; x <= 3000 && !found; x += 32)
-                if (gen.biomeAt(x, z) == world::Swamp) { swx = x; swz = z; found = true; }
+            for (i32 x = -3000; x <= 3000 && !found; x += 32) {
+                if (!swampAt(x, z)) continue;
+                if (!swampAt(x - 32, z) || !swampAt(x + 32, z) ||
+                    !swampAt(x, z - 32) || !swampAt(x, z + 32)) continue;
+                swx = x; swz = z; found = true;
+            }
         check(found, "болото в мире нашлось");
         if (!found) return;
 
@@ -11674,11 +11919,20 @@ void testSwampsAndWitches() {
 
         // А на равнине её нет: бочаги — свойство болота, а не всего
         // мира.
+        // И равнина тоже берётся серединой: у кромки равнины с
+        // болотом воды столько же, сколько на болоте.
         i32 plx = 0, plz = 0;
         bool plain = false;
+        auto plainAt = [&](i32 x, i32 z) {
+            return gen.biomeAt(x, z) == world::Plains;
+        };
         for (i32 z = -3000; z <= 3000 && !plain; z += 32)
-            for (i32 x = -3000; x <= 3000 && !plain; x += 32)
-                if (gen.biomeAt(x, z) == world::Plains) { plx = x; plz = z; plain = true; }
+            for (i32 x = -3000; x <= 3000 && !plain; x += 32) {
+                if (!plainAt(x, z)) continue;
+                if (!plainAt(x - 32, z) || !plainAt(x + 32, z) ||
+                    !plainAt(x, z - 32) || !plainAt(x, z + 32)) continue;
+                plx = x; plz = z; plain = true;
+            }
         if (plain) {
             int pw = 0, ps = 0;
             waterIn(plx, plz, pw, ps);
@@ -13591,14 +13845,20 @@ void testMountainsAndVolcanoes() {
     //
     // По настоящим вокселям: высота и биом — это ещё не картинка.
     {
-        // Ищем вулкан с жерлом.
-        i32 vx = 0, vz = 0; bool haveV = false;
-        for (i32 x = -200000; x <= 200000 && !haveV; x += 211)
-            for (i32 z = -100000; z <= 100000 && !haveV; z += 211) {
+        // Ищем САМЫЙ ВЫСОКИЙ вулкан с жерлом, а не первый попавшийся.
+        //
+        // Утверждение проверки — «вулкан это гора, а не лужа», и оно
+        // про вулканы вообще. Первый попавшийся может оказаться
+        // низким краем поля поднятия, и тогда проверка меряет не то
+        // свойство, о котором говорит: раньше она держалась на том,
+        // что первым в обходе попадался высокий.
+        i32 vx = 0, vz = 0; bool haveV = false; i32 bestTop = -1;
+        for (i32 x = -200000; x <= 200000; x += 211)
+            for (i32 z = -100000; z <= 100000; z += 211) {
                 const auto c = gen.column(x, z);
-                if (c.climate.biome == world::Volcanic && c.lavaTop > 0) {
-                    vx = x; vz = z; haveV = true;
-                }
+                if (c.climate.biome != world::Volcanic || c.lavaTop <= 0) continue;
+                if (c.lavaTop <= bestTop) continue;
+                bestTop = c.lavaTop; vx = x; vz = z; haveV = true;
             }
         check(haveV, "вулкан с жерлом нашёлся");
         if (haveV) {
@@ -13619,7 +13879,9 @@ void testMountainsAndVolcanoes() {
                           c.surface, c.lavaTop, lava);
             check(true, m);
             check(lava > 0, "в жерле стоит лава");
-            check(c.surface > 60, "и стоит она высоко, а не в низине");
+            // Меряется уровень ЛАВЫ, а не дно жерла: дно срезано на
+            // глубину кратера, и по нему высота вулкана не видна.
+            check(c.lavaTop > 60, "и стоит она высоко, а не в низине");
         }
 
         // Ищем заснеженную вершину.
@@ -13772,7 +14034,14 @@ void testTreesHaveBranchesAndCrowns() {
     };
 
     // Найти чанк, у которого середина — нужный биом.
-    auto findBiome = [&](world::BiomeId want, i32& ox, i32& oz) {
+    //
+    // И все восемь соседних чанков тоже: обход ниже считает деревья
+    // по квадрату три на три, а первая попавшаяся колонка биома почти
+    // всегда лежит на его кромке. Тогда две трети площадки — уже
+    // чужой биом с чужими деревьями, и проверка меряет не то, о чём
+    // говорит. Раньше это сходило с рук на совпадении: у прежнего
+    // шума первым в обходе попадался кусок поглубже.
+    auto findBiome = [&](world::BiomeId want, i32 radius, i32& ox, i32& oz) {
         for (i32 x = -300000; x <= 300000; x += 1013)
             for (i32 z = -150000; z <= 150000; z += 1013) {
                 if (gen.biomeAt(x, z) != want) continue;
@@ -13780,6 +14049,14 @@ void testTreesHaveBranchesAndCrowns() {
                 const i32 s = gen.surfaceHeight(x, z);
                 if (s <= world::TerrainGenerator::SEA_LEVEL + 2) continue;
                 if (s >= world::CHUNK_SIZE_Y - 24) continue;
+                bool solid = true;
+                for (i32 kx = -radius; kx <= radius && solid; ++kx)
+                    for (i32 kz = -radius; kz <= radius; ++kz)
+                        if (gen.biomeAt(x + kx * 32, z + kz * 32) != want) {
+                            solid = false;
+                            break;
+                        }
+                if (!solid) continue;
                 ox = x; oz = z;
                 return true;
             }
@@ -13795,20 +14072,41 @@ void testTreesHaveBranchesAndCrowns() {
         /// не должно — у неё лапы.
         bool           wantsBranches;
         bool           wantsTiers;
+        /// Сколько чанков в каждую сторону осматривать.
+        ///
+        /// Зависит от того, как густо в биоме растут деревья. У
+        /// пустыни плотность 0.25 на чанк: на квадрате три на три
+        /// вырастает пара кактусов, и «у деревьев есть размах»
+        /// меряется двумя кактусами — то есть удачей, а не свойством
+        /// биома. На пять на пять их полдюжины.
+        i32            radius;
+        /// Насколько далеко от ствола обязана уходить крона.
+        ///
+        /// У кактуса — ровно на блок, и это не придирка к числу, а
+        /// его устройство: рука ставится в СОСЕДНЮЮ колонку
+        /// (`bx + DIR8_X[dir]` в features.cpp) и оттуда идёт вверх.
+        /// Размаха в два блока у кактусовой заросли не бывает.
+        ///
+        /// Раньше здесь у всех стояла двойка, и пустыня её проходила.
+        /// Проходила потому, что образец брался по ПЕРВОЙ колонке
+        /// биома — то есть почти всегда на кромке, — и в квадрат
+        /// попадали деревья СОСЕДНЕГО биома. Проверка мерила их, а
+        /// говорила про кактусы.
+        i32            minReach;
     };
     const Case cases[] = {
-        { world::Forest,  "лес",        true,  true,  false },
-        { world::Taiga,   "тайга",      true,  false, true  },
-        { world::Plains,  "равнина",    true,  true,  false },
-        { world::Savanna, "саванна",    false, true,  false },
-        { world::Desert,  "пустыня",    false, true,  false },
-        { world::Blight,  "Чёрный лес", false, true,  false },
+        { world::Forest,  "лес",        true,  true,  false, 1, 2 },
+        { world::Taiga,   "тайга",      true,  false, true,  1, 2 },
+        { world::Plains,  "равнина",    true,  true,  false, 2, 2 },
+        { world::Savanna, "саванна",    false, true,  false, 2, 2 },
+        { world::Desert,  "пустыня",    false, true,  false, 2, 1 },
+        { world::Blight,  "Чёрный лес", false, true,  false, 1, 2 },
     };
 
     i32 bare = 0;
     for (const Case& c : cases) {
         i32 bx = 0, bz = 0;
-        if (!findBiome(c.biome, bx, bz)) {
+        if (!findBiome(c.biome, c.radius, bx, bz)) {
             char m[120];
             std::snprintf(m, sizeof(m), "%s: не нашёлся в мире", c.what);
             check(false, m);
@@ -13820,8 +14118,8 @@ void testTreesHaveBranchesAndCrowns() {
         // ни одного дерева» означало бы, что мы смотрим уже не в
         // саванне.
         Grove sum{};
-        for (i32 kx = -1; kx <= 1; ++kx)
-            for (i32 kz = -1; kz <= 1; ++kz) {
+        for (i32 kx = -c.radius; kx <= c.radius; ++kx)
+            for (i32 kz = -c.radius; kz <= c.radius; ++kz) {
                 const Grove g = survey(bx + kx * 32, bz + kz * 32);
                 sum.wood += g.wood;
                 sum.leaves += g.leaves;
@@ -13863,7 +14161,7 @@ void testTreesHaveBranchesAndCrowns() {
                           c.what, sum.tiered, sum.trees);
             check(false, w);
         }
-        check(sum.reach >= 2, "крона и ветви уходят вбок от ствола");
+        check(sum.reach >= c.minReach, "крона и ветви уходят вбок от ствола");
 
         if (c.wantsLeaves)
             check(sum.leaves > sum.trees * 20, "и листвы на них вдоволь");
@@ -13876,7 +14174,7 @@ void testTreesHaveBranchesAndCrowns() {
     // дерева, и оно у каждого своё.
     {
         i32 fx = 0, fz = 0;
-        check(findBiome(world::Forest, fx, fz), "лес для сравнения нашёлся");
+        check(findBiome(world::Forest, 1, fx, fz), "лес для сравнения нашёлся");
         std::map<i32, i32> heights;
         i32 counted = 0;
         for (i32 k = 0; k < 10; ++k) {
@@ -18646,16 +18944,42 @@ void testPathShape() {
         check(ready, "мир для поиска пути сгенерирован");
 
         if (ready) {
-            const i32 sy = mgr.generator().surfaceHeight(8, 8);
-            const i32 gy = mgr.generator().surfaceHeight(20, 20);
-            world::ai::MoveParams mp;
-            auto r = world::ai::findPath(mgr, { 8, sy, 8 }, { 20, gy, 20 }, mp, 2000);
+            // Концы пути ищутся, а не назначаются.
+            //
+            // Раньше стояли две прибитые колонки, (8,8) и (20,20), и
+            // проверка держалась на том, что в этом мире по обеим
+            // можно ходить. Достаточно вырасти дереву на одной из них
+            // — и «путь не найден» означает не поломку поиска, а
+            // ствол в точке назначения.
+            auto standable = [&](i32 x, i32 y, i32 z) {
+                return world::blocks().isSolid(mgr.getVoxel(x, y - 1, z)) &&
+                       !world::blocks().isSolid(mgr.getVoxel(x, y, z)) &&
+                       !world::blocks().isSolid(mgr.getVoxel(x, y + 1, z));
+            };
+            auto freeCell = [&](i32 x, i32 z, i32& outY) {
+                const i32 s = mgr.generator().surfaceHeight(x, z);
+                for (i32 dy = 0; dy <= 2; ++dy)
+                    if (standable(x, s + dy, z)) { outY = s + dy; return true; }
+                return false;
+            };
 
-            check(r.ok, "путь до точки в двенадцати блоках найден");
+            i32 sx = 0, sz = 0, sy = 0, gx = 0, gz = 0, gy = 0;
+            bool haveStart = false, haveGoal = false;
+            for (i32 d = 0; d <= 12 && !haveStart; ++d)
+                if (freeCell(8 + d, 8, sy)) { sx = 8 + d; sz = 8; haveStart = true; }
+            for (i32 d = 0; d <= 12 && !haveGoal; ++d)
+                if (freeCell(20, 20 + d, gy)) { gx = 20; gz = 20 + d; haveGoal = true; }
+            check(haveStart && haveGoal, "нашлись две проходимые клетки");
+            if (!haveStart || !haveGoal) { jobs::gJobs.stop(); return; }
+
+            world::ai::MoveParams mp;
+            auto r = world::ai::findPath(mgr, { sx, sy, sz }, { gx, gy, gz }, mp, 2000);
+
+            check(r.ok, "путь до точки в десятке блоков найден");
             if (r.ok && !r.waypoints.empty()) {
-                check(r.waypoints.front() == glm::ivec3(8, sy, 8),
+                check(r.waypoints.front() == glm::ivec3(sx, sy, sz),
                       "путь начинается в стартовой клетке");
-                check(r.waypoints.back() == glm::ivec3(20, gy, 20),
+                check(r.waypoints.back() == glm::ivec3(gx, gy, gz),
                       "путь заканчивается в целевой клетке");
 
                 // Главное свойство: соседние точки — соседние клетки.
@@ -20966,6 +21290,7 @@ int main() {
     testNeighborArrivalTriggersRemesh();
     testVoxelColorIsPlaceIndependent();
     testBlockColorJitter();
+    testHomeIsLivable();
     testFaceShadingHasSingleSource();
     testApkCarriesTheShadersItWasBuiltFrom();
     testBuildStampIsNotStale();
