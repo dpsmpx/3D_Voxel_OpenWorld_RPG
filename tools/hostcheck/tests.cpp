@@ -6,6 +6,7 @@
 // Собирается и запускается скриптом tools/hostcheck/run.sh.
 // ============================================================
 #include "core/job_system.h"
+#include "core/crashlog.h"
 #include "audio/audio_engine.h"
 #include "audio/sound_registry.h"
 #include "audio/music.h"
@@ -19697,6 +19698,238 @@ void testGuardBlocksParriesAndBreaks() {
     }
 }
 
+// ------------------------------------------------------------
+// Журнал можно выключить целиком — но не посмертную записку.
+//
+// Каждая строка LOG* стои́т двух системных вызовов: в logcat и в
+// файл. Тому, кто просто играет, журнал не нужен, и его можно
+// выключить настройкой. Опасность у такой настройки ровно одна: за
+// компанию отключить единственный способ узнать, отчего игра упала.
+// Поэтому отчёт о падении и предсмертная строка ассерта идут мимо
+// выключателя.
+// ------------------------------------------------------------
+void testLogCanBeTurnedOff() {
+    group("журнал: выключается целиком, отчёт о падении — нет");
+
+    const std::string dir = "build/hostcheck/logtest";
+    ::mkdir("build", 0777);
+    ::mkdir("build/hostcheck", 0777);
+    ::mkdir(dir.c_str(), 0777);
+    crash::init(dir.c_str(), nullptr);
+
+    const std::string path = crash::logPath();
+    check(!path.empty(), "журнал открыт");
+    if (path.empty()) return;
+
+    auto readLog = [&]() {
+        std::string s = readSource(path.c_str());
+        return s;
+    };
+    auto grew = [&](const std::string& before) {
+        return readLog().size() > before.size();
+    };
+
+    check(crash::enabled(), "по умолчанию журнал ведётся");
+
+    // ---- Включённый пишет ----
+    {
+        const std::string before = readLog();
+        crash::write('I', "проверка: строка при включённом журнале");
+        check(grew(before), "включённый журнал принимает строку");
+    }
+
+    // ---- Выключенный молчит ----
+    crash::setEnabled(false);
+    check(!crash::enabled(), "выключатель сработал");
+    {
+        // Сам переход в файле отмечается — иначе оборвавшийся
+        // журнал не отличить от упавшей игры.
+        const std::string afterOff = readLog();
+        check(afterOff.find("журнал выключен") != std::string::npos,
+              "и объяснил в файле, почему дальше тишина");
+
+        const std::string before = readLog();
+        for (int i = 0; i < 50; ++i)
+            crash::write('I', "проверка: этого в файле быть не должно %d", i);
+        check(!grew(before), "выключенный журнал не пишет НИЧЕГО");
+        check(readLog().find("этого в файле быть не должно")
+                  == std::string::npos,
+              "и строк этих в файле нет");
+    }
+
+    // ---- Посмертная записка идёт мимо выключателя ----
+    {
+        const std::string before = readLog();
+        crash::writeFatal("проверка: предсмертная строка %d", 7);
+        check(grew(before), "writeFatal пишет и при выключенном журнале");
+        check(readLog().find("предсмертная строка 7") != std::string::npos,
+              "и пишет именно то, что просили");
+    }
+
+    // ---- Отметка этапа запоминается всегда ----
+    //
+    // В файл она не идёт, но её печатает отчёт о падении, а он
+    // пишется независимо. Иначе выключенный журнал стирал бы из
+    // отчёта строчку «последний этап запуска».
+    {
+        const std::string before = readLog();
+        crash::step("проверочный этап");
+        check(!grew(before), "при выключенном журнале этап в файл не пишется");
+    }
+
+    crash::setEnabled(true);
+    check(crash::enabled(), "и включается обратно");
+    {
+        const std::string before = readLog();
+        crash::write('I', "проверка: снова пишем");
+        check(grew(before), "включённый обратно журнал пишет снова");
+    }
+
+    // ---- Макросы LOG* спрашивают выключатель ----
+    //
+    // Проверяется по исходнику: __android_log_print зовётся напрямую,
+    // и мимо флага он ушёл бы молча — файл бы молчал, а logcat нет.
+    {
+        const std::string h = readSource("app/src/main/cpp/src/core/log.h");
+        check(!h.empty(), "заголовок журнала прочитан");
+        check(h.find("if (crash::enabled())") != std::string::npos,
+              "макросы LOG* проверяют выключатель");
+        // Ровно один вызов в logcat из общего макроса, и он под
+        // проверкой; у ассерта свой, намеренно мимо неё.
+        const usize logcatCalls = [&] {
+            usize n = 0;
+            for (usize i = h.find("__android_log_print");
+                 i != std::string::npos; i = h.find("__android_log_print", i + 1))
+                ++n;
+            return n;
+        }();
+        check(logcatCalls == 2,
+              "в logcat пишут ровно два места: общий макрос и ассерт");
+        check(h.find("crash::writeFatal") != std::string::npos,
+              "ассерт пишет мимо выключателя");
+    }
+
+    // ---- Настройка доезжает до файла и обратно ----
+    {
+        config::Settings s;
+        check(s.logEnabled, "по умолчанию журнал включён и в настройках");
+        s.logEnabled = false;
+        const std::string sp = "build/hostcheck/logsetting.cfg";
+        check(s.save(sp), "настройки записаны");
+        config::Settings back;
+        check(back.load(sp), "настройки прочитаны");
+        check(!back.logEnabled, "выключенный журнал пережил перезапуск");
+    }
+
+    // ---- И доезжает до самого выключателя ----
+    {
+        const std::string m = readSource("app/src/main/cpp/src/main.cpp");
+        check(m.find("crash::setEnabled(cfg::settingsConst().logEnabled);")
+                  != std::string::npos,
+              "настройка применяется сразу после чтения settings.cfg");
+        check(m.find("crash::setEnabled(s.logEnabled);") != std::string::npos,
+              "и при каждой смене в меню");
+        const std::string u = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+        check(u.find("cfg::settings().logEnabled = !cfg::settings().logEnabled;")
+                  != std::string::npos,
+              "а в меню есть переключатель, который её меняет");
+        check(u.find("StrKey::Settings_Logging") != std::string::npos,
+              "и он подписан");
+    }
+}
+
+// ------------------------------------------------------------
+// Облака перестали быть одного цвета.
+//
+// Цвет тучи не зависел от плотности ВООБЩЕ: шум решал, ГДЕ облако,
+// и не решал, КАКОЕ оно. На весь полог приходился один тон, гулявший
+// только по углу к солнцу — то есть плавным градиентом через
+// полнеба, одинаковым сразу для всех облаков.
+// ------------------------------------------------------------
+void testCloudsAreNotOneColour() {
+    group("небо: у облаков есть толщина и своя тень");
+
+    const std::string raw = readSource("app/src/main/cpp/shaders/sky.frag");
+    check(!raw.empty(), "sky.frag прочитан");
+    if (raw.empty()) return;
+    const std::string src = stripComments(raw);
+    const usize NONE = std::string::npos;
+
+    // ---- 1. Октавы больше не теряются ----
+    //
+    // Сумма трёх октав не раскладывается обратно, а затенению нужна
+    // базовая отдельно: сравнивать трёхоктавную сумму с одноктавной
+    // пробой — сравнивать разные величины.
+    check(src.find("vec2 cloudField(") != NONE,
+          "поле облаков отдаёт и сумму октав, и базовую");
+    check(src.find("return vec2(v, base);") != NONE,
+          "именно эти две величины");
+
+    // ---- 2. Цвет зависит от плотности ----
+    check(src.find("float dens = smoothstep(") != NONE,
+          "толщина считается из того же шума, что и покрытие");
+    // Ищем по ФОРМЕ, а не по числам: числа проверяются ниже, и
+    // привязка к ним превратила бы проверку в копию исходника.
+    const usize densUse = src.find("cloudCol *= mix(");
+    check(densUse != NONE && src.find(", dens);", densUse) != NONE,
+          "и цвет тучи на неё умножается");
+
+    // Размах не должен усохнуть до незаметного: ради него всё и
+    // делалось. Числа читаются ИЗ ИСХОДНИКА, а не повторяются здесь.
+    if (densUse != NONE) {
+        double edge = 0.0, core = 0.0;
+        const int got = std::sscanf(src.c_str() + densUse,
+                                    "cloudCol *= mix(%lf, %lf, dens)",
+                                    &edge, &core);
+        char m[176];
+        std::snprintf(m, sizeof(m),
+                      "край и ядро расходятся в яркости: %.2f против %.2f",
+                      edge, core);
+        check(got == 2 && edge - core > 0.30, m);
+    }
+
+    // ---- 3. Есть собственная тень ----
+    check(src.find("cam.sunDir.xz") != NONE,
+          "шум пробуется со стороны солнца");
+    check(src.find("float shade") != NONE && src.find("shade * 0.30") != NONE,
+          "и результат затеняет тучу");
+
+    // Ночью тени нет: лепить нечем, а множитель ушёл бы в минус.
+    check(src.find("shade * 0.30 * above") != NONE,
+          "и гаснет вместе с солнцем");
+
+    // ---- 4. Смещение тени НЕ нормируется ----
+    //
+    // Короткий вектор у высокого солнца даёт короткую тень — ровно
+    // как в полдень. Нормировка это свойство стёрла бы, сделав тень
+    // одинаковой в любое время дня.
+    {
+        const usize tap = src.find("cam.sunDir.xz");
+        check(tap != NONE, "проба со стороны солнца на месте");
+        if (tap != NONE) {
+            const usize lineStart = src.rfind('\n', tap);
+            const std::string line =
+                src.substr(lineStart + 1, src.find('\n', tap) - lineStart - 1);
+            check(line.find("normalize") == NONE,
+                  "и смещение к солнцу не нормируется");
+        }
+    }
+
+    // ---- 5. Цена прохода не выросла ----
+    //
+    // Дорогие операции в main считает соседняя проверка; здесь —
+    // число проб шума, единственное, что добавилось.
+    const usize mainAt = src.find("void main");
+    usize taps = 0;
+    for (usize i = src.find("vnoise(", mainAt); i != NONE;
+         i = src.find("vnoise(", i + 1)) ++taps;
+    for (usize i = src.find("cloudField(", mainAt); i != NONE;
+         i = src.find("cloudField(", i + 1)) taps += 3;   // три октавы внутри
+    char m[160];
+    std::snprintf(m, sizeof(m), "проб шума на пиксель неба: %zu", taps);
+    check(taps == 4, m);
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -19845,6 +20078,8 @@ int main() {
     testWeaponsSwingDifferently();
     testHitsHaveWeight();
     testGuardBlocksParriesAndBreaks();
+    testLogCanBeTurnedOff();
+    testCloudsAreNotOneColour();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);
     if (g_failed) {
