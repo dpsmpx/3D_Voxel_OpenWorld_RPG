@@ -52,6 +52,11 @@ public:
         projRenderer_.setPrecip(data, count);
     }
 
+    /// Осколки на этот кадр. Зовётся ДО prepareFrame.
+    void setParticles(const MobInstance* data, u32 count) {
+        projRenderer_.setParticles(data, count);
+    }
+
     void forgetChunk(world::ChunkCoord coord) {
         chunkRenderer_.forgetChunk(coord);
     }
@@ -90,6 +95,7 @@ public:
     u32 mobInstances()  const { return mobRenderer_.instanceCount(); }
     u32 projInstances() const { return projRenderer_.instanceCount(); }
     u32 precipInstances() const { return projRenderer_.precipCount(); }
+    u32 particleInstances() const { return projRenderer_.particleCount(); }
     u32 npcInstances()  const { return npcRenderer_.instanceCount(); }
     u32 itemInstances() const { return itemRenderer_.instanceCount(); }
 

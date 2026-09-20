@@ -12,6 +12,7 @@
 #include "../ecs/registry.h"
 #include "mob_renderer.h"
 #include "../world/precipitation.h"
+#include "../world/particles.h"
 #include <android/asset_manager.h>
 #include <glm/glm.hpp>
 #include <vector>
@@ -26,6 +27,26 @@ namespace render {
 /// списке быть не должно вовсе.
 void precipInstances(const world::Precipitation& p, f32 snowMix,
                      std::vector<MobInstance>& out);
+
+/// Во сколько раз `shaders/projectile.frag` осветляет цвет инстанса.
+///
+/// Конвейер снарядов писался под светящееся: заклинание, искру,
+/// каплю, поймавшую свет. Осколку это ни к чему — он обязан быть
+/// цвета того блока, от которого откололся. Поэтому цвет частицы
+/// делится здесь ровно на то, на что шейдер потом умножит.
+///
+/// Число обязано совпадать с шейдером дословно, и за этим следит
+/// проверка: она читает `projectile.frag` и ищет в нём этот
+/// множитель.
+constexpr f32 PROJECTILE_FRAG_GAIN = 1.4f;
+
+/// Превратить осколки в инстансы куба.
+///
+/// Отдельно от рендера по той же причине, что и капли: проверять
+/// надо именно это — мёртвых в списке нет, размер и цвет взяты из
+/// частицы, а куб кувыркается, а не висит гранями по осям мира.
+void particleInstances(const world::Particles& p,
+                       std::vector<MobInstance>& out);
 
 class ProjectileRenderer {
 public:
@@ -44,7 +65,17 @@ public:
     /// Зовётся ДО rebuild(): тот собирает кадр целиком.
     void setPrecip(const MobInstance* data, u32 count);
 
+    /// Осколки: тот же поток кубов, что и осадки.
+    ///
+    /// Второй поставщик, а не второй рендер. Ради этого направление
+    /// и выбиралось: частицам не понадобилось ни конвейера, ни
+    /// прохода, ни правки меширования.
+    ///
+    /// Зовётся ДО rebuild().
+    void setParticles(const MobInstance* data, u32 count);
+
     u32 precipCount() const { return precipCount_; }
+    u32 particleCount() const { return particleCount_; }
     void upload(vk::Context& ctx);
     /// set передаётся явно и привязывается своим layout'ом. Раньше
     /// дескрипторы брались те, что оставил после себя рендер чанков:
@@ -65,8 +96,10 @@ private:
 
     std::vector<MobInstance> cpu_;
     std::vector<MobInstance> precip_;
+    std::vector<MobInstance> particles_;
     u32 instanceCount_ = 0;
     u32 precipCount_ = 0;
+    u32 particleCount_ = 0;
 };
 
 } // namespace render

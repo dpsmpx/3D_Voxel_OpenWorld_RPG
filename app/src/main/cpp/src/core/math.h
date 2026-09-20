@@ -89,4 +89,20 @@ inline glm::vec3 safeNormalize(const glm::vec3& v) {
     return len > 1e-6f ? v / len : glm::vec3(0,0,0);
 }
 
+/// xorshift32: детерминированный, быстрый и без состояния снаружи.
+///
+/// Здесь, а не по копии на подсистему: осадки и частицы крутят один
+/// и тот же генератор, и расходиться им незачем.
+inline u32 xorshift32(u32& state) {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+}
+
+/// Случайное число 0..1 из того же генератора.
+inline f32 frand01(u32& state) {
+    return (f32)(xorshift32(state) & 0xFFFFFFu) / (f32)0x1000000u;
+}
+
 } // namespace math

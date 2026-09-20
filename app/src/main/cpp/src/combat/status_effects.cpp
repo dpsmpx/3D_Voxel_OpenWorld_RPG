@@ -13,6 +13,8 @@
 #include "../npc/npc_def.h"
 #include "../quests/quest.h"
 #include "../audio/audio_events.h"
+#include "../entity/body_color.h"
+#include "../world/particles.h"
 #include <algorithm>
 
 namespace combat {
@@ -86,6 +88,36 @@ static void onTargetDeath(ecs::Registry& reg,
             }
         }
     }
+}
+
+/// Гибель цели — одно место на все способы умереть.
+///
+/// Умереть можно от удара, от горения и от яда, и раньше каждый из
+/// трёх путей сам выставлял состояние и сам звал награду. Три копии
+/// одного правила — это три места, где можно забыть добавить
+/// четвёртое; развязка стычки как раз и была таким забытым.
+static void killTarget(ecs::Registry& reg, ecs::Entity target,
+                       u32 killerEntity)
+{
+    auto* agent = reg.get<ecs::AIAgent>(target);
+    const bool alreadyDead = agent && agent->state == ecs::AIAgent::Dead;
+    if (agent) agent->state = ecs::AIAgent::Dead;
+
+    // Существо рассыпается СОБСТВЕННЫМ цветом: по горсти видно, кого
+    // именно добили, — и это единственное, чем развязка стычки
+    // отличалась от исчезновения полоски здоровья.
+    //
+    // Игрок исключён намеренно: его смерть показывает экран, а
+    // горсть осколков в упор перед камерой — это помеха, а не
+    // развязка.
+    if (!alreadyDead && !reg.has<ecs::PlayerTag>(target)) {
+        if (auto* tf = reg.get<ecs::Transform>(target)) {
+            world::deathBurst(tf->position + glm::vec3(0.f, 0.6f, 0.f),
+                              entity::creatureColor(reg, target));
+        }
+    }
+
+    onTargetDeath(reg, target, killerEntity);
 }
 
 f32 applyDamage(ecs::Registry& reg, ecs::Entity target, const DamageInstance& dmg) {
@@ -180,11 +212,7 @@ f32 applyDamage(ecs::Registry& reg, ecs::Entity target, const DamageInstance& dm
         }
     }
 
-    if (killed) {
-        auto* agent = reg.get<ecs::AIAgent>(target);
-        if (agent) agent->state = ecs::AIAgent::Dead;
-        onTargetDeath(reg, target, incoming.sourceEntity);
-    }
+    if (killed) killTarget(reg, target, incoming.sourceEntity);
 
     if (final > 0.f) {
         if (auto* tf = reg.get<ecs::Transform>(target)) {
@@ -199,6 +227,30 @@ f32 applyDamage(ecs::Registry& reg, ecs::Entity target, const DamageInstance& dm
             }
             glm::vec3 pos = tf->position + glm::vec3(0.f, 0.8f, 0.f);
             spawnHitFx(reg, pos, color, 0.20f, 0.65f, 0.16f);
+
+            // ---- Осколки в точке попадания ----
+            //
+            // Здесь, а не в игроке: через это место проходит ВЕСЬ
+            // урон в игре — свой, чужой, от стрелы, от заклинания и
+            // от волка, кусающего овцу. Оформи попадание в игроке —
+            // и мир отвечал бы только на его удары.
+            //
+            // Летят ПРОЧЬ от бьющего: горсть, направленная от удара,
+            // сама показывает, с какой стороны пришло.
+            glm::vec3 away{ 0.f, 1.f, 0.f };
+            if (incoming.sourceEntity != 0) {
+                if (auto* src = reg.get<ecs::Transform>(incoming.sourceEntity)) {
+                    glm::vec3 d = tf->position - src->position;
+                    d.y = std::max(0.35f, d.y);
+                    if (glm::dot(d, d) > 1e-4f) away = d;
+                }
+            }
+
+            const f32 maxHp = std::max(1.f, h->max);
+            world::woundBurst(pos, away,
+                              entity::creatureColor(reg, target),
+                              final / maxHp,
+                              incoming.isCritical);
         }
     }
 
@@ -221,11 +273,7 @@ void tickStatuses(ecs::Registry& reg, f32 dt) {
             se->burnTime -= dt;
             if (se->burnTime < 0.f) se->burnTime = 0.f;
             h->current -= amount;
-            if (h->current <= 0.f) {
-                auto* agent = reg.get<ecs::AIAgent>(e);
-                if (agent) agent->state = ecs::AIAgent::Dead;
-                onTargetDeath(reg, e, se->lastAttacker);
-            }
+            if (h->current <= 0.f) killTarget(reg, e, se->lastAttacker);
         } else {
             se->burnDps = 0.f;
         }
@@ -236,11 +284,7 @@ void tickStatuses(ecs::Registry& reg, f32 dt) {
             se->poisonTime -= dt;
             if (se->poisonTime < 0.f) se->poisonTime = 0.f;
             h->current -= amount;
-            if (h->current <= 0.f) {
-                auto* agent = reg.get<ecs::AIAgent>(e);
-                if (agent) agent->state = ecs::AIAgent::Dead;
-                onTargetDeath(reg, e, se->lastAttacker);
-            }
+            if (h->current <= 0.f) killTarget(reg, e, se->lastAttacker);
         } else {
             se->poisonDps = 0.f;
         }
