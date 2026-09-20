@@ -35,6 +35,13 @@ public:
     /// ---- Примитивы ----
     void rect(float x, float y, float w, float h, UiColor c);
     void rectOutline(float x, float y, float w, float h, float thickness, UiColor c);
+    /// Прямоугольник с картинкой снаружи (см. UiRenderer::setImage).
+    /// Без установленной картинки рисует заливку цветом c.
+    void imageQuad(float x, float y, float w, float h, UiColor c);
+    /// Есть ли что показывать в imageQuad.
+    bool hasImage() const;
+    /// Картинка для imageQuad; владеет ею вызывающий.
+    void setImage(VkImageView view, VkSampler sampler);
     void text(const std::string& s, float x, float y, float scale, UiColor c);
     /// Круг и кольцо в пикселях экрана. Экранные кнопки и джойстик
     /// круглые: из прямоугольников они выглядят как лесенка.

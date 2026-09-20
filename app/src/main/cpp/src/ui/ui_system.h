@@ -45,6 +45,8 @@ enum class Screen {
     Worlds,
     /// Создание мира: название, зерно, и что из этого выйдет.
     NewWorld,
+    /// Изометрический снимок мира: область, сторона, предпросмотр.
+    IsoSnapshot,
 };
 
 /// Разделы меню паузы.
@@ -364,6 +366,45 @@ public:
 
     bool loading() const { return loadProgress < 0.999f; }
 
+    // ---- Изометрический снимок мира ----
+    //
+    // Интерфейс не владеет ни Vulkan, ни миром: он показывает
+    // состояние и зовёт обратно. Ровно так же устроены торговля,
+    // зачарование и создание мира.
+    struct IsoUi {
+        /// Что выбрал игрок.
+        i32 size = 100;            ///< сторона области в БЛОКАХ
+        u32 view = 0;              ///< 0 север, 1 восток, 2 юг, 3 запад
+
+        /// Что происходит. Значения совпадают с render::IsoStage.
+        u8  stage = 0;             ///< 0 Idle, 1 Preparing, 2 Meshing,
+                                   ///< 3 Rendering, 4 Ready, 5 Failed
+        f32 progress = 0.f;
+        /// Совпадает с render::IsoError.
+        u8  error = 0;
+        /// Идёт финальный снимок (а не предпросмотр).
+        bool capturing = false;
+
+        /// Центр области — блок, в котором стоит игрок.
+        i32 centerX = 0, centerZ = 0;
+        /// Размер готовой картинки, пикселей.
+        u32 outW = 0, outH = 0;
+        /// Куда сохранили. Пусто — ещё не сохраняли.
+        std::string savedPath;
+    };
+    IsoUi iso;
+
+    /// Игрок сменил размер или сторону: пересобрать предпросмотр.
+    std::function<void()> onIsoParamsChanged;
+    /// «Готово»: снять в полном разрешении и сохранить.
+    std::function<void()> onIsoCapture;
+    /// «Отмена» или уход с экрана.
+    std::function<void()> onIsoCancel;
+
+    /// Картинка предпросмотра. Владеет ею вызывающий: интерфейс
+    /// только ссылается на неё, пока она показана.
+    void setPreviewImage(VkImageView view, VkSampler sampler);
+
     /// Режим раскладки: кнопки можно перетаскивать по экрану (ТЗ 5.2).
     /// Пока включён, обычные действия кнопок не срабатывают.
     bool buttonLayoutMode = false;
@@ -482,6 +523,7 @@ private:
     void drawSaveLoadScreen(player::Player& player);
     void drawWorldsScreen();
     void drawNewWorldScreen();
+    void drawIsoSnapshotScreen();
     /// Экранная клавиатура. Область — то, что от экрана осталось.
     void drawKeyboard(Rect area);
     void drawCraftingScreen(player::Player& player);

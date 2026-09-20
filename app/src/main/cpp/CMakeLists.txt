@@ -116,6 +116,10 @@ add_library(native-lib SHARED
     # Рендер
     src/render/block_outline.cpp
     src/render/chunk_renderer.cpp
+    src/render/iso_projection.cpp
+    src/render/iso_png.cpp
+    src/render/iso_snapshot.cpp
+    src/render/iso_save.cpp
     src/render/item_renderer.cpp
     src/render/lights.cpp
     src/render/mesh_builder.cpp

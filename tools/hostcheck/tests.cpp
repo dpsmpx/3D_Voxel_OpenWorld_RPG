@@ -118,6 +118,11 @@
 #include "ui/font_data.h"
 #include "ui/ui_system.h"
 #include "input/touch_layout.h"
+#include "render/iso_projection.h"
+#include "render/iso_png.h"
+#include "render/iso_save.h"
+#include "render/iso_snapshot.h"
+#include "save/zlib_util.h"
 #include <string>
 #include <vector>
 #include <thread>
@@ -7893,7 +7898,20 @@ void testSettingsButtonsWork() {
             const ui::SettingsLayout L = sys.settingsLayout();
             const u32 n = ui::settingsRowCount((ui::SettingsTab)t,
                                                sys.buttonLayoutMode);
-            for (u32 r = 0; r < n; ++r) { tap(L.row(r)); ++rows; }
+            for (u32 r = 0; r < n; ++r) {
+                tap(L.row(r));
+                ++rows;
+                // Строка может БЫТЬ ДЕЙСТВИЕМ, а не настройкой:
+                // «Изометрический снимок мира» уводит на свой экран.
+                // Это законно, и проверка «строка пережила нажатие»
+                // от этого не меняется — но следующие нажатия обязаны
+                // идти снова по настройкам, иначе они попадут в чужой
+                // экран, и дальше проверяется уже не то.
+                if (sys.screen != ui::Screen::Settings) {
+                    sys.screen = ui::Screen::Settings;
+                    frame();
+                }
+            }
             // Режим перемещения кнопок мог включиться нажатием —
             // возвращаем, чтобы следующий проход считал те же строки.
             sys.buttonLayoutMode = false;
@@ -8399,6 +8417,717 @@ void testPlayerControls() {
 //
 // Проверяется ИНВАРИАНТ, а не отдельный случай: разрешение
 // столкновений вправе укоротить шаг, но не развернуть его.
+
+// ------------------------------------------------------------
+// Изометрия снимка: строгая, а не «похожая на»
+//
+// Изометрия — это не «вид под углом». Это ровно одно возвышение
+// камеры, при котором три оси мира дают на картинке три направления,
+// попарно разнесённые на 120°, и единичные отрезки всех трёх осей
+// получают ОДИНАКОВУЮ длину. Отсюда и название: iso-metric.
+//
+// Проверяется именно это свойство, а не то, что картинка «выглядит
+// изометрично»: подобранный на глаз угол проходит любой осмотр и
+// проваливает счёт.
+
+// ------------------------------------------------------------
+// PNG: файл, который откроет не игра
+//
+// Снимок уходит в галерею телефона и на другой компьютер. Значит
+// проверять надо не «функция что-то вернула», а что получился
+// настоящий PNG: подпись, IHDR с нужными полями, контрольные суммы
+// каждого блока и — главное — что распакованные пиксели совпадают с
+// исходными до байта.
+//
+// Поэтому здесь лежит маленький РАЗБОРЩИК, а не сверка с эталонным
+// файлом. Эталон поймал бы только изменение байтов; разборщик ловит
+// то, из-за чего файл не откроется.
+// ------------------------------------------------------------
+namespace {
+
+/// Читает PNG обратно. Понимает ровно то, что пишет encodePng.
+struct PngRead {
+    bool ok = false;
+    const char* why = "";
+    u32 w = 0, h = 0;
+    u8  depth = 0, colorType = 0, interlace = 0;
+    u32 chunks = 0;
+    bool crcOk = true;
+    std::vector<u8> rgb;
+};
+
+PngRead decodePng(const std::vector<u8>& f) {
+    PngRead r;
+    auto fail = [&](const char* why) { r.why = why; r.ok = false; return r; };
+
+    static const u8 SIG[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    if (f.size() < 8 || std::memcmp(f.data(), SIG, 8) != 0)
+        return fail("нет подписи PNG");
+
+    auto be32 = [&](usize at) -> u32 {
+        return ((u32)f[at] << 24) | ((u32)f[at+1] << 16) |
+               ((u32)f[at+2] << 8) | (u32)f[at+3];
+    };
+
+    std::vector<u8> idat;
+    bool sawIhdr = false, sawIend = false;
+    usize p = 8;
+    while (p + 12 <= f.size()) {
+        const u32 len = be32(p);
+        if (p + 12 + len > f.size()) return fail("блок выходит за файл");
+        const char* type = (const char*)&f[p + 4];
+        const u32 crcHave = be32(p + 8 + len);
+        const u32 crcWant = save::crc32_compute(&f[p + 4], 4 + len);
+        if (crcHave != crcWant) r.crcOk = false;
+        ++r.chunks;
+
+        if (!std::memcmp(type, "IHDR", 4)) {
+            if (len != 13) return fail("IHDR не 13 байт");
+            r.w = be32(p + 8); r.h = be32(p + 12);
+            r.depth     = f[p + 16];
+            r.colorType = f[p + 17];
+            r.interlace = f[p + 20];
+            sawIhdr = true;
+        } else if (!std::memcmp(type, "IDAT", 4)) {
+            idat.insert(idat.end(), &f[p + 8], &f[p + 8] + len);
+        } else if (!std::memcmp(type, "IEND", 4)) {
+            sawIend = true;
+        }
+        p += 12 + len;
+    }
+    if (!sawIhdr) return fail("нет IHDR");
+    if (!sawIend) return fail("нет IEND");
+    if (idat.empty()) return fail("нет IDAT");
+    if (r.w == 0 || r.h == 0) return fail("нулевой размер");
+
+    const usize stride = (usize)r.w * 3;
+    const std::vector<u8> raw =
+        save::zdecompress(idat, (u64)(stride + 1) * r.h + 64);
+    if (raw.size() != (stride + 1) * (usize)r.h) return fail("длина распакованного не та");
+
+    // Снятие фильтра. Три типа — ровно те, что пишет encodePng.
+    r.rgb.assign(stride * r.h, 0);
+    for (u32 y = 0; y < r.h; ++y) {
+        const u8  ft  = raw[(stride + 1) * y];
+        const u8* src = &raw[(stride + 1) * y + 1];
+        u8* dst  = &r.rgb[stride * y];
+        const u8* up = y ? &r.rgb[stride * (y - 1)] : nullptr;
+        for (usize i = 0; i < stride; ++i) {
+            const u8 a = i >= 3 ? dst[i - 3] : 0;
+            const u8 b = up ? up[i] : 0;
+            switch (ft) {
+                case 0: dst[i] = src[i]; break;
+                case 1: dst[i] = (u8)(src[i] + a); break;
+                case 2: dst[i] = (u8)(src[i] + b); break;
+                default: return fail("неизвестный фильтр строки");
+            }
+        }
+    }
+    r.ok = true;
+    return r;
+}
+
+} // namespace
+
+void testPngIsReadableByOthers() {
+    group("снимок: PNG читается разборщиком со стороны");
+
+    // Картинка с градиентами, резкими краями и шумом: у всех трёх
+    // фильтров есть шанс выиграть, значит проверяются все три.
+    const u32 W = 137, H = 91;
+    std::vector<u8> src((usize)W * H * 3);
+    for (u32 y = 0; y < H; ++y)
+        for (u32 x = 0; x < W; ++x) {
+            u8* px = &src[((usize)y * W + x) * 3];
+            px[0] = (u8)(x * 255 / (W - 1));              // градиент по X
+            px[1] = (u8)(y * 255 / (H - 1));              // градиент по Y
+            px[2] = (u8)(((x / 8) + (y / 8)) % 2 ? 20 : 220);  // шахматка
+            if (x == y) { px[0] = 255; px[1] = 0; px[2] = 0; }  // резкая линия
+        }
+
+    const std::vector<u8> png = render::encodePng(src.data(), W, H);
+    check(!png.empty(), "PNG собрался");
+    if (png.empty()) return;
+
+    const PngRead r = decodePng(png);
+    char m[200];
+    std::snprintf(m, sizeof(m), "файл разобран (%s)", r.ok ? "ок" : r.why);
+    check(r.ok, m);
+    if (!r.ok) return;
+
+    check(r.crcOk, "контрольные суммы всех блоков сошлись");
+    std::snprintf(m, sizeof(m), "размер из IHDR: %u x %u", r.w, r.h);
+    check(r.w == W && r.h == H, m);
+    check(r.depth == 8, "восемь бит на канал");
+    check(r.colorType == 2, "истинный цвет без альфы");
+    check(r.interlace == 0, "без чересстрочности");
+    check(r.chunks >= 3, "есть IHDR, IDAT и IEND");
+
+    usize diff = 0;
+    for (usize i = 0; i < src.size(); ++i)
+        if (src[i] != r.rgb[i]) ++diff;
+    std::snprintf(m, sizeof(m), "пиксели совпали побайтно (расхождений %zu из %zu)",
+                  diff, src.size());
+    check(diff == 0, m);
+
+    std::snprintf(m, sizeof(m), "сжатие: %zu байт вместо %zu сырых",
+                  png.size(), src.size());
+    check(png.size() < src.size(), m);
+
+    // Вырожденные размеры не роняют и не дают битый файл.
+    {
+        const u8 one[3] = { 7, 8, 9 };
+        const std::vector<u8> tiny = render::encodePng(one, 1, 1);
+        const PngRead t = decodePng(tiny);
+        check(t.ok && t.w == 1 && t.h == 1, "картинка 1x1 — тоже честный PNG");
+        check(t.ok && t.rgb.size() == 3 && t.rgb[0] == 7 && t.rgb[2] == 9,
+              "и её единственный пиксель на месте");
+    }
+    check(render::encodePng(nullptr, 4, 4).empty(), "без данных PNG не собирается");
+    check(render::encodePng(src.data(), 0, 4).empty(), "нулевая ширина отвергается");
+}
+
+
+// ------------------------------------------------------------
+// Снимок: какие чанки берём и как зовём файл
+
+// ------------------------------------------------------------
+// Снимок не зависит от того, КОГДА его сделали
+//
+// Два снимка одного мира, сделанные днём и ночью, в дождь и в ясную
+// погоду, с факелом в руке и без, обязаны совпасть. Это утверждение
+// о ЧИСЛАХ в блоке формы, и сверять его надо с ними: по картинке
+// «чуть темнее» от «другое время суток» не отличить.
+//
+// И второе: в снимок не попадают сущности. Здесь это проверяется не
+// отключением, а отсутствием — рендер снимка не знает о мобах, NPC,
+// предметах, снарядах, осадках и небе вовсе, и выключать в нём
+// нечего.
+// ------------------------------------------------------------
+void testIsoSnapshotIsTerrainOnlyAndTimeless() {
+    group("снимок: только территория, свет закреплён");
+
+    using namespace render::iso;
+    const Box box{ Area{ 0, 0, 100 }, 40.f, 90.f };
+
+    // ---- Свет закреплён и одинаков для всех четырёх сторон ----
+    {
+        render::CameraUbo u[4];
+        for (u32 v = 0; v < 4; ++v) {
+            const Camera cam = makeCamera(box, (View)v, 8.f, 0);
+            u[v] = render::IsoSnapshot::fixedLightUbo(cam, (View)v);
+        }
+        int sunDiffers = 0;
+        for (u32 v = 1; v < 4; ++v)
+            if (u[v].sunDir != u[0].sunDir) ++sunDiffers;
+        check(sunDiffers == 0,
+              "солнце стоит одинаково на всех четырёх видах");
+
+        char m[200];
+        std::snprintf(m, sizeof(m), "погода обнулена: тучи %.2f, осадки %.2f",
+                      (double)u[0].weather.x, (double)u[0].weather.y);
+        check(u[0].weather == glm::vec4(0.f), m);
+        check(u[0].wind == glm::vec4(0.f), "ветра нет");
+
+        std::snprintf(m, sizeof(m), "точечных источников нет: %.0f",
+                      (double)u[0].lightInfo.x);
+        check(u[0].lightInfo.x == 0.f, m);
+        int lit = 0;
+        for (u32 i = 0; i < render::MAX_GPU_LIGHTS; ++i)
+            if (u[0].lightColor[i] != glm::vec4(0.f)) ++lit;
+        check(lit == 0, "и ни один не светит");
+
+        // Туман унесён за горизонт: при ортографии он дал бы разную
+        // плотность в разных углах картинки.
+        std::snprintf(m, sizeof(m), "туман начинается на %.0f блоках",
+                      (double)u[0].fogParams.x);
+        check(u[0].fogParams.x > 1.0e5f, m);
+        check(u[0].fogParams.y > u[0].fogParams.x, "и кончается ещё дальше");
+
+        // Солнце — направление, а не что попало.
+        const f32 len = glm::length(glm::vec3(u[0].sunDir));
+        std::snprintf(m, sizeof(m), "направление на солнце нормировано (%.4f)",
+                      (double)len);
+        check(std::fabs(len - 1.f) < 1e-3f, m);
+        check(u[0].sunDir.y > 0.f, "и солнце над горизонтом, а не под");
+    }
+
+    // ---- Зритель бесконечно далеко: блик одинаков по всему кадру ----
+    //
+    // Шейдер берёт направление на зрителя как (cameraPos - точка).
+    // При ортографии оно обязано быть одним на весь кадр, иначе вода
+    // бликует в центре иначе, чем по краям.
+    {
+        const Camera cam = makeCamera(box, View::North, 8.f, 0);
+        const render::CameraUbo u = render::IsoSnapshot::fixedLightUbo(cam, View::North);
+        const glm::vec3 eye = glm::vec3(u.cameraPos);
+        const glm::vec3 a = glm::normalize(eye - glm::vec3(0.f, 40.f, 0.f));
+        const glm::vec3 b = glm::normalize(eye - glm::vec3(100.f, 90.f, 100.f));
+        const f32 deg = std::acos(glm::clamp(glm::dot(a, b), -1.f, 1.f))
+                      * 180.f / 3.14159265f;
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "направление на зрителя одно на весь кадр (расхождение %.4f°)",
+                      (double)deg);
+        check(deg < 0.2f, m);
+    }
+
+    // ---- Сущностей в снимке нет по устройству, а не по флажку ----
+    {
+        const std::string src =
+            readSource("app/src/main/cpp/src/render/iso_snapshot.cpp");
+        const std::string hdr =
+            readSource("app/src/main/cpp/src/render/iso_snapshot.h");
+        if (src.empty() || hdr.empty()) {
+            check(true, "исходники не найдены, проверка пропущена");
+            return;
+        }
+        const std::string both = src + hdr;
+        struct Banned { const char* what; const char* why; };
+        const Banned banned[] = {
+            { "MobRenderer",        "мобы" },
+            { "NpcRenderer",        "NPC" },
+            { "ItemRenderer",       "предметы" },
+            { "ProjectileRenderer", "снаряды" },
+            { "Skybox",             "небо" },
+            { "setPrecip",          "осадки" },
+            { "UiSystem",           "интерфейс" },
+            { "DayCycle",           "время суток" },
+            { "Weather",            "погода" },
+            { "LightField",         "источники света" },
+        };
+        int found = 0;
+        char m[220];
+        for (const Banned& b : banned) {
+            if (both.find(b.what) == std::string::npos) continue;
+            ++found;
+            std::snprintf(m, sizeof(m), "в снимок затесались %s (%s)",
+                          b.why, b.what);
+            check(false, m);
+        }
+        std::snprintf(m, sizeof(m),
+                      "рендер снимка не знает ни об одной динамической сущности "
+                      "(запрещённых упоминаний %d)", found);
+        check(found == 0, m);
+
+        // Зато знает о ландшафте — иначе проверка выше проходила бы
+        // на пустом файле.
+        check(both.find("buildGreedyMesh") != std::string::npos,
+              "и при этом мешит ландшафт тем же жадным мешером");
+        check(both.find("buildChunkVertices") != std::string::npos,
+              "и собирает вершины тем же сборщиком");
+        check(both.find("voxelPipelineDesc") != std::string::npos,
+              "и берёт то же описание конвейера");
+    }
+}
+
+// ------------------------------------------------------------
+void testIsoChunksAndFileName() {
+    group("снимок: чанки области и имя файла");
+
+    using namespace render::iso;
+    constexpr i32 CS = 32;
+
+    // ---- Область целиком накрыта чанками ----
+    {
+        const Area a{ 10, 10, 100 };           // блоки 10..109
+        const ChunkRange r = chunkRange(a, CS, 0);
+        char m[190];
+        std::snprintf(m, sizeof(m), "чанки [%d..%d] x [%d..%d] на область [%d..%d]",
+                      r.x0, r.x1, r.z0, r.z1, a.x0, a.x1() - 1);
+        check(r.x0 == 0 && r.x1 == 3, m);      // 10/32=0, 109/32=3
+        check(r.z0 == 0 && r.z1 == 3, "по Z так же");
+        check(r.count() == 16, "шестнадцать чанков на сотню блоков");
+
+        // Ни один блок области не остался снаружи.
+        check(r.x0 * CS <= a.x0 && (r.x1 + 1) * CS >= a.x1(),
+              "область целиком внутри взятых чанков по X");
+        check(r.z0 * CS <= a.z0 && (r.z1 + 1) * CS >= a.z1(),
+              "и по Z");
+    }
+
+    // ---- Отрицательные координаты: округление ВНИЗ ----
+    //
+    // Обычное целочисленное деление округляет к нулю, и блок -1
+    // попал бы в чанк 0 вместо -1: у края области пропал бы
+    // целый чанк, и на снимке была бы дыра.
+    {
+        const Area a{ -40, -40, 100 };         // блоки -40..59
+        const ChunkRange r = chunkRange(a, CS, 0);
+        char m[190];
+        std::snprintf(m, sizeof(m), "чанки [%d..%d] на блоки [%d..%d]",
+                      r.x0, r.x1, a.x0, a.x1() - 1);
+        check(r.x0 == -2, m);                  // -40 лежит в чанке -2
+        check(r.x1 == 1, "правый край в чанке 1");
+        check(r.x0 * CS <= a.x0, "левый край области накрыт");
+    }
+
+    // ---- Рамка в один чанк: она нужна мешеру ----
+    {
+        const Area a{ 0, 0, 64 };
+        const ChunkRange d = chunkRange(a, CS, 0);
+        const ChunkRange n = chunkRange(a, CS, 1);
+        check(n.x0 == d.x0 - 1 && n.x1 == d.x1 + 1, "рамка шире на чанк с каждой стороны");
+        check(n.count() > d.count(), "и чанков в ней больше");
+        char m[160];
+        std::snprintf(m, sizeof(m), "рисуем %d чанков, готовим %d",
+                      d.count(), n.count());
+        check(d.count() == 4 && n.count() == 16, m);
+    }
+
+    // ---- Ровно на границе чанка ----
+    {
+        const Area a{ 32, 32, 32 };            // блоки 32..63 — ровно чанк 1
+        const ChunkRange r = chunkRange(a, CS, 0);
+        check(r.x0 == 1 && r.x1 == 1 && r.count() == 1,
+              "область в границах одного чанка берёт ровно его");
+    }
+
+    // ---- Имя файла ----
+    //
+    // В имени обязаны читаться ВСЕ условия съёмки: из папки на сотню
+    // карт иначе не выбрать нужную.
+    {
+        // 2026-09-20 14:30:17 UTC. Проверяем состав имени, а не
+        // часовой пояс машины: время в имени местное, и сверять его
+        // с UTC значило бы проверять настройки сборочной машины.
+        const std::string n = render::isoFileName(-42, 128, 100,
+                                                  View::North, 1789223417LL);
+        char m[300];
+        std::snprintf(m, sizeof(m), "имя: %s", n.c_str());
+        check(n.rfind("voxelrpg_map_", 0) == 0, m);
+        check(n.find("x-42") != std::string::npos, "координата X со знаком");
+        check(n.find("z128") != std::string::npos, "координата Z");
+        check(n.find("100b") != std::string::npos, "размер области в блоках");
+        check(n.find("north") != std::string::npos, "сторона обзора");
+        check(n.size() > 4 && n.substr(n.size() - 4) == ".png", "расширение");
+        // Метка времени: восемь цифр, дефис, шесть цифр.
+        const usize dash = n.rfind('-');
+        check(dash != std::string::npos && dash > 8, "в имени есть метка времени");
+
+        // Ни пробелов, ни кириллицы: имя уедет на другой компьютер.
+        int bad = 0;
+        for (char c : n) {
+            const unsigned char u = (unsigned char)c;
+            const bool ok = (u >= '0' && u <= '9') || (u >= 'a' && u <= 'z') ||
+                            (u >= 'A' && u <= 'Z') || c == '_' || c == '-' || c == '.';
+            if (!ok) ++bad;
+        }
+        std::snprintf(m, sizeof(m), "имя состоит только из безопасных символов (плохих %d)", bad);
+        check(bad == 0, m);
+    }
+
+    // ---- Четыре стороны дают четыре разных имени ----
+    {
+        std::set<std::string> names;
+        for (u32 v = 0; v < 4; ++v)
+            names.insert(render::isoFileName(0, 0, 100, (View)v, 1789223417LL));
+        check(names.size() == 4, "снимки четырёх сторон не перезаписывают друг друга");
+        check(std::string(render::isoViewSlug(View::East)) == "east",
+              "сторона названа латиницей");
+    }
+
+    // ---- Размер и координаты в имени — настоящие ----
+    {
+        const std::string a = render::isoFileName(7, -3, 256, View::West, 1000000000LL);
+        check(a.find("256b") != std::string::npos, "размер 256 попал в имя");
+        check(a.find("x7_z-3") != std::string::npos, "обе координаты рядом и со знаком");
+    }
+}
+
+// ------------------------------------------------------------
+void testIsoProjectionIsTrulyIsometric() {
+    group("снимок: проекция строго изометрическая");
+
+    using namespace render::iso;
+
+    // ---- возвышение ровно atan(1/√2) ----
+    {
+        const f32 want = std::atan(1.f / std::sqrt(2.f));
+        char m[160];
+        std::snprintf(m, sizeof(m), "возвышение %.6f рад (%.4f°)",
+                      (double)elevationRad(),
+                      (double)(elevationRad() * 180.f / 3.14159265f));
+        check(std::fabs(elevationRad() - want) < 1e-6f, m);
+    }
+
+    // ---- азимуты: ровно 90° между соседними ----
+    {
+        int bad = 0;
+        for (u32 i = 0; i < 4; ++i) {
+            const f32 a = azimuthRad((View)i);
+            const f32 b = azimuthRad((View)((i + 1) % 4));
+            f32 d = b - a;
+            while (d < 0.f)                d += glm::radians(360.f);
+            while (d >= glm::radians(360.f)) d -= glm::radians(360.f);
+            if (std::fabs(d - glm::radians(90.f)) > 1e-5f) ++bad;
+        }
+        check(bad == 0, "соседние виды отличаются ровно на 90°");
+        check(std::fabs(azimuthRad(View::North) - glm::radians(45.f)) < 1e-6f,
+              "север начинается с 45°, а не с нуля");
+    }
+
+    // ---- три оси мира: 120° и равная длина ----
+    //
+    // Вот та самая проверка, ради которой возвышение не настраивается.
+    {
+        const Box box{ Area{ 0, 0, 64 }, 0.f, 64.f };
+        int badLen = 0, badAngle = 0;
+        f32 worstLen = 0.f, worstAngle = 0.f;
+
+        for (u32 vi = 0; vi < 4; ++vi) {
+            const Camera cam = makeCamera(box, (View)vi, 8.f, 0);
+            const glm::vec3 o{ 32.f, 32.f, 32.f };
+            const glm::vec2 po = worldToImage(cam, o);
+
+            // Экранные направления трёх осей мира.
+            glm::vec2 axis[3];
+            axis[0] = worldToImage(cam, o + glm::vec3(1, 0, 0)) - po;
+            axis[1] = worldToImage(cam, o + glm::vec3(0, 1, 0)) - po;
+            axis[2] = worldToImage(cam, o + glm::vec3(0, 0, 1)) - po;
+
+            f32 len[3];
+            for (int i = 0; i < 3; ++i) len[i] = glm::length(axis[i]);
+
+            // Равная мера: длины трёх осей совпадают.
+            for (int i = 0; i < 3; ++i) {
+                const f32 rel = std::fabs(len[i] - len[0]) / len[0];
+                worstLen = std::max(worstLen, rel);
+                if (rel > 1e-3f) ++badLen;
+            }
+
+            // И 60° между ПРЯМЫМИ, попарно.
+            //
+            // Не между направлениями: ось, смотрящая в камеру,
+            // проецируется в противоположную сторону, и 120°
+            // превращаются в 60°. Какие оси смотрят в камеру —
+            // зависит от стороны обзора, поэтому «120° между
+            // направлениями» верно для севера и неверно для востока.
+            // Признак изометрии, не зависящий от стороны, — угол
+            // между прямыми, и он равен 60° на всех четырёх видах.
+            for (int i = 0; i < 3; ++i) {
+                const glm::vec2 a = axis[i] / len[i];
+                const glm::vec2 b = axis[(i + 1) % 3] / len[(i + 1) % 3];
+                const f32 dot = glm::clamp(a.x * b.x + a.y * b.y, -1.f, 1.f);
+                f32 deg = std::acos(dot) * 180.f / 3.14159265f;
+                if (deg > 90.f) deg = 180.f - deg;      // прямая, не луч
+                const f32 err = std::fabs(deg - 60.f);
+                worstAngle = std::max(worstAngle, err);
+                if (err > 0.05f) ++badAngle;
+            }
+        }
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "единичные отрезки трёх осей равны на картинке (худшее расхождение %.5f)",
+                      (double)worstLen);
+        check(badLen == 0, m);
+        std::snprintf(m, sizeof(m),
+                      "три оси ложатся прямыми через 60° (худшее отклонение %.4f°)",
+                      (double)worstAngle);
+        check(badAngle == 0, m);
+    }
+
+    // ---- ортография: масштаб не зависит от глубины ----
+    //
+    // Тот же блок, отодвинутый от камеры, обязан остаться того же
+    // размера. Перспектива провалит это первым же измерением.
+    {
+        const Box box{ Area{ 0, 0, 100 }, 0.f, 100.f };
+        const Camera cam = makeCamera(box, View::North, 8.f, 0);
+
+        f32 minLen = 1e30f, maxLen = 0.f;
+        for (int k = 0; k < 40; ++k) {
+            // Идём вдоль взгляда: глубина меняется, картинка — нет.
+            const glm::vec3 p = glm::vec3(50.f, 50.f, 50.f)
+                              + viewDirection(View::North) * (f32)k * 2.f;
+            const glm::vec2 a = worldToImage(cam, p);
+            const glm::vec2 b = worldToImage(cam, p + glm::vec3(1, 0, 0));
+            const f32 len = glm::length(b - a);
+            minLen = std::min(minLen, len);
+            maxLen = std::max(maxLen, len);
+        }
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "размер блока не зависит от глубины: %.4f..%.4f пикселя",
+                      (double)minLen, (double)maxLen);
+        check(maxLen - minLen < 1e-2f, m);
+    }
+
+    // ---- параллельные линии остаются параллельными ----
+    {
+        const Box box{ Area{ 0, 0, 100 }, 0.f, 100.f };
+        const Camera cam = makeCamera(box, View::East, 8.f, 0);
+
+        f32 worst = 0.f;
+        const glm::vec2 ref = glm::normalize(
+            worldToImage(cam, { 0.f, 0.f, 1.f }) -
+            worldToImage(cam, { 0.f, 0.f, 0.f }));
+        for (int k = 0; k < 30; ++k) {
+            const glm::vec3 o{ (f32)k * 3.f, (f32)(k % 7) * 4.f, (f32)k };
+            const glm::vec2 d = glm::normalize(
+                worldToImage(cam, o + glm::vec3(0, 0, 1)) - worldToImage(cam, o));
+            const f32 dot = glm::clamp(d.x * ref.x + d.y * ref.y, -1.f, 1.f);
+            worst = std::max(worst, std::acos(dot) * 180.f / 3.14159265f);
+        }
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "параллельные мировые линии параллельны на картинке (худшее расхождение %.5f°)",
+                      (double)worst);
+        // Порог — точность float на этих величинах: направление
+        // считается разностью двух координат в тысячи пикселей.
+        check(worst < 0.05f, m);
+    }
+
+    // ---- w всегда единица: перспективного деления нет вовсе ----
+    {
+        const Box box{ Area{ -50, -50, 100 }, 0.f, 100.f };
+        const Camera cam = makeCamera(box, View::South, 8.f, 0);
+        f32 worst = 0.f;
+        for (int k = 0; k < 50; ++k) {
+            const glm::vec3 p{ (f32)(k * 3 - 60), (f32)(k * 2), (f32)(k - 25) };
+            const glm::vec4 clip = cam.viewProj() * glm::vec4(p, 1.f);
+            worst = std::max(worst, std::fabs(clip.w - 1.f));
+        }
+        char m[160];
+        std::snprintf(m, sizeof(m),
+                      "однородная координата всюду равна единице (худшее %.2e)",
+                      (double)worst);
+        check(worst < 1e-5f, m);
+    }
+}
+
+// ------------------------------------------------------------
+// Область снимка: центр, округление, поворот
+// ------------------------------------------------------------
+void testIsoAreaAndOrientation() {
+    group("снимок: область, центр и четыре стороны");
+
+    using namespace render::iso;
+
+    // ---- центр — блок игрока, дробная часть не влияет ----
+    {
+        const Area a = areaAround({ 10.9f, 64.f, -3.2f }, 100);
+        const Area b = areaAround({ 10.0f, 12.f, -3.9f }, 100);
+        check(a.x0 == b.x0 && a.z0 == b.z0,
+              "снимок из любой точки блока даёт одну и ту же область");
+
+        char m[190];
+        std::snprintf(m, sizeof(m), "область [%d..%d] x [%d..%d]",
+                      a.x0, a.x1(), a.z0, a.z1());
+        check(a.size == 100, m);
+        // Блок игрока: floor(10.9) = 10, floor(-3.2) = -4.
+        check(a.x0 == 10 - 50 && a.z0 == -4 - 50,
+              "блок игрока — левый из двух центральных при чётном размере");
+        check(a.x0 <= 10 && 10 < a.x1(), "блок игрока внутри области по X");
+        check(a.z0 <= -4 && -4 < a.z1(), "блок игрока внутри области по Z");
+    }
+
+    // ---- нечётный размер: центр ровно посередине ----
+    {
+        const Area a = areaAround({ 7.5f, 0.f, 7.5f }, 101);
+        check(a.x0 == 7 - 50 && a.size == 101, "нечётная область центрирована");
+        check(a.x0 + a.size / 2 == 7, "центральный блок — блок игрока");
+    }
+
+    // ---- отрицательные координаты округляются вниз, а не к нулю ----
+    {
+        const Area a = areaAround({ -0.5f, 0.f, -0.5f }, 10);
+        check(a.x0 == -1 - 5 && a.z0 == -1 - 5,
+              "у отрицательных координат блок игрока — floor, а не усечение");
+    }
+
+    // ---- смена стороны не двигает область ----
+    //
+    // Область определяется ДО поворота: игрок, крутя вид, обязан
+    // видеть один и тот же кусок мира с четырёх сторон.
+    {
+        const glm::vec3 pos{ 123.4f, 70.f, -56.7f };
+        const Area a = areaAround(pos, 100);
+        const Box box{ a, 40.f, 90.f };
+
+        glm::vec2 centers[4];
+        u32 widths[4], heights[4];
+        for (u32 i = 0; i < 4; ++i) {
+            const Camera cam = makeCamera(box, (View)i, 8.f, 0);
+            const glm::vec3 c = box.center();
+            centers[i] = worldToImage(cam, c);
+            widths[i]  = cam.width;
+            heights[i] = cam.height;
+        }
+        int offCenter = 0, differentSize = 0;
+        for (u32 i = 0; i < 4; ++i) {
+            // Центр области — в центре картинки, на всех четырёх видах.
+            if (std::fabs(centers[i].x - (f32)widths[i]  * 0.5f) > 1.f) ++offCenter;
+            if (std::fabs(centers[i].y - (f32)heights[i] * 0.5f) > 1.f) ++offCenter;
+            // Квадратная область с четырёх сторон даёт один размер кадра.
+            if (widths[i] != widths[0] || heights[i] != heights[0]) ++differentSize;
+        }
+        check(offCenter == 0, "центр области — в центре картинки на всех видах");
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "все четыре вида дают один размер кадра: %ux%u", widths[0], heights[0]);
+        check(differentSize == 0, m);
+    }
+
+    // ---- поворот на 90°: картинка та же, повёрнутая ----
+    //
+    // Север и юг смотрят навстречу друг другу, поэтому восточный край
+    // области на одном виде обязан оказаться там, где на другом
+    // западный. Проверяется по КОНКРЕТНЫМ углам области.
+    {
+        const Area a{ 0, 0, 100 };
+        const Box box{ a, 0.f, 50.f };
+        const Camera n = makeCamera(box, View::North, 6.f, 0);
+        const Camera s = makeCamera(box, View::South, 6.f, 0);
+
+        const glm::vec3 cornerNE{ 100.f, 0.f, 0.f };
+        const glm::vec3 cornerSW{ 0.f, 0.f, 100.f };
+        const glm::vec2 a1 = worldToImage(n, cornerNE);
+        const glm::vec2 b1 = worldToImage(s, cornerSW);
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "разворот на 180° меняет углы местами: (%.1f,%.1f) и (%.1f,%.1f)",
+                      (double)a1.x, (double)a1.y, (double)b1.x, (double)b1.y);
+        check(std::fabs(a1.x - b1.x) < 1.f && std::fabs(a1.y - b1.y) < 1.f, m);
+    }
+
+    // ---- детерминированность ----
+    {
+        const Box box{ areaAround({ 5.5f, 0.f, 5.5f }, 100), 10.f, 80.f };
+        const Camera a = makeCamera(box, View::West, 8.f, 4096);
+        const Camera b = makeCamera(box, View::West, 8.f, 4096);
+        bool same = a.width == b.width && a.height == b.height;
+        for (int i = 0; i < 4 && same; ++i)
+            for (int j = 0; j < 4 && same; ++j)
+                if (a.viewProj()[i][j] != b.viewProj()[i][j]) same = false;
+        check(same, "два вызова подряд дают побитово одну камеру");
+    }
+
+    // ---- потолок стороны уменьшает масштаб, а не режет область ----
+    {
+        const Box box{ Area{ 0, 0, 1000 }, 0.f, 128.f };
+        const Camera free = makeCamera(box, View::North, 16.f, 0);
+        const Camera capped = makeCamera(box, View::North, 16.f, 2048);
+        check(free.width > 2048, "без потолка картинка получилась бы огромной");
+        check(capped.width <= 2048 && capped.height <= 2048,
+              "с потолком обе стороны укладываются в него");
+        check(capped.pixelsPerUnit < free.pixelsPerUnit,
+              "потолок уменьшил масштаб");
+
+        // И область всё равно влезла целиком: углы внутри кадра.
+        glm::vec3 cs[8];
+        box.corners(cs);
+        int outside = 0;
+        for (const glm::vec3& c : cs) {
+            const glm::vec2 p = worldToImage(capped, c);
+            if (p.x < -1.f || p.y < -1.f ||
+                p.x > (f32)capped.width + 1.f || p.y > (f32)capped.height + 1.f)
+                ++outside;
+        }
+        check(outside == 0, "и вся область осталась в кадре");
+    }
+}
+
 // ------------------------------------------------------------
 namespace {
 
@@ -20050,6 +20779,11 @@ int main() {
     testSprintByDoubleTap();
     testPlayerControls();
     testWalkingNeverTeleports();
+    testIsoProjectionIsTrulyIsometric();
+    testPngIsReadableByOthers();
+    testIsoAreaAndOrientation();
+    testIsoChunksAndFileName();
+    testIsoSnapshotIsTerrainOnlyAndTimeless();
     testShowcaseHoldsEveryModel();
     testEntityInstanceBudget();
     testInstanceColorByteOrder();

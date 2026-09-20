@@ -47,14 +47,15 @@ bool UiRenderer::init(vk::Context& ctx, AAssetManager* mgr) {
     lci.pBindings = &b;
     if (vkCreateDescriptorSetLayout(dev_, &lci, nullptr, &descLayout_) != VK_SUCCESS) return false;
 
-    // Набор ровно один — атлас шрифта. Второй заводился под внешний
-    // атлас, которым рисовалась миникарта.
+    // Наборов два: атлас шрифта и картинка снаружи (предпросмотр
+    // изометрического снимка). Конвейер у них общий — меняется только
+    // текстура.
     VkDescriptorPoolSize ps{};
     ps.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    ps.descriptorCount = 1;
+    ps.descriptorCount = 2;
 
     VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pci.maxSets = 1;
+    pci.maxSets = 2;
     pci.poolSizeCount = 1;
     pci.pPoolSizes = &ps;
     if (vkCreateDescriptorPool(dev_, &pci, nullptr, &descPool_) != VK_SUCCESS) return false;
@@ -112,12 +113,60 @@ void UiRenderer::setSurfaceRotation(u32 degrees) {
 
 void UiRenderer::beginFrame() {
     verts_.clear();
+    runs_.clear();
 }
 void UiRenderer::endFrame() {}
+
+void UiRenderer::beginRun(bool image) {
+    if (!runs_.empty() && runs_.back().image == image) return;
+    runs_.push_back(Run{ (u32)verts_.size(), 0, image });
+}
+
+void UiRenderer::setImage(VkImageView view, VkSampler sampler) {
+    if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
+        imageReady_ = false;
+        return;
+    }
+    if (imageSet_ == VK_NULL_HANDLE) {
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool = descPool_;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &descLayout_;
+        if (vkAllocateDescriptorSets(dev_, &ai, &imageSet_) != VK_SUCCESS) {
+            imageSet_ = VK_NULL_HANDLE;
+            imageReady_ = false;
+            return;
+        }
+    }
+    VkDescriptorImageInfo ii{};
+    ii.imageView   = view;
+    ii.sampler     = sampler;
+    ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = imageSet_;
+    w.dstBinding = 0;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.pImageInfo = &ii;
+    vkUpdateDescriptorSets(dev_, 1, &w, 0, nullptr);
+    imageReady_ = true;
+}
+
+void UiRenderer::pushImageQuad(glm::vec2 pos, glm::vec2 size, u32 rgba) {
+    if (!imageReady_) {
+        // Картинки нет — рисуем подложку, а не дыру.
+        pushQuad(pos, size, whiteU_, whiteV_, whiteU_, whiteV_, rgba);
+        return;
+    }
+    beginRun(true);
+    pushQuad(pos, size, 0.f, 0.f, 1.f, 1.f, rgba);
+    beginRun(false);
+}
 
 void UiRenderer::pushQuad(glm::vec2 pos, glm::vec2 size,
                           float u0, float v0, float u1, float v1, u32 rgba)
 {
+    if (runs_.empty()) beginRun(false);
     u8 r = (rgba >> 24) & 0xFF, g = (rgba >> 16) & 0xFF;
     u8 b = (rgba >>  8) & 0xFF, a = (rgba      ) & 0xFF;
     auto& V = verts_;
@@ -137,6 +186,7 @@ void UiRenderer::pushQuad(glm::vec2 pos, glm::vec2 size,
 }
 
 void UiRenderer::pushTri(glm::vec2 a, glm::vec2 b, glm::vec2 c, u32 rgba) {
+    if (runs_.empty()) beginRun(false);
     u8 r = (rgba >> 24) & 0xFF, g = (rgba >> 16) & 0xFF;
     u8 bl = (rgba >>  8) & 0xFF, al = (rgba      ) & 0xFF;
     auto& V = verts_;
@@ -202,14 +252,28 @@ void UiRenderer::flush(vk::Context& ctx) {
 
     if (fontSet_ == VK_NULL_HANDLE) return;
 
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline_.layout(), 0, 1, &fontSet_, 0, nullptr);
     VkDeviceSize offs[] = { 0 };
     const VkBuffer vb = fb.vb.handle();
     vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offs);
-    vkCmdDraw(cmd, fb.vertexCount, 1, 0, 0);
-    lastDrawn_ += fb.vertexCount;
-    ++lastDrawCalls_;
+
+    // Длину последнего отрезка закрываем здесь: пока шёл кадр, она
+    // была неизвестна.
+    for (usize i = 0; i < runs_.size(); ++i) {
+        const u32 end = (i + 1 < runs_.size()) ? runs_[i + 1].first
+                                               : (u32)verts_.size();
+        runs_[i].count = end - runs_[i].first;
+    }
+
+    for (const Run& r : runs_) {
+        if (r.count == 0) continue;
+        VkDescriptorSet set = (r.image && imageReady_ &&
+                               imageSet_ != VK_NULL_HANDLE) ? imageSet_ : fontSet_;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipeline_.layout(), 0, 1, &set, 0, nullptr);
+        vkCmdDraw(cmd, r.count, 1, r.first, 0);
+        lastDrawn_ += r.count;
+        ++lastDrawCalls_;
+    }
 }
 
 void UiRenderer::destroy() {
@@ -222,6 +286,8 @@ void UiRenderer::destroy() {
     descPool_ = VK_NULL_HANDLE;
     descLayout_ = VK_NULL_HANDLE;
     fontSet_ = VK_NULL_HANDLE;
+    imageSet_ = VK_NULL_HANDLE;
+    imageReady_ = false;
 }
 
 } // namespace ui
