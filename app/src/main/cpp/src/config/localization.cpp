@@ -171,6 +171,7 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Notif_VillageGarrison */   "A garrison: stone walls and twice the guard",
     /* Notif_VillageWoodland */   "A woodland hamlet: no forge, no healer",
     /* Notif_Drowning */          "Out of air!",
+    /* Hint_Parry */             "Raise the guard at the last moment to parry",
 
     /* Hud_Use */           "USE",
     /* Ench_Altar */        "Enchant Altar",
@@ -346,6 +347,7 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Notif_VillageGarrison */   "Сторожевая: кладка и двойная стража",
     /* Notif_VillageWoodland */   "Лесной хутор: ни кузни, ни лекаря",
     /* Notif_Drowning */          "Нечем дышать!",
+    /* Hint_Parry */             "Поднять защиту в последний миг — отбить удар",
 
     /* Hud_Use */           "ИСПОЛЬЗОВАТЬ",
     /* Ench_Altar */        "Алтарь зачарования",

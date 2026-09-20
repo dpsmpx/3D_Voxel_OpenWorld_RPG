@@ -31,6 +31,7 @@
 #include "items/item_use.h"
 #include "combat/resonance.h"
 #include "combat/swing.h"
+#include "combat/guard.h"
 #include "combat/weapon.h"
 #include "factions/faction.h"
 #include "quests/quest.h"
@@ -19186,6 +19187,516 @@ void testHitsHaveWeight() {
     }
 }
 
+// ------------------------------------------------------------
+// Защита: блок, парирование, пробитие.
+//
+// До этой ревизии решение в бою было ровно одно — отойти. Замах
+// (предыдущая итерация) дал окно, в которое видно приближающийся
+// удар; теперь в это окно можно вложить второе решение.
+//
+// Три исхода, и все три обязаны отличаться по последствиям, иначе
+// «защита» окажется одной кнопкой «меньше урона»:
+//
+//   отбил   — урона нет вовсе, бьющий оглушён и потерял замах;
+//   принял  — урон урезан, выносливость потрачена;
+//   пробили — урон прошёл целиком, защитник оглушён.
+// ------------------------------------------------------------
+void testGuardBlocksParriesAndBreaks() {
+    group("бой: защита, парирование и пробитие");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+    combat::weapons();
+
+    char m[220];
+
+    // ---- 1. Парировать можно только по УВИДЕННОМУ замаху ----
+    //
+    // Главный договор всей механики. Будь окно парирования шире
+    // самого короткого замаха в игре, выгодно было бы жать защиту
+    // вслепую — и парирование перестало бы быть ответом на удар.
+    {
+        f32 shortest = 1e9f;
+        const char* who = nullptr;
+        for (u16 id = mobs::MOB_NONE + 1; id < mobs::MOB_COUNT; ++id) {
+            const mobs::MobDef& d = mobs::mobRegistry().get(id);
+            if (d.attackDamage <= 0.f && d.slamDamage <= 0.f) continue;
+            if (d.windupTime < shortest) { shortest = d.windupTime; who = d.name; }
+        }
+        std::snprintf(m, sizeof(m),
+                      "окно парирования %.0f мс короче самого быстрого "
+                      "замаха в игре (%s, %.0f мс)",
+                      (double)combat::PARRY_WINDOW * 1000.0,
+                      who ? who : "?", (double)shortest * 1000.0);
+        check(combat::PARRY_WINDOW < shortest, m);
+    }
+
+    // ---- 1a. Дробь по кнопке не парирует ----
+    //
+    // Самая дешёвая поломка всей механики: если окно открывается на
+    // КАЖДЫЙ подъём, игрок дробит кнопку — и всё подряд парируется,
+    // а выбор «блок или парирование» исчезает.
+    {
+        combat::GuardState g;
+        const f32 dt = 1.f / 60.f;
+        const glm::vec3 fwd { 0.f, 0.f, 1.f };
+
+        // Первый честный подъём: защита до этого лежала внизу.
+        g.tick(dt, true, fwd);
+        check(g.parryReady(), "первый подъём парирует");
+
+        // Дробим: три кадра вниз, один вверх — и так десять раз.
+        int armedTimes = 0;
+        for (int k = 0; k < 10; ++k) {
+            for (int i = 0; i < 3; ++i) g.tick(dt, false, fwd);
+            g.tick(dt, true, fwd);
+            if (g.parryReady()) ++armedTimes;
+        }
+        char mm[160];
+        std::snprintf(mm, sizeof(mm),
+                      "дробью окно не открыть: из десяти нажатий "
+                      "парировало %d", armedTimes);
+        check(armedTimes == 0, mm);
+
+        // А честное «отпустил и поднял на следующий замах» — открывает.
+        for (int i = 0; i < 40; ++i) g.tick(dt, false, fwd);   // 0.67 с внизу
+        g.tick(dt, true, fwd);
+        check(g.parryReady(), "поднятая заново после паузы — парирует снова");
+        check(combat::PARRY_REARM_TIME < 0.6f,
+              "и порог короче самой частой серии ударов в игре");
+    }
+
+    // ---- 2. Оружие держит удар по-разному ----
+    {
+        auto frac = [](u16 id) { return combat::weapons().get(id).guardFraction; };
+        check(frac(combat::WEAPON_IRON_SWORD) > frac(combat::WEAPON_IRON_DAGGER),
+              "мечом закрываются лучше, чем кинжалом");
+        check(frac(combat::WEAPON_ARCANE_BRACELET) > frac(combat::WEAPON_IRON_SWORD),
+              "тайный браслет — оберег: держит лучше любого клинка");
+        check(frac(combat::WEAPON_NONE) > 0.f,
+              "и голыми руками что-то держат");
+        u32 unset = 0;
+        for (u16 id = combat::WEAPON_NONE + 1; id < combat::WEAPON_COUNT; ++id)
+            if (frac(id) <= 0.f) ++unset;
+        check(unset == 0, "доля защиты задана каждому оружию");
+    }
+
+    // ---- 3. Три исхода на стенде ----
+    //
+    // Чучело с мечом и полной выносливостью, один и тот же удар в
+    // двадцать урона — разница только в том, когда поднята защита и
+    // сколько осталось сил.
+    {
+        auto dummy = [](ecs::Registry& reg, u16 weapon, f32 stamina) {
+            const ecs::Entity e = reg.create();
+            ecs::Transform tf; tf.position = { 0.f, 0.f, 0.f }; reg.add(e, tf);
+            ecs::Health h; h.max = 200.f; h.current = 200.f;    reg.add(e, h);
+            ecs::Stamina sp; sp.max = 100.f; sp.current = stamina; reg.add(e, sp);
+            combat::EquippedWeapon eq; eq.weaponId = weapon;    reg.add(e, eq);
+            reg.add(e, combat::StatusEffects{});
+            reg.add(e, combat::ResonanceState{});
+            reg.add(e, combat::GuardState{});
+            return e;
+        };
+        // Нападающий стоит ПЕРЕД чучелом: защита смотрит в +Z.
+        auto attacker = [](ecs::Registry& reg, const glm::vec3& at) {
+            const ecs::Entity e = reg.create();
+            ecs::Transform tf; tf.position = at; reg.add(e, tf);
+            ecs::Health h; h.max = 100.f; h.current = 100.f; reg.add(e, h);
+            reg.add(e, combat::StatusEffects{});
+            return e;
+        };
+        auto swing = [](ecs::Registry& reg, ecs::Entity from, ecs::Entity to) {
+            combat::DamageInstance d{};
+            d.amount = 20.f;
+            d.type   = combat::DamageType::Physical;
+            d.sourceEntity = (u32)from;
+            d.targetEntity = (u32)to;
+            return combat::applyDamage(reg, to, d);
+        };
+        const glm::vec3 FRONT { 0.f, 0.f, 2.f };
+        const glm::vec3 BEHIND{ 0.f, 0.f, -2.f };
+
+        // --- без защиты ---
+        f32 bare = 0.f;
+        {
+            ecs::Registry reg;
+            const auto d = dummy(reg, combat::WEAPON_IRON_SWORD, 100.f);
+            const auto a = attacker(reg, FRONT);
+            bare = swing(reg, a, d);
+            check(bare > 19.f, "без защиты удар проходит целиком");
+        }
+
+        // --- принял на защиту ---
+        {
+            ecs::Registry reg;
+            const auto d = dummy(reg, combat::WEAPON_IRON_SWORD, 100.f);
+            const auto a = attacker(reg, FRONT);
+            auto* g = reg.get<combat::GuardState>(d);
+            // Защита поднята ДАВНО: окно парирования прошло.
+            g->tick(0.016f, true, { 0.f, 0.f, 1.f });
+            for (int i = 0; i < 40; ++i) g->tick(0.016f, true, { 0.f, 0.f, 1.f });
+            check(!g->parryReady(), "давняя защита уже не парирует");
+
+            const f32 stamBefore = reg.get<ecs::Stamina>(d)->current;
+            const f32 got = swing(reg, a, d);
+            std::snprintf(m, sizeof(m),
+                          "блок урезает урон: %.0f вместо %.0f",
+                          (double)got, (double)bare);
+            check(got > 0.f && got < bare * 0.45f, m);
+            check(g->pending == combat::GuardResult::Blocked ||
+                  reg.get<combat::GuardState>(d)->flash > 0.f,
+                  "исход записан как блок");
+            const f32 spent = stamBefore - reg.get<ecs::Stamina>(d)->current;
+            std::snprintf(m, sizeof(m), "и стои́т выносливости: %.0f", (double)spent);
+            check(spent > 1.f, m);
+            check(reg.get<ecs::Health>(d)->current < 200.f,
+                  "часть удара всё же доходит");
+        }
+
+        // --- отбил ---
+        {
+            ecs::Registry reg;
+            const auto d = dummy(reg, combat::WEAPON_IRON_SWORD, 100.f);
+            const auto a = attacker(reg, FRONT);
+            auto* g = reg.get<combat::GuardState>(d);
+            g->tick(0.016f, true, { 0.f, 0.f, 1.f });   // только что подняли
+            check(g->parryReady(), "свежая защита готова отбивать");
+
+            const f32 stamBefore = reg.get<ecs::Stamina>(d)->current;
+            const f32 got = swing(reg, a, d);
+            check(got <= 0.f, "отбитый удар не наносит урона вовсе");
+            check(reg.get<ecs::Health>(d)->current >= 200.f,
+                  "здоровье не тронуто");
+            check(reg.get<ecs::Stamina>(d)->current >= stamBefore,
+                  "и выносливость тоже: точность бесплатна");
+            check(reg.get<combat::StatusEffects>(a)->stunned(),
+                  "а бьющий оглушён — это и есть награда");
+            check(reg.get<combat::ResonanceState>(d)->value > 0.f,
+                  "за точность дают резонанс");
+        }
+
+        // --- пробили ---
+        {
+            ecs::Registry reg;
+            const auto d = dummy(reg, combat::WEAPON_IRON_SWORD, 2.f);  // сил нет
+            const auto a = attacker(reg, FRONT);
+            auto* g = reg.get<combat::GuardState>(d);
+            for (int i = 0; i < 40; ++i) g->tick(0.016f, true, { 0.f, 0.f, 1.f });
+
+            const f32 got = swing(reg, a, d);
+            std::snprintf(m, sizeof(m),
+                          "без выносливости защиту пробивают: %.0f урона",
+                          (double)got);
+            check(got > bare * 0.9f, m);
+            check(!g->up, "защита при этом падает");
+            check(reg.get<combat::StatusEffects>(d)->stunned(),
+                  "а защитник оглушён");
+        }
+
+        // --- со спины защиты нет ---
+        {
+            ecs::Registry reg;
+            const auto d = dummy(reg, combat::WEAPON_IRON_SWORD, 100.f);
+            const auto a = attacker(reg, BEHIND);
+            auto* g = reg.get<combat::GuardState>(d);
+            g->tick(0.016f, true, { 0.f, 0.f, 1.f });   // смотрим вперёд
+            const f32 got = swing(reg, a, d);
+            std::snprintf(m, sizeof(m),
+                          "удар со спины защита не ловит: %.0f урона", (double)got);
+            check(got > bare * 0.9f, m);
+            check(!reg.get<combat::StatusEffects>(a)->stunned(),
+                  "и отбить его нельзя тоже");
+        }
+
+        // --- падение и утопление не блокируются ---
+        {
+            ecs::Registry reg;
+            const auto d = dummy(reg, combat::WEAPON_IRON_SWORD, 100.f);
+            auto* g = reg.get<combat::GuardState>(d);
+            g->tick(0.016f, true, { 0.f, 0.f, 1.f });
+
+            combat::DamageInstance fall{};
+            fall.amount = 20.f;
+            fall.sourceName = "fall";      // источника-сущности нет
+            fall.targetEntity = (u32)d;
+            const f32 got = combat::applyDamage(reg, d, fall);
+            std::snprintf(m, sizeof(m),
+                          "под падение с обрыва щит не подставишь: %.0f урона",
+                          (double)got);
+            check(got > bare * 0.9f, m);
+        }
+
+        // --- кинжалом держат хуже, чем мечом ---
+        {
+            auto blocked = [&](u16 weapon) {
+                ecs::Registry reg;
+                const auto d = dummy(reg, weapon, 100.f);
+                const auto a = attacker(reg, FRONT);
+                auto* g = reg.get<combat::GuardState>(d);
+                for (int i = 0; i < 40; ++i) g->tick(0.016f, true, { 0.f, 0.f, 1.f });
+                return swing(reg, a, d);
+            };
+            const f32 sword  = blocked(combat::WEAPON_IRON_SWORD);
+            const f32 dagger = blocked(combat::WEAPON_IRON_DAGGER);
+            std::snprintf(m, sizeof(m),
+                          "кинжалом пропускают больше, чем мечом: %.0f против %.0f",
+                          (double)dagger, (double)sword);
+            check(dagger > sword + 1.f, m);
+        }
+    }
+
+    // ---- 4. Настоящий бой: отбить замах волка ----
+    //
+    // Не стенд, а та же тварь, тот же замах и та же защита, что в
+    // игре. Проверяется главное: защиту успевают поднять ПО замаху,
+    // и отбитый волк теряет удар.
+    jobs::gJobs.start(2);
+    {
+        constexpr u64 SEED = 0xB10Cu;
+        world::ChunkManager world(SEED, 2);
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        const i32 F = world.generator().surfaceHeight(8, 8) + 6;
+        for (i32 z = -40; z <= 40; ++z)
+            for (i32 x = -40; x <= 40; ++x) {
+                world.setVoxel(x, F - 1, z, world::STONE);
+                for (i32 y = F; y < F + 6; ++y) world.setVoxel(x, y, z, world::AIR);
+            }
+
+        const glm::vec3 at { 8.5f, (f32)F, 8.5f };
+        auto makeDefender = [&](ecs::Registry& reg) {
+            const ecs::Entity e = reg.create();
+            ecs::Transform tf; tf.position = at;                 reg.add(e, tf);
+            ecs::Velocity v{};                                   reg.add(e, v);
+            ecs::Health h; h.max = 500.f; h.current = 500.f;     reg.add(e, h);
+            ecs::Stamina sp; sp.max = 400.f; sp.current = 400.f; reg.add(e, sp);
+            combat::EquippedWeapon eq;
+            eq.weaponId = combat::WEAPON_IRON_SWORD;             reg.add(e, eq);
+            reg.add(e, ecs::PlayerTag{});
+            reg.add(e, combat::StatusEffects{});
+            reg.add(e, combat::ResonanceState{});
+            reg.add(e, combat::GuardState{});
+            reg.add(e, combat::Combatant{});
+            return e;
+        };
+
+        // --- Защита, поднятая В ПОСЛЕДНИЙ МИГ замаха, отбивает ---
+        //
+        // Именно в последний, а не по первому признаку замаха: у
+        // волка замах 300 мс, окно парирования 220, и поднявший
+        // защиту сразу — просто закроется (следующая проверка). Эта
+        // разница и есть вся цена парирования.
+        {
+            ecs::Registry reg;
+            const ecs::Entity def = makeDefender(reg);
+            const ecs::Entity wolf = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF, at + glm::vec3(1.0f, 0.f, 0.f));
+            check(wolf.valid(), "волк на месте");
+            if (!wolf.valid()) { jobs::gJobs.stop(); return; }
+
+            auto* dh  = reg.get<ecs::Health>(def);
+            auto* dtf = reg.get<ecs::Transform>(def);
+            auto* g   = reg.get<combat::GuardState>(def);
+            auto* wai = reg.get<mobs::MobAI>(wolf);
+            auto* wse = reg.get<combat::StatusEffects>(wolf);
+            const f32 dt = 1.f / 60.f;
+
+            bool parried = false;
+            for (int i = 0; i < 60 * 10 && !parried; ++i) {
+                // Ждём и жмём в последний момент.
+                const bool raise = wai->swing.winding() &&
+                                   wai->swing.windupLeft < 0.12f;
+                // Смотрим на волка.
+                glm::vec3 toWolf = reg.get<ecs::Transform>(wolf)->position
+                                 - dtf->position;
+                toWolf.y = 0.f;
+                g->tick(dt, raise, toWolf);
+
+                mobs::updateMobs(world, reg, def, dtf->position, dt);
+                combat::tickStatuses(reg, dt);
+
+                if (g->pending == combat::GuardResult::Parried) parried = true;
+                else g->takeResult();
+            }
+            check(parried, "поднятая в последний миг защита отбивает замах волка");
+            check(dh->current >= 500.f, "и здоровье при этом цело");
+            check(wse->stunned(), "волк после парирования оглушён");
+            check(!wai->swing.winding(),
+                  "и замаха у него больше нет: оглушение обрывает удар");
+        }
+
+        // --- Защита, поднятая заранее, только принимает удар ---
+        {
+            ecs::Registry reg;
+            const ecs::Entity def = makeDefender(reg);
+            const ecs::Entity wolf = mobs::spawnMob(
+                world, reg, mobs::MOB_WOLF, at + glm::vec3(1.0f, 0.f, 0.f));
+            if (!wolf.valid()) { jobs::gJobs.stop(); return; }
+
+            auto* dh  = reg.get<ecs::Health>(def);
+            auto* dsp = reg.get<ecs::Stamina>(def);
+            auto* dtf = reg.get<ecs::Transform>(def);
+            auto* g   = reg.get<combat::GuardState>(def);
+            const f32 dt = 1.f / 60.f;
+
+            bool blocked = false;
+            for (int i = 0; i < 60 * 10 && !blocked; ++i) {
+                glm::vec3 toWolf = reg.get<ecs::Transform>(wolf)->position
+                                 - dtf->position;
+                toWolf.y = 0.f;
+                g->tick(dt, true, toWolf);   // держим всё время
+                mobs::updateMobs(world, reg, def, dtf->position, dt);
+                combat::tickStatuses(reg, dt);
+                if (g->pending == combat::GuardResult::Blocked) blocked = true;
+                else g->takeResult();
+            }
+            check(blocked, "а зажатая заранее — только ПРИНИМАЕТ удар");
+            check(dh->current < 500.f, "часть урона доходит");
+            check(dsp->current < 400.f, "и выносливость тратится");
+        }
+    }
+    jobs::gJobs.stop();
+
+    // ---- 4a. Новый слот кнопки добавлен В КОНЕЦ ----
+    //
+    // Раскладка пишется в settings.cfg строками
+    // `button_<N>_offset`, где N — значение config::ButtonSlot.
+    // Вставка нового слота в середину сдвинула бы все сохранённые
+    // сдвиги на один, и у игрока, который двигал кнопки, разъехался
+    // бы весь экран. Проверяется не порядок вообще, а то, что
+    // прежние слоты сохранили свои НОМЕРА.
+    {
+        check((u32)config::Btn_Attack   == 0, "ATK остался нулевым слотом");
+        check((u32)config::Btn_Finisher == 1, "FIN — первым");
+        check((u32)config::Btn_Jump     == 2, "JMP — вторым");
+        check((u32)config::Btn_Dash     == 8, "DSH — восьмым");
+        check((u32)config::Btn_Block    == (u32)config::Btn_SlotCount - 1,
+              "а новый BLK встал последним");
+        // Порядок PAD_BUTTONS обязан совпадать с ButtonSlot: по
+        // индексу берутся и место, и подпись.
+        check(ui::PAD_BUTTON_COUNT == (u32)config::Btn_SlotCount,
+              "мест на экране столько же, сколько слотов");
+        check(std::string(ui::PAD_BUTTONS[config::Btn_Block].label) == "BLK",
+              "и по индексу BLK лежит именно BLK");
+        check(std::string(ui::PAD_BUTTONS[config::Btn_Attack].label) == "ATK",
+              "а по индексу ATK — по-прежнему ATK");
+    }
+
+    // ---- 5. Защита видна на модели и глушит замах ----
+    {
+        const entity::Rig& rig = player::rig();
+        auto hands = [&](f32 guard, f32 attack) {
+            anim::AnimState st;
+            st.guard = guard;
+            st.attack = attack;
+            st.attackShape = anim::AttackShape::Slash;
+            entity::Pose pose;
+            anim::poseFor(rig, pose, st);
+            entity::ResolvedPart p[entity::MAX_PARTS];
+            const u8 n = entity::resolve(rig, pose, glm::vec3(0.f), 0.f,
+                                         p, entity::MAX_PARTS);
+            glm::vec3 r{0}, l{0};
+            u8 w = 0;
+            for (u8 i = 0; i < rig.count && w < n; ++i) {
+                if (!rig.parts[i].visible) continue;
+                if (rig.parts[i].role == entity::PartRole::LowerArmR) r = p[w].center;
+                if (rig.parts[i].role == entity::PartRole::LowerArmL) l = p[w].center;
+                ++w;
+            }
+            return std::pair<glm::vec3, glm::vec3>{ r, l };
+        };
+
+        const auto rest = hands(0.f, 0.f);
+        const auto up   = hands(1.f, 0.f);
+        check(up.first.y  > rest.first.y  + 0.2f &&
+              up.second.y > rest.second.y + 0.2f,
+              "в защите ОБЕ руки подняты");
+        check(up.first.z > 0.15f && up.second.z > 0.15f,
+              "и вынесены перед собой");
+        // Руки сходятся к середине груди, а не разводятся.
+        check(std::fabs(up.first.x)  < std::fabs(rest.first.x) &&
+              std::fabs(up.second.x) < std::fabs(rest.second.x),
+              "и сведены к середине");
+
+        // Замахнуться со щитом перед лицом нельзя.
+        const auto swingOnly  = hands(0.f, -1.f);
+        const auto swingGuard = hands(1.f, -1.f);
+        check(glm::length(swingGuard.first - up.first) < 1e-4f,
+              "полная защита вытесняет замах целиком");
+        check(glm::length(swingOnly.first - up.first) > 0.2f,
+              "а без защиты замах свой");
+    }
+
+    // ---- 6. Загрузка не оставляет игрока оглушённым ----
+    //
+    // Сейв не пишет ни оглушения, ни занесённой руки, ни поднятой
+    // защиты — но читает он в ТУ ЖЕ живую сущность, и «не записано»
+    // само по себе не значит «сброшено». Пока оглушить игрока было
+    // нечем, это не замечалось; пробитая защита — первый источник.
+    {
+        items::items();
+        ecs::Registry reg;
+        const ecs::Entity p = reg.create();
+        reg.add(p, ecs::Transform{ glm::vec3(1.f, 2.f, 3.f) });
+        reg.add(p, ecs::Health{ 50.f, 100.f, 1.f, 0.f });
+        reg.add(p, items::Inventory{});
+        reg.add(p, items::Wallet{});
+
+        // Игрока оглушили, рука занесена, защита поднята.
+        combat::StatusEffects se; se.stunTime = 5.f; se.poisonTime = 9.f;
+        reg.add(p, se);
+        combat::WeaponState ws; ws.phase = combat::WeaponState::Windup;
+        ws.swingAnim = -0.8f;
+        reg.add(p, ws);
+        combat::GuardState g; g.up = true; g.pose = 1.f; g.raisedFor = 3.f;
+        reg.add(p, g);
+
+        save::ByteWriter w;
+        save::serializePlayer(w, reg, p);
+        save::ByteReader r(w.data());
+        check(save::deserializePlayer(r, reg, p), "игрок прочитан обратно");
+
+        check(!reg.get<combat::StatusEffects>(p)->stunned(),
+              "после загрузки игрок не оглушён");
+        check(reg.get<combat::StatusEffects>(p)->poisonTime <= 0.f,
+              "и не отравлен прошлой жизнью");
+        check(reg.get<combat::WeaponState>(p)->phase == combat::WeaponState::Idle,
+              "занесённая рука опущена");
+        check(!reg.get<combat::GuardState>(p)->up,
+              "поднятая защита опущена");
+    }
+
+    // ---- 7. Оглушённый игрок не ходит ----
+    //
+    // Пробитие обязано иметь последствия. Стан на игроке до сих пор
+    // не делал НИЧЕГО, кроме запрета атаковать: накладывать его было
+    // некому, и это не замечалось.
+    {
+        const std::string src =
+            readSource("app/src/main/cpp/src/player/player.cpp");
+        check(!src.empty(), "исходник игрока прочитан");
+        check(src.find("if (stunned) wish = glm::vec3(0.f);")
+                  != std::string::npos,
+              "оглушённый игрок стои́т на месте");
+        // Оглушение спрашивается у компонента, а не у копии,
+        // снимаемой в конце кадра: оглушают-то между кадрами.
+        check(src.find("const bool stunned = seNow && seNow->stunned();")
+                  != std::string::npos,
+              "и узнаёт об оглушении в том же кадре, а не в следующем");
+        check(src.find("combat::GUARD_SPEED_MULT") != std::string::npos,
+              "а держащий защиту — идёт медленнее");
+    }
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
@@ -19333,6 +19844,7 @@ int main() {
     testAttacksAnnounceThemselves();
     testWeaponsSwingDifferently();
     testHitsHaveWeight();
+    testGuardBlocksParriesAndBreaks();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);
     if (g_failed) {

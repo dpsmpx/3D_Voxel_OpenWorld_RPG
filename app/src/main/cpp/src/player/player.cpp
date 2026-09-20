@@ -76,6 +76,7 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
     reg.add(entity_, combat::WeaponState{});
     reg.add(entity_, combat::ResonanceState{});
     reg.add(entity_, combat::StatusEffects{});
+    reg.add(entity_, combat::GuardState{});
 
     progression::Progression prog{};
     prog.level = 1;
@@ -312,11 +313,59 @@ void Player::updateImpl(world::ChunkManager& world,
     if (len > 1.f) wish /= len;
     if (dialogueOpen) wish = glm::vec3(0);
 
+    // ---- Защита ----
+    //
+    // Поднимается ДО движения, потому что движение от неё зависит.
+    //
+    // Держать её можно только со свободными руками: замах уже начат —
+    // значит, закрыться нечем. Отдельного «опустить защиту, чтобы
+    // ударить» при этом не нужно: атака выводит оружие из Idle, и
+    // защита падает сама. Так нажатие атаки остаётся мгновенным.
+    auto* wsNow = reg_->get<combat::WeaponState>(entity_);
+    const bool handsFree = !wsNow || wsNow->phase == combat::WeaponState::Idle;
+
+    // Оглушение спрашиваем у КОМПОНЕНТА, а не у копии `statuses`:
+    // копия снимается в конце кадра, а оглушают игрока между
+    // кадрами — в апдейте тварей. Разница в один кадр здесь и есть
+    // разница между «защита упала» и «защита упала, но ещё разок
+    // сработала».
+    const auto* seNow = reg_->get<combat::StatusEffects>(entity_);
+    const bool stunned = seNow && seNow->stunned();
+
+    const bool wantsGuard = input.blockHeld && !dialogueOpen && !dead &&
+                            handsFree && !stunned;
+
+    // Смотрит защита ТУДА, КУДА СМОТРИТ КАМЕРА, а не куда идут ноги:
+    // ecs::Facing у игрока догоняет направление ходьбы, и отступая
+    // спиной он держал бы щит в сторону отступления.
+    const glm::vec3 guardDir { fwd.x, 0.f, fwd.z };
+    bool guarding = false;
+    if (auto* g = reg_->get<combat::GuardState>(entity_)) {
+        g->tick(dt, wantsGuard, guardDir);
+        guarding = g->up;
+        // Копия для интерфейса снимается в конце кадра, вместе с
+        // остальными: к тому времени по защите уже могли ударить.
+    }
+
+    // Со щитом наперевес не бегают. Это и есть постоянная цена
+    // блока: держать его можно сколько угодно, но пока держишь — не
+    // убежишь и не догонишь.
+    if (guarding) wish *= combat::GUARD_SPEED_MULT;
+
+    // ---- Оглушение ----
+    //
+    // Оглушённый игрок не ходит — ровно как оглушённая тварь. Раньше
+    // стан на игроке не делал НИЧЕГО, кроме запрета атаковать:
+    // накладывать его было некому, и это не замечалось. Пробитая
+    // защита — первый в игре источник стана на игроке, и без этого
+    // пробитие осталось бы словом без последствий.
+    if (stunned) wish = glm::vec3(0.f);
+
     physics::MoveInput mi;
     mi.wishDir     = { wish.x, wish.z };
     mi.faceDir     = { fwd.x, fwd.z };
-    mi.jumpPressed = input.jumpPressed && !dialogueOpen;
-    mi.jumpHeld    = input.jumpHeld && !dialogueOpen;
+    mi.jumpPressed = input.jumpPressed && !dialogueOpen && !stunned;
+    mi.jumpHeld    = input.jumpHeld && !dialogueOpen && !stunned;
     mi.crouch      = input.crouch;
 
     // ---- Бег ----
@@ -325,7 +374,8 @@ void Player::updateImpl(world::ChunkManager& world,
     // Теперь он тратит выносливость, и тратит её только когда бег
     // ДЕЙСТВИТЕЛЬНО идёт: стоя на месте с зажатой кнопкой никто не
     // устаёт, а плывущему она и так не помогает.
-    const bool wantsSprint = input.sprint && !dialogueOpen;
+    const bool wantsSprint = input.sprint && !dialogueOpen &&
+                            !guarding && !stunned;
     const bool reallyRunning = wantsSprint && !winded_ &&
                                glm::length(mi.wishDir) > 0.1f &&
                                controller.state().onGround &&
@@ -346,8 +396,11 @@ void Player::updateImpl(world::ChunkManager& world,
     // Выносливость снимается ЗДЕСЬ, а не в контроллере: физика не
     // знает ни о каких ресурсах, и знать не должна. Не хватило —
     // рывка просто не происходит, кнопка при этом ничего не тратит.
+    // Рывок работает и из защиты: уйти перекатом из-под удара,
+    // который нечем держать, — законный ответ, и отнимать его у
+    // поднявшего щит незачем. Оглушённый не рвётся: на то и стан.
     mi.dashPressed = false;
-    if (input.dashPressed && !dialogueOpen &&
+    if (input.dashPressed && !dialogueOpen && !stunned &&
         controller.state().dashCooldown <= 0.f &&
         !controller.state().dashing())
     {
@@ -543,6 +596,40 @@ void Player::updateImpl(world::ChunkManager& world,
                 // Добивание — самый сильный удар в игре, и кадр
                 // обязан это сказать.
                 cameraShake_ += 0.55f;
+            }
+        }
+    }
+
+    // ---- Чем кончился удар по защите ----
+    //
+    // Звук и частицы у защиты свои и играются там же, где считается
+    // сама защита. Сюда доходит только то, что знает один игрок:
+    // насколько тряхнуть камеру и не пора ли объяснить парирование.
+    if (auto* g = reg_->get<combat::GuardState>(entity_)) {
+        const combat::GuardResult r = g->takeResult();
+        if (r != combat::GuardResult::None) {
+            switch (r) {
+                case combat::GuardResult::Parried:
+                    // Отбитый удар — лучшее, что может случиться в
+                    // бою, и кадр обязан сказать это громче всего
+                    // остального, кроме добивания.
+                    cameraShake_ += 0.45f;
+                    break;
+                case combat::GuardResult::Broken:
+                    cameraShake_ += 0.35f;
+                    break;
+                case combat::GuardResult::Blocked:
+                    cameraShake_ += 0.16f;
+                    // Заблокировал — значит, защита у него уже в
+                    // руках, и про её вторую половину пора
+                    // рассказать. До этого момента объяснять было
+                    // нечего.
+                    if (!parryHintShown_) {
+                        parryHintShown_  = true;
+                        pendingParryHint = true;
+                    }
+                    break;
+                default: break;
             }
         }
     }

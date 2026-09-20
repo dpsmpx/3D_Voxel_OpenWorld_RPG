@@ -218,6 +218,7 @@ struct Engine {
     u32 btnPlace_   = 0;
     u32 btnCamera_  = 0;
     u32 btnAttack_  = 0;
+    u32 btnBlock_   = 0;
     u32 btnFinisher_= 0;
     u32 btnInteract_= 0;
     u32 btnUseItem_ = 0;
@@ -233,6 +234,7 @@ struct Engine {
     bool evInteract_= false;
     bool evUseItem_ = false;
     bool evDash_    = false;
+    bool evBlock_   = false;
 
     bool running     = false;
     bool initialized = false;
@@ -988,6 +990,12 @@ struct Engine {
 
         btnAttack_   = add(cfg::Btn_Attack,   [this](u32) { evAttack_   = true; });
         btnFinisher_ = add(cfg::Btn_Finisher, [this](u32) { evFinish_   = true; });
+        // Защита читается УДЕРЖАНИЕМ (isButtonHeld), но обработчик
+        // нажатия всё равно обязателен: кнопка без действия не
+        // доходит до геймпада и не видна проверке раскладки. Здесь
+        // он поднимает защиту в тот же кадр, что и касание, — иначе
+        // окно парирования начиналось бы на кадр позже.
+        btnBlock_    = add(cfg::Btn_Block,    [this](u32) { evBlock_ = true; });
         // Обработчик обязателен: без него нажатие никуда не идёт.
         // Кнопка прыжка стояла с nullptr, и evJump_ не выставлялся
         // НИКОГДА — ни с экрана, ни с геймпада. Прыжок по кнопке не
@@ -1009,6 +1017,7 @@ struct Engine {
 
         buttonIds_[cfg::Btn_Attack]   = btnAttack_;
         buttonIds_[cfg::Btn_Finisher] = btnFinisher_;
+        buttonIds_[cfg::Btn_Block]    = btnBlock_;
         buttonIds_[cfg::Btn_Jump]     = btnJump_;
         buttonIds_[cfg::Btn_Break]    = btnBreak_;
         buttonIds_[cfg::Btn_Place]    = btnPlace_;
@@ -1155,7 +1164,7 @@ struct Engine {
         // Касания принимаются, но никуда не идут: буферы всё равно
         // надо закрывать покадрово, иначе состояние пальцев копится.
         evJump_ = evBreak_ = evPlace_ = evAttack_ = evFinish_ =
-            evInteract_ = evUseItem_ = evDash_ = false;
+            evInteract_ = evUseItem_ = evDash_ = evBlock_ = false;
         touch.endFrame();
 
         debugSceneLog();
@@ -1367,6 +1376,11 @@ struct Engine {
             pin.finisherInput = evFinish_;
             pin.interactPressed = evInteract_;
             pin.dashPressed   = evDash_;
+            // Удержание ИЛИ нажатие этого кадра: касание и первый
+            // опрос удержания приходятся на разные кадры, и без «или»
+            // защита вставала бы на кадр позже касания — а окно
+            // парирования всего в двести двадцать миллисекунд.
+            pin.blockHeld     = touch.isButtonHeld(btnBlock_) || evBlock_;
 
             // Записываем скорость до апдейта (для звука шагов).
             glm::vec3 prevPos = player->controller.state().position;
@@ -1419,6 +1433,16 @@ struct Engine {
                     if (player->justDrowned)
                         ui->notify(cfg::T(cfg::StrKey::Notif_Drowning),
                                    ui::theme::NotifyPriority::High);
+                    // Про парирование рассказываем ровно один раз и
+                    // ровно тогда, когда игрок уже что-то принял на
+                    // защиту: до первого блока объяснять нечего, а
+                    // после него у него в руках половина механики и
+                    // не хватает второй.
+                    if (player->pendingParryHint) {
+                        player->pendingParryHint = false;
+                        ui->notify(cfg::T(cfg::StrKey::Hint_Parry),
+                                   ui::theme::NotifyPriority::High);
+                    }
                     if (player->enteredVillage) {
                         cfg::StrKey k = cfg::StrKey::Notif_VillageFarmstead;
                         switch (player->villageStyle) {
@@ -1771,7 +1795,7 @@ struct Engine {
         if (ui) ui->tickUi(dt);
 
         evJump_ = evBreak_ = evPlace_ = evAttack_ = evFinish_ =
-            evInteract_ = evUseItem_ = evDash_ = false;
+            evInteract_ = evUseItem_ = evDash_ = evBlock_ = false;
 
         touch.endFrame();
     }
@@ -1892,6 +1916,11 @@ static int32_t handleInput(android_app* app, AInputEvent* e) {
             // стик направления, а рвутся туда, куда идут.
             case AKEYCODE_BUTTON_L2:
                 eng->touch.injectGamepadButton(eng->btnDash_, down);
+                return 1;
+            // Защита — на правом курке, под тем же пальцем, что и
+            // атака на X: блок и удар чередуют одной рукой.
+            case AKEYCODE_BUTTON_R2:
+                eng->touch.injectGamepadButton(eng->btnBlock_, down);
                 return 1;
             case AKEYCODE_BUTTON_START:
                 if (down && eng->ui) eng->ui->togglePause();

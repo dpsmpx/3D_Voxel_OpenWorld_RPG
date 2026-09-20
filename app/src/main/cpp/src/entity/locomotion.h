@@ -213,6 +213,12 @@ struct AnimState {
 
     /// По какой дуге. Значимо только при attack != 0.
     AttackShape attackShape = AttackShape::None;
+
+    /// Насколько поднята защита, 0..1.
+    ///
+    /// Кладётся ПОВЕРХ удара и вытесняет его: замахнуться со щитом
+    /// перед лицом нельзя, и поза обязана говорить об этом сама.
+    f32 guard = 0.f;
     f32 death     = 0.f;   ///< секунды с момента смерти, 0 — жив
     f32 air       = 0.f;   ///< доля воздушной позы, 0..1
     f32 land      = 0.f;   ///< доля посадочной позы, 0..1
@@ -423,6 +429,42 @@ inline void attackPose(const entity::Rig& rig, entity::Pose& pose,
     }
 }
 
+/// Поза защиты: руки перед собой, оружие поперёк груди.
+///
+/// Смешивается с тем, что уже в позе, долей `g`, а не прибавляется
+/// к ней: поднятая защита — это ПОЛОЖЕНИЕ рук, а не добавка к их
+/// качанию шагом. Прибавка оставила бы руки махать на бегу со щитом
+/// наперевес.
+inline void guardPose(const entity::Rig& rig, entity::Pose& pose, f32 g) {
+    if (g <= 0.001f) return;
+    const f32 k = g > 1.f ? 1.f : g;
+
+    for (u8 i = 0; i < rig.count && i < entity::MAX_PARTS; ++i) {
+        const entity::PartRole r = rig.parts[i].role;
+        glm::vec3& e = pose.euler[i];
+
+        // Оси см. в attackPose: x < 0 — кисть вперёд, z < 0 —
+        // поперёк тела. Обе руки идут вперёд и внутрь, к середине
+        // груди; правая (с оружием) держит его плашмя перед лицом,
+        // левая прикрывает ниже.
+        if (isRightArm(r)) {
+            e.x = e.x * (1.f - k) + (-1.25f) * k;
+            e.z = e.z * (1.f - k) + (-0.60f) * k;
+        } else if (isLeftArm(r)) {
+            e.x = e.x * (1.f - k) + (-1.40f) * k;
+            e.z = e.z * (1.f - k) + ( 0.80f) * k;
+        } else if (r == entity::PartRole::Torso) {
+            // Вполоборота и чуть пригнувшись: подставляют плечо, а
+            // не грудь.
+            e.y += 0.30f * k;
+            e.x += 0.16f * k;
+        } else if (r == entity::PartRole::Head) {
+            // Голова прячется за руки.
+            e.x += 0.18f * k;
+        }
+    }
+}
+
 /// Поза сущности: покой смешивается с шагом по нормированной скорости.
 ///
 /// Смешивание, а не переключение: иначе при трогании поза прыгает.
@@ -494,7 +536,11 @@ inline void poseFor(const entity::Rig& rig, entity::Pose& pose,
         }
     }
 
-    attackPose(rig, pose, st.attack, st.attackShape);
+    // Удар глушится защитой: замахнуться со щитом перед лицом
+    // нельзя, и половинчатых поз между этими двумя не бывает.
+    attackPose(rig, pose, st.attack * (1.f - std::min(1.f, st.guard)),
+               st.attackShape);
+    guardPose(rig, pose, st.guard);
     if (st.death > 0.f) {
         // Заваливается набок, а не тонет в земле.
         const f32 t = st.death / 1.6f;

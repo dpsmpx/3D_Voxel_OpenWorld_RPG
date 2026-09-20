@@ -3,6 +3,7 @@
  * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
  */
 #include "save_player.h"
+#include "../combat/guard.h"
 #include "save_inventory.h"
 #include "../core/log.h"
 #include "../ecs/components.h"
@@ -528,6 +529,22 @@ bool deserializePlayer(ByteReader& r, ecs::Registry& reg, ecs::Entity player) {
     }
 
     if (!deserializeInventory(r, reg, player)) return false;
+
+    // ---- Мимолётное состояние боя ----
+    //
+    // Заголовок обещал, что фаза атаки сбрасывается в Idle, а
+    // статусы «сгорают при сохранении». Написано это было только в
+    // комментарии: в сейв они и правда не идут, но и НЕ СБРАСЫВАЮТСЯ
+    // — читаем-то мы в ту же самую живую сущность, и всё, что на ней
+    // висело до загрузки, остаётся на ней после.
+    //
+    // Пока игрока нечем было оглушить, это не замечалось. С
+    // пробитием защиты — оглушение на игроке появилось, и загрузка в
+    // этот момент оставляла бы его стоять столбом в новом мире.
+    // Заодно уходят догорающий яд и занесённая рука.
+    if (auto* ws = reg.get<combat::WeaponState>(player)) *ws = {};
+    if (auto* se = reg.get<combat::StatusEffects>(player)) *se = {};
+    if (auto* g  = reg.get<combat::GuardState>(player))  *g  = {};
 
     return r.ok();
 }

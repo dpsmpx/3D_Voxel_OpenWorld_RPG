@@ -838,6 +838,16 @@ void SoundRegistry::init(u32 sampleRate) {
     // Hit wood — глухой
     genNoiseBurst(sounds_[SOUND_HIT_WOOD], sampleRate, 0.10f, 0.55f, 60.f, 0.30f);
 
+    // ---- Защита ----
+    //
+    // Все три — один и тот же металлический резонанс, разведённый
+    // по высоте и длине. Так они слышатся как ОДНО семейство (удар
+    // пришёлся в защиту), но различаются с первого раза: чем выше и
+    // дольше звенит, тем лучше вышло.
+    genMetallicHit(sounds_[SOUND_GUARD_HIT],   sampleRate, 0.16f,  520.f, 0.50f);
+    genMetallicHit(sounds_[SOUND_GUARD_BREAK], sampleRate, 0.38f,  240.f, 0.62f);
+    genMetallicHit(sounds_[SOUND_PARRY],       sampleRate, 0.45f, 1650.f, 0.72f);
+
     // ---- Ranged ----
     genWhoosh(sounds_[SOUND_ARROW_SHOOT], sampleRate, 0.20f, 0.35f, 0.15f);
     genClick(sounds_[SOUND_ARROW_HIT], sampleRate, 0.08f, 0.55f, 0.45f);

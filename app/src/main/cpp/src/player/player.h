@@ -13,6 +13,7 @@
 #include "../combat/weapon.h"
 #include "../combat/resonance.h"
 #include "../combat/combat_controller.h"
+#include "../combat/guard.h"
 #include "../combat/spatial_hash.h"
 #include "../progression/progression.h"
 #include "../progression/skill_tree.h"
@@ -42,6 +43,10 @@ struct PlayerInput {
     bool attackHeld    = false;
     bool finisherInput = false;
     bool dashPressed   = false;
+    /// Защита — УДЕРЖАНИЕ, а не нажатие: поднял и держишь, пока
+    /// нужно. Момент подъёма при этом решает всё (см. PARRY_WINDOW),
+    /// поэтому важно именно удержание, а не переключатель.
+    bool blockHeld     = false;
 
     bool interactPressed = false;
 };
@@ -190,6 +195,17 @@ public:
     combat::Combatant        combatant;
     combat::CombatAction     lastAction;
 
+    /// Подсказку про парирование показываем один раз за сессию — и
+    /// только после того, как игрок сам что-нибудь заблокировал.
+    /// Объяснять механику до того, как она встретилась, некому.
+    ///
+    /// Копии самого GuardState здесь нет намеренно: рисует защиту
+    /// рендер прямо по компоненту, а интерфейсу показывать нечего —
+    /// поднятые руки видны на модели, а цену блока показывает полоса
+    /// выносливости. Поле, в которое пишут и которое не читают, —
+    /// ровно то, за чем в этом проекте следят.
+    bool pendingParryHint = false;
+
     bool pendingLevelUpNotification = false;
     f32  levelUpFlashTimer = 0.f;
     u32  lastLevelGained   = 1;
@@ -259,6 +275,11 @@ public:
 private:
     /// Насколько тряхнуть камеру в этом кадре, 0..1.
     f32 cameraShake_ = 0.f;
+
+    /// Подсказку про парирование показывали. Живёт сессию и в сейв
+    /// не идёт: вреда от второго показа в новой сессии нет, а место
+    /// в формате сохранения он бы занял навсегда.
+    bool parryHintShown_ = false;
 
     /// Здоровье на прошлом кадре. Иначе «сколько с меня сняли» не
     /// узнать: одним числом ecs::Health хранит только остаток.
