@@ -18,7 +18,7 @@ BlockRegistry& blocks() {
                        bool solid, bool transparent, bool liquid,
                        bool emissive, u8 light,
                        BlockColor top, BlockColor side, BlockColor bottom,
-                       f32 hardness)
+                       f32 hardness, u8 jitter = 0)
         {
             BlockDef d{};
             d.name = name;
@@ -33,6 +33,7 @@ BlockRegistry& blocks() {
             d.colorSide = side;
             d.colorBottom = bottom;
             d.hardness = hardness;
+            d.colorJitter = jitter & 3u;
             d.toolFlags = 0;
             inst.registerBlock(id, d);
         };
@@ -51,15 +52,21 @@ BlockRegistry& blocks() {
         // которой её раньше узнавали бы, здесь нет, и весь блок
         // окрашен в цвет своего металла.
         //
-        //  ID          имя        тв.  прз.  жид.  свеч. св.  верх                    бок                     низ                     прочн.
+        // Последний столбец — крапчатость (см. BlockDef::colorJitter).
+        // Она стоит у травы, листвы и земли и больше нигде: это то,
+        // что в природе разнородно. Камень, песок, доска и снег
+        // обязаны оставаться ровными, иначе кладка и наст начинают
+        // рябить.
+        //
+        //  ID          имя        тв.  прз.  жид.  свеч. св.  верх                    бок                     низ                     прочн. крап.
         reg(AIR,      "Air",       false, true,  false, false, 0, bcolor(  0,  0,  0,0), bcolor(  0,  0,  0,0), bcolor(  0,  0,  0,0),  0.0f);
         reg(STONE,    "Stone",     true,  false, false, false, 0, bcolor(142,144,152),   bcolor(142,144,152),   bcolor(142,144,152),   1.5f);
-        reg(DIRT,     "Dirt",      true,  false, false, false, 0, bcolor(122, 89, 56),   bcolor(122, 89, 56),   bcolor(122, 89, 56),   0.6f);
-        reg(GRASS,    "Grass",     true,  false, false, false, 0, bcolor(124,186, 84),   bcolor(122, 89, 56),   bcolor(122, 89, 56),   0.6f);
+        reg(DIRT,     "Dirt",      true,  false, false, false, 0, bcolor(122, 89, 56),   bcolor(122, 89, 56),   bcolor(122, 89, 56),   0.6f, 2);
+        reg(GRASS,    "Grass",     true,  false, false, false, 0, bcolor(124,186, 84),   bcolor(122, 89, 56),   bcolor(122, 89, 56),   0.6f, 2);
         reg(SAND,     "Sand",      true,  false, false, false, 0, bcolor(222,204,146),   bcolor(222,204,146),   bcolor(222,204,146),   0.5f);
         reg(WATER,    "Water",     false, true,  true,  false, 0, bcolor( 58,117,188,160), bcolor( 58,117,188,160), bcolor( 58,117,188,160), 100.f);
         reg(WOOD,     "Wood",      true,  false, false, false, 0, bcolor(158,122, 74),   bcolor(104, 74, 44),   bcolor(158,122, 74),   1.2f);
-        reg(LEAVES,   "Leaves",    true,  true,  false, false, 0, bcolor( 84,143, 60),   bcolor( 84,143, 60),   bcolor( 84,143, 60),   0.3f);
+        reg(LEAVES,   "Leaves",    true,  true,  false, false, 0, bcolor( 84,143, 60),   bcolor( 84,143, 60),   bcolor( 84,143, 60),   0.3f, 3);
         reg(SNOW,     "Snow",      true,  false, false, false, 0, bcolor(243,247,251),   bcolor(243,247,251),   bcolor(243,247,251),   0.4f);
         reg(ICE,      "Ice",       true,  true,  false, false, 0, bcolor(174,217,239,205), bcolor(174,217,239,205), bcolor(174,217,239,205), 0.8f);
         reg(LAVA,     "Lava",      false, true,  true,  true, 15, bcolor(230,103, 34),   bcolor(230,103, 34),   bcolor(230,103, 34),  100.f);

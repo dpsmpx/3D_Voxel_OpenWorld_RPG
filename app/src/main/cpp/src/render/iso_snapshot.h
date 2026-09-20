@@ -162,9 +162,18 @@ public:
     /// проверка: «снимок не зависит от времени суток» — утверждение о
     /// числах в этом блоке, и сверять его надо с ними, а не с
     /// картинкой.
-    static CameraUbo fixedLightUbo(const iso::Camera& cam, iso::View view);
+    /// Зерно крапчатости — параметром, а не полем: свет у снимка
+    /// закреплён, а крапчатость блоков закреплять нельзя. Она
+    /// свойство МИРА, и подменять её значило бы рисовать другую
+    /// землю, чем та, по которой игрок ходит.
+    static CameraUbo fixedLightUbo(const iso::Camera& cam, iso::View view,
+                                   f32 tintSeed = 0.f);
 
 private:
+    /// Зерно крапчатости блоков, снятое с мира в step().
+    /// См. render::tintSeedOf и комментарий в renderTile.
+    f32 tintSeed_ = 0.f;
+
     struct Tile { u32 x, y, w, h; };
     struct ChunkMeshGpu {
         vk::Buffer vb, ib;

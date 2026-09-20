@@ -786,10 +786,11 @@ void testVoxelShading() {
 
     // Упаковка вершины: всё достаётся обратно ровно так, как её
     // читает шейдер.
-    bool packOk = true, tailFree = true;
+    bool packOk = true, tailFree = true, jitOk = true;
     for (u32 face = 0; face < 6; ++face) {
+        const u32 jit = face % 4;
         const u32 p = render::packVoxelPos(32, 128, 31, face, face % 4,
-                                           (face + 2) % 8);
+                                           (face + 2) % 8, jit);
         packOk = packOk
               && ( p        & 63u)  == 32
               && ((p >>  6) & 255u) == 128
@@ -797,13 +798,20 @@ void testVoxelShading() {
               && ((p >> 20) & 7u)   == face
               && ((p >> 23) & 3u)   == (face % 4)
               && ((p >> 25) & 7u)   == ((face + 2) % 8);
-        // Старшие четыре бита свободны и обязаны оставаться нулями:
-        // в них лежали крапчатость и подкраска по местности, которые
-        // шейдер давно перестал читать, а мешер продолжал собирать.
-        if ((p >> 28) != 0u) tailFree = false;
+        // Класс крапчатости — биты 28..29, ровно там, где его ищет
+        // voxel.vert. Соседние поля от него не страдают: всё, что
+        // выше, обязано остаться нулём.
+        if (((p >> 28) & 3u) != jit) jitOk = false;
+        if ((p >> 30) != 0u) tailFree = false;
     }
     check(packOk, "упаковка вершины распаковывается обратно");
-    check(tailFree, "старшие биты вершины свободны");
+    check(jitOk, "класс крапчатости лежит в битах 28..29");
+    check(tailFree, "старшие два бита вершины свободны");
+    // Без класса вызов обязан давать те же биты, что и раньше: у
+    // параметра значение по умолчанию, и мешеры, которые его не
+    // передают, не имеют права начать красить.
+    check((render::packVoxelPos(5, 9, 3, 2, 1, 4) >> 28) == 0u,
+          "без класса старшие биты нулевые");
     check(sizeof(render::VoxelVertex) == 8, "вершина террейна весит 8 байт");
 
     // Геометрия из квадов: по четыре вершины и шесть индексов на квад,
@@ -1198,53 +1206,326 @@ void testNeighborArrivalTriggersRemesh() {
 }
 
 void testVoxelColorIsPlaceIndependent() {
-    group("шейдер: цвет грани зависит только от материала и грани");
+    group("шейдер: цвет грани — материал, грань и крапчатость блока");
 
+    // Правило, которое здесь сторожится, ОДНО и звучит так: цвет
+    // предсказуем и постоянен в пределах блока.
+    //
+    // Раньше правило формулировалось жёстче — «от места не зависит
+    // ничего» — и сторожилось запретом на vWorldPos в строке альбедо.
+    // Запрет был средством, а не целью: настоящая поломка, из-за
+    // которой его завели, — это волна sin() по мировым координатам и
+    // градиент по высоте, от которых один и тот же блок травы выходил
+    // разным зелёным в разных концах ОДНОГО кадра, а на большом
+    // квадрате оттенок ещё и тёк непрерывно.
+    //
+    // Крапчатость блоков считается из ЦЕЛЫХ координат вокселя, то
+    // есть постоянна внутри блока и меняется строго с шагом сетки.
+    // Поэтому проверка требует теперь не отсутствия координат, а
+    // целочисленности: floor и ivec3 в подкраске — это и есть
+    // разница между «оттенок у блока» и «градиент по поляне».
     const std::string f = readSource("app/src/main/cpp/shaders/voxel.frag");
     if (f.empty()) { check(true, "шейдер не найден, проверка пропущена"); return; }
     const std::string src = stripComments(f);
 
-    // ---- 1. никакого шума по номеру вокселя ----
-    check(src.find("hash13") == std::string::npos, "функции шума в шейдере нет");
-    check(src.find("fract(sin(") == std::string::npos, "и не заменена другим шумом");
-
-    // ---- 2. альбедо: цвет вершины, грань, фаска — и всё ----
-    //
-    // Место фрагмента в мире здесь не участвует. Так выглядела
-    // настоящая поломка: цвет умножался на волну sin() по мировым
-    // координатам и на градиент по высоте, и один и тот же блок травы
-    // выходил заметно разным зелёным в разных концах одного кадра.
-    const usize a = src.find("vec3 albedo = ");
-    check(a != std::string::npos, "альбедо считается");
-    if (a != std::string::npos) {
-        const std::string line = src.substr(a, src.find(';', a) - a);
-        check(line.find("vColor") != std::string::npos, "из цвета материала");
-        check(line.find("FACE_LIGHT") != std::string::npos,
-              "и освещённости своей грани");
-        for (const char* bad : { "hash", "grain", "noise", "random",
-                                 "vWorldPos", "sin(", "tint" }) {
-            if (line.find(bad) != std::string::npos) {
-                std::printf("       альбедо зависит от «%s»\n", bad);
-                check(false, "без шума, места в мире и подкрасок");
-                return;
-            }
-        }
-        check(true, "без шума, места в мире и подкрасок");
-    }
-
-    // Подкрасок по мировым координатам не осталось нигде: ни волны,
-    // ни градиента по высоте. Единственные sin/cos, какие терпимы в
-    // этом шейдере, — вообще никакие.
+    // ---- 1. никакой волны по координатам ----
+    check(src.find("fract(sin(") == std::string::npos, "шума через fract(sin()) нет");
     check(src.find("sin(") == std::string::npos,
           "тригонометрии по координатам в террейне нет");
     check(src.find("vWorldPos.y - 40.0") == std::string::npos,
           "градиента цвета по высоте нет");
 
-    // ---- 3. точность межстадийных переменных ----
+    // ---- 2. альбедо: цвет материала с крапчатостью, грань, фаска ----
+    const usize b = src.find("vec3 base = ");
+    check(b != std::string::npos, "цвет материала с крапчатостью считается");
+    if (b != std::string::npos) {
+        const std::string line = src.substr(b, src.find(';', b) - b);
+        check(line.find("vColor") != std::string::npos, "из цвета материала");
+        check(line.find("blockTint") != std::string::npos, "и его крапчатости");
+        check(line.find("clamp") != std::string::npos,
+              "с ограничением: отклонение не имеет права вывести цвет за единицу");
+    }
+
+    const usize a = src.find("vec3 albedo = ");
+    check(a != std::string::npos, "альбедо считается");
+    if (a != std::string::npos) {
+        const std::string line = src.substr(a, src.find(';', a) - a);
+        check(line.find("base") != std::string::npos, "из него же");
+        check(line.find("FACE_LIGHT") != std::string::npos,
+              "и освещённости своей грани");
+        // Место фрагмента в альбедо по-прежнему не входит напрямую:
+        // всё, что зависит от координат, спрятано в blockTint, и там
+        // округлено до клетки.
+        for (const char* bad : { "vWorldPos", "sin(", "hash" }) {
+            if (line.find(bad) != std::string::npos) {
+                std::printf("       альбедо зависит от «%s» напрямую\n", bad);
+                check(false, "и больше ни от чего");
+                return;
+            }
+        }
+        check(true, "и больше ни от чего");
+    }
+
+    // ---- 3. крапчатость постоянна внутри блока ----
+    const usize t = src.find("float blockTint(");
+    check(t != std::string::npos, "подкраска блока вынесена в отдельную функцию");
+    if (t != std::string::npos) {
+        const std::string body = src.substr(t, src.find("\n}", t) - t);
+        // Главное. Аргументом хэша идут ЦЕЛЫЕ координаты клетки —
+        // иначе оттенок потечёт по грани, и это снова будет градиент.
+        check(body.find("ivec3") != std::string::npos &&
+              body.find("floor(") != std::string::npos,
+              "хэш берёт ЦЕЛУЮ клетку вокселя, а не позицию фрагмента");
+        // Полшага против нормали: точки грани +X лежат ровно на целом
+        // x, и без смещения floor отдал бы соседний блок. Тогда две
+        // соседние грани одного куба красились бы по-разному.
+        check(body.find("N * 0.5") != std::string::npos,
+              "и смещается на полшага против нормали");
+        // Класс 0 — материал не трогаем вовсе.
+        check(body.find("if (cls == 0u) return 1.0;") != std::string::npos,
+              "материал без крапчатости возвращается как есть");
+        // Зерно мира — снаружи, а не из константы.
+        check(body.find("seed") != std::string::npos,
+              "зерно приходит аргументом, значит зависит от мира");
+        // Умножается цвет в sRGB, ДО toLinear: перевод возводит в
+        // квадрат, и проценты в названии обязаны значить проценты на
+        // экране.
+        check(src.find("toLinear(base)") != std::string::npos,
+              "отклонение накладывается до перевода в линейное пространство");
+    }
+
+    // ---- 4. хэш целочисленный и highp ----
+    //
+    // Файл начинается с precision mediump int, а mediump int
+    // стандарт разрешает делать шестнадцатибитным. Хэш в нём дал бы
+    // на разных драйверах разные числа — один мир пестрил бы
+    // по-разному на разных телефонах.
+    const usize h = src.find("uint jitterHash(");
+    check(h != std::string::npos, "хэш крапчатости объявлен");
+    if (h != std::string::npos) {
+        const std::string sig = src.substr(h - 6, 6);
+        check(sig.find("highp") != std::string::npos, "хэш возвращает highp uint");
+        const std::string body = src.substr(h, src.find("\n}", h) - h);
+        check(body.find("highp ivec3") != std::string::npos &&
+              body.find("highp uint") != std::string::npos,
+              "и считает всё в highp");
+        check(body.find("float") == std::string::npos,
+              "и целыми числами: float в хэше — разные числа на разных драйверах");
+    }
+
+    // ---- 5. размах один и тот же в шейдере и в C++ ----
+    //
+    // Число живёт в двух местах поневоле: GLSL не видит констант
+    // C++. Значит его сверяет проверка — текстом, как и блок
+    // CameraUbo.
+    {
+        const usize k = src.find("const float JITTER_STEP = ");
+        check(k != std::string::npos, "шаг размаха объявлен в шейдере");
+        if (k != std::string::npos) {
+            const std::string v =
+                src.substr(k + 26, src.find(';', k) - (k + 26));
+            const f32 shaderStep = (f32)std::atof(v.c_str());
+            check(std::fabs(shaderStep - world::COLOR_JITTER_STEP) < 1e-6f,
+                  "и совпадает с world::COLOR_JITTER_STEP");
+            // Небольшой — это требование задачи, а не вкус: на
+            // ±10 % трава начинает рябить, и поляна снова читается
+            // грязным пятном.
+            check(shaderStep > 0.f && shaderStep * 3.f <= 0.08f,
+                  "и он невелик: наибольший размах не больше 8 % цвета");
+        }
+    }
+
+    // ---- 6. точность межстадийных переменных ----
     check(f.find("in highp vec2  vShade") != std::string::npos,
           "vShade объявлена highp в фрагментном шейдере");
     check(f.find("clamp(vShade, 0.0, 1.0)") != std::string::npos,
           "затенение ограничено своим договорным диапазоном");
+
+    // ---- 7. зерно переводится в целое там, где точность есть ----
+    //
+    // Зерно — целое до 2^24. Фрагментный шейдер начинается с
+    // precision mediump float, и поля блока формы в нём mediump, а
+    // mediump float стандарт разрешает делать десятибитным по
+    // мантиссе: от зерна остались бы старшие биты, и разные миры
+    // получили бы одну крапчатость. Поэтому перевод живёт в
+    // вершинном шейдере, который precision не объявляет вовсе.
+    check(f.find("in flat highp uint vSeed;") != std::string::npos,
+          "зерно приходит во фрагмент уже целым и highp");
+    check(src.find("uint(cam.wind.w)") == std::string::npos,
+          "и не переводится во фрагментном шейдере, где точность mediump");
+
+    const std::string v = readSource("app/src/main/cpp/shaders/voxel.vert");
+    check(!v.empty(), "вершинный шейдер прочитан");
+    if (!v.empty()) {
+        // По коду без комментариев: слово «precision» стоит и в
+        // объяснении рядом, а проверяется объявление.
+        check(stripComments(v).find("precision ") == std::string::npos,
+              "вершинный шейдер точность не понижает — он весь highp");
+        check(v.find("vSeed     = uint(cam.wind.w);") != std::string::npos,
+              "и именно он переводит зерно в целое");
+        check(v.find("out flat uint vSeed;") != std::string::npos,
+              "и отдаёт его плоско, без интерполяции");
+        // Класс крапчатости распаковывается из тех же битов, в
+        // которые его кладёт packVoxelPos.
+        check(v.find("(inPacked >> 28) & 3u") != std::string::npos,
+              "класс крапчатости читается из битов 28..29");
+    }
+}
+
+// ------------------------------------------------------------
+// Крапчатость блоков: одна и та же у одного мира, разная у разных
+// ------------------------------------------------------------
+//
+// Само отклонение считает шейдер, и проверить его числами здесь
+// нельзя — но можно проверить ВСЁ, что к нему ведёт: какие материалы
+// его получают, как класс доезжает до вершины и как зерно мира
+// попадает в блок формы. Саму картинку сверяет tools/hostcheck/run.sh
+// настоящим кадром Vulkan: два кадра одного мира обязаны совпасть до
+// пикселя, кадр с другим зерном — отличаться, но чуть-чуть.
+void testBlockColorJitter() {
+    group("цвет блоков: крапчатость от зерна мира");
+
+    auto& reg = world::blocks();
+
+    // ---- 1. крапчатость получает то, что в природе разнородно ----
+    check(reg.get(world::GRASS).colorJitter  > 0, "трава крапчатая");
+    check(reg.get(world::DIRT).colorJitter   > 0, "земля крапчатая");
+    check(reg.get(world::LEAVES).colorJitter > 0, "листва крапчатая");
+
+    // ---- 2. и НЕ получает всё остальное ----
+    //
+    // Это половина задачи, а не придирка: рябящая кладка, рябящий
+    // наст и рябящее стекло выглядят браком, а не жизнью. Тёсаный
+    // камень и доска — рукотворные, снег и песок однородны.
+    bool restFlat = true;
+    for (u16 id : { world::STONE, world::SAND, world::SNOW, world::ICE,
+                    world::WATER, world::LAVA, world::PLANK, world::THATCH,
+                    world::GLASS, world::BRICK, world::BEDROCK,
+                    world::IRON_ORE, world::GOLD_ORE })
+        if (reg.get(id).colorJitter != 0) {
+            std::printf("       крапчатым оказался «%s»\n", reg.get(id).name);
+            restFlat = false;
+        }
+    check(restFlat, "камень, песок, снег, кладка и руда — ровные");
+
+    // Размах небольшой. Это требование задачи, а не вкус: на десяти
+    // процентах трава начинает рябить, и поляна снова читается
+    // грязным пятном — ровно тем, из-за чего подкраску отсюда
+    // когда-то убирали.
+    check(world::COLOR_JITTER_MAX > 0.f && world::COLOR_JITTER_MAX <= 0.08f,
+          "наибольший размах не больше 8 % цвета");
+    check(world::COLOR_JITTER_MAX ==
+          world::COLOR_JITTER_STEP * 3.f, "и это ровно три шага");
+
+    // ---- 3. класс доезжает до вершины ----
+    //
+    // Через настоящий мешер, а не через packVoxelPos: между реестром
+    // блоков и вершиной лежит emitQuad, и молча потерять класс может
+    // именно он.
+    auto c = std::make_unique<world::Chunk>();
+    c->coord = { 0, 0, 0 };
+    for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+        for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+            c->set(x, 0, z, world::STONE);
+            c->set(x, 1, z, x < 16 ? world::GRASS : world::STONE);
+        }
+
+    std::vector<world::Quad> quads;
+    world::ChunkNeighbors nb;
+    world::buildGreedyMesh(*c, nb, quads);
+    std::vector<render::VoxelVertex> verts;
+    std::vector<u32> idx;
+    u32 opaque = 0;
+    render::buildChunkVertices(*c, quads, verts, idx, opaque);
+    check(!verts.empty(), "меш построен");
+
+    usize grassVerts = 0, stoneVerts = 0, wrong = 0;
+    for (const auto& v : verts) {
+        const u32 x   = v.packed & 63u;
+        const u32 y   = (v.packed >> 6) & 255u;
+        const u32 cls = (v.packed >> 28) & 3u;
+        // Верхние грани травяного слоя: y = 2 — это верх блока на
+        // высоте 1, и там, где x < 16, лежит трава.
+        const bool grassTop = (y == 2 && x < 16);
+        if (grassTop) {
+            ++grassVerts;
+            if (cls != reg.get(world::GRASS).colorJitter) ++wrong;
+        } else if (y == 2 && x > 16) {
+            ++stoneVerts;
+            if (cls != 0u) ++wrong;
+        }
+    }
+    check(grassVerts > 0 && stoneVerts > 0, "в меше есть и трава, и камень");
+    check(wrong == 0, "у травы класс из реестра, у камня — ноль");
+
+    // ---- 4. слияние квадов крапчатость НЕ ломает ----
+    //
+    // Главное ограничение всей задачи. Положи мешер готовый оттенок
+    // в вершину — и квады с разным цветом перестали бы склеиваться:
+    // поле из одного слитого квада распалось бы на тысячу отдельных.
+    // Поэтому в вершину едет КЛАСС МАТЕРИАЛА, один на весь материал,
+    // и слияние его не замечает.
+    usize topQuads = 0;
+    for (const auto& q : quads) if (q.v0.face == 2) ++topQuads;
+    check(topQuads < 8,
+          "верх чанка по-прежнему слит в считанные квады, а не в тысячу");
+
+    // ---- 5. зерно мира доезжает до блока формы ----
+    render::Camera cam;
+    cam.setWorldSeed(0);
+    const render::CameraUbo z = cam.toUbo(1.f);
+    cam.setWorldSeed(0xDEADBEEFCAFEULL);
+    const render::CameraUbo a = cam.toUbo(1.f);
+    cam.setWorldSeed(0xDEADBEEFCAFEULL);
+    const render::CameraUbo b = cam.toUbo(2.f);
+    cam.setWorldSeed(0xDEADBEEFCAFDULL);
+    const render::CameraUbo d = cam.toUbo(1.f);
+
+    check(a.wind.w != z.wind.w, "зерно доезжает до CameraUbo");
+    check(a.wind.w == b.wind.w,
+          "одно зерно — одно значение, и время суток на него не влияет");
+    check(a.wind.w != d.wind.w, "соседние зёрна дают разные значения");
+
+    // Значение обязано доехать ЦЕЛЫМ: в шейдере из него делается
+    // uint, и потеря младшего бита означала бы другую крапчатость.
+    check((u64)(u32)a.wind.w == (0xDEADBEEFCAFEULL & 0xFFFFFFull),
+          "и доезжает целым, без потери младших битов");
+
+    // Двадцать четыре бита — ровно столько float держит целыми.
+    // Двадцать пять уже не держит, и правило обязано резать раньше,
+    // чем начнёт врать float.
+    bool exact = true;
+    for (u64 k = 0; k < 24; ++k) {
+        const u64 seed = (1ull << k) | 1ull;
+        const f32 v = render::tintSeedOf(seed);
+        if ((u64)(u32)v != (seed & 0xFFFFFFull)) exact = false;
+    }
+    check(exact, "любое зерно переживает дорогу через float");
+
+    // ---- 6. изометрический снимок красит тот же мир так же ----
+    //
+    // У снимка свой блок формы: свет в нём закреплён намеренно, чтобы
+    // два снимка одного места совпадали. Крапчатость закреплять
+    // нельзя — иначе на карте окажется земля, которой в мире нет.
+    render::iso::Camera icam{};
+    icam.width = 64; icam.height = 64;
+    const render::CameraUbo s0 =
+        render::IsoSnapshot::fixedLightUbo(icam, render::iso::View::North,
+                                           render::tintSeedOf(0xDEADBEEFCAFEULL));
+    check(s0.wind.w == a.wind.w,
+          "снимок берёт то же зерно, что и игровой кадр");
+    const render::CameraUbo s1 =
+        render::IsoSnapshot::fixedLightUbo(icam, render::iso::View::South,
+                                           render::tintSeedOf(0xDEADBEEFCAFEULL));
+    check(s1.wind.w == s0.wind.w, "и не зависит от стороны обзора");
+
+    // Зерно снимок берёт у МИРА, а не у запроса: иначе карта и мир
+    // разошлись бы по цвету при первом же сохранении.
+    const std::string iso = readSource("app/src/main/cpp/src/render/iso_snapshot.cpp");
+    check(iso.find("tintSeed_ = tintSeedOf(world.seed())") != std::string::npos,
+          "и снимается с мира, а не задаётся снаружи");
+    check(iso.find("fixedLightUbo(cam_, req_.view, tintSeed_)") != std::string::npos,
+          "и доезжает до блока формы каждого тайла");
 }
 
 // ------------------------------------------------------------
@@ -20684,6 +20965,7 @@ int main() {
     testUnknownNeighborIsNotAir();
     testNeighborArrivalTriggersRemesh();
     testVoxelColorIsPlaceIndependent();
+    testBlockColorJitter();
     testFaceShadingHasSingleSource();
     testApkCarriesTheShadersItWasBuiltFrom();
     testBuildStampIsNotStale();

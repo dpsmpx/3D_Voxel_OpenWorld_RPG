@@ -56,7 +56,8 @@ struct CameraUbo {
     /// z — яркость радуги, w — снег (0 дождь, 1 снег).
     glm::vec4 weather;
     /// Ветер. xy — блоков в секунду, по которым едут тучи;
-    /// z — время в секундах для их движения, w — запас.
+    /// z — время в секундах для их движения;
+    /// w — зерно крапчатости блоков, см. tintSeedOf.
     glm::vec4 wind;
 
     /// Точечные источники: факелы, фонари, огонь в руке.
@@ -70,6 +71,19 @@ struct CameraUbo {
     /// rgb — цвет, линейный; w — яркость. Ноль — источника нет.
     glm::vec4 lightColor[8];
 };
+
+/// Зерно крапчатости блоков в том виде, в каком его получает шейдер.
+///
+/// Мир задаётся 64-битным зерном, а в блок формы влезает float.
+/// Берём младшие 24 бита: ровно столько float держит целыми без
+/// потерь, и это же число приходит в шейдер обратно целым. Больше —
+/// и в UBO поехало бы не то значение, которое отсюда положили.
+///
+/// Правило одно на всех, кто строит CameraUbo: и игровой кадр, и
+/// изометрический снимок обязаны красить один мир одинаково.
+inline f32 tintSeedOf(u64 worldSeed) {
+    return (f32)(u32)(worldSeed & 0xFFFFFFull);
+}
 
 // Размер массива записан числом, а не константой, и вот почему: тот
 // же блок слово в слово объявлен в восьми шейдерах, и проверка
@@ -104,6 +118,12 @@ public:
         snowMix_ = snowMix; wind_ = wind;
     }
     f32 cloudCover() const { return cloud_; }
+
+    /// Зерно мира. Из него шейдер террейна берёт крапчатость блоков:
+    /// один мир пестрит всегда одинаково, разные — по-разному.
+    /// Ставится один раз, при создании или загрузке мира.
+    void setWorldSeed(u64 seed) { tintSeed_ = tintSeedOf(seed); }
+    f32  tintSeed() const       { return tintSeed_; }
 
     /// Параметры суток: цвет неба, сила небесного света и фаза дня.
     /// Задаются раз в кадр из world::DayCycle.
@@ -337,7 +357,7 @@ public:
         u.ambLight  = glm::vec4(ambTint, glm::mix(0.14f, 0.60f, day));
         u.skyLinear = glm::vec4(skyLin, above);
         u.weather   = glm::vec4(cloud_, precip_, rainbow_, snowMix_);
-        u.wind      = glm::vec4(wind_.x, wind_.y, timeSec, 0.f);
+        u.wind      = glm::vec4(wind_.x, wind_.y, timeSec, tintSeed_);
 
         // ---- точечные источники ----
         //
@@ -385,6 +405,7 @@ private:
     f32 near_ = 0.1f, far_ = 512.f;
     f32 cloud_ = 0.f, precip_ = 0.f, rainbow_ = 0.f, snowMix_ = 0.f;
     glm::vec2 wind_{0.f};
+    f32       tintSeed_ = 0.f;
     i32 debugShading_ = 0;
     bool debugCamera_ = false;
     u32 screenW_ = 1080, screenH_ = 1920;

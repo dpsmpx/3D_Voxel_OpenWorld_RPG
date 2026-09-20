@@ -58,7 +58,7 @@ void emitQuad(const world::Quad& q, const world::BlockDef& def,
         ao[i] = q.ao[c];
         verts.push_back({
             packVoxelPos((u32)p.x, (u32)p.y, (u32)p.z,
-                         q.v0.face, ao[i], q.sky[c]),
+                         q.v0.face, ao[i], q.sky[c], def.colorJitter),
             cr, cg, cb, ca });
     }
 
