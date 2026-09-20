@@ -47,6 +47,30 @@ static const std::array<BiomeDef, BIOME_COUNT> BIOMES = {{
     { "Blight",   DIRT,    DIRT,    STONE, WATER, 14.00f, TreeType::Dead, 1,  0.0f },
 }};
 
+/// Климат, к которому подтягивается околица. Всё безопасное.
+///
+/// Температура и влажность выбраны так, чтобы classify() дал нужный
+/// биом даже с учётом оставшейся доли собственного шума мира: запас
+/// до порога соседнего биома больше, чем эта доля может сдвинуть.
+/// Проверка перебирает зёрна и убеждается в этом числами.
+struct HomeClimate { f32 temperature, humidity; };
+static constexpr HomeClimate HOME_CLIMATE[(u32)HomeKind::Count] = {
+    { 0.20f,  0.00f },   // Plains  — чистое поле
+    { 0.15f,  0.20f },   // Forest  — густой лес
+    { 0.35f, -0.18f },   // Savanna — редколесье
+    {-0.20f,  0.20f },   // Taiga   — сосняк
+};
+
+f32 homeWeight(f32 d) {
+    if (d >= HOME_FADE_RADIUS) return 0.f;
+    if (d <= HOME_FULL_RADIUS) return HOME_WEIGHT;
+    const f32 t = (d - HOME_FULL_RADIUS)
+                / (HOME_FADE_RADIUS - HOME_FULL_RADIUS);
+    // smoothstep: у подтяжки не должно быть ни ступеньки, ни излома —
+    // иначе околица видна кольцом на рельефе.
+    return HOME_WEIGHT * (1.f - t * t * (3.f - 2.f * t));
+}
+
 struct BiomeField::Impl {
     SimplexNoise continent;
     SimplexNoise temperature;
@@ -56,6 +80,9 @@ struct BiomeField::Impl {
     SimplexNoise weird;
     SimplexNoise uplift;
 
+    /// Какая околица досталась миру. Выбирается зерном один раз.
+    HomeKind home = HomeKind::Plains;
+
     explicit Impl(u64 seed)
         : continent(seed ^ 0x1111),
           temperature(seed ^ 0x2222),
@@ -63,10 +90,23 @@ struct BiomeField::Impl {
           erosion(seed ^ 0x4444),
           peaks(seed ^ 0x5555),
           weird(seed ^ 0x6666),
-          uplift(seed ^ 0x7777) {}
+          uplift(seed ^ 0x7777)
+    {
+        // Перемешивание зерна перед выбором: младшие биты у соседних
+        // зёрен отличаются на единицу, и без перемешивания миры 1, 2,
+        // 3, 4 получили бы все четыре околицы по кругу — «случайно»
+        // ровно до первого взгляда на список.
+        u64 h = seed ^ 0xA24BAED4963EE407ULL;
+        h ^= h >> 29; h *= 0xBF58476D1CE4E5B9ULL;
+        h ^= h >> 32; h *= 0x94D049BB133111EBULL;
+        h ^= h >> 31;
+        home = (HomeKind)(h % (u64)HomeKind::Count);
+    }
 };
 
 BiomeField::BiomeField(u64 seed) : impl_(new Impl(seed)) {}
+
+HomeKind BiomeField::home() const { return impl_->home; }
 // (в реальном проекте — unique_ptr, но здесь упрощаем для краткости)
 
 BiomeField::Sample BiomeField::fields(i32 x, i32 z) const {
@@ -107,6 +147,44 @@ BiomeField::Sample BiomeField::fields(i32 x, i32 z) const {
         constexpr f32 RIDGE_HALF = 0.055f;
         s.uplift = std::clamp((RIDGE_HALF - std::fabs(raw)) / RIDGE_HALF,
                               0.f, 1.f);
+    }
+
+    // ============================================================
+    // Домашняя околица
+    // ============================================================
+    //
+    // Подтяжка стоит ЗДЕСЬ, между шумом и высотой, и это важно:
+    // высота считается из полей, и подтянуть её отдельно значило бы
+    // получить равнину с горным биомом на ней.
+    //
+    // Почему вообще: в начале координат у всех миров был один и тот
+    // же максимальный хребет. Причина — в шуме (см. noise.h), и она
+    // устранена там; но и после этого начало пути доставалось жребию:
+    // замер по тремстам зёрнам дал 34 % океана, 8 % гор, 5 % Чёрного
+    // леса и 1.7 % вулкана. Игрок просыпался в воде или в горах не
+    // «иногда», а в каждом третьем мире.
+    //
+    // Перебор точки появления такое не лечит: он умеет отвергнуть
+    // плохое место, но не умеет сделать хорошее.
+    {
+        const f32 d = std::sqrt(fx * fx + fz * fz);
+        const f32 w = homeWeight(d);
+        if (w > 0.f) {
+            const HomeClimate& hc = HOME_CLIMATE[(u32)impl_->home];
+            auto toward = [w](f32 value, f32 target) {
+                return value + (target - value) * w;
+            };
+            // Суша, и заведомо выше уровня моря.
+            s.continent   = toward(s.continent, 0.30f);
+            s.temperature = toward(s.temperature, hc.temperature);
+            s.humidity    = toward(s.humidity, hc.humidity);
+            // Пологий рельеф: эрозия высока, пиков нет.
+            s.erosion     = toward(s.erosion, 0.85f);
+            s.peaks       = toward(s.peaks, 0.f);
+            // Ни порчи, ни поднятия коры: ни Чёрного леса, ни хребта.
+            s.weird       = toward(s.weird, -0.40f);
+            s.uplift     *= (1.f - w);
+        }
     }
 
     // Модификатор высоты: континент + горы, океаны глубже суши
