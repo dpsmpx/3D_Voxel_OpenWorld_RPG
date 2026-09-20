@@ -239,6 +239,9 @@ void UiSystem::buildFrame(player::Player& player,
         case Screen::NewWorld:
             drawNewWorldScreen();
             break;
+        case Screen::IsoSnapshot:
+            drawIsoSnapshotScreen();
+            break;
     }
 
     drawDragOverlay();
@@ -1249,7 +1252,7 @@ u32 settingsRowCount(SettingsTab tab, bool buttonLayout) {
         case SettingsTab::Ui:     return 4u;
         case SettingsTab::Audio:  return 3u;
         // Язык, автосейв, его интервал, журнал.
-        case SettingsTab::Game:   return 4u;
+        case SettingsTab::Game:   return 5u;
         case SettingsTab::Render: return 2u;
         default:                  return 0u;
     }
@@ -1518,6 +1521,17 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 });
                 toggleWidget(ui_, r, idx, &s.logEnabled,
                              T(StrKey::Settings_Logging));
+            }
+            // Изометрический снимок мира — не настройка, а действие,
+            // поэтому кнопка, а не переключатель.
+            {
+                Rect r = nextRow();
+                const int idx = ui_.pushInteractiveRect(r, [this]() {
+                    openScreen(Screen::IsoSnapshot);
+                    if (onIsoParamsChanged) onIsoParamsChanged();
+                });
+                ui_.button(T(StrKey::Iso_Open), r, idx,
+                           theme::PanelRaised, theme::TextPrimary);
             }
             break;
         }
@@ -2410,6 +2424,259 @@ NewWorldLayout UiSystem::newWorldLayout() const {
     const f32 kbTop = area.y + rowH + gap;
     out.keyboard = { area.x, kbTop, area.w, area.y + area.h - kbTop };
     return out;
+}
+
+// ============================================================
+// Изометрический снимок мира
+// ============================================================
+//
+// Экран ничего не рисует сам и ничего не считает: размер и сторону
+// выбирает игрок, всё остальное делает render::IsoSnapshot, а сюда
+// приходит только его состояние. Предпросмотр — настоящая картинка
+// того же рендера, положенная в текстуру; своей приблизительной
+// отрисовки здесь нет и быть не должно, иначе игрок выбирал бы по
+// одному изображению, а получал другое.
+void UiSystem::setPreviewImage(VkImageView view, VkSampler sampler) {
+    ui_.setImage(view, sampler);
+}
+
+void UiSystem::drawIsoSnapshotScreen() {
+    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
+             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
+
+    const Rect title = layout_.menuTitle();
+    ui_.text(T(StrKey::Iso_Title), title.x,
+             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
+             theme::TEXT_TITLE, theme::TextPrimary);
+
+    const bool busy = iso.capturing &&
+                      (iso.stage == 1 || iso.stage == 2 || iso.stage == 3);
+
+    drawCloseButton([this]() {
+        if (onIsoCancel) onIsoCancel();
+        openScreen(Screen::Settings);
+    });
+
+    const Rect panel = layout_.menuArea();
+    ui_.rect(panel.x, panel.y, panel.w, panel.h, theme::Panel);
+    ui_.rectOutline(panel.x, panel.y, panel.w, panel.h,
+                    layout_.dp(theme::STROKE_DP), theme::Stroke);
+
+    const f32 pad  = layout_.dp(theme::PANEL_PAD_DP);
+    const f32 gap  = layout_.dp(theme::SPACE_M_DP);
+    const f32 rowH = layout_.dp(theme::TOUCH_REGULAR_DP);
+
+    auto textButton = [&](Rect r, const char* label, const BtnStyle& st,
+                          f32 size, bool enabled, std::function<void()> onClick)
+    {
+        const int idx = enabled
+            ? ui_.pushInteractiveRect(r, std::move(onClick)) : -1;
+        const bool pressed = enabled && ui_.isInteractivePressed(idx);
+        ui_.rect(r.x, r.y, r.w, r.h,
+                 enabled ? (pressed ? st.fillPressed : st.fill) : theme::Panel);
+        ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
+                        enabled ? st.stroke : theme::Stroke);
+        const f32 tw = ui_.textWidth(label, size);
+        ui_.text(label, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(size)) * 0.5f, size,
+                 !enabled ? theme::TextDisabled
+                          : (pressed ? theme::Ink : theme::TextPrimary));
+    };
+
+    // ---- Левая колонка: настройки. Правая: предпросмотр. ----
+    const f32 colGap = layout_.dp(theme::SPACE_L_DP);
+    const f32 leftW  = (panel.w - pad * 2.f - colGap) * 0.42f;
+    const f32 leftX  = panel.x + pad;
+    const f32 rightX = leftX + leftW + colGap;
+    const f32 rightW = panel.w - pad * 2.f - leftW - colGap;
+    f32 y = panel.y + pad;
+
+    // ---- Центр области ----
+    {
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%s: %d, %d",
+                      T(StrKey::Iso_Center), iso.centerX, iso.centerZ);
+        ui_.text(buf, leftX, y, theme::TEXT_LABEL, theme::TextSecondary);
+        y += ui_.textHeight(theme::TEXT_LABEL) + gap;
+    }
+
+    // ---- Размер области ----
+    {
+        ui_.text(T(StrKey::Iso_Size), leftX, y, theme::TEXT_LABEL,
+                 theme::TextSecondary);
+        y += ui_.textHeight(theme::TEXT_LABEL) + layout_.dp(theme::SPACE_XS_DP);
+
+        // Шаг ступенями: 16..512 удваивается не всегда, поэтому
+        // список фиксированный — так игрок не подбирает число
+        // колесом, а выбирает из осмысленных.
+        static constexpr i32 STEPS[] = { 32, 64, 100, 160, 256, 384, 512 };
+        constexpr int STEP_COUNT = (int)(sizeof(STEPS) / sizeof(STEPS[0]));
+
+        const f32 bw = (leftW - gap * 2.f) / 3.f;
+        const Rect minus{ leftX, y, bw, rowH };
+        const Rect value{ leftX + bw + gap, y, bw, rowH };
+        const Rect plus { leftX + (bw + gap) * 2.f, y, bw, rowH };
+
+        auto stepIndex = [&]() {
+            int best = 0;
+            for (int i = 0; i < STEP_COUNT; ++i)
+                if (STEPS[i] <= iso.size) best = i;
+            return best;
+        };
+
+        textButton(minus, "-", BTN_NORMAL, theme::TEXT_BODY,
+                   !busy && iso.size > STEPS[0], [this, stepIndex]() {
+            static constexpr i32 S[] = { 32, 64, 100, 160, 256, 384, 512 };
+            const int i = stepIndex();
+            iso.size = S[i > 0 ? i - 1 : 0];
+            if (onIsoParamsChanged) onIsoParamsChanged();
+        });
+
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%d x %d", iso.size, iso.size);
+        ui_.rect(value.x, value.y, value.w, value.h, theme::PanelRaised);
+        ui_.rectOutline(value.x, value.y, value.w, value.h,
+                        layout_.dp(theme::STROKE_DP), theme::Stroke);
+        const f32 tw = ui_.textWidth(buf, theme::TEXT_BODY);
+        ui_.text(buf, value.x + (value.w - tw) * 0.5f,
+                 value.y + (value.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, theme::TextPrimary);
+
+        textButton(plus, "+", BTN_NORMAL, theme::TEXT_BODY,
+                   !busy && iso.size < STEPS[STEP_COUNT - 1],
+                   [this, stepIndex]() {
+            static constexpr i32 S[] = { 32, 64, 100, 160, 256, 384, 512 };
+            constexpr int N = (int)(sizeof(S) / sizeof(S[0]));
+            const int i = stepIndex();
+            iso.size = S[i + 1 < N ? i + 1 : N - 1];
+            if (onIsoParamsChanged) onIsoParamsChanged();
+        });
+        y += rowH + gap;
+    }
+
+    // ---- Сторона обзора ----
+    {
+        ui_.text(T(StrKey::Iso_View), leftX, y, theme::TEXT_LABEL,
+                 theme::TextSecondary);
+        y += ui_.textHeight(theme::TEXT_LABEL) + layout_.dp(theme::SPACE_XS_DP);
+
+        const config::StrKey names[4] = {
+            StrKey::Iso_North, StrKey::Iso_East,
+            StrKey::Iso_South, StrKey::Iso_West,
+        };
+        const f32 bw = (leftW - gap * 3.f) / 4.f;
+        for (u32 i = 0; i < 4; ++i) {
+            const Rect r{ leftX + (bw + gap) * (f32)i, y, bw, rowH };
+            const bool active = (iso.view == i);
+            const int idx = busy ? -1 : ui_.pushInteractiveRect(r, [this, i]() {
+                iso.view = i;
+                if (onIsoParamsChanged) onIsoParamsChanged();
+            });
+            const bool pressed = !busy && ui_.isInteractivePressed(idx);
+            ui_.rect(r.x, r.y, r.w, r.h,
+                     active ? theme::Accent
+                            : (pressed ? theme::PanelRaised : theme::Panel));
+            ui_.rectOutline(r.x, r.y, r.w, r.h,
+                            layout_.dp(active ? theme::STROKE_SELECTED_DP
+                                              : theme::STROKE_DP),
+                            active ? theme::AccentPressed : theme::Stroke);
+            const char* nm = T(names[i]);
+            const f32 tw = ui_.textWidth(nm, theme::TEXT_LABEL);
+            ui_.text(nm, r.x + (r.w - tw) * 0.5f,
+                     r.y + (r.h - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f,
+                     theme::TEXT_LABEL,
+                     active ? theme::Ink : theme::TextPrimary);
+        }
+        y += rowH + gap;
+    }
+
+    // ---- Состояние: что сейчас происходит ----
+    {
+        const char* msg = nullptr;
+        UiColor col = theme::TextSecondary;
+        if (iso.stage == 5) {
+            switch (iso.error) {
+                case 1: msg = T(StrKey::Iso_ErrMemory);     break;
+                case 2: msg = T(StrKey::Iso_ErrGeneration); break;
+                case 3: msg = T(StrKey::Iso_ErrTarget);     break;
+                default: msg = T(StrKey::Iso_ErrSave);      break;
+            }
+            col = theme::Danger;
+        } else if (iso.capturing && iso.stage == 3) {
+            msg = T(StrKey::Iso_Rendering);
+        } else if (iso.capturing && (iso.stage == 1 || iso.stage == 2)) {
+            msg = T(StrKey::Iso_Preparing);
+        } else if (!iso.savedPath.empty()) {
+            msg = T(StrKey::Iso_Saved);
+            col = theme::Success;
+        }
+        if (msg) {
+            ui_.text(msg, leftX, y, theme::TEXT_BODY, col);
+            y += ui_.textHeight(theme::TEXT_BODY) + layout_.dp(theme::SPACE_XS_DP);
+        }
+
+        if (busy) {
+            const f32 barH = layout_.dp(theme::SPACE_S_DP);
+            ui_.rect(leftX, y, leftW, barH, theme::Ink);
+            const f32 p = iso.progress < 0.f ? 0.f
+                        : (iso.progress > 1.f ? 1.f : iso.progress);
+            if (p > 0.f) ui_.rect(leftX, y, leftW * p, barH, theme::Success);
+            y += barH + layout_.dp(theme::SPACE_XS_DP);
+        }
+
+        // Путь показываем целиком: без него «сохранено» не отвечает
+        // на единственный вопрос, который у игрока остался.
+        if (!iso.savedPath.empty() && iso.stage != 5) {
+            char buf[256];
+            std::snprintf(buf, sizeof(buf), "%ux%u", iso.outW, iso.outH);
+            ui_.text(buf, leftX, y, theme::TEXT_CAPTION, theme::TextSecondary);
+            y += ui_.textHeight(theme::TEXT_CAPTION) + layout_.dp(theme::SPACE_XS_DP);
+            ui_.text(iso.savedPath, leftX, y, theme::TEXT_CAPTION,
+                     theme::TextSecondary);
+            y += ui_.textHeight(theme::TEXT_CAPTION) + gap;
+        }
+    }
+
+    // ---- Предпросмотр: настоящая картинка того же рендера ----
+    {
+        const f32 previewH = panel.h - pad * 2.f - rowH - gap;
+        const Rect pv{ rightX, panel.y + pad, rightW, previewH };
+        ui_.rect(pv.x, pv.y, pv.w, pv.h, theme::Ink);
+        ui_.rectOutline(pv.x, pv.y, pv.w, pv.h,
+                        layout_.dp(theme::STROKE_DP), theme::Stroke);
+
+        if (ui_.hasImage() && iso.outW > 0 && iso.outH > 0) {
+            // Вписываем картинку целиком, сохраняя пропорции: снимок
+            // почти никогда не той же формы, что окно предпросмотра,
+            // а растянутая изометрия — уже не изометрия.
+            const f32 sx = pv.w / (f32)iso.outW;
+            const f32 sy = pv.h / (f32)iso.outH;
+            const f32 sc = sx < sy ? sx : sy;
+            const f32 iw = (f32)iso.outW * sc;
+            const f32 ih = (f32)iso.outH * sc;
+            ui_.imageQuad(pv.x + (pv.w - iw) * 0.5f,
+                          pv.y + (pv.h - ih) * 0.5f, iw, ih, COL_WHITE);
+        } else {
+            const char* wait = T(StrKey::Iso_PreviewWait);
+            const f32 tw = ui_.textWidth(wait, theme::TEXT_LABEL);
+            ui_.text(wait, pv.x + (pv.w - tw) * 0.5f,
+                     pv.y + (pv.h - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f,
+                     theme::TEXT_LABEL, theme::TextDisabled);
+        }
+
+        // ---- Готово / Отмена ----
+        const f32 bw = (rightW - gap) * 0.5f;
+        const f32 by = pv.y + pv.h + gap;
+        textButton({ rightX, by, bw, rowH }, T(StrKey::Cancel),
+                   BTN_NORMAL, theme::TEXT_BODY, true, [this]() {
+            if (onIsoCancel) onIsoCancel();
+            openScreen(Screen::Settings);
+        });
+        textButton({ rightX + bw + gap, by, bw, rowH }, T(StrKey::Iso_Done),
+                   BTN_PRIMARY, theme::TEXT_BODY, !busy, [this]() {
+            if (onIsoCapture) onIsoCapture();
+        });
+    }
 }
 
 void UiSystem::drawNewWorldScreen() {

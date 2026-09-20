@@ -70,6 +70,13 @@ enum class StrKey : u16 {
     Settings_Logging,
     Settings_ViewDistance, Settings_UnlimitedFps,
 
+    // --- Изометрический снимок мира ---
+    Iso_Title, Iso_Open, Iso_Size, Iso_View, Iso_Preview,
+    Iso_Done, Iso_North, Iso_East, Iso_South, Iso_West,
+    Iso_Center, Iso_Preparing, Iso_Rendering, Iso_Saving,
+    Iso_Saved, Iso_PreviewWait,
+    Iso_ErrMemory, Iso_ErrGeneration, Iso_ErrTarget, Iso_ErrSave,
+
     // --- Уведомления ---
     Notif_LevelUp, Notif_Crafted, Notif_Saved, Notif_Loaded,
     Notif_Deleted, Notif_RepGained, Notif_Loading,

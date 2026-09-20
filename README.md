@@ -10,7 +10,7 @@
 запуске.
 
 > **Состояние проекта.** Код собирается и линкуется без ошибок и
-> предупреждений, логика покрыта **2273 автоматическими проверками**
+> предупреждений, логика покрыта **2506 автоматическими проверками**
 > (`tools/hostcheck/run.sh`). Три кадра рисуются настоящим Vulkan на
 > каждом прогоне — обычный, с погодой и ночной с факелом. Сборка
 > запускается на физическом Android-устройстве; графика и управление
@@ -728,7 +728,7 @@ export RELEASE_KEY_PASSWORD=...
 | Таблицы строк | строку, вставленную не на своё место: количество сходится, а подписи ниже — чужие |
 | Обход граней | намотанные наоборот грани: половина каждого куба просвечивала насквозь |
 | Уровни Android API | вызов NDK новее минимального API |
-| Тесты логики | 2273 проверки |
+| Тесты логики | 2506 проверок |
 | Две конфигурации сборки | флаг времени компиляции нельзя проверить в одном бинарнике |
 | Java активности | опечатку в единственном Java-классе — иначе она стоила бы полного прогона CI |
 | Три кадра Vulkan | геометрию, освещение, погоду и свет факела |
@@ -898,6 +898,8 @@ export RELEASE_KEY_PASSWORD=...
 | [docs/UI_DESIGN_SYSTEM.md](docs/UI_DESIGN_SYSTEM.md), [docs/UI_UX_AUDIT.md](docs/UI_UX_AUDIT.md) | правила интерфейса и их нарушения |
 | [docs/ANIMATION_SYSTEM.md](docs/ANIMATION_SYSTEM.md), [docs/ENTITY_VISUAL_ARCHITECTURE.md](docs/ENTITY_VISUAL_ARCHITECTURE.md) | оснастка, поза, походка |
 | [docs/CHARACTER_STYLE_GUIDE.md](docs/CHARACTER_STYLE_GUIDE.md), [docs/VILLAGE_STYLE_GUIDE.md](docs/VILLAGE_STYLE_GUIDE.md) | как должны выглядеть существа и деревни |
+| [docs/AAA_DIRECTION.md](docs/AAA_DIRECTION.md), [docs/AI_ITERATIONS.md](docs/AI_ITERATIONS.md) | куда игре расти и что по этому списку уже сделано |
+| [docs/CUBE_WORLD_COMPARISON.md](docs/CUBE_WORLD_COMPARISON.md) | сравнение с Cube World: визуальный стиль и перемещение |
 
 ---
 
