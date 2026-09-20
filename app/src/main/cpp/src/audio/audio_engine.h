@@ -39,7 +39,8 @@ struct Voice {
 
     SoundId       soundId      = SOUND_NONE;
     const Sound*  sound        = nullptr;
-    u64           cursor       = 0;          ///< только микшер
+    /// Положение в источнике, 16.16 долей сэмпла. Только микшер.
+    u64           cursor       = 0;
     /// Громкость, которую заказал владелец голоса. Игровой поток
     /// меняет её через setVoiceGain, update() домножает на громкость
     /// категории и кладёт результат в liveGain.
@@ -69,6 +70,15 @@ struct Voice {
 class AudioEngine {
 public:
     static constexpr i32 MAX_VOICES = 64;
+
+    /// Дробная часть курсора воспроизведения: 16 бит.
+    ///
+    /// Нужна затем, что частота звука и частота потока не обязаны
+    /// совпадать. Музыка синтезируется на MUSIC_RATE — у синусного
+    /// пэда выше шести килогерц нет ничего, а шестнадцать дорожек на
+    /// полной частоте стоили бы полсотни мегабайт.
+    static constexpr u32 FIXED_SHIFT = 16;
+    static constexpr u32 FIXED_ONE   = 1u << FIXED_SHIFT;
 
     AudioEngine();
     ~AudioEngine();

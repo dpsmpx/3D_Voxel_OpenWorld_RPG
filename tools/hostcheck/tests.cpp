@@ -8,6 +8,7 @@
 #include "core/job_system.h"
 #include "audio/audio_engine.h"
 #include "audio/sound_registry.h"
+#include "audio/music.h"
 #include "audio/audio_events.h"
 #include "save/save_inventory.h"
 #include "save/world_delta.h"
@@ -49,6 +50,7 @@
 #include "core/shared_dir.h"
 #include "ui/text_entry.h"
 #include "ui/font_data.h"
+#include "world/biome.h"
 #include "world/features.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
@@ -3651,7 +3653,8 @@ void testFrameRateLimitSetting() {
           "смена тумблера доходит до контекста");
     check(mn.find("vk.setVsync(!cfg::settingsConst().unlimitedFps)") != std::string::npos,
           "и применяется ещё до создания первой цепочки");
-    check(uis.find("s.unlimitedFps = !s.unlimitedFps") != std::string::npos,
+    check(uis.find("cfg::settings().unlimitedFps = !cfg::settings().unlimitedFps")
+              != std::string::npos,
           "тумблер в меню переключает именно её");
 }
 
@@ -4241,8 +4244,34 @@ void testHudAndButtonsDoNotOverlap() {
         // ---- прямоугольники HUD, которые всегда на экране ----
         std::vector<std::pair<const char*, ui::Rect>> rects;
         rects.push_back({ "полоса опыта", L.xpBar() });
-        for (u32 i = 0; i < 3; ++i)
+        for (u32 i = 0; i < ui::HudLayout::RES_BARS; ++i)
             rects.push_back({ "полоса ресурса", L.resourceBar(i) });
+        // Счётчик кадров стоял по постоянной 180-й точке от верха и
+        // накрывал полосу выносливости: полосы считаются от плотности
+        // экрана, а он не считался ни от чего. Раз его место теперь
+        // задано раскладкой — оно и проверяется вместе с остальными.
+        for (u32 i = 0; i < ui::HudLayout::DEBUG_LINES; ++i)
+            rects.push_back({ "служебная строка", L.debugLine(i) });
+        // Важное уведомление всплывает в той же верхней середине, что
+        // и служебные строки. В общий список его не кладём: это
+        // временная плашка поверх игры, она и должна перекрывать
+        // кнопки. А вот счётчик кадров ей закрывать нечего — доля от
+        // высоты экрана и раскладка строк считаются от разного, и на
+        // 1280x720 плашка начиналась выше, чем строки кончались.
+        {
+            const ui::Rect nh = L.notice(0, true, L.dp(200.f));
+            for (u32 i = 0; i < ui::HudLayout::DEBUG_LINES; ++i) {
+                const ui::Rect d = L.debugLine(i);
+                if (nh.y >= d.y + d.h - 0.5f) continue;
+                ++problems;
+                char msg[176];
+                std::snprintf(msg, sizeof(msg),
+                              "%s%s: уведомление с %.0f накрывает строку %.0f..%.0f",
+                              sz.name, mode, (double)nh.y,
+                              (double)d.y, (double)(d.y + d.h));
+                check(false, msg);
+            }
+        }
         for (u32 i = 0; i < ui::HudLayout::NAV_COUNT; ++i)
             rects.push_back({ "кнопка навигации", L.navButton(i) });
         // Плашка подгрузки живёт поверх обычного HUD, а не вместо
@@ -4365,6 +4394,24 @@ void testHudAndButtonsDoNotOverlap() {
 
     check(problems == 0,
           "на семи экранах: ни наложений, ни целей мельче 48 dp");
+
+    // Низкий экран: доля от высоты и раскладка строк расходятся
+    // сильнее всего именно там. На 1280x600 доля 0.28 даёт 168-ю
+    // точку, а вторая служебная строка кончается на 200-й — плашка
+    // уведомления села бы прямо на счётчик кадров.
+    {
+        const ui::HudLayout S(1280.f, 600.f,
+                              ui::theme::Metrics::fromDensityDpi(320),
+                              ui::SafeInsets{});
+        const ui::Rect nh = S.notice(0, true, S.dp(200.f));
+        char msg[176];
+        std::snprintf(msg, sizeof(msg),
+                      "на низком экране уведомление с %.0f ниже строк (кончаются на %.0f)",
+                      (double)nh.y, (double)S.debugBottom());
+        check(nh.y >= S.debugBottom() - 0.5f, msg);
+        check(600.f * ui::HudLayout::NOTICE_HIGH_Y_FRAC < S.debugBottom(),
+              "и одной доли от высоты для этого не хватило бы");
+    }
 }
 
 // ------------------------------------------------------------
@@ -6380,6 +6427,601 @@ void testBlockEconomy() {
 // nullptr — законное значение std::function. Кнопка при этом
 // рисуется, нажимается и подсвечивается, просто ничего не делает.
 // ------------------------------------------------------------
+// ------------------------------------------------------------
+// Настройки: кнопки нажимаются, тумблеры переключаются.
+//
+// Каждое нажатие на тумблер роняло игру. Обработчик интерактивной
+// области живёт ДОЛЬШЕ кадра: UiContext копирует его при нажатии и
+// вызывает при отпускании — пять-семь кадров спустя, когда кадр,
+// создавший лямбду, давно свёрнут. Обработчики настроек захватывали
+// по ссылке лямбду changeCb, лежавшую на стеке drawSettingsScreen;
+// к отпусканию от неё оставался мусор, и игра падала на вызове.
+// ------------------------------------------------------------
+
+/// Затереть стек ниже текущего кадра.
+///
+/// В тесте кадр рисуется тем же вызовом с той же глубины, поэтому
+/// свёрнутая лямбда ложится обратно на то же место с тем же
+/// содержимым — висячая ссылка «работает», и проверка ничего не
+/// замечает. На устройстве между нажатием и отпусканием проходят
+/// физика, мир, звук и сеть, и стек к этому моменту чужой. Здесь
+/// добиваемся того же нарочно.
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
+void scrubStackBelow() {
+    constexpr u32 N = 8192;               // 64 КиБ — глубже любого кадра UI
+    volatile u64 junk[N];
+    for (u32 i = 0; i < N; ++i) junk[i] = 0xD1EDD1EDD1EDD1EDull;
+    (void)junk[N - 1];
+}
+
+// ------------------------------------------------------------
+// Музыка мест: у каждого биома и каждой деревни своя.
+//
+// Раньше на всю игру было четыре дорожки: исследование, бой,
+// подземелье и одна общая деревня. Пустыня, болото и тайга звучали
+// одинаково, а четыре уклада деревень — тем более.
+// ------------------------------------------------------------
+
+/// Грубая «окраска» дорожки: доля энергии в четырёх полосах и общий
+/// уровень. Двух одинаковых по этим пяти числам быть не должно —
+/// иначе где-то рецепт скопирован, а не написан.
+struct TrackColour {
+    f64 band[4] = { 0, 0, 0, 0 };   ///< низ, низ-середина, середина, верх
+    f64 rms     = 0.0;
+    f32 dur     = 0.f;
+};
+
+TrackColour colourOf(const audio::Sound& s) {
+    TrackColour c;
+    c.dur = s.duration();
+    if (!s.valid()) return c;
+
+    // Полосы считаем не спектром, а разностями: разность соседних
+    // сэмплов давит низ и поднимает верх. Четыре степени разности —
+    // четыре всё более высоких полосы. Для «похожи ли две дорожки»
+    // этого достаточно, а БПФ ради проверки тащить незачем.
+    std::vector<f64> cur(s.frames);
+    for (u32 i = 0; i < s.frames; ++i) cur[i] = (f64)s.samples[i];
+    for (u32 b = 0; b < 4; ++b) {
+        f64 sum = 0.0;
+        for (f64 v : cur) sum += v * v;
+        c.band[b] = std::sqrt(sum / (f64)cur.size());
+        for (usize i = cur.size(); i-- > 1; ) cur[i] = cur[i] - cur[i - 1];
+        cur[0] = 0.0;
+    }
+    c.rms = c.band[0];
+    return c;
+}
+
+void testBiomeAndVillageMusic() {
+    group("музыка: у каждого биома и деревни своя");
+
+    audio::SoundRegistry::instance().init(48000);
+    const auto& reg = audio::SoundRegistry::instance();
+
+    // ---- 1. Треков ровно столько, сколько мест ----
+    check((u32)world::BIOME_COUNT == audio::MUSIC_BIOME_COUNT,
+          "трек есть у каждого биома");
+    check((u32)world::VillageStyle::Count == audio::MUSIC_VILLAGE_COUNT,
+          "трек есть у каждого уклада деревни");
+
+    std::vector<std::pair<std::string, audio::SoundId>> tracks;
+    const world::BiomeField field(0xB10E5u);   // нужен только за именами
+    for (u32 i = 0; i < audio::MUSIC_BIOME_COUNT; ++i)
+        tracks.push_back({ field.def((world::BiomeId)i).name,
+                           audio::musicForBiome(i) });
+    for (u32 i = 0; i < audio::MUSIC_VILLAGE_COUNT; ++i)
+        tracks.push_back({ world::villageStyleName((world::VillageStyle)i),
+                           audio::musicForVillage(i) });
+
+    // ---- 2. Каждая дорожка звучит и не хрипит ----
+    usize bytes = 0;
+    int silent = 0, clipped = 0, tooShort = 0;
+    std::vector<TrackColour> colours;
+    for (const auto& [name, id] : tracks) {
+        const audio::Sound& s = reg.get(id);
+        bytes += s.samples.size() * sizeof(f32);
+        const TrackColour c = colourOf(s);
+        colours.push_back(c);
+        if (!s.valid() || c.rms < 0.02) { ++silent; }
+        f32 peak = 0.f;
+        for (f32 v : s.samples) peak = std::max(peak, std::fabs(v));
+        if (peak > 0.999f) ++clipped;
+        // Петля короче десяти секунд слышна как повтор.
+        if (s.duration() < 10.f) ++tooShort;
+        if (!s.looping) ++tooShort;
+    }
+    char m[240];
+    std::snprintf(m, sizeof(m), "беззвучных дорожек: %d из %d", silent,
+                  (int)tracks.size());
+    check(silent == 0, m);
+    std::snprintf(m, sizeof(m), "хрипящих дорожек (пик > 0.999): %d", clipped);
+    check(clipped == 0, m);
+    std::snprintf(m, sizeof(m), "коротких или незацикленных дорожек: %d", tooShort);
+    check(tooShort == 0, m);
+
+    // ---- 3. Память ----
+    //
+    // Шестнадцать шестнадцатисекундных дорожек на частоте потока —
+    // это полсотни мегабайт. Музыка синтезируется вчетверо ниже, а
+    // разницу доигрывает микшер интерполяцией.
+    std::snprintf(m, sizeof(m), "музыка мест занимает %.1f МиБ",
+                  (double)bytes / (1024.0 * 1024.0));
+    check(bytes < 20u * 1024u * 1024u, m);
+    check(reg.get(audio::musicForBiome(0)).sampleRate == audio::MUSIC_RATE,
+          "и синтезирована на своей частоте, а не на частоте потока");
+
+    // ---- 4. Ни одна пара не звучит одинаково ----
+    //
+    // «Своя музыка» — это не свой номер в таблице: шестнадцать
+    // одинаковых буферов прошли бы любую проверку на наличие.
+    int twins = 0;
+    std::string twinNames;
+    for (usize a = 0; a < colours.size(); ++a)
+        for (usize b = a + 1; b < colours.size(); ++b) {
+            const TrackColour& A = colours[a];
+            const TrackColour& B = colours[b];
+            f64 diff = std::fabs((f64)A.dur - (f64)B.dur) * 0.05;
+            for (u32 k = 0; k < 4; ++k) {
+                const f64 sum = A.band[k] + B.band[k];
+                if (sum > 1e-9) diff += std::fabs(A.band[k] - B.band[k]) / sum;
+            }
+            if (diff >= 0.04) continue;
+            ++twins;
+            if (twins <= 3)
+                twinNames += " " + tracks[a].first + "/" + tracks[b].first;
+        }
+    std::snprintf(m, sizeof(m), "пар с неразличимой музыкой: %d%s", twins,
+                  twinNames.c_str());
+    check(twins == 0, m);
+
+    // ---- 5. Где что играет ----
+    {
+        audio::MusicContext ctx;
+        ctx.biome = (u32)world::Desert;
+        check(audio::MusicDirector::trackFor(ctx) == audio::SOUND_MUSIC_BIOME_DESERT,
+              "в пустыне играет пустыня");
+
+        ctx.inVillage = true;
+        ctx.villageStyle = (u32)world::VillageStyle::Garrison;
+        check(audio::MusicDirector::trackFor(ctx)
+                  == audio::SOUND_MUSIC_VILLAGE_GARRISON,
+              "деревня важнее биома, в котором стоит");
+
+        ctx.underground = true;
+        check(audio::MusicDirector::trackFor(ctx) == audio::SOUND_MUSIC_DUNGEON,
+              "под землёй важнее и деревни, и биома");
+
+        ctx.underground = false;
+        ctx.inVillage = false;
+        ctx.biome = 0xFFFFFFFFu;
+        check(audio::MusicDirector::trackFor(ctx) == audio::SOUND_MUSIC_EXPLORE,
+              "неизвестное место играет общий трек, а не молчит");
+    }
+
+    // ---- 6. Музыка не дёргается на границе ----
+    //
+    // Граница биомов — не линия, а полоса: игрок переступает её
+    // туда-обратно десяток раз в минуту. Музыка, честно следующая за
+    // биомом, менялась бы вместе с ним.
+    {
+        audio::AudioEngine eng;          // без init(): поток AAudio не нужен
+        audio::MusicDirector dir;
+        dir.init(eng);
+
+        audio::MusicContext ctx;
+        ctx.biome = (u32)world::Forest;
+        dir.update(0.05f, ctx);
+        check(dir.placeTrack() == audio::SOUND_MUSIC_BIOME_FOREST,
+              "первое место включается сразу, без выдержки");
+
+        // Шагнули в поле и тут же обратно в лес.
+        ctx.biome = (u32)world::Plains;
+        for (int i = 0; i < 20; ++i) dir.update(0.1f, ctx);   // 2 с
+        check(dir.placeTrack() == audio::SOUND_MUSIC_BIOME_FOREST,
+              "двух секунд в соседнем биоме мало, чтобы сменить музыку");
+        ctx.biome = (u32)world::Forest;
+        for (int i = 0; i < 20; ++i) dir.update(0.1f, ctx);
+        check(dir.placeTrack() == audio::SOUND_MUSIC_BIOME_FOREST,
+              "вернулись — музыка и не менялась");
+
+        // А вот если ушли насовсем.
+        ctx.biome = (u32)world::Desert;
+        const f32 need = audio::MusicDirector::PLACE_HOLD_SEC;
+        for (f32 t = 0.f; t < need - 0.5f; t += 0.1f) dir.update(0.1f, ctx);
+        check(dir.placeTrack() == audio::SOUND_MUSIC_BIOME_FOREST,
+              "до конца выдержки музыка прежняя");
+        for (int i = 0; i < 12; ++i) dir.update(0.1f, ctx);
+        check(dir.placeTrack() == audio::SOUND_MUSIC_BIOME_DESERT,
+              "выдержал срок — музыка сменилась");
+        check(dir.crossfading(), "и старая дорожка ещё доигрывает");
+        check(dir.placeGain() < 0.35f && dir.fadingGain() > 0.65f,
+              "новая дорожка входит с нуля, а не вместо прежней разом");
+
+        // ---- 7. Переход плавный, а не рубленый ----
+        //
+        // Плавность — это не «когда-нибудь дойдёт»: сумма уровней
+        // обязана держаться около единицы всю дорогу. Провалится —
+        // будет дыра тишины, превысит — музыки станет вдвое больше.
+        f32 fadeSec = 0.f, worstSum = 1.f, bestSum = 1.f;
+        while (dir.crossfading() && fadeSec < 30.f) {
+            dir.update(0.1f, ctx);
+            fadeSec += 0.1f;
+            const f32 sum = dir.placeGain() + dir.fadingGain();
+            worstSum = std::min(worstSum, sum);
+            bestSum  = std::max(bestSum, sum);
+        }
+        std::snprintf(m, sizeof(m), "переход длился %.1f с при заказанных %.1f",
+                      (double)fadeSec,
+                      (double)audio::MusicDirector::PLACE_FADE_SEC);
+        check(fadeSec > 2.f && fadeSec < audio::MusicDirector::PLACE_FADE_SEC + 2.f, m);
+        std::snprintf(m, sizeof(m), "сумма уровней держалась в %.2f..%.2f",
+                      (double)worstSum, (double)bestSum);
+        check(worstSum > 0.85f && bestSum < 1.15f, m);
+        check(!dir.crossfading(), "к концу перехода старая дорожка отпущена");
+
+        // И на самом сигнале: громкость не прыгает ступенькой.
+        constexpr u32 FRAMES = 512;
+        std::vector<f32> buf((usize)FRAMES * 2);
+        f32 prevPeak = -1.f, worstJump = 0.f;
+        for (int i = 0; i < 60; ++i) {
+            dir.update(0.1f, ctx);
+            eng.update(0.1f, {});
+            std::fill(buf.begin(), buf.end(), 0.f);
+            eng.mixInto(buf.data(), FRAMES);
+            f32 peak = 0.f;
+            for (f32 v : buf) peak = std::max(peak, std::fabs(v));
+            if (prevPeak >= 0.f)
+                worstJump = std::max(worstJump, std::fabs(peak - prevPeak));
+            prevPeak = peak;
+        }
+        std::snprintf(m, sizeof(m), "худший скачок громкости: %.3f",
+                      (double)worstJump);
+        check(worstJump < 0.35f, m);
+
+        dir.shutdown();
+    }
+}
+
+// ------------------------------------------------------------
+// Микшер умеет играть звук, записанный не с частотой потока.
+//
+// Без этого музыку пришлось бы синтезировать на 48 кГц — полсотни
+// мегабайт на шестнадцать дорожек, которые слышно ровно так же.
+// ------------------------------------------------------------
+void testMixerResamples() {
+    group("audio: звук с чужой частотой");
+
+    audio::SoundRegistry::instance().init(48000);
+    const auto& reg = audio::SoundRegistry::instance();
+
+    audio::AudioEngine eng;               // без init(): поток AAudio не нужен
+    eng.setMasterVolume(1.f);
+    eng.setSfxVolume(1.f);
+    eng.setMusicVolume(1.f);
+
+    constexpr u32 OUT_RATE = 48000;
+    check(eng.sampleRate() == OUT_RATE, "поток идёт на 48 кГц");
+
+    const audio::SoundId ID = audio::SOUND_MUSIC_BIOME_PLAINS;
+    const audio::Sound& src = reg.get(ID);
+    check(src.valid() && src.sampleRate == audio::MUSIC_RATE,
+          "дорожка записана не на частоте потока");
+
+    // Частота нулевых переходов — грубая мера высоты тона. Она
+    // сравнивается с собой же: если бы курсор шёл по сэмплу за
+    // сэмпл, дорожка на 12 кГц играла бы вчетверо выше и вчетверо
+    // быстрее, и число переходов в секунду выросло бы вчетверо.
+    auto crossRate = [](const f32* v, usize n, usize stride, f32 seconds) {
+        int z = 0;
+        for (usize i = 1; i < n; ++i) {
+            const f32 a = v[(i - 1) * stride], b = v[i * stride];
+            if ((a <= 0.f && b > 0.f) || (a >= 0.f && b < 0.f)) ++z;
+        }
+        return (f32)z / seconds;
+    };
+
+    const usize srcN = std::min<usize>(src.frames, audio::MUSIC_RATE);  // 1 с
+    const f32 srcHz = crossRate(src.samples.data(), srcN, 1,
+                                (f32)srcN / (f32)audio::MUSIC_RATE);
+
+    auto v = eng.play(ID, 1.f, /*looping=*/true);
+    check(v.valid(), "дорожка запустилась");
+    eng.setVoiceIsMusic(v, true);
+    eng.update(0.01f, {});
+
+    constexpr u32 FRAMES = OUT_RATE;      // секунда
+    std::vector<f32> buf((usize)FRAMES * 2, 0.f);
+    eng.mixInto(buf.data(), FRAMES);
+    const f32 outHz = crossRate(buf.data(), FRAMES, 2, 1.f);
+
+    char m[200];
+    std::snprintf(m, sizeof(m),
+                  "высота тона сохранилась: %.0f переходов в источнике, %.0f на выходе",
+                  (double)srcHz, (double)outHz);
+    check(srcHz > 1.f && std::fabs(outHz - srcHz) < srcHz * 0.25f, m);
+
+    f32 peak = 0.f;
+    for (u32 i = 0; i < FRAMES; ++i) peak = std::max(peak, std::fabs(buf[i * 2]));
+    std::snprintf(m, sizeof(m), "амплитуда сохранилась: %.2f", (double)peak);
+    check(peak > 0.05f && peak <= 1.0f, m);
+
+    // Интерполяция, а не ступенька: без неё три сэмпла из четырёх
+    // были бы точной копией предыдущего.
+    int flat = 0;
+    for (u32 i = 1; i < FRAMES; ++i)
+        if (buf[(i - 1) * 2] == buf[i * 2]) ++flat;
+    std::snprintf(m, sizeof(m), "повторов подряд идущих сэмплов: %d из %u",
+                  flat, FRAMES - 1);
+    check(flat < (int)FRAMES / 10, m);
+
+    // Звук с частотой потока проходит ровно как раньше: шаг курсора
+    // целый, дробной части нет, интерполяция ничего не меняет.
+    {
+        audio::AudioEngine e2;
+        e2.setMasterVolume(1.f); e2.setSfxVolume(1.f);
+        auto c = e2.play(audio::SOUND_UI_CLICK, 1.f, false);
+        check(c.valid(), "обычный звук запускается");
+        e2.update(0.01f, {});
+        std::vector<f32> b2(512 * 2, 0.f);
+        e2.mixInto(b2.data(), 512);
+        const audio::Sound& click = reg.get(audio::SOUND_UI_CLICK);
+        check(click.sampleRate == OUT_RATE, "щелчок записан на частоте потока");
+        f32 worst = 0.f;
+        for (u32 i = 0; i < 512 && i < click.frames; ++i)
+            worst = std::max(worst,
+                             std::fabs(b2[i * 2] - click.samples[i] * click.defaultGain));
+        std::snprintf(m, sizeof(m),
+                      "звук на частоте потока проходит без искажений (%.6f)",
+                      (double)worst);
+        check(worst < 1e-5f, m);
+    }
+}
+
+void testSettingsButtonsWork() {
+    group("настройки: кнопки и тумблеры");
+
+    // ---- 1. Ни один обработчик не захватывает ничего по ссылке ----
+    //
+    // Это правило, а не вкус: всё, что попало в pushInteractiveRect,
+    // переживает свой кадр. Захват по ссылке здесь — это чтение
+    // мёртвого стека при отпускании пальца.
+    {
+        const char* files[] = {
+            "app/src/main/cpp/src/ui/ui_system.cpp",
+            "app/src/main/cpp/src/ui/slider.cpp",
+        };
+        const std::string call = "pushInteractiveRect(";
+        int handlers = 0;
+        std::string byRef;
+        for (const char* path : files) {
+            const std::string src = readSource(path);
+            if (src.empty()) { check(false, "исходник интерфейса не прочитался"); continue; }
+            usize p = 0;
+            while ((p = src.find(call, p)) != std::string::npos) {
+                // Границы вызова: до парной закрывающей скобки.
+                usize i = p + call.size();
+                int depth = 1;
+                usize end = src.size();
+                for (usize k = i; k < src.size(); ++k) {
+                    if (src[k] == '(') ++depth;
+                    else if (src[k] == ')' && --depth == 0) { end = k; break; }
+                }
+                // Список захвата — первая квадратная скобка внутри.
+                usize open = std::string::npos;
+                for (usize k = i; k < end; ++k)
+                    if (src[k] == '[') { open = k; break; }
+                if (open != std::string::npos) {
+                    usize close = src.find(']', open);
+                    if (close != std::string::npos && close < end) {
+                        ++handlers;
+                        const std::string cap = src.substr(open + 1, close - open - 1);
+                        // Захват по ссылке — это элемент списка,
+                        // НАЧИНАЮЩИЙСЯ с амперсанда: `&x`, `&`. А
+                        // `p = &x` — обычный захват по значению, там
+                        // амперсанд принадлежит выражению справа.
+                        usize a = 0;
+                        int d = 0;
+                        for (usize k = 0; k <= cap.size(); ++k) {
+                            const char c = k < cap.size() ? cap[k] : ',';
+                            if (c == '(' || c == '[' || c == '{') ++d;
+                            else if (c == ')' || c == ']' || c == '}') --d;
+                            if (c != ',' || d != 0) continue;
+                            std::string item = trimmed(cap.substr(a, k - a));
+                            a = k + 1;
+                            if (!item.empty() && item[0] == '&')
+                                byRef += " [" + cap + "]";
+                        }
+                    }
+                }
+                p = end;
+            }
+        }
+        char m[300];
+        std::snprintf(m, sizeof(m), "обработчиков с захватом разобрано: %d", handlers);
+        check(handlers >= 20, m);
+        std::snprintf(m, sizeof(m), "захватывают по ссылке:%s",
+                      byRef.empty() ? " ничего" : byRef.c_str());
+        check(byRef.empty(), m);
+    }
+
+    // ---- 2. Экран настроек отвечает на палец ----
+    constexpr i32 W = 1920, H = 1080, DPI = 420;
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, { 0.f, 40.f, 0.f });
+    world::ChunkManager wd(0xC0FFEEull, 1);
+
+    const config::Settings saved = config::settings();
+    config::settings() = config::Settings{};
+
+    ui::UiSystem sys;
+    sys.setDensityDpi(DPI);
+    sys.setScreenSize(W, H);
+    sys.screen = ui::Screen::Settings;
+
+    int changes = 0;
+    sys.onSettingsChanged = [&changes]() { ++changes; };
+
+    auto frame = [&]() {
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, wd, 60.f);
+    };
+    // Нажать и отпустить так, как это делает палец: между двумя
+    // событиями проходит кадр, и стек успевает стать чужим.
+    auto tap = [&](ui::Rect r) {
+        const f32 cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
+        frame();
+        sys.routeTouch(1, cx, cy, 0);
+        frame();
+        scrubStackBelow();
+        sys.routeTouch(1, cx, cy, 1);
+        frame();
+    };
+
+    // Вкладки не должны налезать на панель: иначе первая строка
+    // настроек перекрыта, и нажать её нечем.
+    {
+        const ui::Rect tab = ui::settingsTabRect((u32)ui::SettingsTab::Count - 1);
+        const ui::SettingsLayout L = sys.settingsLayout();
+        char m[160];
+        std::snprintf(m, sizeof(m), "вкладки кончаются на %.0f, панель с %.0f",
+                      (double)(tab.y + tab.h), (double)L.panel.y);
+        check(tab.y + tab.h <= L.panel.y, m);
+        std::snprintf(m, sizeof(m), "последняя вкладка правым краем на %.0f из %d",
+                      (double)(tab.x + tab.w), W);
+        check(tab.x + tab.w <= (f32)W, m);
+        check(L.row(0).w > 0.f && L.row(0).h > 0.f, "строка настройки не пустая");
+    }
+
+    // ---- 3. Каждая вкладка открывается нажатием ----
+    for (u32 i = 0; i < (u32)ui::SettingsTab::Count; ++i) {
+        tap(ui::settingsTabRect(i));
+        char m[120];
+        std::snprintf(m, sizeof(m), "вкладка %u открывается нажатием", i);
+        check((u32)sys.settingsTab == i, m);
+    }
+
+    // ---- 4. Каждая строка каждой вкладки переживает нажатие ----
+    //
+    // Проходим ВСЕ строки — и тумблеры, и слайдеры, и переключатель
+    // языка: падало на любом из них, а проверять по одному значило бы
+    // оставить остальные непроверенными.
+    {
+        int rows = 0;
+        for (u32 t = 0; t < (u32)ui::SettingsTab::Count; ++t) {
+            tap(ui::settingsTabRect(t));
+            const ui::SettingsLayout L = sys.settingsLayout();
+            const u32 n = ui::settingsRowCount((ui::SettingsTab)t,
+                                               sys.buttonLayoutMode);
+            for (u32 r = 0; r < n; ++r) { tap(L.row(r)); ++rows; }
+            // Режим перемещения кнопок мог включиться нажатием —
+            // возвращаем, чтобы следующий проход считал те же строки.
+            sys.buttonLayoutMode = false;
+        }
+        char m[120];
+        std::snprintf(m, sizeof(m), "нажато строк настроек: %d, игра жива", rows);
+        check(rows >= 20, m);
+    }
+
+    // ---- 5. Тумблеры вправду переключают то, что подписано ----
+    struct ToggleCase {
+        ui::SettingsTab tab;
+        u32             row;
+        bool config::Settings::* field;
+        const char*     what;
+    };
+    const ToggleCase cases[] = {
+        { ui::SettingsTab::Input,  1, &config::Settings::invertX,
+          "инверсия X" },
+        { ui::SettingsTab::Input,  2, &config::Settings::invertY,
+          "инверсия Y" },
+        { ui::SettingsTab::Input,  3, &config::Settings::joystickLeftHanded,
+          "стик под левую руку" },
+        { ui::SettingsTab::Ui,     2, &config::Settings::showFps,
+          "счётчик кадров" },
+        { ui::SettingsTab::Ui,     3, &config::Settings::showDebugPos,
+          "отладочные координаты" },
+        { ui::SettingsTab::Game,   1, &config::Settings::autosaveEnabled,
+          "автосохранение" },
+        { ui::SettingsTab::Render, 1, &config::Settings::unlimitedFps,
+          "без ограничения кадров" },
+    };
+    for (const ToggleCase& c : cases) {
+        tap(ui::settingsTabRect((u32)c.tab));
+        const ui::SettingsLayout L = sys.settingsLayout();
+        const bool before = config::settings().*c.field;
+        const int  seen   = changes;
+        tap(L.row(c.row));
+        char m[160];
+        std::snprintf(m, sizeof(m), "%s переключается нажатием", c.what);
+        check(config::settings().*c.field != before, m);
+        std::snprintf(m, sizeof(m), "%s: игра узнала об изменении", c.what);
+        check(changes > seen, m);
+        tap(L.row(c.row));
+        std::snprintf(m, sizeof(m), "%s возвращается вторым нажатием", c.what);
+        check(config::settings().*c.field == before, m);
+    }
+
+    // ---- 6. Язык переключается по кругу ----
+    {
+        tap(ui::settingsTabRect((u32)ui::SettingsTab::Game));
+        const ui::SettingsLayout L = sys.settingsLayout();
+        const config::Language start = config::settings().language;
+        tap(L.row(0));
+        check(config::settings().language != start, "язык меняется нажатием");
+        check(config::L().language() == config::settings().language,
+              "и таблица строк переключается вместе с настройкой");
+        for (u32 i = 1; i < (u32)config::Language::Count; ++i) tap(L.row(0));
+        check(config::settings().language == start,
+              "полный круг возвращает исходный язык");
+    }
+
+    // ---- 7. Сброс возвращает значения по умолчанию ----
+    {
+        config::settings().invertX      = true;
+        config::settings().showFps      = false;
+        config::settings().viewDistance = 12;
+        const int seen = changes;
+        const ui::SettingsLayout L = sys.settingsLayout();
+        tap(L.resetAll);
+        const config::Settings def{};
+        check(config::settings().invertX == def.invertX &&
+              config::settings().showFps == def.showFps &&
+              config::settings().viewDistance == def.viewDistance,
+              "кнопка сброса возвращает настройки по умолчанию");
+        check(changes > seen, "и игра об этом узнаёт");
+    }
+
+    // ---- 8. Слайдер двигается пальцем ----
+    {
+        tap(ui::settingsTabRect((u32)ui::SettingsTab::Audio));
+        const ui::SettingsLayout L = sys.settingsLayout();
+        // Не общая громкость: она по умолчанию на максимуме, и
+        // вправо её тянуть некуда — проверка прошла бы вхолостую.
+        const ui::Rect r = L.row(1);            // громкость музыки
+        const f32 before = config::settings().musicVolume;
+        // Тянем к правому краю дорожки: значение обязано вырасти.
+        const f32 y = r.y + r.h * 0.5f;
+        frame();
+        sys.routeTouch(1, r.x + r.w * 0.5f, y, 0);
+        frame();
+        sys.routeTouch(1, r.x + r.w - 4.f, y, 2);
+        frame();
+        sys.routeTouch(1, r.x + r.w - 4.f, y, 1);
+        frame();
+        char m[160];
+        std::snprintf(m, sizeof(m), "громкость музыки от %.2f доехала до %.2f",
+                      (double)before, (double)config::settings().musicVolume);
+        check(config::settings().musicVolume > before, m);
+    }
+
+    config::settings() = saved;
+    config::L().setLanguage(config::settings().language);
+}
+
 void testEveryButtonHasAnAction() {
     group("ввод: у каждой кнопки есть действие");
 
@@ -17101,6 +17743,9 @@ int main() {
     testVillageHousesAreBuildings();
     testVillagesDifferFromEachOther();
     testBlockEconomy();
+    testBiomeAndVillageMusic();
+    testMixerResamples();
+    testSettingsButtonsWork();
     testEveryButtonHasAnAction();
     testSprintByDoubleTap();
     testPlayerControls();

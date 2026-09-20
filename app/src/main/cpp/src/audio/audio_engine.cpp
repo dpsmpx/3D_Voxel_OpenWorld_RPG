@@ -446,6 +446,19 @@ void AudioEngine::mixInto(f32* out, u32 frames) {
         const f32 gR = baseGain * v.panR.load(std::memory_order_relaxed);
 
         const u32 totalFrames = snd->frames;
+        // Курсор — в долях сэмпла источника, 16.16.
+        //
+        // Звук может быть записан не с той частотой, с какой играет
+        // поток: музыка генерируется на 12 кГц, потому что синусный
+        // пэд выше шести килогерц ничего не содержит, а память за
+        // шестнадцать дорожек платится настоящая. Шаг курсора равен
+        // отношению частот; при совпадающих частотах он ровно
+        // 65536, дробная часть всегда ноль, и для прежних звуков
+        // ничего не меняется.
+        const u64 step = snd->sampleRate == sampleRate_
+                       ? (u64)FIXED_ONE
+                       : ((u64)snd->sampleRate * FIXED_ONE) / (sampleRate_ ? sampleRate_ : 1);
+        const u64 total = (u64)totalFrames * FIXED_ONE;
         u64 cursor = v.cursor;
         bool loop = v.looping;
 
@@ -463,9 +476,9 @@ void AudioEngine::mixInto(f32* out, u32 frames) {
         // сроком отдачи буфера.
         constexpr f32 SILENCE = 1e-4f;
         if (gL < SILENCE && gR < SILENCE) {
-            cursor += frames;
-            if (cursor >= totalFrames) {
-                if (loop) cursor %= (totalFrames ? totalFrames : 1);
+            cursor += (u64)frames * step;
+            if (cursor >= total) {
+                if (loop) cursor %= (total ? total : 1);
                 else { freeVoice(idx); continue; }
             }
             const u32 stQuiet = v.state.load(std::memory_order_relaxed);
@@ -475,18 +488,25 @@ void AudioEngine::mixInto(f32* out, u32 frames) {
         }
 
         for (u32 i = 0; i < frames; ++i) {
-            if (cursor >= totalFrames) {
+            if (cursor >= total) {
                 if (loop) {
-                    cursor = 0;
+                    cursor = total ? (cursor % total) : 0;
                 } else {
                     freeVoice(idx);
                     break;
                 }
             }
-            f32 s = snd->samples[cursor];
+            const u32 i0 = (u32)(cursor >> FIXED_SHIFT);
+            // Следующий сэмпл: у петли — через стык, у одиночного
+            // звука — он же сам. Без этого хвост дорожки, играемой с
+            // пониженной частотой, тянулся бы в тишину ступенькой.
+            const u32 i1 = (i0 + 1u < totalFrames) ? (i0 + 1u)
+                                                   : (loop ? 0u : i0);
+            const f32 frac = (f32)(cursor & (FIXED_ONE - 1)) * (1.f / (f32)FIXED_ONE);
+            const f32 s = snd->samples[i0] * (1.f - frac) + snd->samples[i1] * frac;
             out[i * 2 + 0] += s * gL;
             out[i * 2 + 1] += s * gR;
-            ++cursor;
+            cursor += step;
         }
 
         // Положение в сэмплах сохраняем и для затухающего голоса.
