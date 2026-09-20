@@ -333,13 +333,13 @@ int main(int argc, char** argv) {
         }
         snd.setMusicVolume(1.f);
         snd.update(0.016f, {});
-        bench("mixInto: музыка (слышна одна из четырёх)",
+        bench("mixInto: музыка (слышна одна из четырёх дорожек)",
               [&] { snd.mixInto(abuf.data(), AFRAMES); },
               "кадр", (double)AFRAMES);
 
         for (int i = 0; i < 4; ++i) snd.setVoiceGain(music[i], 1.f);
         snd.update(0.016f, {});
-        bench("mixInto: музыка (слышны все четыре)",
+        bench("mixInto: музыка (слышны все четыре дорожки)",
               [&] { snd.mixInto(abuf.data(), AFRAMES); },
               "кадр", (double)AFRAMES);
     }

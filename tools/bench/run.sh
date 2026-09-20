@@ -39,7 +39,7 @@ mkdir -p "$OUT"
     "$SRC"/world/ai/pathfinding.cpp \
     "$SRC"/audio/{audio_engine,sound_registry}.cpp \
     "$SRC"/config/settings.cpp \
-    "$SRC"/core/{crashlog,job_system}.cpp \
+    "$SRC"/core/{crashlog,job_system,shared_dir}.cpp \
     "$OUT/stubs.o" \
     -lpthread -ldl
 
