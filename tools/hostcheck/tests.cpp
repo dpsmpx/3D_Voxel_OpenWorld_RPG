@@ -5354,6 +5354,51 @@ void testInventoryScrolls() {
             return n;
         };
 
+        // Сколько вершин оказалось ВЫШЕ области — там, где стоят
+        // заголовок экрана и столбец HUD.
+        //
+        // Уехавшая ячейка обязана исчезнуть, а не лечь поверх них:
+        // нажать её можно было бы там, где её не видно. Проверка на
+        // это нужна отдельная — счёт внутри области отключённого
+        // отсечения не замечает, что и показала мутация.
+        auto cellsAbove = [&](f32 offset) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(DPI);
+            sys.setScreenSize(W, H);
+            sys.screen = ui::Screen::Inventory;
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+            sys.scrollInventoryTo(offset);
+            sys.buildFrame(pl, wd, 60.f);
+            const ui::Rect v = sys.layout().invLeft();
+            const ui::Rect t = sys.layout().menuTitle();
+            u32 n = 0;
+            for (const ui::UiVertex& vx : sys.frameVertices()) {
+                const f32 px = (vx.pos.x * 0.5f + 0.5f) * (f32)W;
+                const f32 py = (vx.pos.y * 0.5f + 0.5f) * (f32)H;
+                // ВСЁ, что выше области, по её ширине.
+                //
+                // Сперва бралась полоса от низа заголовка до верха
+                // области — и мутация ушла: при полной прокрутке
+                // ячейки уезжают выше этой полосы, в самый верх
+                // экрана, а она их не видела.
+                (void)t;
+                if (px >= v.x && px <= v.x + v.w && py < v.y - 0.5f) ++n;
+            }
+            return n;
+        };
+
+        const u32 aboveTop = cellsAbove(0.f);
+        const u32 aboveEnd = cellsAbove(1e6f);
+        // Сравниваются два положения, а не проверяется ноль: в этой
+        // полосе стоят служебные строки HUD, и они там по праву.
+        // Важно, что прокрутка не ДОБАВЛЯЕТ туда ничего своего.
+        std::snprintf(m, sizeof(m),
+                      "прокрутка не выносит ячейки поверх заголовка "
+                      "(вершин выше области: %u в начале, %u в конце)",
+                      aboveTop, aboveEnd);
+        check(aboveEnd <= aboveTop, m);
+
         const u32 atTop = cellsInView(0.f);
         const u32 atEnd = cellsInView(1e6f);  // до упора; Scroll ограничит сам
         std::snprintf(m, sizeof(m),
@@ -5361,6 +5406,88 @@ void testInventoryScrolls() {
                       atTop, atEnd);
         check(atTop != atEnd, m);
         check(atTop > 0 && atEnd > 0, "и в обоих положениях что-то нарисовано");
+    }
+
+    // ---- Настоящее касание: листает и несёт ----
+    //
+    // Проверок на раскладку и смещение мало: они не трогают сам
+    // жест, и мутации, отключавшие перетаскивание и снимавшие защиту
+    // переноса, прошли их насквозь. Здесь касание гоняется через
+    // `routeTouch` — тем же путём, каким приходит палец.
+    {
+        constexpr i32 W = 1280, H = 720, DPI = 320;
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+        auto* inv = pl.inventory();
+        check(inv != nullptr, "инвентарь есть");
+        if (!inv) { config::settings() = savedCfg; return; }
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(DPI);
+        sys.setScreenSize(W, H);
+        sys.screen = ui::Screen::Inventory;
+
+        auto frame = [&]() {
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+        };
+        frame();
+
+        const ui::HudLayout& L = sys.layout();
+        const ui::Rect view = L.invLeft();
+        const auto grid = L.cellGrid(view, items::INV_MAIN_SLOTS);
+
+        // ---- Пустое место листает ----
+        //
+        // Берётся зазор между первым и вторым столбцом: там ячейки
+        // нет, значит и нести нечего.
+        {
+            sys.scrollInventoryTo(0.f);
+            const ui::Rect a = grid.at(0);
+            const f32 gapX = a.x + a.w + grid.gap * 0.5f;
+            const f32 y0 = a.y + a.h * 0.5f;
+            sys.routeTouch(7, gapX, y0, 0);
+            frame();
+            sys.routeTouch(7, gapX, y0 - L.dp(40.f), 2);
+            frame();
+            const f32 moved = sys.inventoryScrollOffset();
+            std::snprintf(m, sizeof(m),
+                          "палец по пустому месту листает (смещение %.1f)",
+                          (double)moved);
+            check(moved > 0.f, m);
+            sys.routeTouch(7, gapX, y0 - L.dp(40.f), 1);
+            frame();
+        }
+
+        // ---- Занятая ячейка несёт, а не листает ----
+        {
+            sys.scrollInventoryTo(0.f);
+            frame();
+            inv->at(items::INV_MAIN_OFFSET).itemId = items::ITEM_STONE;
+            inv->at(items::INV_MAIN_OFFSET).count  = 5;
+            frame();
+
+            const ui::Rect a = grid.at(0);
+            const f32 cx = a.x + a.w * 0.5f, cy = a.y + a.h * 0.5f;
+            sys.routeTouch(8, cx, cy, 0);
+            frame();
+            const f32 afterDown = sys.inventoryScrollOffset();
+            std::snprintf(m, sizeof(m),
+                          "нажатие на ячейку само по себе не листает (%.1f)",
+                          (double)afterDown);
+            check(afterDown <= 0.01f, m);
+            sys.routeTouch(8, cx, cy - L.dp(40.f), 2);
+            frame();
+            const f32 moved = sys.inventoryScrollOffset();
+            std::snprintf(m, sizeof(m),
+                          "палец с занятой ячейки несёт предмет, а не листает "
+                          "(смещение %.1f)", (double)moved);
+            check(moved <= 0.01f, m);
+            sys.routeTouch(8, cx, cy - L.dp(40.f), 1);
+            frame();
+        }
     }
 
     config::settings() = savedCfg;

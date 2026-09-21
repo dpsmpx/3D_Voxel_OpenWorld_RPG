@@ -148,11 +148,13 @@ public:
     /// Насколько содержимое инвентаря выше отведённой ему области.
     /// Ноль — помещается целиком.
     f32 inventoryScrollMax() const { return invScroll.maxOffset; }
+    f32 inventoryScrollOffset() const { return invScroll.offset; }
 
     /// Прокрутить инвентарь на заданное смещение. Больше края не
     /// уедет: `Scroll` ограничивает сам.
     void scrollInventoryTo(f32 offset) {
         invScroll.offset = offset;
+        invScroll.velocity = 0.f;   // поставить — значит остановить
         invScroll.clampOffset();
     }
 
