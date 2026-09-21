@@ -1,13 +1,14 @@
 /**
- * @file body_color.cpp
- * @brief Цвет тела существа: один ответ на вопрос «какого оно цвета».
+ * @file creature_info.cpp
+ * @brief Кто это существо: имя и цвет тела, как их видит игрок.
  */
-#include "body_color.h"
+#include "creature_info.h"
 #include "mob_rigs.h"
 #include "../npc/npc_rig.h"
 #include "../npc/npc_def.h"
 #include "../player/player_rig.h"
 #include "../mobs/mob_ai.h"
+#include "../mobs/mob_def.h"
 #include "../ecs/components.h"
 
 namespace entity {
@@ -45,6 +46,18 @@ u32 creatureColor(ecs::Registry& reg, ecs::Entity e) {
         return bodyColor(player::rig());
 
     return 0xB0B0B0FFu;
+}
+
+const char* creatureName(ecs::Registry& reg, ecs::Entity e) {
+    if (auto* tag = reg.get<mobs::MobTag>(e)) {
+        const char* n = mobs::mobRegistry().get(tag->id).name;
+        return n ? n : "";
+    }
+    if (auto* tag = reg.get<npc::NpcTag>(e)) {
+        const char* n = npc::npcRegistry().get(tag->id).name;
+        return n ? n : "";
+    }
+    return "";
 }
 
 } // namespace entity

@@ -51,20 +51,33 @@ void precipInstances(const world::Precipitation& p, f32 snowMix,
     }
 }
 
-void particleInstances(const world::Particles& p,
+void particleInstances(const world::Particles& p, const glm::vec3& eye,
                        std::vector<MobInstance>& out)
 {
     out.clear();
     out.reserve(p.liveCount());
 
+    const f32 hideSq = PARTICLE_NEAR_HIDE * PARTICLE_NEAR_HIDE;
+
     for (const world::Particle& q : p.items()) {
         if (!q.alive) continue;
+
+        const glm::vec3 d = q.pos - eye;
+        const f32 distSq = d.x * d.x + d.y * d.y + d.z * d.z;
+        if (distSq <= hideSq) continue;
 
         // Гаснет ПОД КОНЕЦ, а не с первого кадра: осколок, тающий
         // всю свою жизнь, виден только как муть. Полную прозрачность
         // он набирает за последнюю треть срока.
         const f32 left = q.lifeTime > 0.f ? q.life / q.lifeTime : 0.f;
-        const f32 k = std::min(1.f, std::max(0.f, left * 3.f));
+        f32 k = std::min(1.f, std::max(0.f, left * 3.f));
+
+        // И отдельно — у самого глаза.
+        const f32 dist = std::sqrt(distSq);
+        if (dist < PARTICLE_NEAR_FULL) {
+            k *= (dist - PARTICLE_NEAR_HIDE) /
+                 (PARTICLE_NEAR_FULL - PARTICLE_NEAR_HIDE);
+        }
         const u8 a = (u8)(255.f * k * (f32)(q.color & 0xFFu) / 255.f);
 
         // Гасим ровно на столько, на сколько шейдер осветлит: осколок

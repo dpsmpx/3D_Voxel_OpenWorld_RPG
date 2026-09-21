@@ -16,6 +16,7 @@
 #include "../save/save_slot.h"
 #include "../items/inventory.h"
 #include "../crafting/crafting.h"
+#include "../combat/focus.h"
 #include "../config/settings.h"
 #include "../input/touch.h"
 #include <android/asset_manager.h>
@@ -206,6 +207,14 @@ public:
     /// ---- Enchant ----
     EnchantContext enchantCtx{};
     u32 nearbyAltar = 0;
+
+    /// ---- Полоса цели ----
+    ///
+    /// Кладётся сюда снаружи, раз в кадр, — тем же порядком, что и
+    /// `nearbyStation`. Интерфейс не спрашивает реестр сам: ему не
+    /// положено знать ни о мобах, ни о фазах босса, ни о том, кто
+    /// кого ударил. Ему положено это НАРИСОВАТЬ.
+    combat::FocusView target{};
 
     /// Выбранное задание в журнале, -1 — ничего.
     i32 selectedQuest = -1;
@@ -490,6 +499,7 @@ private:
     void drawHud(player::Player& player,
                  world::ChunkManager& world, f32 fps);
     void drawXpBar(player::Player& player);
+    void drawTargetBar();
     void drawResonanceBar(player::Player& player);
     void drawStatusIcons(player::Player& player);
     void drawLevelUpNotification(player::Player& player);

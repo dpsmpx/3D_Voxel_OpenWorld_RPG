@@ -7,6 +7,7 @@
 #include "../combat/projectile.h"
 #include "../ecs/components.h"
 #include "../combat/status_effects.h"
+#include "../combat/focus.h"
 #include "../combat/hit_detection.h"
 #include "../progression/resource_regen.h"
 #include "../items/item_pickup.h"
@@ -78,6 +79,7 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
     reg.add(entity_, combat::ResonanceState{});
     reg.add(entity_, combat::StatusEffects{});
     reg.add(entity_, combat::GuardState{});
+    reg.add(entity_, combat::FocusTarget{});
 
     progression::Progression prog{};
     prog.level = 1;
@@ -713,6 +715,11 @@ void Player::updateImpl(world::ChunkManager& world,
     // Последним: к этому месту за кадр случилось всё, отчего бывает
     // больно, — удар твари, урон от падения, тик яда.
     noticeImpacts();
+
+    // И всё, отчего меняется полоса цели: она движется от того же
+    // урона, только с другой стороны.
+    if (auto* f = reg_->get<combat::FocusTarget>(entity_))
+        combat::tickFocus(*reg_, *f, dt);
 }
 
 // ============================================================
