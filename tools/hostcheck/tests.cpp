@@ -5494,6 +5494,167 @@ void testInventoryScrolls() {
 }
 
 // ------------------------------------------------------------
+// Журнал и ассортимент прокручиваются, а не обрываются.
+//
+// Строк в журнале помещается мало: на 1280x720 — ДВЕ, на 2400x1080 —
+// три. Всё, что дальше, не рисовалось вовсе: игрок с пятью заданиями
+// видел два и до остальных добраться не мог. У торговца то же
+// самое, только грубее — `if (shown >= 24) break`, число с потолка.
+//
+// `questScroll` и `tradeScroll` при этом существовали, тикались
+// каждый кадр и не получали ни содержимого, ни жеста: `maxOffset` у
+// них был вечный ноль. Пятый случай «написано и не вызывается» в
+// этом проекте.
+// ------------------------------------------------------------
+void testQuestAndTradeListsScroll() {
+    group("журнал и торговля: списки прокручиваются");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    const config::Settings savedCfg = config::settingsConst();
+    config::settings() = config::Settings{};
+
+    char m[220];
+    constexpr i32 W = 1280, H = 720, DPI = 320;
+
+    // ---- Журнал ----
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        auto* log = pl.questLog();
+        check(log != nullptr, "журнал есть");
+        if (!log) { config::settings() = savedCfg; return; }
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(DPI);
+        sys.setScreenSize(W, H);
+        sys.screen = ui::Screen::QuestLog;
+        auto frame = [&]() { sys.tickUi(1.f / 60.f); sys.buildFrame(pl, wd, 60.f); };
+
+        // Одно задание помещается — листать нечего.
+        auto addQuest = [&](int n) {
+            quests::Quest q{};
+            q.id = quests::nextQuestId();
+            q.tmpl.type = quests::QuestType::Kill;
+            q.tmpl.targetMobId = 1;
+            q.tmpl.requiredCount = 3;
+            q.progress = 1;
+            q.state = quests::QuestState::Active;
+            q.ownerEntity = (u32)pl.entity();
+            std::snprintf(q.title, sizeof(q.title), "Quest %d", n);
+            const ecs::Entity qe = reg.create();
+            reg.add(qe, q);
+            log->addActive(qe);
+        };
+
+        addQuest(1);
+        frame();
+        std::snprintf(m, sizeof(m),
+                      "одно задание помещается, листать нечего (запас %.0f)",
+                      (double)sys.questScrollMax());
+        check(sys.questScrollMax() <= 0.01f, m);
+
+        for (int i = 2; i <= 6; ++i) addQuest(i);
+        frame();
+        std::snprintf(m, sizeof(m),
+                      "шесть заданий не помещаются — список листается "
+                      "(запас %.0f)", (double)sys.questScrollMax());
+        check(sys.questScrollMax() > 0.f, m);
+
+        // Прокрутка меняет то, что нарисовано, и ничего не выносит
+        // за пределы списка.
+        auto shot = [&](f32 offset) {
+            sys.scrollQuestsTo(offset);
+            frame();
+            const ui::Rect area = sys.layout().questList();
+            u32 inside = 0, above = 0;
+            for (const ui::UiVertex& v : sys.frameVertices()) {
+                const f32 px = (v.pos.x * 0.5f + 0.5f) * (f32)W;
+                const f32 py = (v.pos.y * 0.5f + 0.5f) * (f32)H;
+                if (px < area.x || px > area.x + area.w) continue;
+                if (py >= area.y && py <= area.y + area.h) ++inside;
+                else if (py < area.y) ++above;
+            }
+            return std::pair<u32, u32>{ inside, above };
+        };
+
+        const auto atTop = shot(0.f);
+        const auto atEnd = shot(1e6f);
+        std::snprintf(m, sizeof(m),
+                      "прокрутка меняет показанное (вершин в списке %u -> %u)",
+                      atTop.first, atEnd.first);
+        check(atTop.first != atEnd.first || atEnd.second <= atTop.second, m);
+        std::snprintf(m, sizeof(m),
+                      "и не выносит строки поверх заголовка (%u -> %u)",
+                      atTop.second, atEnd.second);
+        check(atEnd.second <= atTop.second, m);
+
+        // Палец листает журнал.
+        {
+            sys.scrollQuestsTo(0.f);
+            frame();
+            const ui::Rect area = sys.layout().questList();
+            const f32 x = area.x + area.w * 0.5f;
+            const f32 y = area.y + area.h * 0.5f;
+            sys.routeTouch(11, x, y, 0);
+            frame();
+            sys.routeTouch(11, x, y - sys.layout().dp(40.f), 2);
+            frame();
+            std::snprintf(m, sizeof(m), "палец листает журнал (смещение %.1f)",
+                          (double)sys.questScrollMax());
+            check(sys.questScrollMax() > 0.f, m);
+            sys.routeTouch(11, x, y - sys.layout().dp(40.f), 1);
+            frame();
+        }
+    }
+
+    // ---- Ассортимент торговца ----
+    //
+    // Жёсткое «не больше двадцати четырёх» убрано: сколько товаров у
+    // торговца, столько и должно быть достижимо.
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        const ecs::Entity trader = reg.create();
+        trade::TradeInventory inv{};
+        for (int i = 0; i < 40; ++i) {
+            trade::TradeEntry e{};
+            e.itemId    = items::ITEM_STONE;
+            e.basePrice = 1;
+            e.stock     = 5;
+            e.maxStock  = 5;
+            e.isBuyable = true;
+            inv.entries.push_back(e);
+        }
+        reg.add(trader, inv);
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(DPI);
+        sys.setScreenSize(W, H);
+        sys.screen = ui::Screen::Trade;
+        sys.tradeCtx.traderEntity = (u32)trader;
+        sys.tradeCtx.tab = 0;
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, wd, 60.f);
+
+        std::snprintf(m, sizeof(m),
+                      "сорок товаров не помещаются — ассортимент листается "
+                      "(запас %.0f)", (double)sys.tradeScrollMax());
+        check(sys.tradeScrollMax() > 0.f, m);
+    }
+
+    config::settings() = savedCfg;
+}
+
+// ------------------------------------------------------------
 void testHudAndButtonsDoNotOverlap() {
     group("раскладка: HUD и экранные кнопки не налезают");
 
@@ -23631,6 +23792,7 @@ int main() {
     testMenusDoNotSitOnHud();
     testCompactHudUnderMenus();
     testInventoryScrolls();
+    testQuestAndTradeListsScroll();
     testHudAndButtonsDoNotOverlap();
     testLoadingIsAPanelNotACurtain();
     testUiThemeObeysItsOwnRules();
