@@ -21213,10 +21213,21 @@ void testYouCanSeeWhoYouFight() {
               "сразу после удара след заметно выше заливки");
 
         // Держится, потом оседает.
+        //
+        // «Держится» проверяется НЕПОДВИЖНОСТЬЮ, а не тем, что след
+        // ещё выше заливки: мутация, убравшая задержку, оставляла
+        // след выше заливки все первые кадры и проходила проверку
+        // насквозь. Задержка на то и задержка, что за это время след
+        // не двигается вовсе.
+        const f32 ghostAtHit = v.ghost;
         for (i32 i = 0; i < 10; ++i) combat::tickFocus(reg, focus(), 1.f / 60.f);
         combat::focusView(reg, focus(), v);
-        check(v.ghost > v.fill,
-              "первые кадры след стоит на месте, чтобы его успели увидеть");
+        char m0[190];
+        std::snprintf(m0, sizeof(m0),
+                      "за первые десять кадров след не сдвинулся: было %.4f, стало %.4f",
+                      (double)ghostAtHit, (double)v.ghost);
+        check(std::fabs(v.ghost - ghostAtHit) < 1e-4f, m0);
+        check(v.ghost > v.fill, "и всё ещё выше заливки");
 
         for (i32 i = 0; i < 180; ++i) combat::tickFocus(reg, focus(), 1.f / 60.f);
         combat::focusView(reg, focus(), v);
@@ -21427,6 +21438,21 @@ void testYouCanSeeWhoYouFight() {
         char m[190];
         std::snprintf(m, sizeof(m),
                       "осколков в глазу: %u из %u", (u32)inst.size(), p.liveCount());
+        check(inst.empty(), m);
+
+        // И на волос ближе порога — тоже ни одного.
+        //
+        // Без этой строки проверка держалась на совпадении: осколок
+        // РОВНО в глазу отсекался бы и с нулевым порогом, потому что
+        // ноль не меньше нуля. Мутация, обнулившая порог, прошла
+        // насквозь — и правильно сделала: сказано было не то, что
+        // имелось в виду. Имелось в виду «ближе порога не видно».
+        const f32 inside = render::PARTICLE_NEAR_HIDE * 0.7f;
+        render::particleInstances(p, glm::vec3(0.f, 64.f - inside, 0.f), inst);
+        std::snprintf(m, sizeof(m),
+                      "и на %.2f блока от глаза (порог %.2f) — тоже ни одного, а их %u",
+                      (double)inside, (double)render::PARTICLE_NEAR_HIDE,
+                      (u32)inst.size());
         check(inst.empty(), m);
 
         // На границе полной видимости — все и в полную силу.
