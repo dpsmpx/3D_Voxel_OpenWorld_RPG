@@ -165,6 +165,7 @@ struct Opts {
     /// потому что он обещает игроку награду, и обещание надо
     /// прочитать глазами, а не поверить коду на слово.
     ui::Screen screen = ui::Screen::Hud;
+    int questCount = 1;          ///< сколько заданий положить в журнал
     bool target = false;          ///< показать полосу цели
     f32  targetFill = 0.42f;
     f32  targetGhost = 0.63f;
@@ -185,6 +186,7 @@ int main(int argc, char** argv) {
         else if (k == "--h")      o.h = std::atoi(next());
         else if (k == "--dpi")    o.dpi = std::atoi(next());
         else if (k == "--mirror") o.mirror = true;
+        else if (k == "--quests") o.questCount = std::atoi(next());
         else if (k == "--screen") {
             const std::string v = next();
             if      (v == "hud")        o.screen = ui::Screen::Hud;
@@ -235,6 +237,9 @@ int main(int argc, char** argv) {
     // генератором, каким его получает игрок: снимок обязан показывать
     // настоящие тексты и настоящие числа, а не подставные.
     if (o.screen == ui::Screen::QuestLog) {
+      // Несколько заданий, а не одно: строк в журнале помещается две
+      // или три, и смысл прокрутки виден только когда их больше.
+      for (int qi = 0; qi < o.questCount; ++qi) {
         quests::Quest q{};
         q.id = quests::nextQuestId();
         q.tmpl.type = quests::QuestType::Collect;
@@ -252,10 +257,13 @@ int main(int argc, char** argv) {
         std::snprintf(q.description, sizeof(q.description),
                       "The village needs 8 wood to close the north gap "
                       "before nightfall.");
+        std::snprintf(q.title, sizeof(q.title), "Quest %d of %d",
+                      qi + 1, o.questCount);
         const ecs::Entity qe = reg.create();
         reg.add(qe, q);
         if (auto* log = pl.questLog()) log->addActive(qe);
-        sys.selectedQuest = 0;
+      }
+      sys.selectedQuest = 0;
     }
 
     if (o.target) {

@@ -5354,6 +5354,51 @@ void testInventoryScrolls() {
             return n;
         };
 
+        // Сколько вершин оказалось ВЫШЕ области — там, где стоят
+        // заголовок экрана и столбец HUD.
+        //
+        // Уехавшая ячейка обязана исчезнуть, а не лечь поверх них:
+        // нажать её можно было бы там, где её не видно. Проверка на
+        // это нужна отдельная — счёт внутри области отключённого
+        // отсечения не замечает, что и показала мутация.
+        auto cellsAbove = [&](f32 offset) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(DPI);
+            sys.setScreenSize(W, H);
+            sys.screen = ui::Screen::Inventory;
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+            sys.scrollInventoryTo(offset);
+            sys.buildFrame(pl, wd, 60.f);
+            const ui::Rect v = sys.layout().invLeft();
+            const ui::Rect t = sys.layout().menuTitle();
+            u32 n = 0;
+            for (const ui::UiVertex& vx : sys.frameVertices()) {
+                const f32 px = (vx.pos.x * 0.5f + 0.5f) * (f32)W;
+                const f32 py = (vx.pos.y * 0.5f + 0.5f) * (f32)H;
+                // ВСЁ, что выше области, по её ширине.
+                //
+                // Сперва бралась полоса от низа заголовка до верха
+                // области — и мутация ушла: при полной прокрутке
+                // ячейки уезжают выше этой полосы, в самый верх
+                // экрана, а она их не видела.
+                (void)t;
+                if (px >= v.x && px <= v.x + v.w && py < v.y - 0.5f) ++n;
+            }
+            return n;
+        };
+
+        const u32 aboveTop = cellsAbove(0.f);
+        const u32 aboveEnd = cellsAbove(1e6f);
+        // Сравниваются два положения, а не проверяется ноль: в этой
+        // полосе стоят служебные строки HUD, и они там по праву.
+        // Важно, что прокрутка не ДОБАВЛЯЕТ туда ничего своего.
+        std::snprintf(m, sizeof(m),
+                      "прокрутка не выносит ячейки поверх заголовка "
+                      "(вершин выше области: %u в начале, %u в конце)",
+                      aboveTop, aboveEnd);
+        check(aboveEnd <= aboveTop, m);
+
         const u32 atTop = cellsInView(0.f);
         const u32 atEnd = cellsInView(1e6f);  // до упора; Scroll ограничит сам
         std::snprintf(m, sizeof(m),
@@ -5361,6 +5406,249 @@ void testInventoryScrolls() {
                       atTop, atEnd);
         check(atTop != atEnd, m);
         check(atTop > 0 && atEnd > 0, "и в обоих положениях что-то нарисовано");
+    }
+
+    // ---- Настоящее касание: листает и несёт ----
+    //
+    // Проверок на раскладку и смещение мало: они не трогают сам
+    // жест, и мутации, отключавшие перетаскивание и снимавшие защиту
+    // переноса, прошли их насквозь. Здесь касание гоняется через
+    // `routeTouch` — тем же путём, каким приходит палец.
+    {
+        constexpr i32 W = 1280, H = 720, DPI = 320;
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+        auto* inv = pl.inventory();
+        check(inv != nullptr, "инвентарь есть");
+        if (!inv) { config::settings() = savedCfg; return; }
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(DPI);
+        sys.setScreenSize(W, H);
+        sys.screen = ui::Screen::Inventory;
+
+        auto frame = [&]() {
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+        };
+        frame();
+
+        const ui::HudLayout& L = sys.layout();
+        const ui::Rect view = L.invLeft();
+        const auto grid = L.cellGrid(view, items::INV_MAIN_SLOTS);
+
+        // ---- Пустое место листает ----
+        //
+        // Берётся зазор между первым и вторым столбцом: там ячейки
+        // нет, значит и нести нечего.
+        {
+            sys.scrollInventoryTo(0.f);
+            const ui::Rect a = grid.at(0);
+            const f32 gapX = a.x + a.w + grid.gap * 0.5f;
+            const f32 y0 = a.y + a.h * 0.5f;
+            sys.routeTouch(7, gapX, y0, 0);
+            frame();
+            sys.routeTouch(7, gapX, y0 - L.dp(40.f), 2);
+            frame();
+            const f32 moved = sys.inventoryScrollOffset();
+            std::snprintf(m, sizeof(m),
+                          "палец по пустому месту листает (смещение %.1f)",
+                          (double)moved);
+            check(moved > 0.f, m);
+            sys.routeTouch(7, gapX, y0 - L.dp(40.f), 1);
+            frame();
+        }
+
+        // ---- Занятая ячейка несёт, а не листает ----
+        {
+            sys.scrollInventoryTo(0.f);
+            frame();
+            inv->at(items::INV_MAIN_OFFSET).itemId = items::ITEM_STONE;
+            inv->at(items::INV_MAIN_OFFSET).count  = 5;
+            frame();
+
+            const ui::Rect a = grid.at(0);
+            const f32 cx = a.x + a.w * 0.5f, cy = a.y + a.h * 0.5f;
+            sys.routeTouch(8, cx, cy, 0);
+            frame();
+            const f32 afterDown = sys.inventoryScrollOffset();
+            std::snprintf(m, sizeof(m),
+                          "нажатие на ячейку само по себе не листает (%.1f)",
+                          (double)afterDown);
+            check(afterDown <= 0.01f, m);
+            sys.routeTouch(8, cx, cy - L.dp(40.f), 2);
+            frame();
+            const f32 moved = sys.inventoryScrollOffset();
+            std::snprintf(m, sizeof(m),
+                          "палец с занятой ячейки несёт предмет, а не листает "
+                          "(смещение %.1f)", (double)moved);
+            check(moved <= 0.01f, m);
+            sys.routeTouch(8, cx, cy - L.dp(40.f), 1);
+            frame();
+        }
+    }
+
+    config::settings() = savedCfg;
+}
+
+// ------------------------------------------------------------
+// Журнал и ассортимент прокручиваются, а не обрываются.
+//
+// Строк в журнале помещается мало: на 1280x720 — ДВЕ, на 2400x1080 —
+// три. Всё, что дальше, не рисовалось вовсе: игрок с пятью заданиями
+// видел два и до остальных добраться не мог. У торговца то же
+// самое, только грубее — `if (shown >= 24) break`, число с потолка.
+//
+// `questScroll` и `tradeScroll` при этом существовали, тикались
+// каждый кадр и не получали ни содержимого, ни жеста: `maxOffset` у
+// них был вечный ноль. Пятый случай «написано и не вызывается» в
+// этом проекте.
+// ------------------------------------------------------------
+void testQuestAndTradeListsScroll() {
+    group("журнал и торговля: списки прокручиваются");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    const config::Settings savedCfg = config::settingsConst();
+    config::settings() = config::Settings{};
+
+    char m[220];
+    constexpr i32 W = 1280, H = 720, DPI = 320;
+
+    // ---- Журнал ----
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        auto* log = pl.questLog();
+        check(log != nullptr, "журнал есть");
+        if (!log) { config::settings() = savedCfg; return; }
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(DPI);
+        sys.setScreenSize(W, H);
+        sys.screen = ui::Screen::QuestLog;
+        auto frame = [&]() { sys.tickUi(1.f / 60.f); sys.buildFrame(pl, wd, 60.f); };
+
+        // Одно задание помещается — листать нечего.
+        auto addQuest = [&](int n) {
+            quests::Quest q{};
+            q.id = quests::nextQuestId();
+            q.tmpl.type = quests::QuestType::Kill;
+            q.tmpl.targetMobId = 1;
+            q.tmpl.requiredCount = 3;
+            q.progress = 1;
+            q.state = quests::QuestState::Active;
+            q.ownerEntity = (u32)pl.entity();
+            std::snprintf(q.title, sizeof(q.title), "Quest %d", n);
+            const ecs::Entity qe = reg.create();
+            reg.add(qe, q);
+            log->addActive(qe);
+        };
+
+        addQuest(1);
+        frame();
+        std::snprintf(m, sizeof(m),
+                      "одно задание помещается, листать нечего (запас %.0f)",
+                      (double)sys.questScrollMax());
+        check(sys.questScrollMax() <= 0.01f, m);
+
+        for (int i = 2; i <= 6; ++i) addQuest(i);
+        frame();
+        std::snprintf(m, sizeof(m),
+                      "шесть заданий не помещаются — список листается "
+                      "(запас %.0f)", (double)sys.questScrollMax());
+        check(sys.questScrollMax() > 0.f, m);
+
+        // Прокрутка меняет то, что нарисовано, и ничего не выносит
+        // за пределы списка.
+        auto shot = [&](f32 offset) {
+            sys.scrollQuestsTo(offset);
+            frame();
+            const ui::Rect area = sys.layout().questList();
+            u32 inside = 0, above = 0;
+            for (const ui::UiVertex& v : sys.frameVertices()) {
+                const f32 px = (v.pos.x * 0.5f + 0.5f) * (f32)W;
+                const f32 py = (v.pos.y * 0.5f + 0.5f) * (f32)H;
+                if (px < area.x || px > area.x + area.w) continue;
+                if (py >= area.y && py <= area.y + area.h) ++inside;
+                else if (py < area.y) ++above;
+            }
+            return std::pair<u32, u32>{ inside, above };
+        };
+
+        const auto atTop = shot(0.f);
+        const auto atEnd = shot(1e6f);
+        std::snprintf(m, sizeof(m),
+                      "прокрутка меняет показанное (вершин в списке %u -> %u)",
+                      atTop.first, atEnd.first);
+        check(atTop.first != atEnd.first || atEnd.second <= atTop.second, m);
+        std::snprintf(m, sizeof(m),
+                      "и не выносит строки поверх заголовка (%u -> %u)",
+                      atTop.second, atEnd.second);
+        check(atEnd.second <= atTop.second, m);
+
+        // Палец листает журнал.
+        {
+            sys.scrollQuestsTo(0.f);
+            frame();
+            const ui::Rect area = sys.layout().questList();
+            const f32 x = area.x + area.w * 0.5f;
+            const f32 y = area.y + area.h * 0.5f;
+            sys.routeTouch(11, x, y, 0);
+            frame();
+            sys.routeTouch(11, x, y - sys.layout().dp(40.f), 2);
+            frame();
+            std::snprintf(m, sizeof(m), "палец листает журнал (смещение %.1f)",
+                          (double)sys.questScrollMax());
+            check(sys.questScrollMax() > 0.f, m);
+            sys.routeTouch(11, x, y - sys.layout().dp(40.f), 1);
+            frame();
+        }
+    }
+
+    // ---- Ассортимент торговца ----
+    //
+    // Жёсткое «не больше двадцати четырёх» убрано: сколько товаров у
+    // торговца, столько и должно быть достижимо.
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        const ecs::Entity trader = reg.create();
+        trade::TradeInventory inv{};
+        for (int i = 0; i < 40; ++i) {
+            trade::TradeEntry e{};
+            e.itemId    = items::ITEM_STONE;
+            e.basePrice = 1;
+            e.stock     = 5;
+            e.maxStock  = 5;
+            e.isBuyable = true;
+            inv.entries.push_back(e);
+        }
+        reg.add(trader, inv);
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(DPI);
+        sys.setScreenSize(W, H);
+        sys.screen = ui::Screen::Trade;
+        sys.tradeCtx.traderEntity = (u32)trader;
+        sys.tradeCtx.tab = 0;
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, wd, 60.f);
+
+        std::snprintf(m, sizeof(m),
+                      "сорок товаров не помещаются — ассортимент листается "
+                      "(запас %.0f)", (double)sys.tradeScrollMax());
+        check(sys.tradeScrollMax() > 0.f, m);
     }
 
     config::settings() = savedCfg;
@@ -23504,6 +23792,7 @@ int main() {
     testMenusDoNotSitOnHud();
     testCompactHudUnderMenus();
     testInventoryScrolls();
+    testQuestAndTradeListsScroll();
     testHudAndButtonsDoNotOverlap();
     testLoadingIsAPanelNotACurtain();
     testUiThemeObeysItsOwnRules();

@@ -1128,12 +1128,21 @@ void UiSystem::drawSlotGrid(player::Player& player,
     auto* inv = player.inventory();
     if (!inv) return;
 
-    // Ячейку, уехавшую за край области прокрутки, не рисуем и
-    // касаний ей не даём: иначе она легла бы на заголовок экрана, а
-    // нажать её можно было бы там, где её не видно.
+    // Ячейка рисуется, только если помещается в область ЦЕЛИКОМ.
+    //
+    // Сперва отсекались лишь ячейки, ушедшие за край полностью, — и
+    // проверка показала, что этого мало: частично уехавший ряд
+    // рисуется весь и вылезает на заголовок экрана (девяносто восемь
+    // лишних вершин над областью). Нажать такую ячейку можно было бы
+    // там, где её не видно.
+    //
+    // Графической обрезки у этого интерфейса нет, поэтому выбор
+    // простой: ряд либо виден весь, либо не виден вовсе. При
+    // прокрутке он пропадает шагом — зато ничего никуда не наползает.
     const bool clipped = clip.h > 0.f;
     auto hidden = [&](const Rect& r) {
-        return clipped && (r.y + r.h <= clip.y || r.y >= clip.y + clip.h);
+        return clipped && (r.y < clip.y - 0.01f ||
+                           r.y + r.h > clip.y + clip.h + 0.01f);
     };
 
     for (u32 i = 0; i < count; ++i) {
@@ -2088,12 +2097,24 @@ void UiSystem::drawQuestLogScreen(player::Player& player) {
     // игрок с тремя заданиями видел «3». Ни названий, ни целей, ни
     // прогресса — то есть главный вопрос «что мне делать сейчас»
     // журнал не отвечал вовсе.
-    const u32 maxRows = layout_.questRowsVisible();
+    // Список ПРОКРУЧИВАЕТСЯ, а не обрывается на первых строках.
+    //
+    // Строк помещается мало: на 1280x720 — две, на 2400x1080 — три.
+    // Всё, что дальше, просто не рисовалось: игрок с пятью заданиями
+    // видел два и не мог добраться до остальных. Ровно то же было у
+    // ячеек сумки, и лечится оно тем же — прокруткой.
+    const Rect listArea = layout_.questList();
     u32 row = 0;
 
     auto rowButton = [&](const char* label, f32 pct, bool done, i32 questIdx) {
-        if (row >= maxRows) return;
-        const Rect r = layout_.questRow(row++);
+        const Rect base = layout_.questRow(row++);
+        const Rect r{ base.x, base.y - questScroll.offset, base.w, base.h };
+
+        // Строка видна, только если помещается целиком: графической
+        // обрезки здесь нет, и половина строки поверх заголовка —
+        // хуже, чем её отсутствие.
+        if (r.y < listArea.y - 0.01f ||
+            r.y + r.h > listArea.y + listArea.h + 0.01f) return;
 
         const int idx = ui_.pushInteractiveRect(r, [this, questIdx]() {
             selectedQuest = (selectedQuest == questIdx) ? -1 : questIdx;
@@ -2145,9 +2166,17 @@ void UiSystem::drawQuestLogScreen(player::Player& player) {
     }
 
     // Выполненные — ниже и приглушённо.
-    for (usize i = 0; i < log->history.size() && row < maxRows; ++i) {
+    for (usize i = 0; i < log->history.size(); ++i) {
         const auto& h = log->history[log->history.size() - 1 - i];
         rowButton(h.title[0] ? h.title : "?", 1.f, true, -1);
+    }
+
+    // Сколько строк вышло — столько и прокручивается.
+    {
+        const Rect probe = layout_.questRow(0);
+        const f32 step = layout_.questRow(1).y - probe.y;
+        questScroll.setContentHeight((f32)row * step, listArea.h);
+        feedScrollDrag(questScroll, listArea);
     }
 
     drawQuestDetails(player);
@@ -3302,21 +3331,30 @@ void UiSystem::drawTradeScreen(player::Player& player) {
             ui_.text(T(StrKey::Trade_NothingToBuy), listX, listY, 1.8f,
                      rgba(180, 180, 180, 255));
         } else {
+            // Ассортимент ПРОКРУЧИВАЕТСЯ, а не обрывается на
+            // двадцать четвёртом товаре. «Четыре ряда по шесть» было
+            // числом, взятым с потолка: у торговца бывает больше, и
+            // всё, что за ним, игрок не видел и купить не мог.
+            const f32 cellW = 140.f, cellH = 90.f;
+            const int cols = 6;
             int shown = 0;
             for (const auto& e : tinv->entries) {
                 if (!e.isBuyable || e.stock == 0) continue;
-                if (shown >= 24) break;             // четыре ряда по шесть
 
-                const int c = shown % 6, rrow = shown / 6;
+                const int c = shown % cols, rrow = shown / cols;
                 ++shown;
 
                 const auto& def = items::items().get(e.itemId);
                 const auto price = trade::priceFor(e.itemId, e.basePrice, tier,
                                                    e.isBuyable, e.isSellable);
 
-                const f32 x = listX + c * 140.f;
-                const f32 y = listY + rrow * 90.f;
+                const f32 x = listX + (f32)c * cellW;
+                const f32 y = listY + (f32)rrow * cellH - tradeScroll.offset;
                 Rect rr{ x, y, 130.f, 80.f };
+
+                // Карточка видна, только если помещается целиком.
+                if (rr.y < listArea.y - 0.01f ||
+                    rr.y + rr.h > listArea.y + listArea.h + 0.01f) continue;
 
                 const u16 itemId = e.itemId;
                 const bool affordable = wal->gold >= price.buyPrice;
@@ -3352,6 +3390,11 @@ void UiSystem::drawTradeScreen(player::Player& player) {
                 ui_.text(T(StrKey::Trade_NothingToBuy), listX, listY, 1.8f,
                          rgba(180, 180, 180, 255));
             }
+
+            // Сколько рядов вышло — столько и прокручивается.
+            const int rows = (shown + cols - 1) / cols;
+            tradeScroll.setContentHeight((f32)rows * cellH, listArea.h);
+            feedScrollDrag(tradeScroll, listArea);
         }
     } else {
         // SELL — инвентарь
