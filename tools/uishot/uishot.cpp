@@ -28,6 +28,7 @@
 #include "quests/quest_def.h"
 #include "ecs/registry.h"
 #include "config/settings.h"
+#include "config/localization.h"
 
 #include <cstdio>
 #include <cstring>
@@ -189,6 +190,12 @@ int main(int argc, char** argv) {
         else if (k == "--dpi")    o.dpi = std::atoi(next());
         else if (k == "--mirror") o.mirror = true;
         else if (k == "--quests") o.questCount = std::atoi(next());
+        else if (k == "--lang") {
+            const std::string v = next();
+            config::settings().language = (v == "ru") ? config::Language::Russian
+                                                      : config::Language::English;
+            config::L().setLanguage(config::settings().language);
+        }
         else if (k == "--hurts")  o.hurts = std::atoi(next());
         else if (k == "--screen") {
             const std::string v = next();
@@ -247,12 +254,23 @@ int main(int argc, char** argv) {
       // Несколько заданий, а не одно: строк в журнале помещается две
       // или три, и смысл прокрутки виден только когда их больше.
       for (int qi = 0; qi < o.questCount; ++qi) {
+        // Задания РАЗНЫЕ: у каждого свой тип, своя цель и своя
+        // сложность. Одинаковые не показали бы ни длины строк, ни
+        // того, что имя цели вообще подставляется.
+        static const quests::QuestType TYPES[] = {
+            quests::QuestType::Collect, quests::QuestType::Kill,
+            quests::QuestType::Explore, quests::QuestType::Treasure,
+            quests::QuestType::Defend,  quests::QuestType::Deliver,
+        };
         quests::Quest q{};
         q.id = quests::nextQuestId();
-        q.tmpl.type = quests::QuestType::Collect;
+        q.tmpl.type = TYPES[(usize)qi % (sizeof(TYPES) / sizeof(TYPES[0]))];
         q.tmpl.targetBlockId = world::WOOD;
+        q.tmpl.targetMobId = mobs::MOB_WOLF;
         q.tmpl.requiredCount = 8;
-        q.tmpl.difficulty = quests::QuestDifficulty::Hard;
+        q.tmpl.targetLocation = { 128, 64, -96 };
+        q.tmpl.difficulty =
+            (quests::QuestDifficulty)(qi % (int)quests::QuestDifficulty::Count);
         q.progress = 5;
         q.state = quests::QuestState::Active;
         q.ownerEntity = (u32)pl.entity();
@@ -260,12 +278,6 @@ int main(int argc, char** argv) {
         q.rewards.gold = 120;
         q.rewards.itemBlockId = world::IRON_ORE;
         q.rewards.itemCount = 3;
-        std::snprintf(q.title, sizeof(q.title), "Wood for the Palisade");
-        std::snprintf(q.description, sizeof(q.description),
-                      "The village needs 8 wood to close the north gap "
-                      "before nightfall.");
-        std::snprintf(q.title, sizeof(q.title), "Quest %d of %d",
-                      qi + 1, o.questCount);
         const ecs::Entity qe = reg.create();
         reg.add(qe, q);
         if (auto* log = pl.questLog()) log->addActive(qe);

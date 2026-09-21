@@ -368,10 +368,4 @@ void Weather::update(const TerrainGenerator& terrain, const glm::vec3& pos,
     wind_.y  = approach(wind_.y,  sample_.wind.y, 0.50f);
 }
 
-f32 Weather::lightScale() const {
-    // Пасмурный день темнее ясного почти вдвое — это и есть главный
-    // признак пасмурности, куда более внятный, чем цвет неба.
-    return 1.f - cloud_ * 0.55f;
-}
-
 } // namespace world

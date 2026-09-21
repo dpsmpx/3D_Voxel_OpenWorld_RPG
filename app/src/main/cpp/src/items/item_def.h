@@ -179,7 +179,12 @@ public:
     u16    maxStack(u16 id) const { return get(id).maxStack; }
     u32    value(u16 id)    const { return get(id).value; }
     ItemRarity rarity(u16 id) const { return get(id).rarity; }
-    const char* name(u16 id) const { return get(id).name; }
+    /// Имя предмета на языке игрока.
+    ///
+    /// Поле `name` — английский текст, он же ключ словаря
+    /// содержимого; читать его напрямую для показа нельзя, иначе в
+    /// русской игре в сумке окажется «Iron Sword».
+    const char* name(u16 id) const;
 
     /// ---- Обратные преобразования ----
     /// Для block id → item id.

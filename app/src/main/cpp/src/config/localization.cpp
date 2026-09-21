@@ -109,13 +109,6 @@ static const char* EN[STR_KEY_COUNT] = {
     /* Quest_Rewards */    "Rewards",
 
     /* Rep_Title */         "REPUTATION",
-    /* Rep_Hated */         "Hated",
-    /* Rep_Hostile */       "Hostile",
-    /* Rep_Unfriendly */    "Unfriendly",
-    /* Rep_Neutral */       "Neutral",
-    /* Rep_Friendly */      "Friendly",
-    /* Rep_Honored */       "Honored",
-    /* Rep_Exalted */       "Exalted",
 
     /* Settings_Title */    "SETTINGS",
     /* Settings_Input */    "Input",
@@ -306,13 +299,6 @@ static const char* RU[STR_KEY_COUNT] = {
     /* Quest_Rewards */    "Награда",
 
     /* Rep_Title */         "РЕПУТАЦИЯ",
-    /* Rep_Hated */         "Ненависть",
-    /* Rep_Hostile */       "Враждебность",
-    /* Rep_Unfriendly */    "Недоверие",
-    /* Rep_Neutral */       "Нейтрально",
-    /* Rep_Friendly */      "Дружелюбие",
-    /* Rep_Honored */       "Уважение",
-    /* Rep_Exalted */       "Превознесение",
 
     /* Settings_Title */    "НАСТРОЙКИ",
     /* Settings_Input */    "Управление",
@@ -440,6 +426,17 @@ void Localization::setLanguage(Language l) {
         default:                buildEnglish(); break;
     }
 
+    // Словарь содержимого строится здесь же, а не при первом
+    // обращении: смена языка — редкое событие, а tr() зовётся
+    // десятками раз за кадр, и проверять «а построен ли словарь»
+    // на каждом вызове незачем.
+    content_.clear();
+    if (l == Language::Russian) {
+        content_.reserve(CONTENT_RU_COUNT * 2);
+        for (usize i = 0; i < CONTENT_RU_COUNT; ++i)
+            content_[CONTENT_RU[i].en] = CONTENT_RU[i].tr;
+    }
+
     LOGI("Localization: язык установлен %s", languageCode(l));
 }
 
@@ -467,6 +464,39 @@ const char* Localization::format(StrKey k, ...) {
     va_list args;
     va_start(args, k);
     std::vsnprintf(target, 256, tmpl, args);
+    va_end(args);
+
+    return target;
+}
+
+const char* Localization::translate(const char* englishText) const {
+    if (!englishText) return "";
+    // Английский — язык исходника: словаря нет, и искать нечего.
+    if (content_.empty()) return englishText;
+
+    auto it = content_.find(englishText);
+    return (it == content_.end()) ? englishText : it->second;
+}
+
+const char* tr(const char* englishText) {
+    return Localization::instance().translate(englishText);
+}
+
+const char* trf(const char* englishText, ...) {
+    const char* tmpl = tr(englishText);
+
+    // Буфер тот же двойной, что и у format(): вызывающий вправе
+    // держать две готовые строки разом — скажем, название задания
+    // и его описание.
+    static char buf1[256];
+    static char buf2[256];
+    static int  toggle = 0;
+    char* target = (toggle == 0) ? buf1 : buf2;
+    toggle = 1 - toggle;
+
+    va_list args;
+    va_start(args, englishText);
+    std::vsnprintf(target, sizeof(buf1), tmpl, args);
     va_end(args);
 
     return target;

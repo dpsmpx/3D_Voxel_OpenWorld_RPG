@@ -146,6 +146,13 @@ public:
     static const MobRegistry& instance();
     const MobDef& get(u16 id) const;
 
+    /// Имя на языке игрока.
+    ///
+    /// Поле `name` в определении — английский текст, он же ключ
+    /// словаря содержимого. Для показа читать его напрямую нельзя.
+    const char* name(u16 id) const;
+
+
 private:
     MobRegistry();
     MobDef defs_[MOB_COUNT];

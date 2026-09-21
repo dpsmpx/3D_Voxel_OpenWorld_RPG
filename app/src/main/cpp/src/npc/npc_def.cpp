@@ -3,6 +3,7 @@
  * @brief NPC: роли, диалоги с ветвлением, поведение жителей.
  */
 #include "npc_def.h"
+#include "../config/localization.h"
 #include "../combat/weapon.h"
 #include "../core/log.h"
 
@@ -180,6 +181,10 @@ NpcRegistry::NpcRegistry() {
 const NpcRegistry& NpcRegistry::instance() {
     static NpcRegistry r;
     return r;
+}
+
+const char* NpcRegistry::name(u16 id) const {
+    return config::tr(get(id).name);
 }
 
 const NpcDef& NpcRegistry::get(u16 id) const {

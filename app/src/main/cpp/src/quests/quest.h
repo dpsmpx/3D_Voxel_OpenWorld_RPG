@@ -15,18 +15,23 @@ struct QuestLog {
     /// Активные квесты (не завершённые). Завершённые удаляются.
     std::vector<ecs::Entity> activeQuests;
 
-    /// Последние N завершённых квестов (для UI истории)
-    struct HistoryEntry {
-        u32      questId   = 0;
-        QuestState state    = QuestState::TurnedIn;
-        char     title[64]  = {};
-    };
-    std::vector<HistoryEntry> history;
+    /// Последние N завершённых квестов (для UI истории).
+    ///
+    /// Хранится само задание, а не слепок его названия. Слепок
+    /// пришлось бы держать на языке, который был в силе в день
+    /// сдачи, и история осталась бы двуязычной даже после перевода
+    /// всего остального. Задание же помнит свой источник текста и
+    /// цель — по ним название собирается на любом языке.
+    ///
+    /// Стоило это ноль: текста в Quest больше нет, и запись истории
+    /// стала легче прежней, у которой одно только название занимало
+    /// шестьдесят четыре байта.
+    std::vector<Quest> history;
 
     /// API — вызывается из логики игрока и NPC.
     void addActive(ecs::Entity quest);
     void removeActive(ecs::Entity quest);
-    void addHistory(u32 questId, QuestState state, const char* title);
+    void addHistory(const Quest& q);
     void clear();
 };
 

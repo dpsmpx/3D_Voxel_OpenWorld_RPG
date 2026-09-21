@@ -5553,12 +5553,18 @@ void testQuestAndTradeListsScroll() {
             // видно поровну, и при одинаковых названиях в кадре
             // ровно столько же вершин. Мутация, от которой строки
             // перестали ехать, именно так и прошла проверку.
-            char title[64];
-            int at = std::snprintf(title, sizeof(title), "Q%d", n);
-            for (int k = 0; k < n * 4 && at < (int)sizeof(title) - 2; ++k)
-                title[at++] = 'x';
-            title[at] = '\0';
-            std::snprintf(q.title, sizeof(q.title), "%s", title);
+            //
+            // Название задание больше не хранит, а собирает по цели
+            // и сложности, — поэтому разная длина добывается разной
+            // тварью и разной сложностью, а не набивкой иксами.
+            static const u16 MOBS[] = {
+                mobs::MOB_COW, mobs::MOB_SKELETON,
+                mobs::MOB_BOSS_WARDEN, mobs::MOB_CHICKEN,
+                mobs::MOB_BOSS_HOLLOW, mobs::MOB_GOBLIN,
+            };
+            q.tmpl.targetMobId = MOBS[(usize)n % (sizeof(MOBS) / sizeof(MOBS[0]))];
+            q.tmpl.difficulty =
+                (quests::QuestDifficulty)(n % (int)quests::QuestDifficulty::Count);
             const ecs::Entity qe = reg.create();
             reg.add(qe, q);
             log->addActive(qe);
@@ -5949,6 +5955,463 @@ void testHurtDirection() {
 // той, в которой стоим», то есть рассчитана на игрока, уже
 // пришедшего к людям.
 // ------------------------------------------------------------
+// Игра говорит на одном языке.
+//
+// Переключатель языка в настройках менял только обвязку
+// интерфейса: кнопки, заголовки, уведомления. Всё, ЧЕМ игра
+// разговаривает, шло мимо него — имена предметов и тварей, шаблоны
+// заданий, реплики жителей, — а сюжетные главы были написаны
+// по-русски прямо в исходнике. То есть на любом из двух языков
+// игрок видел текст на обоих.
+//
+// Проверки здесь спрашивают не словарь, а сами реестры: перебрать
+// список строк в исходнике легко и бесполезно — он не знает, что
+// из него доезжает до экрана. Реестр знает.
+// ------------------------------------------------------------
+
+/// Есть ли в строке латиница — за вычетом подстановок.
+///
+/// «%d» — это латинская «d», и без вычета непереведённой оказалась
+/// бы каждая строка с числом. Сами подстановки сверяются отдельно.
+static bool hasLatin(const char* s) {
+    if (!s) return false;
+    for (const char* p = s; *p; ++p) {
+        if (*p == '%') { if (p[1]) ++p; continue; }
+        if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) return true;
+    }
+    return false;
+}
+
+/// Последовательность подстановок строки: «%d%s» и т. п.
+static std::string specsOf(const char* s) {
+    std::string out;
+    if (!s) return out;
+    for (const char* p = s; *p; ++p)
+        if (*p == '%' && p[1]) { out += '%'; out += p[1]; ++p; }
+    return out;
+}
+
+void testOneLanguageEverywhere() {
+    group("язык: игра говорит на одном языке");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+    npc::npcRegistry();
+    crafting::recipes();
+    progression::skillTree();
+
+    char m[260];
+    const auto wasLanguage = config::L().language();
+    config::L().setLanguage(config::Language::Russian);
+
+    // ---- 1. Словарь без дыр и без двойников ----
+    {
+        int dupes = 0, specMismatch = 0;
+        std::unordered_map<std::string, int> seen;
+        for (usize i = 0; i < config::CONTENT_RU_COUNT; ++i) {
+            const auto& pr = config::CONTENT_RU[i];
+            if (++seen[pr.en] > 1) ++dupes;
+            // Порядок подстановок обязан совпадать: переставленные
+            // «%d» и «%s» — это printf, читающий строку по адресу
+            // числа, то есть падение на первом же задании.
+            if (specsOf(pr.en) != specsOf(pr.tr)) {
+                ++specMismatch;
+                std::snprintf(m, sizeof(m), "подстановки разошлись: «%s»", pr.en);
+                check(false, m);
+            }
+        }
+        std::snprintf(m, sizeof(m), "в словаре строк %u",
+                      (unsigned)config::CONTENT_RU_COUNT);
+        check(true, m);
+        check(dupes == 0, "одна строка — один перевод, двойников нет");
+        check(specMismatch == 0, "и подстановки в паре стоят в том же порядке");
+    }
+
+    // ---- 2. Содержимое: перебор реестров ----
+    //
+    // Имя, которое игрок видит, не должно быть английским. Спрашиваем
+    // не «нашлось ли в словаре», а «не осталось ли латиницы»: строка
+    // может найтись и остаться непереведённой.
+    {
+        int bad = 0;
+        auto want = [&](const char* s, const char* what) {
+            if (!hasLatin(s)) return;
+            ++bad;
+            std::snprintf(m, sizeof(m), "не переведено (%s): «%s»", what, s);
+            check(false, m);
+        };
+
+        for (u16 id = 1; id < items::ITEM_COUNT; ++id)
+            want(items::items().name(id), "предмет");
+        for (u16 id = 1; id < mobs::MOB_COUNT; ++id)
+            want(mobs::mobRegistry().name(id), "тварь");
+        for (u16 id = 1; id < npc::NPC_COUNT; ++id)
+            want(npc::npcRegistry().name(id), "житель");
+        for (const auto& r : crafting::recipes().all())
+            want(config::tr(r.name), "рецепт");
+        for (u8 b = 0; b < 3; ++b) {
+            u16 n = 0;
+            const auto* nodes = progression::skillTree().nodesInBranch(
+                (progression::SkillBranch)b, n);
+            for (u16 i = 0; i < n; ++i) {
+                want(config::tr(nodes[i].name), "навык");
+                want(config::tr(nodes[i].description), "что даёт навык");
+            }
+        }
+        for (u8 e = 1; e < (u8)combat::EnchantmentId::Count; ++e)
+            want(combat::enchantmentName((combat::EnchantmentId)e), "зачарование");
+        for (u8 f = 1; f < (u8)factions::FactionId::Count; ++f)
+            want(factions::factionName((factions::FactionId)f), "фракция");
+        for (i8 tr = -3; tr <= 3; ++tr)
+            want(factions::tierName((factions::ReputationTier)tr), "отношение");
+        for (u8 r = 0; r < 5; ++r)
+            want(items::rarityName((items::ItemRarity)r), "редкость");
+        for (u16 id = 1; id < combat::WEAPON_COUNT; ++id)
+            want(config::tr(combat::weapons().get(id).name), "оружие");
+        for (u8 s = 1; s < (u8)crafting::StationType::Count; ++s)
+            want(crafting::stationName((crafting::StationType)s), "станок");
+        // Отказ ремесла игрок читает красной строкой под рецептом —
+        // и читал по-английски, пока весь экран был русским.
+        for (u8 s = 0; s <= (u8)crafting::CraftStatus::OutputBlocked; ++s)
+            want(crafting::statusString((crafting::CraftStatus)s), "отказ ремесла");
+
+        std::snprintf(m, sizeof(m), "английских имён в реестрах: %d", bad);
+        check(bad == 0, m);
+    }
+
+    // ---- 3. Задания: текст собирается, и в нём нет процентов ----
+    //
+    // Два шаблона «дойти» просили «%s», а подстановки для них не
+    // делали вовсе: название копировалось через
+    // snprintf(dst, "%s", pattern). Игрок читал в журнале «Chart %s».
+    {
+        int latin = 0, percents = 0, checked = 0;
+        for (u8 t = 0; t < (u8)quests::QuestType::Count; ++t)
+            for (u8 d = 0; d < (u8)quests::QuestDifficulty::Count; ++d) {
+                quests::Quest q{};
+                q.tmpl.type = (quests::QuestType)t;
+                q.tmpl.difficulty = (quests::QuestDifficulty)d;
+                q.tmpl.targetMobId = mobs::MOB_WOLF;
+                q.tmpl.targetBlockId = world::IRON_ORE;
+                q.tmpl.requiredCount = 7;
+                q.tmpl.targetLocation = { 120, 64, -48 };
+
+                const std::string ti = quests::questTitle(q);
+                const std::string de = quests::questDescription(q);
+                ++checked;
+                if (ti.empty() || de.empty()) { ++latin; continue; }
+                if (hasLatin(ti.c_str()) || hasLatin(de.c_str())) {
+                    ++latin;
+                    std::snprintf(m, sizeof(m), "английское задание: «%s»",
+                                  ti.c_str());
+                    check(false, m);
+                }
+                if (ti.find('%') != std::string::npos ||
+                    de.find('%') != std::string::npos) {
+                    ++percents;
+                    std::snprintf(m, sizeof(m), "процент на экране: «%s» / «%s»",
+                                  ti.c_str(), de.c_str());
+                    check(false, m);
+                }
+            }
+        std::snprintf(m, sizeof(m), "шаблонов собрано %d", checked);
+        check(checked == 30, m);
+        check(latin == 0, "у всякого задания название и описание на языке игрока");
+        check(percents == 0, "и ни одной несделанной подстановки");
+    }
+
+    // ---- 3b. И называют ИМЕННО свою цель ----
+    //
+    // «Убить» подставляет тварь, «принести» — предмет. Перепутать их
+    // легко: оба поля лежат в одном шаблоне рядом, и оба заполнены.
+    // Чтобы проверка не оказалась пустой, имена сперва сверяются
+    // между собой: совпади они — она не проверяла бы ничего.
+    {
+        const std::string mob = mobs::mobRegistry().name(mobs::MOB_WOLF);
+        const std::string blk = quests::blockTargetName(world::IRON_ORE);
+        check(mob != blk, "имя твари и имя блока — разные слова");
+
+        quests::Quest kill{};
+        kill.tmpl.type = quests::QuestType::Kill;
+        kill.tmpl.difficulty = quests::QuestDifficulty::Normal;
+        kill.tmpl.targetMobId = mobs::MOB_WOLF;
+        kill.tmpl.targetBlockId = world::IRON_ORE;
+        kill.tmpl.requiredCount = 5;
+
+        quests::Quest coll = kill;
+        coll.tmpl.type = quests::QuestType::Collect;
+
+        const std::string kt = quests::questTitle(kill) + " " +
+                               quests::questDescription(kill);
+        const std::string ct = quests::questTitle(coll) + " " +
+                               quests::questDescription(coll);
+
+        check(kt.find(mob) != std::string::npos, "«убить» называет тварь");
+        check(kt.find(blk) == std::string::npos, "и только её");
+        check(ct.find(blk) != std::string::npos, "«принести» называет предмет");
+        check(ct.find(mob) == std::string::npos, "и только его");
+    }
+
+    // ---- 3a. «Дойти» и «докопаться» называют место ----
+    //
+    // Координаты дописываются к описанию отдельной фразой. Без них
+    // задание звучит как «уйди далеко» и не выполняется: цель есть,
+    // а где она — не сказано.
+    {
+        for (auto ty : { quests::QuestType::Explore,
+                         quests::QuestType::Treasure }) {
+            quests::Quest q{};
+            q.tmpl.type = ty;
+            q.tmpl.difficulty = quests::QuestDifficulty::Normal;
+            q.tmpl.targetLocation = { 1234, 64, -567 };
+            const std::string de = quests::questDescription(q);
+            check(de.find("1234") != std::string::npos,
+                  ty == quests::QuestType::Explore
+                      ? "«дойти» называет, куда идти"
+                      : "«докопаться» называет, где копать");
+            check(de.find("-567") != std::string::npos,
+                  "и вторую координату тоже");
+        }
+        // Глубина у тайника названа: стоять на месте и не копать —
+        // ровно то, чем это кончалось без неё.
+        quests::Quest tq{};
+        tq.tmpl.type = quests::QuestType::Treasure;
+        tq.tmpl.difficulty = quests::QuestDifficulty::Easy;
+        tq.tmpl.targetLocation = { 10, 64, 20 };
+        check(quests::questDescription(tq).find("6") != std::string::npos,
+              "и на сколько блоков вглубь");
+    }
+
+    // ---- 4. Сюжет и первые цели ----
+    {
+        int bad = 0;
+        for (u8 ch = 0; ch < quests::STORY_CHAPTERS; ++ch) {
+            quests::Quest q{};
+            q.textSource = quests::QuestTextSource::Story;
+            q.storyChapter = ch;
+            q.tmpl.type = quests::QuestType::Explore;
+            q.tmpl.targetLocation = { 10, 64, 20 };
+            if (hasLatin(quests::questTitle(q).c_str())) ++bad;
+            if (hasLatin(quests::questDescription(q).c_str())) ++bad;
+        }
+        for (auto src : { quests::QuestTextSource::FirstStepVillage,
+                          quests::QuestTextSource::FirstStepWood }) {
+            quests::Quest q{};
+            q.textSource = src;
+            if (hasLatin(quests::questTitle(q).c_str())) ++bad;
+            if (hasLatin(quests::questDescription(q).c_str())) ++bad;
+        }
+        check(bad == 0, "главы сюжета и первые цели — на языке игрока");
+    }
+
+    // ---- 5. Имя блока для «принеси» — настоящее имя предмета ----
+    //
+    // Вместо словаря из четырнадцати английских слов в генераторе.
+    // Заодно сторож пространств номеров: блок IRON_ORE —
+    // одиннадцатый, а одиннадцатый ПРЕДМЕТ — железный слиток.
+    {
+        config::L().setLanguage(config::Language::English);
+        check(std::strcmp(quests::blockTargetName(world::IRON_ORE),
+                          "Iron Ore") == 0,
+              "руда называется рудой, а не слитком");
+        check(std::strcmp(quests::blockTargetName(world::WOOD),
+                          "Wood") == 0, "дерево называется деревом");
+        // Блок без предмета — не «materials» по умолчанию у всех, а
+        // только там, где предмета и правда нет.
+        check(std::strcmp(quests::blockTargetName(world::AIR),
+                          "materials") == 0,
+              "блоку без предмета остаётся общее слово");
+        config::L().setLanguage(config::Language::Russian);
+    }
+
+    // ---- 6. Смена языка меняет УЖЕ ВЫДАННОЕ задание ----
+    //
+    // Ради этого текст и перестали хранить в задании. Раньше журнал
+    // оставался на языке, который был в силе в час выдачи.
+    {
+        quests::Quest q{};
+        q.tmpl.type = quests::QuestType::Kill;
+        q.tmpl.difficulty = quests::QuestDifficulty::Normal;
+        q.tmpl.targetMobId = mobs::MOB_WOLF;
+        q.tmpl.requiredCount = 9;
+
+        config::L().setLanguage(config::Language::English);
+        const std::string en = quests::questTitle(q);
+        config::L().setLanguage(config::Language::Russian);
+        const std::string ru = quests::questTitle(q);
+
+        std::snprintf(m, sizeof(m), "«%s» → «%s»", en.c_str(), ru.c_str());
+        check(true, m);
+        check(en != ru, "название задания меняется вместе с языком");
+        check(!hasLatin(ru.c_str()), "и по-русски в нём нет латиницы");
+        check(hasLatin(en.c_str()), "а по-английски — есть");
+    }
+
+    // ---- 7. Реплики жителей ----
+    //
+    // Берём не список строк, а тех, с кем игрок может заговорить:
+    // у каждого жителя в определении записан корень его диалога.
+    {
+        int bad = 0, lines = 0;
+        for (u16 id = 1; id < npc::NPC_COUNT; ++id) {
+            const char* root = npc::npcRegistry().get(id).dialogueRoot;
+            if (!root) continue;
+            const auto& tm = npc::dialogues().get(root);
+            for (const auto& n : tm.nodes) {
+                ++lines;
+                if (hasLatin(config::tr(n.text.c_str()))) {
+                    ++bad;
+                    std::snprintf(m, sizeof(m), "английская реплика: «%s»",
+                                  n.text.c_str());
+                    check(false, m);
+                }
+                for (const auto& c : n.choices) {
+                    ++lines;
+                    if (hasLatin(config::tr(c.text.c_str()))) {
+                        ++bad;
+                        std::snprintf(m, sizeof(m), "английский ответ: «%s»",
+                                      c.text.c_str());
+                        check(false, m);
+                    }
+                }
+            }
+        }
+        std::snprintf(m, sizeof(m), "реплик и ответов проверено %d", lines);
+        check(lines > 20, m);
+        check(bad == 0, "жители говорят на языке игрока");
+
+        // И перевод доезжает до РАЗГОВОРА, а не только до словаря.
+        //
+        // Реестр диалогов статический: он строится один раз, до
+        // того как игра прочитала настройки, и перевод в нём
+        // застыл бы навсегда. Поэтому перевод делается при начале
+        // разговора — и спрашивать надо именно разговор.
+        {
+            world::ChunkManager world(0x1A9E, 1);
+            ecs::Registry reg;
+            const ecs::Entity pl = reg.create();
+            reg.add(pl, ecs::Transform{});
+            reg.add(pl, npc::ActiveDialogue{});
+            reg.add(pl, factions::Reputation{});
+
+            const ecs::Entity guy = reg.create();
+            ecs::Transform tf; tf.position = glm::vec3(1.f, 64.f, 0.f);
+            reg.add(guy, tf);
+            npc::NpcTag tag; tag.id = npc::NPC_VILLAGER; tag.persistKey = 1;
+            reg.add(guy, tag);
+            npc::NpcAI ai; ai.homePos = tf.position;
+            reg.add(guy, ai);
+
+            const char* root = npc::npcRegistry().get(npc::NPC_VILLAGER).dialogueRoot;
+            check(npc::startDialogue(reg, world, (u32)pl, (u32)guy, root),
+                  "разговор начался");
+            auto* dlg = reg.get<npc::ActiveDialogue>(pl);
+            check(dlg != nullptr && !dlg->nodes.empty(), "и в нём есть реплики");
+            if (dlg && !dlg->nodes.empty()) {
+                int raw = 0;
+                for (const auto& n : dlg->nodes) {
+                    if (hasLatin(n.text.c_str())) ++raw;
+                    for (const auto& c : n.choices)
+                        if (hasLatin(c.text.c_str())) ++raw;
+                }
+                std::snprintf(m, sizeof(m),
+                              "первая реплика разговора: «%s»",
+                              dlg->nodes[0].text.c_str());
+                check(true, m);
+                check(raw == 0, "в самом разговоре английского не осталось");
+            }
+        }
+    }
+
+    config::L().setLanguage(wasLanguage);
+}
+
+// ------------------------------------------------------------
+// Сохранение не знает языка — и помнит, что глава сюжетная.
+//
+// Текста в задании больше нет, а сохранялся он раньше строкой: сейв,
+// записанный в английской игре, приносил английский журнал в
+// русскую. И отдельно: признак «это глава сюжета» не сохранялся
+// ВОВСЕ — после загрузки глава становилась обычным поручением, и
+// сдача её не двигала цепочку.
+// ------------------------------------------------------------
+void testSaveKeepsQuestsWithoutText() {
+    group("сохранение: задания без текста, глава остаётся главой");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    const auto wasLanguage = config::L().language();
+
+    ecs::Registry reg;
+    const ecs::Entity player = reg.create();
+    reg.add(player, ecs::Transform{});
+
+    quests::QuestLog log;
+
+    quests::Quest chapter{};
+    chapter.id = 7001;
+    chapter.state = quests::QuestState::Active;
+    chapter.textSource = quests::QuestTextSource::Story;
+    chapter.storyChapter = 2;
+    chapter.tmpl.type = quests::QuestType::Explore;
+    chapter.tmpl.targetLocation = { 300, 70, -120 };
+    const ecs::Entity ce = reg.create();
+    reg.add(ce, chapter);
+    log.activeQuests.push_back(ce);
+
+    quests::Quest done{};
+    done.id = 7002;
+    done.state = quests::QuestState::TurnedIn;
+    done.tmpl.type = quests::QuestType::Kill;
+    done.tmpl.difficulty = quests::QuestDifficulty::Hard;
+    done.tmpl.targetMobId = mobs::MOB_GOBLIN;
+    done.tmpl.requiredCount = 14;
+    log.addHistory(done);
+    reg.add(player, log);
+
+    // Пишем по-английски.
+    config::L().setLanguage(config::Language::English);
+    save::ByteWriter w;
+    save::serializePlayer(w, reg, player);
+
+    // Читаем по-русски.
+    config::L().setLanguage(config::Language::Russian);
+    ecs::Registry reg2;
+    const ecs::Entity p2 = reg2.create();
+    save::ByteReader r(w.data());
+    check(save::deserializePlayer(r, reg2, p2), "сейв прочитан");
+
+    auto* log2 = reg2.get<quests::QuestLog>(p2);
+    check(log2 != nullptr, "журнал восстановлен");
+    if (!log2) { config::L().setLanguage(wasLanguage); return; }
+
+    check(log2->activeQuests.size() == 1, "активное задание одно");
+    check(log2->history.size() == 1, "и одна запись в истории");
+
+    if (!log2->activeQuests.empty()) {
+        auto* q = reg2.get<quests::Quest>(log2->activeQuests[0]);
+        check(q != nullptr, "задание на месте");
+        if (q) {
+            check(q->isStory(), "и это по-прежнему глава сюжета");
+            check(q->storyChapter == 2, "та самая, третья");
+            check(!hasLatin(quests::questTitle(*q).c_str()),
+                  "название главы — на языке, выбранном СЕЙЧАС");
+        }
+    }
+    if (!log2->history.empty()) {
+        check(!hasLatin(quests::questTitle(log2->history[0]).c_str()),
+              "и история тоже переведена");
+        check(log2->history[0].tmpl.targetMobId == mobs::MOB_GOBLIN,
+              "история помнит цель, а не слепок названия");
+    }
+
+    config::L().setLanguage(wasLanguage);
+}
+
+// ------------------------------------------------------------
 void testFirstStepsGiveAGoal() {
     group("первые минуты: есть что делать");
 
@@ -5985,7 +6448,7 @@ void testFirstStepsGiveAGoal() {
 
             const auto* q = reg.get<quests::Quest>(qe);
             if (!q) { ++without; continue; }
-            if (q->title[0] == '\0') ++nameless;
+            if (quests::questTitle(*q).empty()) ++nameless;
 
             // У цели должно быть КУДА идти или ЧТО нести. Задание без
             // того и другого — строка в журнале, которую нельзя
@@ -6081,7 +6544,6 @@ void testFirstStepsGiveAGoal() {
         own.id = quests::nextQuestId();
         own.state = quests::QuestState::Active;
         own.ownerEntity = (u32)pl.entity();
-        std::snprintf(own.title, sizeof(own.title), "%s", "Своё дело");
         const ecs::Entity oe = reg.create();
         reg.add(oe, own);
         pl.questLog()->addActive(oe);
@@ -7531,7 +7993,7 @@ void testQuestLogAnswersWhatToDoNow() {
     const std::string body = src.substr(ql, end - ql);
 
     // ---- 1. Показываются сами задания, а не их количество ----
-    check(body.find("q->title") != NONE, "в списке названия заданий");
+    check(body.find("questTitle(*q)") != NONE, "в списке названия заданий");
     check(body.find("progressPct()") != NONE, "и их прогресс");
     // Печать размера списка — ровно то, чем это было.
     check(body.find("activeQuests.size());") == NONE,
@@ -7543,7 +8005,8 @@ void testQuestLogAnswersWhatToDoNow() {
     if (qd != NONE) {
         const usize dend = src.find("\n}\n", qd);
         const std::string db = src.substr(qd, dend - qd);
-        check(db.find("description") != NONE, "в подробностях есть описание");
+        check(db.find("questDescription(") != NONE,
+              "в подробностях есть описание");
         check(db.find("rewards") != NONE, "и награда");
         check(db.find("requiredCount") != NONE, "и сколько осталось");
         check(db.find("textWrapped(") != NONE,
@@ -12669,24 +13132,48 @@ void testQuestTemplatesHaveOneShape() {
         return n;
     };
 
+    // Какие подстановки ждёт шаблон — определяет ТИП задания, а не
+    // вкус: questTitle() и questDescription() передают имя цели
+    // только «убить» и «принести», число — им же и «защитить», а
+    // остальным не передают ничего. Шаблон, просящий больше, читает
+    // аргумент, которого нет.
+    //
+    // Так уже было: два шаблона «дойти» просили «%s», и игрок видел
+    // в журнале проценты с эс — подстановки для них не делали вовсе.
+    auto wants = [](quests::QuestType ty, bool& name, bool& num) {
+        name = (ty == quests::QuestType::Kill ||
+                ty == quests::QuestType::Collect);
+        num  = name || (ty == quests::QuestType::Defend);
+    };
+
     int titlesBad = 0, descsBad = 0, checked = 0;
     for (u8 t = 0; t < (u8)quests::QuestType::Count; ++t)
         for (u8 d = 0; d < (u8)quests::QuestDifficulty::Count; ++d) {
+            const auto ty = (quests::QuestType)t;
             const auto& def = quests::questTemplates().get(
-                (quests::QuestType)t, (quests::QuestDifficulty)d);
+                ty, (quests::QuestDifficulty)d);
             if (!def.titlePattern || !def.descPattern) continue;
             ++checked;
-            // Заголовок: не больше одного «%s» и ни одного «%d».
-            if (count(def.titlePattern, "s") > 1 ||
-                count(def.titlePattern, "d") > 0) ++titlesBad;
-            // Описание: «%d» и «%s» — по одному, и «%d» раньше.
+
+            bool wantName = false, wantNum = false;
+            wants(ty, wantName, wantNum);
+
+            // Заголовок: имя — если тип его даёт, и никогда число.
+            if (count(def.titlePattern, "s") != (wantName ? 1 : 0) ||
+                count(def.titlePattern, "d") != 0) ++titlesBad;
+
+            // Описание: ровно то, что тип передаёт, и ничего сверх.
             const int ds = count(def.descPattern, "s");
             const int dd = count(def.descPattern, "d");
-            if (ds > 1 || dd > 1) { ++descsBad; continue; }
+            if (ds != (wantName ? 1 : 0) || dd != (wantNum ? 1 : 0)) {
+                ++descsBad;
+                continue;
+            }
+            // Порядок: сперва имя, потом число — как их и передают.
             if (ds == 1 && dd == 1) {
                 const char* ps = std::strstr(def.descPattern, "%s");
                 const char* pd = std::strstr(def.descPattern, "%d");
-                if (pd > ps) ++descsBad;
+                if (ps > pd) ++descsBad;
             }
         }
     {
@@ -12697,8 +13184,8 @@ void testQuestTemplatesHaveOneShape() {
         check(true, m);
     }
     check(checked >= 20, "шаблоны есть, и их много");
-    check(titlesBad == 0, "в заголовке — только имя, без числа");
-    check(descsBad == 0, "в описании — сперва число, потом имя");
+    check(titlesBad == 0, "заголовок просит ровно то, что ему дают");
+    check(descsBad == 0, "и описание тоже: сперва имя, потом число");
 
     // И у всякого моба есть имя: его подставляют в текст, а нулевой
     // указатель там валит игру в printf, далеко от места ошибки.
@@ -12758,10 +13245,10 @@ void testStoryChainRunsInOrder() {
     auto* qq = reg.get<quests::Quest>(q1);
     check(qq != nullptr, "задание первой главы существует");
     if (!qq) return;
-    check(qq->isStory, "и оно помечено сюжетным");
+    check(qq->isStory(), "и оно помечено сюжетным");
     check(qq->storyChapter == 0, "это первая глава");
-    check(qq->title[0] != '\0' && qq->description[0] != '\0',
-          "у главы есть и название, и текст");
+    check(!quests::questTitle(*qq).empty(), "у главы есть название");
+    check(!quests::questDescription(*qq).empty(), "и текст");
     check(qq->rewards.xp > 0, "и награда");
 
     // Цель первой главы — НАСТОЯЩАЯ деревня, а не точка в поле.
@@ -12872,7 +13359,7 @@ void testStoryChainRunsInOrder() {
         const ecs::Entity se = quests::generateQuest(sreg, world, opts);
         auto* sq = sreg.get<quests::Quest>(se);
         check(sq != nullptr, "побочное поручение выдаётся по-прежнему");
-        if (sq) check(!sq->isStory, "и сюжетным оно не притворяется");
+        if (sq) check(!sq->isStory(), "и сюжетным оно не притворяется");
     }
 }
 
@@ -13064,7 +13551,8 @@ void testSecretTreasureAndItsQuest() {
                       "и ровно тот, что лежит в мире");
             check(q->tmpl.targetRadius <= 4,
                   "радиус такой, что надо докопаться, а не пройти поверху");
-            check(q->description[0] != '\0', "подсказка не пустая");
+            check(!quests::questDescription(*q).empty(),
+                  "подсказка не пустая");
         }
     }
 
@@ -14945,8 +15433,29 @@ void testWeatherCyclonesAndSeasons() {
         check(std::fabs(w.cloud() - target) < 0.2f, "но догоняет за полминуты");
 
         // Тучи гасят свет — по этому пасмурность и узнают.
-        check(w.lightScale() <= 1.f && w.lightScale() >= 0.4f,
-              "тучи гасят дневной свет, но не до ночи");
+        //
+        // Спрашиваем то, что ДОЕЗЖАЕТ до шейдера, а не отдельную
+        // функцию рядом. Здесь стояла проверка Weather::lightScale()
+        // — числа, которое считалось правильно и не читалось никем:
+        // свет под тучами гасит render::Camera, у себя и по-своему.
+        // Проверка держала мёртвый код живым, а настоящий путь не
+        // трогала вовсе.
+        {
+            render::Camera cam;
+            cam.setSunDir(glm::vec3(0.2f, 0.9f, 0.3f));
+            cam.setSky(glm::vec3(0.45f, 0.65f, 0.95f), 1.f, 0.5f);
+
+            cam.setWeather(0.f, 0.f, 0.f, 0.f, glm::vec2(0.f));
+            const f32 clear = cam.toUbo(0.f).sunLight.w;
+            cam.setWeather(1.f, 0.6f, 0.f, 0.f, glm::vec2(0.f));
+            const f32 overcast = cam.toUbo(0.f).sunLight.w;
+
+            std::snprintf(m, sizeof(m), "солнце: ясно %.2f, пасмурно %.2f",
+                          (double)clear, (double)overcast);
+            check(true, m);
+            check(overcast < clear * 0.5f, "тучи гасят солнце больше чем вдвое");
+            check(overcast > 0.f, "но не до ночи: тень слабеет, свет остаётся");
+        }
     }
 
     // ---- 9. Ветер в циклоне закручен ----
@@ -21278,10 +21787,17 @@ void testPlayerSaveRoundTrip() {
     q.timeRemaining = 61.5f;
     q.rewards.xp = 900;
     q.rewards.gold = 250;
-    std::snprintf(q.title, sizeof(q.title), "Найти пропажу");
+    q.textSource = quests::QuestTextSource::Story;
+    q.storyChapter = 2;
     reg.add(questEnt, q);
     qlog.activeQuests.push_back(questEnt);
-    qlog.addHistory(111, quests::QuestState::TurnedIn, "Старое дело");
+    quests::Quest done{};
+    done.id = 111;
+    done.state = quests::QuestState::TurnedIn;
+    done.tmpl.type = quests::QuestType::Collect;
+    done.tmpl.targetBlockId = world::WOOD;
+    done.tmpl.requiredCount = 4;
+    qlog.addHistory(done);
     reg.add(player, qlog);
 
     save::ByteWriter w;
@@ -24315,6 +24831,8 @@ int main() {
     testQuestAndTradeListsScroll();
     testHurtDirection();
     testFirstStepsGiveAGoal();
+    testOneLanguageEverywhere();
+    testSaveKeepsQuestsWithoutText();
     testHudAndButtonsDoNotOverlap();
     testLoadingIsAPanelNotACurtain();
     testUiThemeObeysItsOwnRules();

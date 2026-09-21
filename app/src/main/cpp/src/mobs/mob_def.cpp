@@ -3,6 +3,7 @@
  * @brief Мобы: определения, конечный автомат ИИ, спавн, боссы.
  */
 #include "mob_def.h"
+#include "../config/localization.h"
 #include "../core/log.h"
 
 namespace mobs {
@@ -327,6 +328,10 @@ MobRegistry::MobRegistry() {
 const MobRegistry& MobRegistry::instance() {
     static MobRegistry r;
     return r;
+}
+
+const char* MobRegistry::name(u16 id) const {
+    return config::tr(get(id).name);
 }
 
 const MobDef& MobRegistry::get(u16 id) const {

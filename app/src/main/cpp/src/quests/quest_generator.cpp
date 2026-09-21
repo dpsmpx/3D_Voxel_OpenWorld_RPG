@@ -45,29 +45,6 @@ struct GenRng {
     f32 f01() { return (f32)(next() & 0xFFFFFF) / (f32)0x1000000; }
 };
 
-/// Подстановка в шаблон квеста.
-///
-/// Шаблонов ровно две формы, и путать их нельзя:
-///   заголовок — один «%s» (что именно: «Cull the Wolf»),
-///   описание  — «%d», а следом «%s» («Slay 5 Wolf near…»).
-///
-/// Раньше подстановка была одна на обе формы и передавала аргументы в
-/// порядке (строка, число, строка) — тогда как описание ждёт (число,
-/// строка). То есть «%d» получал указатель, а «%s» — число, и printf
-/// шёл читать строку по адресу 5. Падал на этом КАЖДЫЙ квест «убить»
-/// и «собрать», то есть большинство заданий в игре; не всплывало это
-/// потому, что ни одна проверка до сих пор не доводила генератор до
-/// готового текста.
-void fmtTitle(char* out, usize outSize, const char* fmt, const char* name) {
-    std::snprintf(out, outSize, fmt, name ? name : "");
-}
-
-void fmtDesc(char* out, usize outSize, const char* fmt,
-             i32 count, const char* name)
-{
-    std::snprintf(out, outSize, fmt, count, name ? name : "");
-}
-
 } // namespace
 
 QuestDifficulty pickDifficulty(u32 playerLevel, u64 seed) {
@@ -361,66 +338,6 @@ void finalizeQuest(Quest& q,
     if (q.tmpl.difficulty >= QuestDifficulty::Hard) {
         q.rewards.itemBlockId = world::IRON_ORE;
         q.rewards.itemCount   = 1 + (u8)(rng.next() % 3);
-    }
-
-    // --- Title / Description ---
-    switch (q.tmpl.type) {
-        case QuestType::Kill: {
-            const auto& mob = mobs::mobRegistry().get(q.tmpl.targetMobId);
-            fmtTitle(q.title, sizeof(q.title), tmplDef.titlePattern, mob.name);
-            fmtDesc(q.description, sizeof(q.description),
-                    tmplDef.descPattern, count, mob.name);
-            break;
-        }
-        case QuestType::Collect: {
-            const char* blockName = "materials";
-            // Упрощённо — используем имя блока по ID
-            // В реальном проекте — BlockRegistry::get(id).name
-            static const char* names[] = {
-                "air","stone","dirt","grass","sand","water","wood",
-                "leaves","snow","ice","lava","iron ore","gold ore","bedrock"
-            };
-            if (q.tmpl.targetBlockId < 14) blockName = names[q.tmpl.targetBlockId];
-            fmtTitle(q.title, sizeof(q.title), tmplDef.titlePattern, blockName);
-            fmtDesc(q.description, sizeof(q.description),
-                    tmplDef.descPattern, count, blockName);
-            break;
-        }
-        case QuestType::Explore: {
-            std::snprintf(q.title, sizeof(q.title), "%s", tmplDef.titlePattern);
-            std::snprintf(q.description, sizeof(q.description),
-                          "%s Target: (%d, %d, %d).",
-                          tmplDef.descPattern,
-                          q.tmpl.targetLocation.x,
-                          q.tmpl.targetLocation.y,
-                          q.tmpl.targetLocation.z);
-            break;
-        }
-        case QuestType::Treasure: {
-            std::snprintf(q.title, sizeof(q.title), "%s", tmplDef.titlePattern);
-            // Глубину называем отдельно: без неё игрок стоит на
-            // нужном месте и не понимает, что копать надо вниз.
-            std::snprintf(q.description, sizeof(q.description),
-                          "%s Ruins at (%d, %d), buried %d blocks down.",
-                          tmplDef.descPattern,
-                          q.tmpl.targetLocation.x,
-                          q.tmpl.targetLocation.z,
-                          6);
-            break;
-        }
-        case QuestType::Defend: {
-            std::snprintf(q.title, sizeof(q.title), "%s", tmplDef.titlePattern);
-            std::snprintf(q.description, sizeof(q.description),
-                          tmplDef.descPattern, count);
-            break;
-        }
-        case QuestType::Deliver: {
-            std::snprintf(q.title, sizeof(q.title), "%s", tmplDef.titlePattern);
-            std::snprintf(q.description, sizeof(q.description), "%s",
-                          tmplDef.descPattern);
-            break;
-        }
-        default: break;
     }
 }
 

@@ -50,11 +50,11 @@ u32 creatureColor(ecs::Registry& reg, ecs::Entity e) {
 
 const char* creatureName(ecs::Registry& reg, ecs::Entity e) {
     if (auto* tag = reg.get<mobs::MobTag>(e)) {
-        const char* n = mobs::mobRegistry().get(tag->id).name;
+        const char* n = mobs::mobRegistry().name(tag->id);
         return n ? n : "";
     }
     if (auto* tag = reg.get<npc::NpcTag>(e)) {
-        const char* n = npc::npcRegistry().get(tag->id).name;
+        const char* n = npc::npcRegistry().name(tag->id);
         return n ? n : "";
     }
     return "";

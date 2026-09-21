@@ -80,6 +80,7 @@ add_library(native-lib SHARED
 
     # Настройки, локализация, таймер игры
     src/config/localization.cpp
+    src/config/content_ru.cpp
     src/config/playtime.cpp
     src/config/settings.cpp
 
@@ -189,6 +190,7 @@ add_library(native-lib SHARED
     # Квесты
     src/quests/quest.cpp
     src/quests/quest_def.cpp
+    src/quests/quest_text.cpp
     src/quests/quest_generator.cpp
     src/quests/story.cpp
 

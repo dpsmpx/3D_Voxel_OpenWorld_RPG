@@ -16,25 +16,25 @@ namespace quests {
 namespace {
 
 const StoryChapter CHAPTERS[STORY_CHAPTERS] = {
-    { "Дорога к соседям",
-      "Старик просит дойти до соседней деревни по каменной дороге и "
-      "узнать, отчего оттуда никто не приходит.",
+    { "The road to the neighbours",
+      "The elder asks you to follow the stone road to the next "
+      "village and find out why nobody comes from there.",
       QuestType::Explore },
-    { "Тень на западе",
-      "Говорят, за дорогой начинается лес, где не поют птицы. "
-      "Дойти и посмотреть своими глазами.",
+    { "A shadow in the west",
+      "They say a forest begins past the road where the birds do "
+      "not sing. Go and see it for yourself.",
       QuestType::Explore },
-    { "Замок среди сухостоя",
-      "В глубине Чёрного леса стоит замок. Кто его строил, не помнит "
-      "никто — но ворота там есть, и они открыты.",
+    { "The castle among dead wood",
+      "Deep in the Black Forest stands a castle. Nobody remembers "
+      "who built it, but its gates are there, and they are open.",
       QuestType::Explore },
-    { "Что спрятали под руинами",
-      "Старые развалины помнят больше людей. Под ними замуровано то, "
-      "за чем и стоило идти.",
+    { "What the ruins hid",
+      "The old ruins remember more than people do. Walled up "
+      "beneath them is the thing worth coming for.",
       QuestType::Treasure },
-    { "Логово",
-      "Осталось последнее: земля, где водится один-единственный "
-      "зверь. Разобраться с её хозяевами.",
+    { "The lair",
+      "One thing is left: a land where a single beast is found. "
+      "Deal with its masters.",
       QuestType::Kill },
 };
 
@@ -108,26 +108,20 @@ ecs::Entity offerFirstSteps(ecs::Registry& reg,
 
     if (targeted) {
         q.tmpl.targetRadius = 16;
-        std::snprintf(q.title, sizeof(q.title), "%s", "Найти людей");
-        std::snprintf(q.description, sizeof(q.description), "%s",
-                      "Где-то рядом есть деревня. Дойти до неё и "
-                      "поговорить с теми, кто там живёт.");
+        q.textSource = QuestTextSource::FirstStepVillage;
     } else {
         // Людей рядом нет — тогда первое, что можно сделать голыми
         // руками: набрать дерева. С него начинается всё остальное.
         q.tmpl.type = QuestType::Collect;
         q.tmpl.targetBlockId = world::WOOD;
         q.tmpl.requiredCount = 4;
-        std::snprintf(q.title, sizeof(q.title), "%s", "Первое дерево");
-        std::snprintf(q.description, sizeof(q.description), "%s",
-                      "Людей поблизости не видно. Набрать дерева — "
-                      "с него начинается и топор, и всё остальное.");
+        q.textSource = QuestTextSource::FirstStepWood;
     }
 
     const ecs::Entity qe = reg.create();
     reg.add(qe, q);
     log->addActive(qe);
-    LOGI("First steps: %s", q.title);
+    LOGI("First steps: %s", questTitle(q).c_str());
     return qe;
 }
 
@@ -152,7 +146,7 @@ ecs::Entity offerStoryChapter(ecs::Registry& reg,
 
     Quest q{};
     q.id           = nextQuestId();
-    q.isStory      = true;
+    q.textSource   = QuestTextSource::Story;
     q.storyChapter = ch;
     q.state        = QuestState::Available;
     q.ownerEntity  = (u32)player;
@@ -270,21 +264,13 @@ ecs::Entity offerStoryChapter(ecs::Registry& reg,
     }
     if (!targeted) return {};
 
-    std::snprintf(q.title, sizeof(q.title), "%s", def.title);
-    if (q.tmpl.type == QuestType::Kill) {
-        std::snprintf(q.description, sizeof(q.description),
-                      "%s Нужно %d.", def.text, q.tmpl.requiredCount);
-    } else {
-        std::snprintf(q.description, sizeof(q.description),
-                      "%s Идти к (%d, %d).", def.text,
-                      q.tmpl.targetLocation.x, q.tmpl.targetLocation.z);
-    }
 
     const ecs::Entity e = reg.create();
     reg.add(e, q);
     reg.add(e, ecs::Kind{ ecs::EntityKind::Item });
     sp->activeId = q.id;
-    LOGI("Сюжет: выдана глава %u — %s", (unsigned)(ch + 1), q.title);
+    LOGI("Сюжет: выдана глава %u — %s", (unsigned)(ch + 1),
+         questTitle(q).c_str());
     return e;
 }
 
