@@ -187,8 +187,18 @@ int main(int argc, char** argv) {
         else if (k == "--mirror") o.mirror = true;
         else if (k == "--screen") {
             const std::string v = next();
-            if      (v == "hud")    o.screen = ui::Screen::Hud;
-            else if (v == "quests") o.screen = ui::Screen::QuestLog;
+            if      (v == "hud")        o.screen = ui::Screen::Hud;
+            else if (v == "quests")     o.screen = ui::Screen::QuestLog;
+            else if (v == "pause")      o.screen = ui::Screen::PauseMenu;
+            else if (v == "inventory")  o.screen = ui::Screen::Inventory;
+            else if (v == "settings")   o.screen = ui::Screen::Settings;
+            else if (v == "skills")     o.screen = ui::Screen::SkillTree;
+            else if (v == "attributes") o.screen = ui::Screen::Attributes;
+            else if (v == "reputation") o.screen = ui::Screen::Reputation;
+            else if (v == "saveload")   o.screen = ui::Screen::SaveLoad;
+            else if (v == "crafting")   o.screen = ui::Screen::Crafting;
+            else if (v == "trade")      o.screen = ui::Screen::Trade;
+            else if (v == "enchant")    o.screen = ui::Screen::Enchant;
             else { std::printf("uishot: неизвестный экран «%s»\n", v.c_str()); return 1; }
         }
         else if (k == "--target") o.target = true;
