@@ -150,6 +150,7 @@ public:
     f32 inventoryScrollMax() const { return invScroll.maxOffset; }
     f32 inventoryScrollOffset() const { return invScroll.offset; }
     f32 questScrollMax() const { return questScroll.maxOffset; }
+    f32 questScrollOffset() const { return questScroll.offset; }
     f32 tradeScrollMax() const { return tradeScroll.maxOffset; }
     void scrollQuestsTo(f32 o) {
         questScroll.offset = o; questScroll.velocity = 0.f;

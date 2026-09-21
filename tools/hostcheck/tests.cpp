@@ -5546,7 +5546,18 @@ void testQuestAndTradeListsScroll() {
             q.progress = 1;
             q.state = quests::QuestState::Active;
             q.ownerEntity = (u32)pl.entity();
-            std::snprintf(q.title, sizeof(q.title), "Quest %d", n);
+            // Название тем длиннее, чем дальше задание в списке.
+            //
+            // Иначе прокрутку не отличить от её отсутствия: строк
+            // видно поровну, и при одинаковых названиях в кадре
+            // ровно столько же вершин. Мутация, от которой строки
+            // перестали ехать, именно так и прошла проверку.
+            char title[64];
+            int at = std::snprintf(title, sizeof(title), "Q%d", n);
+            for (int k = 0; k < n * 4 && at < (int)sizeof(title) - 2; ++k)
+                title[at++] = 'x';
+            title[at] = '\0';
+            std::snprintf(q.title, sizeof(q.title), "%s", title);
             const ecs::Entity qe = reg.create();
             reg.add(qe, q);
             log->addActive(qe);
@@ -5585,10 +5596,17 @@ void testQuestAndTradeListsScroll() {
 
         const auto atTop = shot(0.f);
         const auto atEnd = shot(1e6f);
+        // Два УТВЕРЖДЕНИЯ, а не одно через «или».
+        //
+        // Сперва тут стояло `A || B`, и B («не вынесло наверх»)
+        // истинно почти всегда — мутация, от которой строки вовсе
+        // перестали ехать, прошла проверку насквозь. Дизъюнкция в
+        // проверке почти всегда значит, что проверяется слабейшее из
+        // двух.
         std::snprintf(m, sizeof(m),
                       "прокрутка меняет показанное (вершин в списке %u -> %u)",
                       atTop.first, atEnd.first);
-        check(atTop.first != atEnd.first || atEnd.second <= atTop.second, m);
+        check(atTop.first != atEnd.first, m);
         std::snprintf(m, sizeof(m),
                       "и не выносит строки поверх заголовка (%u -> %u)",
                       atTop.second, atEnd.second);
@@ -5605,9 +5623,13 @@ void testQuestAndTradeListsScroll() {
             frame();
             sys.routeTouch(11, x, y - sys.layout().dp(40.f), 2);
             frame();
+            // Смотреть надо на СМЕЩЕНИЕ, а не на максимум: максимум
+            // больше нуля и без всякого жеста — он про то, что
+            // листать есть что. Пока проверка сверяла его, мутация,
+            // отключавшая жест, проходила незамеченной.
             std::snprintf(m, sizeof(m), "палец листает журнал (смещение %.1f)",
-                          (double)sys.questScrollMax());
-            check(sys.questScrollMax() > 0.f, m);
+                          (double)sys.questScrollOffset());
+            check(sys.questScrollOffset() > 0.f, m);
             sys.routeTouch(11, x, y - sys.layout().dp(40.f), 1);
             frame();
         }
