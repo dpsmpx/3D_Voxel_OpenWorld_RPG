@@ -5037,7 +5037,51 @@ void testCompactHudUnderMenus() {
         ui::HudLayout lean = full;
         lean.setHudCompact(true);
 
-        // ---- Сжатый столбец действительно короче ----
+        // ---- Сами полосы тоньше ----
+        //
+        // Проверять один лишь «столбец короче» бессмысленно: он
+        // короче и оттого, что кончается на Резонансе, даже если
+        // полосы остались прежней высоты. Мутация, вернувшая полную
+        // высоту полосы, прошла такую проверку насквозь. Проверять
+        // надо оба изменения по отдельности.
+        if (lean.resourceBar(0).h >= full.resourceBar(0).h - 0.01f) {
+            ++shrunk;
+            std::snprintf(m, sizeof(m),
+                          "%s: полоса ресурса в сжатом виде не тоньше "
+                          "(%.0f против %.0f)", sz.name,
+                          (double)lean.resourceBar(0).h,
+                          (double)full.resourceBar(0).h);
+            check(false, m);
+        }
+
+        // ---- И столбец кончается там, где должен ----
+        //
+        // В сжатом виде — на Резонансе; в полном — на строке
+        // задания. Мутация, оставившая полный состав, прошла проверку
+        // «столбец короче»: полосы-то стали тоньше, и он всё равно
+        // выходил короче.
+        {
+            const f32 leanBottom = lean.hudLeftColumn().y + lean.hudLeftColumn().h;
+            const f32 res = lean.resonanceBar().y + lean.resonanceBar().h;
+            if (std::fabs(leanBottom - res) > 0.01f) {
+                ++shrunk;
+                std::snprintf(m, sizeof(m),
+                              "%s: сжатый столбец не кончается на Резонансе "
+                              "(%.0f против %.0f)", sz.name,
+                              (double)leanBottom, (double)res);
+                check(false, m);
+            }
+            const f32 fullBottom = full.hudLeftColumn().y + full.hudLeftColumn().h;
+            const f32 trk = full.questTracker().y + full.questTracker().h;
+            if (std::fabs(fullBottom - trk) > 0.01f) {
+                ++shrunk;
+                std::snprintf(m, sizeof(m),
+                              "%s: полный столбец не кончается строкой задания",
+                              sz.name);
+                check(false, m);
+            }
+        }
+
         const f32 tall = full.hudLeftColumn().h;
         const f32 low  = lean.hudLeftColumn().h;
         if (low >= tall - 0.01f) {
@@ -5077,28 +5121,60 @@ void testCompactHudUnderMenus() {
                   worstCount);
     check(unreachable == 0, m);
 
-    // ---- Подписи в сжатом столбце не рисуются ----
+    // ---- Сжатый вид включает сама UiSystem, и в столбце рисуется
+    //      меньше ----
     //
-    // В полоску высотой в восемь точек подпись не помещается и лезет
-    // наружу. Проверка по исходнику: обе ветки — и полосы ресурсов, и
-    // Резонанс — должны спрашивать у раскладки, сжата ли она.
+    // Проверять это по ИСХОДНИКУ бесполезно: мутация, менявшая
+    // `if (!compact)` на `if (true)`, оставляла вызов
+    // `layout_.hudCompact()` на месте — строка находилась, проверка
+    // проходила, подписи рисовались. Ровно та же сверка модели с
+    // моделью, на которой я попался итерацией раньше.
+    //
+    // Поэтому здесь — настоящий кадр: сжатый вид должен включаться
+    // от самого экрана, и вершин в столбце при нём должно быть
+    // МЕНЬШЕ, чем на чистом HUD. Подписи, золото, воздух и строка
+    // задания — это вершины, и если они вернутся, счёт это покажет.
     {
-        const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
-        if (!src.empty()) {
-            const usize res = src.find("void UiSystem::drawHudResources(");
-            check(res != std::string::npos, "полосы ресурсов на месте");
-            if (res != std::string::npos) {
-                const std::string body = src.substr(res, 2600);
-                check(body.find("layout_.hudCompact()") != std::string::npos,
-                      "полосы ресурсов знают про сжатый вид");
+        constexpr i32 W = 1280, H = 720, DPI = 320;
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        struct Shot { bool compact; u32 verts; };
+        auto shoot = [&](ui::Screen sc) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(DPI);
+            sys.setScreenSize(W, H);
+            sys.screen = sc;
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+            const ui::Rect first = sys.layout().resourceBar(0);
+            // Область берётся с запасом вниз: в полном виде под
+            // полосами стоят золото, воздух и строка задания, и
+            // именно их присутствие здесь и меряется.
+            const ui::Rect col{ first.x, first.y, first.w,
+                                sys.layout().dp(200.f) };
+            u32 n = 0;
+            for (const ui::UiVertex& v : sys.frameVertices()) {
+                const f32 px = (v.pos.x * 0.5f + 0.5f) * (f32)W;
+                const f32 py = (v.pos.y * 0.5f + 0.5f) * (f32)H;
+                if (px >= col.x && px <= col.x + col.w &&
+                    py >= col.y && py <= col.y + col.h) ++n;
             }
-            const usize rb = src.find("void UiSystem::drawResonanceBar(");
-            if (rb != std::string::npos) {
-                const std::string body = src.substr(rb, 2200);
-                check(body.find("layout_.hudCompact()") != std::string::npos,
-                      "и Резонанс тоже");
-            }
-        }
+            return Shot{ sys.layout().hudCompact(), n };
+        };
+
+        const Shot hud = shoot(ui::Screen::Hud);
+        const Shot bag = shoot(ui::Screen::Inventory);
+
+        check(!hud.compact, "на чистом HUD столбец полный");
+        check(bag.compact, "а под инвентарём — сжатый");
+        std::snprintf(m, sizeof(m),
+                      "в сжатом столбце рисуется меньше, чем в полном "
+                      "(%u вершин против %u)", bag.verts, hud.verts);
+        check(bag.verts < hud.verts, m);
+        check(hud.verts > 0, "и на HUD столбец не пуст");
     }
 
     // ---- Сведения о предмете не занимают место, пока не нужны ----
