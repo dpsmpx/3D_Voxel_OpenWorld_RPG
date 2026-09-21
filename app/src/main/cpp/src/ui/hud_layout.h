@@ -409,19 +409,110 @@ public:
     // по вертикали места меньше всего, а по горизонтали оно пустует.
     // Поэтому сетка.
 
+    /// Весь левый столбец HUD одним прямоугольником: от полосы опыта
+    /// до полосы воздуха.
+    ///
+    /// Нужен он затем, что **HUD рисуется и под полноэкранными
+    /// экранами**, и это не небрежность: `paused()` гасит только ввод
+    /// и музыку, мир продолжает жить. Пока игрок перекладывает
+    /// предметы, его бьют — и полоса здоровья ему нужна ровно тогда.
+    ///
+    /// А значит, меню обязано знать, где столбец стоит, и обходить
+    /// его. Не знало: заголовок «INVENTORY» рисовался поверх полосы
+    /// маны, «BUY»/«SELL» — поверх здоровья и выносливости. Видно
+    /// это стало на снимках `tools/uishot`.
+    ///
+    /// Прямоугольник уже зеркальный: у левши столбец справа, и меню
+    /// отступает в другую сторону, ничего об этом не зная.
+    /// Рисуется ли под текущим экраном HUD.
+    ///
+    /// Выставляет `UiSystem::buildFrame` — тот же список, по которому
+    /// он решает, звать ли `drawHud`. Без этого раскладка обходила бы
+    /// столбец и там, где столбца нет: экран создания мира рисуется
+    /// на чистом фоне, и отнятые у него 120 точек высоты стоили ему
+    /// экранной клавиатуры.
+    void setHudBehind(bool v) { hudBehind_ = v; }
+    bool hudBehind() const { return hudBehind_; }
+
+    Rect hudLeftColumn() const {
+        const Rect first = resourceBar(0);
+        const Rect last  = questTracker();
+        const f32 x = std::min(first.x, last.x);
+        const f32 wdt = std::max(first.x + first.w, last.x + last.w) - x;
+        return { x, first.y, wdt, (last.y + last.h) - first.y };
+    }
+
+    /// С какой стороны и насколько меню отступает от столбца HUD.
+    ///
+    /// Уводить меню ВНИЗ нельзя: столбец занимает около 120 точек, а
+    /// на 640x360 (это и 1280x720, и 960x540) высоты всего 360 — под
+    /// содержимое не осталось бы ничего. Зато по ширине столбец узок
+    /// (160 точек из 640), и вбок места хватает.
+    f32 menuLeft() const {
+        const f32 pad = dp(theme::SPACE_XL_DP);
+        if (!hudBehind_) return left() + pad;
+        const Rect c = hudLeftColumn();
+        // Столбец слева — начинаем за ним; справа (левша) — от края.
+        return c.x <= left() + dp(theme::SPACE_L_DP) + 1.f
+                   ? c.x + c.w + pad
+                   : left() + pad;
+    }
+    f32 menuRight() const {
+        const f32 pad = dp(theme::SPACE_XL_DP);
+        if (!hudBehind_) return right() - pad;
+        const Rect c = hudLeftColumn();
+        return c.x > left() + dp(theme::SPACE_L_DP) + 1.f
+                   ? c.x - pad
+                   : right() - pad;
+    }
+
     /// Область, отведённая содержимому полноэкранного меню.
+    ///
+    /// Вбок отступает только ЗАГОЛОВОК: он стоит в той же полосе
+    /// высоты, что столбец HUD, и иначе ложится ему на полосы.
+    /// Содержимое отступать вбок не может — у него и так тесно: на
+    /// 640x360 отнять 176 точек ширины значит не вместить ни сетку
+    /// сумки, ни строки характеристик. Поэтому оно уходит НИЖЕ
+    /// столбца и берёт всю ширину: ниже столбца пусто.
+    ///
+    /// Считается от низа заголовка, а не от `top() + MENU_TITLE_DP`:
+    /// прежняя формула забывала, что заголовок сам начинается с
+    /// отступа, и содержимое прилипало к нему вплотную.
     Rect menuArea() const {
         const f32 pad = dp(theme::SPACE_XL_DP);
-        return { left() + pad, top() + dp(MENU_TITLE_DP) + pad,
-                 (right() - left()) - pad * 2.f,
-                 (bottom() - top()) - dp(MENU_TITLE_DP) - pad * 2.f };
+        const Rect t = menuTitle();
+        const f32 below = hudBehind_
+            ? hudLeftColumn().y + hudLeftColumn().h : 0.f;
+        const f32 y = std::max(t.y + t.h, below) + pad;
+        const f32 x = left() + pad;
+        return { x, y, (right() - pad) - x, bottom() - pad - y };
     }
 
     /// Заголовок меню — над областью содержимого.
     Rect menuTitle() const {
         const f32 pad = dp(theme::SPACE_XL_DP);
-        return { left() + pad, top() + pad,
-                 (right() - left()) - pad * 2.f, dp(MENU_TITLE_DP) };
+        const f32 x = menuLeft();
+        return { x, top() + pad, menuRight() - x, dp(MENU_TITLE_DP) };
+    }
+
+    /// Ряд вкладок под заголовком экрана.
+    ///
+    /// Был у торговли и настроек — у каждой свой и в пикселях: у
+    /// торговли вкладки стояли по (40, 74), то есть ровно на полосах
+    /// здоровья и маны.
+    Rect menuTab(u32 i, u32 count) const {
+        const Rect a = menuArea();
+        const f32 gap = dp(theme::SPACE_S_DP);
+        const f32 h = dp(theme::TOUCH_REGULAR_DP);
+        const f32 wdt = count ? (a.w - gap * (f32)(count - 1)) / (f32)count : a.w;
+        return { a.x + (f32)i * (wdt + gap), a.y, wdt, h };
+    }
+
+    /// Содержимое экрана — под рядом вкладок.
+    Rect menuBelowTabs() const {
+        const Rect a = menuArea();
+        const f32 top = dp(theme::TOUCH_REGULAR_DP) + dp(theme::SPACE_M_DP);
+        return { a.x, a.y + top, a.w, a.h - top };
     }
 
     /// Ячейка сетки меню. Ряды считаются сверху, колонки слева.
@@ -450,6 +541,19 @@ public:
         Rect area;
         f32  cell = 0.f, gap = 0.f;
         u32  cols = 1, rows = 1;
+        u32  total = 0;      ///< сколько ячеек просили разместить
+
+        /// Сколько рядов помещается в отведённую высоту целиком.
+        u32 rowsVisible() const {
+            if (cell <= 0.f) return 0;
+            const f32 n = (area.h + gap) / (cell + gap);
+            return n < 1.f ? 0u : (u32)n;
+        }
+        /// Сколько ячеек НЕ поместилось. Ноль — всё видно.
+        u32 overflow() const {
+            const u32 fits = rowsVisible() * cols;
+            return total > fits ? total - fits : 0u;
+        }
 
         Rect at(u32 i) const {
             const u32 c = cols ? (i % cols) : 0;
@@ -465,16 +569,39 @@ public:
         }
     };
 
+    /// Сетка ячеек под `count` штук внутри `area`.
+    ///
+    /// Раньше считалась только ШИРИНА: столбцов брали сколько влезет,
+    /// ряды получались сколько выйдет — и сумка из 27 ячеек уезжала
+    /// за нижний край экрана. На снимке `uishot` нижний ряд обрезан
+    /// ровно поэтому.
+    ///
+    /// Теперь высота тоже считается. Не влезает при обычной ячейке —
+    /// пробуем наименьшую, какую ещё можно нажать пальцем
+    /// (`TOUCH_MIN_DP`); мельче нельзя, это не украшение, а нижняя
+    /// граница попадания. Если не помогает и она, `overflow()`
+    /// говорит, сколько ячеек не поместилось: рисующий обязан не
+    /// делать вид, что их нет, а показать их другим способом. Молча
+    /// рисовать за краем — худший из вариантов: предмет туда попасть
+    /// может, а палец нет.
     CellGrid cellGrid(Rect area, u32 count) const {
         CellGrid g;
         g.area = area;
-        g.cell = dp(theme::TOUCH_REGULAR_DP);
         g.gap  = dp(theme::SPACE_S_DP);
-        if (count == 0) { g.cols = g.rows = 0; return g; }
-        f32 fit = (area.w + g.gap) / (g.cell + g.gap);
-        g.cols = fit < 1.f ? 1u : (u32)fit;
-        if (g.cols > count) g.cols = count;
-        g.rows = (count + g.cols - 1) / g.cols;
+        g.total = count;
+        if (count == 0) { g.cols = g.rows = 0; g.cell = dp(theme::TOUCH_REGULAR_DP); return g; }
+
+        auto layOut = [&](f32 cell) {
+            g.cell = cell;
+            const f32 fit = (area.w + g.gap) / (cell + g.gap);
+            g.cols = fit < 1.f ? 1u : (u32)fit;
+            if (g.cols > count) g.cols = count;
+            g.rows = (count + g.cols - 1) / g.cols;
+            return (f32)g.rows * (cell + g.gap) - g.gap <= area.h;
+        };
+
+        if (!layOut(dp(theme::TOUCH_REGULAR_DP)))
+            layOut(dp(theme::TOUCH_MIN_DP));
         return g;
     }
 
@@ -508,10 +635,23 @@ public:
     ///
     /// Её не было: чтобы узнать, что делать, приходилось открывать
     /// журнал, а журнал показывал только ЧИСЛО активных заданий.
+    /// Строка текущего задания — под всем столбцом ресурсов.
+    ///
+    /// Отмерялась от ПОСЛЕДНЕЙ ПОЛОСЫ РЕСУРСОВ — а ниже неё с шестой
+    /// итерации стоят Резонанс, золото и воздух. Строка ложилась
+    /// прямо на золото: на снимке «WOOD FOR THE PALISADE» читалось
+    /// поверх «100 G». Считать надо от низа столбца, а не от того,
+    /// что когда-то было его низом.
+    /// Она же — по ширине СТОЛБЦА, а не своей.
+    ///
+    /// Своя ширина была 220 точек против 160 у столбца, и зеркало к
+    /// ней не применялось: у левши столбец уезжает вправо, а строка
+    /// вылезала за край экрана. Увидеть это было нечем — строки не
+    /// было в списке проверяемых прямоугольников.
     Rect questTracker() const {
-        const Rect last = resourceBar(RES_BARS - 1);
-        return { last.x, last.y + last.h + dp(theme::SPACE_XL_DP),
-                 dp(TRACKER_W_DP), dp(TRACKER_H_DP) };
+        const Rect air = airBar();
+        return { air.x, air.y + air.h + dp(theme::SPACE_M_DP),
+                 air.w, dp(TRACKER_H_DP) };
     }
 
     static constexpr f32 QUEST_DETAILS_FRAC = 0.40f;
@@ -581,17 +721,40 @@ public:
         // в ней стоят кнопки. Если при обычном зазоре ряды всё же не
         // влезают, ужимается ЗАЗОР, а не строка: расстояние между
         // рядами можно потерять, нажимаемость — нет.
+        // Если и с ужатым зазором строка выходит ниже цели касания,
+        // ужимать больше нечего — и столбец надо разбить НАДВОЕ.
+        // Экран альбомный: по высоте места мало всегда, по ширине
+        // оно пустует. Раньше этой развилки не было, строка просто
+        // ставилась в minH и уезжала за нижний край области —
+        // четвёртая характеристика оказывалась там, куда не попасть
+        // пальцем.
+        u32 cols = 1;
         f32 g = dp(theme::SPACE_M_DP);
-        f32 h = (a.h - g * (f32)(ATTR_COUNT - 1)) / (f32)ATTR_COUNT;
+        auto rowHeight = [&](u32 c, f32 gap) {
+            const u32 rows = (ATTR_COUNT + c - 1) / c;
+            return (a.h - gap * (f32)(rows - 1)) / (f32)rows;
+        };
+
+        f32 h = rowHeight(cols, g);
+        if (h < minH) { g = dp(theme::SPACE_XS_DP); h = rowHeight(cols, g); }
         if (h < minH) {
-            g = dp(theme::SPACE_XS_DP);
-            h = (a.h - g * (f32)(ATTR_COUNT - 1)) / (f32)ATTR_COUNT;
+            cols = 2;
+            g = dp(theme::SPACE_M_DP);
+            h = rowHeight(cols, g);
+            if (h < minH) { g = dp(theme::SPACE_XS_DP); h = rowHeight(cols, g); }
         }
         if (h > maxH) h = maxH;
         if (h < minH) h = minH;
 
-        const f32 wdt = a.w < dp(ATTR_ROW_MAX_W_DP) ? a.w : dp(ATTR_ROW_MAX_W_DP);
-        return { a.x + (a.w - wdt) * 0.5f, a.y + (f32)i * (h + g), wdt, h };
+        const f32 colGap = cols > 1 ? dp(theme::SPACE_L_DP) : 0.f;
+        const f32 colW = (a.w - colGap * (f32)(cols - 1)) / (f32)cols;
+        const f32 wdt = colW < dp(ATTR_ROW_MAX_W_DP) ? colW
+                                                     : dp(ATTR_ROW_MAX_W_DP);
+        const u32 col = cols > 1 ? (i % cols) : 0;
+        const u32 row = cols > 1 ? (i / cols) : i;
+        const f32 colX = a.x + (f32)col * (colW + colGap);
+        return { colX + (colW - wdt) * 0.5f, a.y + (f32)row * (h + g),
+                 wdt, h };
     }
 
     /// i — номер строки, plus — прибавить (иначе убавить).
@@ -778,6 +941,7 @@ private:
     theme::Metrics m_{};
     SafeInsets     si_{};
     bool           mirror_ = false;
+    bool           hudBehind_ = false;
 };
 
 } // namespace ui

@@ -199,6 +199,10 @@ void UiSystem::buildFrame(player::Player& player,
         cachedAirPct = hr.airPct;
     }
 
+    // Раскладка обходит столбец ресурсов ровно там, где он есть, —
+    // и узнаёт об этом из того же списка, по которому HUD рисуется.
+    layout_.setHudBehind(hudVisibleUnder(screen));
+
     switch (screen) {
         case Screen::Hud:
             drawHud(player, world, fps);
@@ -861,15 +865,28 @@ const std::vector<MenuEntry>& menuEntries() {
     return items;
 }
 
-void UiSystem::drawPauseMenu(player::Player& player) {
+// ============================================================
+// Фон и заголовок полноэкранного экрана
+// ============================================================
+//
+// HUD под таким экраном рисуется намеренно: `paused()` гасит только
+// ввод и музыку, мир продолжает жить, и полоса здоровья игроку
+// нужна ровно тогда, когда он копается в сумке. Затемнение гасит
+// игру за спиной, но не HUD — а заголовок отмеряется от раскладки,
+// которая про столбец HUD знает и обходит его.
+void UiSystem::drawMenuBackdrop(const char* title) {
     ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
              withAlpha(theme::Ink, theme::ALPHA_SCRIM));
-
-    // Первое, что должен сообщать экран, — что игра остановлена.
-    const Rect title = layout_.menuTitle();
-    ui_.text(T(StrKey::Menu_Pause), title.x,
-             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
+    if (!title || !title[0]) return;
+    const Rect t = layout_.menuTitle();
+    ui_.text(title, t.x,
+             t.y + (t.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
              theme::TEXT_TITLE, theme::TextPrimary);
+}
+
+void UiSystem::drawPauseMenu(player::Player& player) {
+    // Первое, что должен сообщать экран, — что игра остановлена.
+    drawMenuBackdrop(T(StrKey::Menu_Pause));
 
     // Пунктов было восемь в столбик, каждый своего цвета: зелёный,
     // синий, фиолетовый, оранжевый, жёлтый, голубой, оливковый,
@@ -979,16 +996,12 @@ void UiSystem::drawPauseMenu(player::Player& player) {
 // Inventory
 // ============================================================
 void UiSystem::drawInventory(player::Player& player) {
-    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
-             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
+    drawMenuBackdrop(T(StrKey::Inv_Title));
 
     auto* inv = player.inventory();
     if (!inv) return;
 
     const Rect title = layout_.menuTitle();
-    ui_.text(T(StrKey::Inv_Title), title.x,
-             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
-             theme::TEXT_TITLE, theme::TextPrimary);
 
     if (auto* wal = player.wallet()) {
         char gold[32];
@@ -1383,9 +1396,7 @@ SettingsLayout UiSystem::settingsLayout() const {
 }
 
 void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(10, 15, 25, 240));
-
-    ui_.text(T(StrKey::Settings_Title), 40.f, 24.f, 3.f, COL_WHITE);
+    drawMenuBackdrop(T(StrKey::Settings_Title));
 
     drawCloseButton([this]() { screen = Screen::PauseMenu; });
 
@@ -1677,12 +1688,10 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
 // Skill Tree
 // ============================================================
 void UiSystem::drawSkillTreeScreen(player::Player& player) {
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(10, 5, 30, 235));
+    drawMenuBackdrop("TREE OF KNOWLEDGE");
 
     auto* tree = player.skillTree();
     if (!tree) return;
-
-    ui_.text("TREE OF KNOWLEDGE", (float)screenW_ * 0.35f, 24.f, 3.f, COL_WHITE);
 
     char ptsBuf[64];
     std::snprintf(ptsBuf, sizeof(ptsBuf), "Skill Points: %d", tree->unspentPoints);
@@ -1756,8 +1765,7 @@ void UiSystem::drawSkillTreeScreen(player::Player& player) {
 // Attributes
 // ============================================================
 void UiSystem::drawAttributesScreen(player::Player& player) {
-    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
-             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
+    drawMenuBackdrop(T(StrKey::Menu_Attributes));
 
     auto* prog = player.progression();
     auto* attr = player.attributes();
@@ -1767,9 +1775,6 @@ void UiSystem::drawAttributesScreen(player::Player& player) {
         ? reg->get<progression::AttributeBuffs>(player.entity()) : nullptr;
 
     const Rect title = layout_.menuTitle();
-    ui_.text(T(StrKey::Menu_Attributes), title.x,
-             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
-             theme::TEXT_TITLE, theme::TextPrimary);
 
     // Свободные очки — то, ради чего сюда заходят, поэтому крупно и
     // акцентом, пока они есть.
@@ -1977,17 +1982,11 @@ void UiSystem::drawDialogueScreen(player::Player& player) {
 // Quest Log
 // ============================================================
 void UiSystem::drawQuestLogScreen(player::Player& player) {
-    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
-             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
+    drawMenuBackdrop(T(StrKey::Quest_Title));
 
     auto* log = player.questLog();
     auto* reg = player.registryHandle();
     if (!log || !reg) return;
-
-    const Rect title = layout_.menuTitle();
-    ui_.text(T(StrKey::Quest_Title), title.x,
-             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
-             theme::TEXT_TITLE, theme::TextPrimary);
 
     // ---- Список ----
     //
@@ -2177,12 +2176,10 @@ void UiSystem::drawQuestTracker(player::Player& player) {
 // Reputation
 // ============================================================
 void UiSystem::drawReputationScreen(player::Player& player) {
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(15, 20, 25, 235));
+    drawMenuBackdrop(T(StrKey::Rep_Title));
 
     auto* rep = player.reputation();
     if (!rep) return;
-
-    ui_.text(T(StrKey::Rep_Title), (float)screenW_ * 0.40f, 24.f, 3.f, COL_WHITE);
 
     drawCloseButton([this]() { screen = Screen::Hud; });
 
@@ -2249,11 +2246,9 @@ void UiSystem::drawReputationScreen(player::Player& player) {
 // ============================================================
 void UiSystem::drawSaveLoadScreen(player::Player& player) {
     (void)player;
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(5, 10, 20, 240));
-
     const char* title = (saveLoadMode == SaveLoadMode::Save)
         ? "SAVE GAME" : "LOAD GAME";
-    ui_.text(title, (float)screenW_ * 0.38f, 24.f, 3.f, COL_WHITE);
+    drawMenuBackdrop(title);
 
     drawCloseButton([this]() { screen = Screen::Hud; });
 
@@ -2951,8 +2946,6 @@ void UiSystem::drawKeyboard(Rect area) {
 // Crafting
 // ============================================================
 void UiSystem::drawCraftingScreen(player::Player& player) {
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(20, 15, 10, 240));
-
     // Без станка заголовок говорит «на ходу», а не прочерк: прочерк
     // читается как ошибка, а не как «руками и на костре».
     const char* stName = nearbyStation == crafting::StationType::None
@@ -2961,7 +2954,7 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
     char title[96];
     std::snprintf(title, sizeof(title), "%s — %s",
                   T(StrKey::Craft_Title), stName);
-    ui_.text(title, (float)screenW_ * 0.28f, 24.f, 3.f, COL_WHITE);
+    drawMenuBackdrop(title);
 
     drawCloseButton([this]() { screen = Screen::Hud; });
 
@@ -3144,51 +3137,49 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
 // Trade
 // ============================================================
 void UiSystem::drawTradeScreen(player::Player& player) {
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(10, 20, 15, 240));
+    drawMenuBackdrop(T(StrKey::Trade_Title));
 
     auto* inv = player.inventory();
     auto* wal = player.wallet();
     if (!inv || !wal) return;
 
-    ui_.text(T(StrKey::Trade_Title), (float)screenW_ * 0.42f, 24.f, 3.f, COL_WHITE);
-
     drawCloseButton([this]() { screen = Screen::Hud; });
 
-    // Табы
+    // Вкладки «купить» и «продать».
+    //
+    // Стояли по (40, 74) в пикселях — то есть ровно на полосах
+    // здоровья и маны, и это было видно на снимке. Теперь ряд
+    // вкладок отмеряет раскладка, которая про столбец HUD знает.
     {
-        const f32 tabW = 160.f;
-        Rect buyTab{ 40.f, 74.f, tabW, 50.f };
-        int bi = ui_.pushInteractiveRect(buyTab, [this]() { tradeCtx.tab = 0; });
-        bool bp = ui_.isInteractivePressed(bi);
-        ui_.rect(buyTab.x, buyTab.y, buyTab.w, buyTab.h,
-                 (tradeCtx.tab == 0) ? rgba(120, 160, 120, 255)
-                                     : (bp ? rgba(80,80,80,255) : rgba(40,40,40,220)));
-        ui_.rectOutline(buyTab.x, buyTab.y, buyTab.w, buyTab.h, 2.f, COL_BLACK);
-        ui_.text(T(StrKey::Trade_Buy), buyTab.x + 40.f, buyTab.y + 14.f,
-                 2.f, COL_WHITE);
-
-        Rect sellTab{ 210.f, 74.f, tabW, 50.f };
-        int si = ui_.pushInteractiveRect(sellTab, [this]() { tradeCtx.tab = 1; });
-        bool sp = ui_.isInteractivePressed(si);
-        ui_.rect(sellTab.x, sellTab.y, sellTab.w, sellTab.h,
-                 (tradeCtx.tab == 1) ? rgba(160, 120, 120, 255)
-                                     : (sp ? rgba(80,80,80,255) : rgba(40,40,40,220)));
-        ui_.rectOutline(sellTab.x, sellTab.y, sellTab.w, sellTab.h, 2.f, COL_BLACK);
-        ui_.text(T(StrKey::Trade_Sell), sellTab.x + 40.f, sellTab.y + 14.f,
-                 2.f, COL_WHITE);
+        const char* names[2] = { T(StrKey::Trade_Buy), T(StrKey::Trade_Sell) };
+        for (u32 t = 0; t < 2; ++t) {
+            const Rect r = layout_.menuTab(t, 2);
+            const int id = ui_.pushInteractiveRect(
+                r, [this, t]() { tradeCtx.tab = (int)t; });
+            const bool pressed  = ui_.isInteractivePressed(id);
+            const bool selected = ((u32)tradeCtx.tab == t);
+            ui_.rect(r.x, r.y, r.w, r.h,
+                     pressed ? theme::Accent
+                             : (selected ? theme::PanelRaised : theme::Panel));
+            ui_.rectOutline(r.x, r.y, r.w, r.h,
+                            layout_.dp(selected ? theme::STROKE_SELECTED_DP
+                                                : theme::STROKE_DP),
+                            selected ? theme::Accent : theme::Stroke);
+            const f32 tw = ui_.textWidth(names[t], theme::TEXT_BODY);
+            ui_.text(names[t], r.x + (r.w - tw) * 0.5f,
+                     r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                     theme::TEXT_BODY,
+                     pressed ? theme::Ink : theme::TextPrimary);
+        }
     }
 
-    // Золото
-    {
-        char goldBuf[32];
-        wal->format(goldBuf, sizeof(goldBuf));
-        float tw = ui_.textWidth(goldBuf, 2.f);
-        ui_.text(goldBuf, (float)screenW_ - tw - 40.f, 24.f, 2.f,
-                 rgba(255, 220, 100, 255));
-    }
+    // Золото здесь не печатается: оно уже стоит в столбце HUD, а тот
+    // виден и из меню. Две одинаковые цифры в разных углах — не
+    // забота, а лишний вопрос «почему их две».
 
-    const f32 listX = 40.f;
-    const f32 listY = 140.f;
+    const Rect listArea = layout_.menuBelowTabs();
+    const f32 listX = listArea.x;
+    const f32 listY = listArea.y;
 
     if (tradeCtx.tab == 0) {
         // Ассортимент торговца. Здесь стояла строка-заглушка
@@ -3307,9 +3298,7 @@ void UiSystem::drawTradeScreen(player::Player& player) {
 // Enchant Altar
 // ============================================================
 void UiSystem::drawEnchantScreen(player::Player& player) {
-    ui_.rect(0, 0, (float)screenW_, (float)screenH_, rgba(20, 10, 30, 240));
-
-    ui_.text("ENCHANT ALTAR", (float)screenW_ * 0.36f, 24.f, 3.f, COL_WHITE);
+    drawMenuBackdrop("ENCHANT ALTAR");
 
     drawCloseButton([this]() { screen = Screen::Hud; });
 
