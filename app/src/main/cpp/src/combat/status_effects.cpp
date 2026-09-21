@@ -6,6 +6,7 @@
 #include "projectile.h"
 #include "guard.h"
 #include "focus.h"
+#include "hurt_marks.h"
 #include "../ecs/components.h"
 #include "../mobs/mob_def.h"
 #include "../mobs/mob_ai.h"
@@ -223,6 +224,11 @@ f32 applyDamage(ecs::Registry& reg, ecs::Entity target, const DamageInstance& dm
         const f32 before = std::min(1.f, std::max(0.f,
                                     (h->current + final) / maxHp));
         noticeDamage(reg, target, incoming.sourceEntity, before);
+        // И запоминаем, ОТКУДА ударили. Полоса цели отвечает на
+        // «кого бью я», а этот вопрос — «кто бьёт меня»: на телефоне
+        // обзор узкий, и удар со спины иначе читается только по
+        // убывающей полоске здоровья.
+        noticeHurt(reg, target, incoming.sourceEntity, final);
     }
 
     // Звук попадания и смерти. Эти события были написаны и

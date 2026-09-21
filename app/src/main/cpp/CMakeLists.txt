@@ -168,6 +168,7 @@ add_library(native-lib SHARED
     src/combat/damage.cpp
     src/combat/enchantment.cpp
     src/combat/focus.cpp
+    src/combat/hurt_marks.cpp
     src/combat/guard.cpp
     src/combat/hit_detection.cpp
     src/combat/projectile.cpp

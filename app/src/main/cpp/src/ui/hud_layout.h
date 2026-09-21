@@ -929,6 +929,25 @@ public:
 
     static constexpr f32 INV_DETAILS_FRAC = 0.45f;
 
+    // ---- отметки урона: дуги по краю свободного центра ----
+    //
+    // Не по самому краю экрана: там сидят полосы, столбец навигации
+    // и круглые кнопки, и дуга легла бы на них. Свободный центр —
+    // единственное место, которое игра держит пустым специально, и
+    // отметка рисуется по его границе.
+    //
+    // Радиус берётся по меньшей стороне: на широком экране дуга
+    // иначе уехала бы за кнопки, а на узком — в самый центр, под
+    // прицел.
+    f32 hurtRingRadius() const {
+        const Rect c = clearCenter();
+        return (c.w < c.h ? c.w : c.h) * 0.5f;
+    }
+    f32 hurtRingThickness() const { return dp(HURT_ARC_THICK_DP); }
+    /// Половина углового размера дуги, в радианах.
+    static constexpr f32 HURT_ARC_HALF = 0.30f;
+    static constexpr f32 HURT_ARC_THICK_DP = 10.f;
+
     // ---- свободный центр: сюда не залезает ничто ----
     Rect clearCenter() const {
         const f32 cw = w_ * theme::HUD_CLEAR_W_FRAC;
