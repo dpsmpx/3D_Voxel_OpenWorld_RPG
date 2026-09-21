@@ -4866,12 +4866,77 @@ void testMenusDoNotSitOnHud() {
             const usize bd = src.find("void UiSystem::drawMenuBackdrop(");
             check(bd != std::string::npos,
                   "фон и заголовок меню живут в одном месте");
-            if (bd != std::string::npos) {
-                const std::string body = src.substr(bd, 700);
-                check(body.find("layout_.menuTitle()") != std::string::npos,
-                      "и заголовок берёт свой прямоугольник из раскладки");
-            }
         }
+    }
+
+    // ---- Меню ничего не рисует в столбце HUD ----
+    //
+    // Проверяется НАРИСОВАННЫЙ КАДР, а не раскладка. Проверять по
+    // раскладке — значит сверять модель с моделью: мутация, которая
+    // оставляла вызов `layout_.menuTitle()` на месте и обнуляла
+    // координату уже после него, проходила такую проверку насквозь,
+    // хотя заголовок при ней ложился ровно на полосу здоровья.
+    //
+    // Считаются вершины, попавшие внутрь столбца, на чистом HUD и на
+    // экране меню. HUD под меню рисуется тот же самый, значит всё,
+    // что прибавилось, прибавило меню.
+    {
+        constexpr i32 W = 1280, H = 720, DPI = 320;
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        // ОБА зеркала, и это не для полноты.
+        //
+        // `joystickLeftHanded` по умолчанию включён, то есть столбец
+        // стоит СПРАВА. Проверка, написанная только под эту сторону,
+        // пропустила мутацию, клавшую заголовок на x = 0: слева
+        // столбца просто нет, и мутация там ничего не задевала.
+        // Настоящее требование стороны не выбирает.
+        const bool savedHanded = config::settingsConst().joystickLeftHanded;
+
+        auto countIn = [&](ui::Screen sc) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(DPI);
+            sys.setScreenSize(W, H);
+            sys.screen = sc;
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+            // Берётся ВЕРХ столбца — от первой полосы до низа
+            // строки золота. Весь столбец не годится: его низ
+            // накрывают круглые кнопки «PUT» и «USE» (направление
+            // 16), их вершины попадают в счёт на чистом HUD, и
+            // добавка меню в этом запасе тонет. Мутация, кладущая
+            // заголовок на x=0, именно так и уходила от проверки.
+            const ui::Rect first = sys.layout().resourceBar(0);
+            const ui::Rect gold  = sys.layout().goldLine();
+            const ui::Rect col{ first.x, first.y, first.w,
+                                (gold.y + gold.h) - first.y };
+            u32 n = 0;
+            for (const ui::UiVertex& v : sys.frameVertices()) {
+                const f32 px = (v.pos.x * 0.5f + 0.5f) * (f32)W;
+                const f32 py = (v.pos.y * 0.5f + 0.5f) * (f32)H;
+                if (px >= col.x && px <= col.x + col.w &&
+                    py >= col.y && py <= col.y + col.h) ++n;
+            }
+            return n;
+        };
+
+        for (int handed = 0; handed < 2; ++handed) {
+            config::settings().joystickLeftHanded = (handed != 0);
+            const u32 onHud  = countIn(ui::Screen::Hud);
+            const u32 onMenu = countIn(ui::Screen::QuestLog);
+            std::snprintf(m, sizeof(m),
+                          "%s: меню не добавляет в столбец HUD ни одной "
+                          "вершины (на HUD %u, на экране журнала %u)",
+                          handed ? "левша" : "правша", onHud, onMenu);
+            check(onMenu <= onHud, m);
+            std::snprintf(m, sizeof(m), "%s: и сам столбец при этом рисуется",
+                          handed ? "левша" : "правша");
+            check(onHud > 0, m);
+        }
+        config::settings().joystickLeftHanded = savedHanded;
     }
 
     // ---- Сетка ячеек знает про высоту ----
@@ -4884,26 +4949,47 @@ void testMenusDoNotSitOnHud() {
         const ui::HudLayout L(1280.f, 720.f,
                               ui::theme::Metrics::fromDensityDpi(320),
                               ui::SafeInsets{});
-        // Заведомо низкая область: ряды при обычной ячейке не влезут.
-        const ui::Rect tight{ 0.f, 0.f, L.dp(400.f), L.dp(120.f) };
+        // Область подобрана так, что 27 ячеек влезают ТОЛЬКО при
+        // мелкой ячейке: при обычной (56+8) выходит 6 столбцов и 5
+        // рядов — 312 точек, при наименьшей нажимаемой (48+8) — 7
+        // столбцов и 4 ряда, 216. Высота 240 лежит между.
+        //
+        // Проверять «ячейка не мельче пальца и не крупнее обычной»
+        // бессмысленно: этому условию отвечает и обычная ячейка, то
+        // есть сетка, которая мелкую даже не пробовала. Мутация это
+        // и показала — она прошла проверку насквозь. Утверждать надо
+        // то, ради чего развилка писалась: здесь ячейка ОБЯЗАНА
+        // стать мельче обычной, и тогда помещается всё.
+        const ui::Rect tight{ 0.f, 0.f, L.dp(400.f), L.dp(240.f) };
         const ui::HudLayout::CellGrid g = L.cellGrid(tight, 27);
+        check(g.total == 27, "сетка помнит, сколько ячеек просили");
         check(g.cell >= L.dp(ui::theme::TOUCH_MIN_DP) - 0.01f,
               "ячейка не мельче того, во что попадает палец");
-        check(g.cell <= L.dp(ui::theme::TOUCH_REGULAR_DP) + 0.01f,
-              "и не крупнее обычной");
-        check(g.total == 27, "сетка помнит, сколько ячеек просили");
         std::snprintf(m, sizeof(m),
-                      "не поместившееся считается, а не теряется "
-                      "(рядов видно %u из %u, лишних ячеек %u)",
-                      g.rowsVisible(), g.rows, g.overflow());
-        check(g.overflow() > 0 && g.rowsVisible() < g.rows, m);
+                      "в тесной области ячейка ужимается (%.0f при обычной %.0f)",
+                      (double)g.cell, (double)L.dp(ui::theme::TOUCH_REGULAR_DP));
+        check(g.cell < L.dp(ui::theme::TOUCH_REGULAR_DP) - 0.01f, m);
+        std::snprintf(m, sizeof(m),
+                      "и тогда помещается всё (рядов %u, видно %u, лишних %u)",
+                      g.rows, g.rowsVisible(), g.overflow());
+        check(g.overflow() == 0, m);
 
-        // А там, где места хватает, переполнения нет вовсе.
+        // Там, где места хватает, ужимать нечего.
         const ui::Rect roomy{ 0.f, 0.f, L.dp(600.f), L.dp(400.f) };
         const ui::HudLayout::CellGrid g2 = L.cellGrid(roomy, 27);
         check(g2.overflow() == 0, "просторная область вмещает всё");
         check(g2.cell >= L.dp(ui::theme::TOUCH_REGULAR_DP) - 0.01f,
               "и ячейки там обычного размера");
+
+        // А там, где не помогает и мелкая, переполнение считается
+        // честно, а не прячется.
+        const ui::Rect hopeless{ 0.f, 0.f, L.dp(400.f), L.dp(120.f) };
+        const ui::HudLayout::CellGrid g3 = L.cellGrid(hopeless, 27);
+        std::snprintf(m, sizeof(m),
+                      "не поместившееся считается, а не теряется "
+                      "(рядов видно %u из %u, лишних ячеек %u)",
+                      g3.rowsVisible(), g3.rows, g3.overflow());
+        check(g3.overflow() > 0 && g3.rowsVisible() < g3.rows, m);
     }
 }
 
