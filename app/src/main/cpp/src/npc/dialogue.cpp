@@ -425,8 +425,15 @@ bool applyChoice(ecs::Registry& reg,
             if (!q) continue;
             if (q->state != quests::QuestState::Completed) continue;
 
+            // «Принеси» — это обмен: сперва отдать, потом получить.
+            // Не хватило принесённого — квест не сдаётся, и игрок
+            // остаётся при своём.
+            if (!quests::consumeCarried(reg, dlg.playerEntity, *q)) continue;
+
             // Награда
-            quests::grantRewards(reg, dlg.playerEntity, *q);
+            const quests::GrantedRewards got =
+                quests::grantRewards(reg, dlg.playerEntity, *q);
+            dlg.lastRewards = got;
 
             // Сюжет двигается ТОЛЬКО сдачей: дойти до места мало,
             // надо вернуться и рассказать. Иначе следующая глава

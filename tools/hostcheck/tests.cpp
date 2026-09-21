@@ -15,6 +15,8 @@
 #include "save/world_delta.h"
 #include "items/item_def.h"
 #include "items/item_pickup.h"
+#include "items/inventory.h"
+#include "items/currency.h"
 #include "items/throwable.h"
 #include "combat/components.h"
 #include "combat/projectile.h"
@@ -19996,6 +19998,250 @@ void testQuestProgress() {
         combat::applyDamage(reg, victim, dmg);
         check(q2->progress == 0, "чужое убийство игроку не засчитывается");
     }
+
+}
+
+// ------------------------------------------------------------
+// Награда доезжает до игрока, а «принеси» — обмен.
+//
+// Журнал заданий печатал игроку «золото +120» и «x3» — а выдавались
+// только опыт и репутация: на месте золота и предмета в grantRewards
+// три итерации стояла записка «Phase 12 (инвентарь)». Кошелёк при
+// этом существовал, им пользовались торговля и алтарь. То есть игра
+// обещала и не давала — на самом заметном месте петли, в момент, за
+// который игрок и работал.
+//
+// Второе: цель «принеси N таких-то» сравнивала номер БЛОКА с номером
+// ПРЕДМЕТА. Это разные пространства: блок WOOD — шестой, предмет
+// ITEM_WOOD — пятый, а шестой предмет — ЛИСТВА. Квест «принеси
+// дерева» не двигался от дерева и двигался от листвы. И принесённое
+// никто не забирал: сдал — и остался при своём.
+//
+// Проверяется путь целиком — через npc::applyChoice, как сдаёт
+// живой игрок, а не сами по себе grantRewards и consumeCarried.
+// ------------------------------------------------------------
+void testQuestRewardsReachThePlayer() {
+    group("quests: награда доезжает, принесённое забирается");
+
+    world::blocks();
+    items::items();
+
+    char m[220];
+
+    // Номера, из-за которых всё и ломалось. Если реестр когда-нибудь
+    // перенумеруют так, что пространства совпадут, проверки ниже
+    // станут вакуумными — здесь об этом скажут вслух.
+    const u16 woodItem   = items::items().blockToItem(world::WOOD);
+    const u16 leavesItem = items::items().blockToItem(world::LEAVES);
+    const u16 oreItem    = items::items().blockToItem(world::IRON_ORE);
+    std::snprintf(m, sizeof(m),
+                  "номер блока и номер предмета — разные: WOOD=%u → предмет %u, "
+                  "а предмет №%u это %s",
+                  (unsigned)world::WOOD, (unsigned)woodItem,
+                  (unsigned)world::WOOD, items::items().name(world::WOOD));
+    check(woodItem != world::WOOD && woodItem == items::ITEM_WOOD, m);
+    check(leavesItem == items::ITEM_LEAVES && (u16)world::WOOD == items::ITEM_LEAVES,
+          "и именно листва носит номер, равный номеру блока дерева");
+    check(oreItem == items::ITEM_IRON_ORE && oreItem != items::ITEM_IRON_INGOT,
+          "руда переводится в руду, а не в слиток с тем же номером");
+
+    // --- Заготовка мира: игрок, журнал, квест, сдающий NPC ---
+    struct World {
+        ecs::Registry reg;
+        ecs::Entity player{};
+        ecs::Entity npc{};
+        ecs::Entity questEnt{};
+    };
+
+    auto makeWorld = [&](World& w) {
+        w.player = w.reg.create();
+        w.reg.add(w.player, ecs::Transform{ glm::vec3(10.f, 40.f, 10.f) });
+        w.reg.add(w.player, ecs::Health{ 100.f, 100.f, 0.f, 0.f });
+        w.reg.add(w.player, progression::Progression{});
+        w.reg.add(w.player, items::Inventory{});
+        w.reg.add(w.player, items::Wallet{});
+        w.reg.add(w.player, quests::QuestLog{});
+        w.npc = w.reg.create();
+        w.reg.add(w.npc, npc::NpcAI{});
+    };
+
+    auto addQuest = [&](World& w, const quests::Quest& proto) {
+        w.questEnt = w.reg.create();
+        w.reg.add(w.questEnt, proto);
+        w.reg.get<quests::QuestLog>(w.player)->addActive(w.questEnt);
+        return w.reg.get<quests::Quest>(w.questEnt);
+    };
+
+    auto turnIn = [&](World& w) {
+        npc::ActiveDialogue dlg;
+        dlg.active       = true;
+        dlg.playerEntity = (u32)w.player;
+        dlg.npcEntity    = (u32)w.npc;
+        npc::DialogueChoice choice;
+        choice.action = npc::DialogueAction::CompleteQuest;
+        npc::applyChoice(w.reg, dlg, choice);
+        return dlg.lastRewards;
+    };
+
+    // ---- 1. Золото и предмет доезжают ----
+    {
+        World w; makeWorld(w);
+        quests::Quest q{};
+        q.id = 1;
+        q.tmpl.type = quests::QuestType::Kill;
+        q.tmpl.targetMobId = 1;
+        q.tmpl.requiredCount = 1;
+        q.progress = 1;
+        q.state = quests::QuestState::Completed;
+        q.ownerEntity = (u32)w.player;
+        q.rewards.xp = 50;
+        q.rewards.gold = 120;
+        q.rewards.itemBlockId = world::IRON_ORE;
+        q.rewards.itemCount = 3;
+        addQuest(w, q);
+
+        const quests::GrantedRewards got = turnIn(w);
+        const auto* wal = w.reg.get<items::Wallet>(w.player);
+        const auto* inv = w.reg.get<items::Inventory>(w.player);
+
+        std::snprintf(m, sizeof(m), "обещано 120 золота — в кошельке %llu",
+                      (unsigned long long)(wal ? wal->gold : 0));
+        check(wal && wal->gold == 120, m);
+        check(got.gold == 120, "и сдача докладывает ровно столько же");
+
+        std::snprintf(m, sizeof(m),
+                      "обещано x3 руды — в сумке %u руды и %u слитков",
+                      (unsigned)inv->countOf(items::ITEM_IRON_ORE),
+                      (unsigned)inv->countOf(items::ITEM_IRON_INGOT));
+        check(inv && inv->countOf(items::ITEM_IRON_ORE) == 3 &&
+              inv->countOf(items::ITEM_IRON_INGOT) == 0, m);
+        check(got.itemId == items::ITEM_IRON_ORE && got.itemsToBag == 3,
+              "награда названа предметом, а не блоком");
+
+        const auto* prog = w.reg.get<progression::Progression>(w.player);
+        check(prog && prog->xp >= 50, "опыт по-прежнему начисляется");
+        check(w.reg.get<quests::QuestLog>(w.player)->activeQuests.empty(),
+              "сданный квест уходит из журнала");
+    }
+
+    // ---- 2. Полная сумка не съедает награду ----
+    //
+    // Игрок работу сделал; то, что у него нет места, — не повод
+    // отобрать обещанное. Не влезшее ложится под ноги.
+    {
+        World w; makeWorld(w);
+        auto* inv = w.reg.get<items::Inventory>(w.player);
+        for (int i = 0; i < 64; ++i) {
+            if (inv->addItem(items::ITEM_STONE, 64).leftover) break;
+        }
+        check(inv->addItem(items::ITEM_IRON_ORE, 1).added == 0,
+              "сумка действительно забита");
+
+        quests::Quest q{};
+        q.id = 2;
+        q.tmpl.type = quests::QuestType::Kill;
+        q.tmpl.requiredCount = 1;
+        q.progress = 1;
+        q.state = quests::QuestState::Completed;
+        q.ownerEntity = (u32)w.player;
+        q.rewards.itemBlockId = world::IRON_ORE;
+        q.rewards.itemCount = 2;
+        addQuest(w, q);
+
+        const quests::GrantedRewards got = turnIn(w);
+        check(got.itemsToBag == 0 && got.itemsToGround == 2,
+              "не влезшее не пропало");
+
+        u32 onGround = 0;
+        w.reg.view<items::ItemPickup>().each(
+            [&](ecs::Entity, items::ItemPickup& p) {
+                if (p.stack.itemId == items::ITEM_IRON_ORE)
+                    onGround += p.stack.count;
+            });
+        std::snprintf(m, sizeof(m),
+                      "под ногами лежит x2 руды (лежит: %u)", (unsigned)onGround);
+        check(onGround == 2, m);
+    }
+
+    // ---- 3. «Принеси» считается по сумке, а не по событиям ----
+    {
+        World w; makeWorld(w);
+        quests::Quest q{};
+        q.id = 3;
+        q.tmpl.type = quests::QuestType::Collect;
+        q.tmpl.targetBlockId = world::WOOD;
+        q.tmpl.requiredCount = 4;
+        q.state = quests::QuestState::Active;
+        q.ownerEntity = (u32)w.player;
+        auto* live = addQuest(w, q);
+        auto* inv = w.reg.get<items::Inventory>(w.player);
+
+        // Листва — НЕ дерево, сколько её ни неси.
+        inv->addItem(items::ITEM_LEAVES, 10);
+        quests::syncCarriedProgress(w.reg, (u32)w.player);
+        std::snprintf(m, sizeof(m),
+                      "десять листвы не двигают «принеси дерева» (счётчик %d)",
+                      (int)live->progress);
+        check(live->progress == 0 && live->state == quests::QuestState::Active, m);
+
+        inv->addItem(items::ITEM_WOOD, 3);
+        quests::syncCarriedProgress(w.reg, (u32)w.player);
+        check(live->progress == 3 && live->state == quests::QuestState::Active,
+              "три дерева — это три четверти цели, не больше и не меньше");
+
+        inv->addItem(items::ITEM_WOOD, 5);
+        quests::syncCarriedProgress(w.reg, (u32)w.player);
+        check(live->progress == 4 && live->state == quests::QuestState::Completed,
+              "набрал — цель выполнена, и счётчик не переваливает за требуемое");
+
+        // Потратил принесённое — галочка обязана погаснуть.
+        inv->removeItem(items::ITEM_WOOD, 6);
+        quests::syncCarriedProgress(w.reg, (u32)w.player);
+        std::snprintf(m, sizeof(m),
+                      "потратил принесённое — цель снова не выполнена "
+                      "(счётчик %d, состояние %d)",
+                      (int)live->progress, (int)live->state);
+        check(live->progress == 2 && live->state == quests::QuestState::Active, m);
+
+        // Сдать сейчас нельзя: нечего отдавать.
+        live->state = quests::QuestState::Completed;
+        w.reg.get<items::Wallet>(w.player)->gold = 0;
+        live->rewards.gold = 99;
+        turnIn(w);
+        check(w.reg.get<items::Wallet>(w.player)->gold == 0 &&
+              !w.reg.get<quests::QuestLog>(w.player)->activeQuests.empty(),
+              "не хватило принесённого — квест не сдаётся и награда не идёт");
+        check(w.reg.get<items::Inventory>(w.player)->countOf(items::ITEM_WOOD) == 2,
+              "и принесённое остаётся у игрока");
+    }
+
+    // ---- 4. Сдача забирает ровно требуемое ----
+    {
+        World w; makeWorld(w);
+        quests::Quest q{};
+        q.id = 4;
+        q.tmpl.type = quests::QuestType::Collect;
+        q.tmpl.targetBlockId = world::WOOD;
+        q.tmpl.requiredCount = 4;
+        q.state = quests::QuestState::Active;
+        q.ownerEntity = (u32)w.player;
+        q.rewards.gold = 70;
+        addQuest(w, q);
+
+        auto* inv = w.reg.get<items::Inventory>(w.player);
+        inv->addItem(items::ITEM_WOOD, 7);
+        quests::syncCarriedProgress(w.reg, (u32)w.player);
+
+        turnIn(w);
+        std::snprintf(m, sizeof(m),
+                      "принёс 7 при нужных 4 — забрали 4, осталось %u",
+                      (unsigned)inv->countOf(items::ITEM_WOOD));
+        check(inv->countOf(items::ITEM_WOOD) == 3, m);
+        check(w.reg.get<items::Wallet>(w.player)->gold == 70,
+              "и за обмен заплатили");
+        check(w.reg.get<quests::QuestLog>(w.player)->activeQuests.empty(),
+              "квест сдан");
+    }
 }
 
 // ------------------------------------------------------------
@@ -22660,6 +22906,7 @@ int main() {
     testWorldDeltaRoundTrip();
     testPlayerSaveRoundTrip();
     testQuestProgress();
+    testQuestRewardsReachThePlayer();
     testInventoryInvariants();
     testTrade();
     testDialogueOpensScreens();

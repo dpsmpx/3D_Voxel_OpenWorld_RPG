@@ -8,6 +8,7 @@
 #include "../ecs/registry.h"
 #include "../factions/faction.h"
 #include "../quests/quest_def.h"
+#include "../quests/quest_generator.h"
 #include <functional>
 #include <vector>
 #include <string>
@@ -77,6 +78,15 @@ struct ActiveDialogue {
     /// Раньше эти две ветки просто закрывали диалог с пометкой
     /// «Phase 12», и выбор «покажи товар» не приводил ни к чему.
     DialogueAction pendingAction = DialogueAction::None;
+
+    /// Что игрок получил за только что сданный квест.
+    ///
+    /// Здесь, а не в журнале: сдача идёт через диалог, и сказать
+    /// «+120 золота, x2 железная руда» должен тот, кто её провёл.
+    /// Молча начислить — это ровно то, из-за чего пропажу золота
+    /// никто и не заметил: награда была обещана в журнале, не выдана
+    /// в коде и не объявлена на экране.
+    quests::GrantedRewards lastRewards{};
 
     DialogueNode* findNode(u32 id) {
         for (auto& n : nodes) if (n.id == id) return &n;

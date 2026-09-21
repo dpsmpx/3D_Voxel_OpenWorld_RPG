@@ -2130,8 +2130,16 @@ void UiSystem::drawQuestDetails(player::Player& player) {
         y += ui_.textHeight(theme::TEXT_CAPTION) + layout_.dp(theme::SPACE_XS_DP);
     }
     if (q->rewards.itemCount) {
-        std::snprintf(rew, sizeof(rew), "x%u", (unsigned)q->rewards.itemCount);
-        ui_.text(rew, d.x + pad, y, theme::TEXT_CAPTION, theme::TextSecondary);
+        // «x3» без названия — не обещание, а загадка. Номер здесь
+        // блочный, имя спрашивается у реестра предметов ровно тем
+        // же переводом, каким награда и выдаётся (grantRewards).
+        const u16 itemId = items::items().blockToItem(q->rewards.itemBlockId);
+        if (itemId != items::ITEM_NONE) {
+            std::snprintf(rew, sizeof(rew), "%s x%u",
+                          items::items().name(itemId),
+                          (unsigned)q->rewards.itemCount);
+            ui_.text(rew, d.x + pad, y, theme::TEXT_CAPTION, theme::TextSecondary);
+        }
     }
 }
 

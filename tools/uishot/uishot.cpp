@@ -23,6 +23,8 @@
 #include "items/item_def.h"
 #include "mobs/mob_def.h"
 #include "combat/weapon.h"
+#include "quests/quest.h"
+#include "quests/quest_def.h"
 #include "ecs/registry.h"
 #include "config/settings.h"
 
@@ -159,6 +161,10 @@ void triangle(Canvas& c, const Atlas& at, const Screen& sc,
 struct Opts {
     i32 w = 1920, h = 1080, dpi = 420;
     bool mirror = false;
+    /// Какой экран снимать. HUD — по умолчанию; журнал заданий —
+    /// потому что он обещает игроку награду, и обещание надо
+    /// прочитать глазами, а не поверить коду на слово.
+    ui::Screen screen = ui::Screen::Hud;
     bool target = false;          ///< показать полосу цели
     f32  targetFill = 0.42f;
     f32  targetGhost = 0.63f;
@@ -179,6 +185,22 @@ int main(int argc, char** argv) {
         else if (k == "--h")      o.h = std::atoi(next());
         else if (k == "--dpi")    o.dpi = std::atoi(next());
         else if (k == "--mirror") o.mirror = true;
+        else if (k == "--screen") {
+            const std::string v = next();
+            if      (v == "hud")        o.screen = ui::Screen::Hud;
+            else if (v == "quests")     o.screen = ui::Screen::QuestLog;
+            else if (v == "pause")      o.screen = ui::Screen::PauseMenu;
+            else if (v == "inventory")  o.screen = ui::Screen::Inventory;
+            else if (v == "settings")   o.screen = ui::Screen::Settings;
+            else if (v == "skills")     o.screen = ui::Screen::SkillTree;
+            else if (v == "attributes") o.screen = ui::Screen::Attributes;
+            else if (v == "reputation") o.screen = ui::Screen::Reputation;
+            else if (v == "saveload")   o.screen = ui::Screen::SaveLoad;
+            else if (v == "crafting")   o.screen = ui::Screen::Crafting;
+            else if (v == "trade")      o.screen = ui::Screen::Trade;
+            else if (v == "enchant")    o.screen = ui::Screen::Enchant;
+            else { std::printf("uishot: неизвестный экран «%s»\n", v.c_str()); return 1; }
+        }
         else if (k == "--target") o.target = true;
         else if (k == "--fill")   o.targetFill = (f32)std::atof(next());
         else if (k == "--ghost")  o.targetGhost = (f32)std::atof(next());
@@ -206,7 +228,35 @@ int main(int argc, char** argv) {
     ui::UiSystem sys;
     sys.setDensityDpi(o.dpi);
     sys.setScreenSize(o.w, o.h);
-    sys.screen = ui::Screen::Hud;
+    sys.screen = o.screen;
+
+    // Журнал без заданий показывать нечего, а цель снимка —
+    // прочитать строку награды. Задание собирается тем же
+    // генератором, каким его получает игрок: снимок обязан показывать
+    // настоящие тексты и настоящие числа, а не подставные.
+    if (o.screen == ui::Screen::QuestLog) {
+        quests::Quest q{};
+        q.id = quests::nextQuestId();
+        q.tmpl.type = quests::QuestType::Collect;
+        q.tmpl.targetBlockId = world::WOOD;
+        q.tmpl.requiredCount = 8;
+        q.tmpl.difficulty = quests::QuestDifficulty::Hard;
+        q.progress = 5;
+        q.state = quests::QuestState::Active;
+        q.ownerEntity = (u32)pl.entity();
+        q.rewards.xp = 240;
+        q.rewards.gold = 120;
+        q.rewards.itemBlockId = world::IRON_ORE;
+        q.rewards.itemCount = 3;
+        std::snprintf(q.title, sizeof(q.title), "Wood for the Palisade");
+        std::snprintf(q.description, sizeof(q.description),
+                      "The village needs 8 wood to close the north gap "
+                      "before nightfall.");
+        const ecs::Entity qe = reg.create();
+        reg.add(qe, q);
+        if (auto* log = pl.questLog()) log->addActive(qe);
+        sys.selectedQuest = 0;
+    }
 
     if (o.target) {
         sys.target.name   = o.targetName;
@@ -238,9 +288,10 @@ int main(int argc, char** argv) {
         std::printf("uishot: не записался %s\n", o.out.c_str());
         return 1;
     }
-    std::printf("uishot: %dx%d @%d%s%s -> %s (треугольников %u)\n",
+    std::printf("uishot: %dx%d @%d%s%s%s -> %s (треугольников %u)\n",
                 o.w, o.h, o.dpi, o.mirror ? ", левша" : "",
                 o.target ? ", с полосой цели" : "",
+                o.screen == ui::Screen::QuestLog ? ", журнал заданий" : "",
                 o.out.c_str(), (u32)(v.size() / 3));
     return 0;
 }

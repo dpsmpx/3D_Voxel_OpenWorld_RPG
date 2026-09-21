@@ -3,6 +3,8 @@
  * @brief Квесты: шаблоны, процедурная генерация, журнал заданий.
  */
 #include "quest.h"
+#include "../items/inventory.h"
+#include "../items/item_def.h"
 #include "../progression/progression.h"
 #include "../progression/resource_regen.h"
 #include "../ecs/components.h"
@@ -10,6 +12,8 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+
+#include <algorithm>
 
 namespace quests {
 
@@ -86,26 +90,73 @@ bool notifyMobKilled(ecs::Registry& reg, u32 playerEntity,
     return changed;
 }
 
-bool notifyItemCollected(ecs::Registry& reg, u32 playerEntity,
-                         u16 blockId, i32 amount)
-{
+/// Какой предмет соответствует цели «принеси этот блок».
+static u16 carriedItemOf(const Quest& q) {
+    if (q.tmpl.type != QuestType::Collect) return items::ITEM_NONE;
+    return items::items().blockToItem(q.tmpl.targetBlockId);
+}
+
+bool syncCarriedProgress(ecs::Registry& reg, u32 playerEntity) {
     auto* log = reg.get<QuestLog>(playerEntity);
-    if (!log) return false;
+    const auto* inv = reg.get<items::Inventory>(playerEntity);
+    if (!log || !inv) return false;
 
     bool changed = false;
 
     for (ecs::Entity qe : log->activeQuests) {
         auto* q = reg.get<Quest>(qe);
         if (!q) continue;
-        if (q->state != QuestState::Active) continue;
         if (q->tmpl.type != QuestType::Collect) continue;
-        if (q->tmpl.targetBlockId != blockId) continue;
+        if (q->state != QuestState::Active &&
+            q->state != QuestState::Completed) continue;
 
-        q->progress += amount;
-        checkCompletion(*q);
+        const u16 itemId = carriedItemOf(*q);
+        if (itemId == items::ITEM_NONE) continue;
+
+        const i32 have = (i32)std::min<u32>((u32)q->tmpl.requiredCount,
+                                            inv->countOf(itemId));
+        if (q->progress == have) continue;
+
+        q->progress = have;
         changed = true;
+
+        // Состояние ходит в ОБЕ стороны. Потратил принесённое — цель
+        // снова не выполнена, и журнал обязан это сказать, а не
+        // держать зелёную галочку над пустой сумкой.
+        if (have >= q->tmpl.requiredCount) {
+            if (q->state == QuestState::Active) q->state = QuestState::Completed;
+        } else if (q->state == QuestState::Completed) {
+            q->state = QuestState::Active;
+        }
     }
     return changed;
+}
+
+bool consumeCarried(ecs::Registry& reg, u32 playerEntity, const Quest& q) {
+    if (q.tmpl.type != QuestType::Collect) return true;
+
+    auto* inv = reg.get<items::Inventory>(playerEntity);
+    if (!inv) return false;
+
+    const u16 itemId = carriedItemOf(q);
+    if (itemId == items::ITEM_NONE) return false;
+
+    const u16 need = (u16)std::max(0, q.tmpl.requiredCount);
+    if (inv->countOf(itemId) < need) return false;
+
+    return inv->removeItem(itemId, need) == need;
+}
+
+bool notifyItemCollected(ecs::Registry& reg, u32 playerEntity,
+                         u16 blockId, i32 amount)
+{
+    // Прогресс «принеси» считает syncCarriedProgress по содержимому
+    // сумки — там единственный источник истины. Здесь осталась
+    // только немедленная сверка, чтобы счётчик не ждал следующего
+    // кадра; складывать события сюда больше нельзя.
+    (void)blockId;
+    (void)amount;
+    return syncCarriedProgress(reg, playerEntity);
 }
 
 bool notifyLocationReached(ecs::Registry& reg, u32 playerEntity,
