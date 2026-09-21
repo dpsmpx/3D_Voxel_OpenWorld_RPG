@@ -67,7 +67,31 @@ void finalizeQuest(Quest& q,
                    const QuestGenOptions& options,
                    world::ChunkManager& world);
 
-/// Выдать награду игроку за квест. Возвращает true при успехе.
-bool grantRewards(ecs::Registry& reg, u32 playerEntity, const Quest& q);
+/// Что именно досталось игроку за квест.
+///
+/// Возвращается наружу, а не пишется в журнал: сдачу квеста ведёт
+/// диалог, и показать игроку «+120 золота» должен он же. Молча
+/// начислить и промолчать — ровно то, из-за чего золота и не было:
+/// никто не замечал, что его нет.
+struct GrantedRewards {
+    u64 xp          = 0;
+    u32 gold        = 0;
+    u16 itemId      = 0;   ///< номер ПРЕДМЕТА (не блока)
+    u16 itemsToBag  = 0;   ///< сколько влезло в сумку
+    u16 itemsToGround = 0; ///< сколько пришлось положить под ноги
+    i32 reputation  = 0;
+
+    bool any() const {
+        return xp || gold || itemsToBag || itemsToGround || reputation;
+    }
+};
+
+/// Выдать награду игроку за квест.
+///
+/// Выдаёт ВСЁ, что обещано в журнале: опыт, репутацию, золото и
+/// предмет. Не влезшее в сумку кладётся под ноги отдельной кучкой —
+/// награда не имеет права пропасть оттого, что сумка полна.
+GrantedRewards grantRewards(ecs::Registry& reg, u32 playerEntity,
+                            const Quest& q);
 
 } // namespace quests

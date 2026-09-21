@@ -1924,6 +1924,10 @@ struct Engine {
 
         progression::tickProgression(registry, dt);
         quests::tickQuestTime(registry, (u32)player->entity(), dt);
+        // Цели «принеси N таких-то» считаются по сумке, а не по
+        // событиям подбора: потратил принесённое — цель снова не
+        // выполнена.
+        quests::syncCarriedProgress(registry, (u32)player->entity());
 
         locCheckTimer_ += dt;
         if (locCheckTimer_ >= 0.5f) {

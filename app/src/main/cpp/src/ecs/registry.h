@@ -211,7 +211,12 @@ public:
             static_assert(sizeof...(Cs) > 0, "View требует хотя бы один компонент");
             std::vector<EnttEntity> snapshot;
             auto v = reg_->view<Cs...>();
-            snapshot.reserve(v.size_hint());
+            // У представления по ОДНОМУ компоненту размер точный и
+            // зовётся size(); size_hint() есть только у пересечения
+            // нескольких. Без этой развилки view<T>().each(...) не
+            // компилировался вовсе — а это самый обычный случай.
+            if constexpr (sizeof...(Cs) == 1) snapshot.reserve(v.size());
+            else                              snapshot.reserve(v.size_hint());
             for (auto h : v) snapshot.push_back(h);
 
             for (auto h : snapshot) {

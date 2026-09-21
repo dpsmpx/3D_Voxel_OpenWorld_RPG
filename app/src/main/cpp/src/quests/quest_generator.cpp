@@ -8,6 +8,10 @@
 #include "../ecs/components.h"
 #include "../progression/progression.h"
 #include "../progression/resource_regen.h"
+#include "../items/currency.h"
+#include "../items/item_def.h"
+#include "../items/inventory.h"
+#include "../items/item_pickup.h"
 #include "../world/biome.h"
 #include "../world/terrain.h"
 #include "../core/log.h"
@@ -501,13 +505,18 @@ ecs::Entity generateQuest(ecs::Registry& reg,
     return e;
 }
 
-bool grantRewards(ecs::Registry& reg, u32 playerEntity, const Quest& q) {
+GrantedRewards grantRewards(ecs::Registry& reg, u32 playerEntity,
+                            const Quest& q)
+{
+    GrantedRewards got{};
+
     // XP
     if (q.rewards.xp > 0) {
         auto* prog = reg.get<progression::Progression>(playerEntity);
         if (prog) {
             u32 gained = 0;
             prog->addXP(q.rewards.xp, gained);
+            got.xp = q.rewards.xp;
         }
     }
 
@@ -519,13 +528,59 @@ bool grantRewards(ecs::Registry& reg, u32 playerEntity, const Quest& q) {
         if (rep) {
             rep->add(q.rewards.reputationFaction,
                      q.rewards.reputationDelta);
+            got.reputation = q.rewards.reputationDelta;
         }
     }
 
-    // Золото и предметы — Phase 12 (инвентарь).
-    // Пока только XP и репутация.
+    // ---- Золото ----
+    //
+    // Здесь три итерации стоял комментарий «Phase 12 (инвентарь),
+    // пока только XP и репутация». Кошелёк у игрока всё это время
+    // был, им пользовались и торговля, и алтарь зачарования; журнал
+    // заданий всё это время писал игроку «золото +120». Не доезжала
+    // награда ровно в одном месте — в этом.
+    if (q.rewards.gold > 0) {
+        if (auto* wal = reg.get<items::Wallet>(playerEntity)) {
+            wal->receive(q.rewards.gold);
+            got.gold = q.rewards.gold;
+        }
+    }
 
-    return true;
+    // ---- Предмет ----
+    //
+    // Не влезшее в сумку кладётся под ноги, а не пропадает: игрок
+    // выполнил работу, и полная сумка — его забота, а не повод
+    // отобрать обещанное. Тем же spawnPickup, каким выпадает лут.
+    //
+    // itemBlockId — номер БЛОКА, и в сумку он идёт только через
+    // blockToItem. Напрямую нельзя: блок IRON_ORE — одиннадцатый, а
+    // одиннадцатый предмет — железный СЛИТОК, и за квест выдавался
+    // бы он. Ровно эта подмена пространств номеров уже ломала цель
+    // «принеси N таких-то», см. syncCarriedProgress.
+    const u16 rewardItem = items::items().blockToItem(q.rewards.itemBlockId);
+    if (rewardItem != items::ITEM_NONE && q.rewards.itemCount > 0) {
+        got.itemId = rewardItem;
+        u16 left = q.rewards.itemCount;
+
+        if (auto* inv = reg.get<items::Inventory>(playerEntity)) {
+            const items::AddResult res = inv->addItem(got.itemId, left);
+            got.itemsToBag = res.added;
+            left = res.leftover;
+        }
+
+        if (left > 0) {
+            if (auto* tf = reg.get<ecs::Transform>(playerEntity)) {
+                items::ItemStack drop{};
+                drop.itemId = got.itemId;
+                drop.count  = left;
+                items::spawnPickup(reg, tf->position + glm::vec3(0.f, 0.6f, 0.f),
+                                   drop, glm::vec3(0.f, 2.5f, 0.f));
+                got.itemsToGround = left;
+            }
+        }
+    }
+
+    return got;
 }
 
 } // namespace quests
