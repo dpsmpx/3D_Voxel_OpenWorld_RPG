@@ -378,6 +378,7 @@ void UiSystem::drawHud(player::Player& player,
                    [this]() { screen = Screen::Inventory; drag.clear(); });
 
     drawXpBar(player);
+    drawTargetBar();
     drawHudResources(player);
     drawResonanceBar(player);
     drawStatusIcons(player);
@@ -533,6 +534,64 @@ void UiSystem::drawXpBar(player::Player& player) {
     ui_.text(xpText, r.x + r.w - tw - layout_.dp(theme::SPACE_S_DP),
              r.y + r.h + layout_.dp(theme::SPACE_XS_DP),
              theme::TEXT_CAPTION, theme::TextSecondary);
+}
+
+void UiSystem::drawTargetBar() {
+    if (!target.dead && target.fill <= 0.f) return;
+    if (target.alpha <= 0.f) return;
+
+    const Rect r = layout_.targetBar();
+    const f32 a = target.alpha < 0.f ? 0.f : (target.alpha > 1.f ? 1.f : target.alpha);
+
+    // Затухание полосы — поверх настройки прозрачности HUD, а не
+    // вместо неё: уходящая полоса обязана уходить и у того, кто
+    // выкрутил прозрачность.
+    auto tint = [&](UiColor c) {
+        const UiColor h = hudTint(c);
+        return withAlpha(h, (u8)((f32)(h & 0xFFu) * a + 0.5f));
+    };
+
+    ui_.rect(r.x - layout_.dp(2.f), r.y - layout_.dp(2.f),
+             r.w + layout_.dp(4.f), r.h + layout_.dp(4.f), tint(theme::Ink));
+    ui_.rect(r.x, r.y, r.w, r.h, tint(theme::HpBed));
+
+    // След последнего урона — ПОД основной заливкой и шире её. Он и
+    // отвечает на вопрос «сколько снял этот удар»: разница между
+    // двумя краями и есть размер удара.
+    if (target.ghost > target.fill)
+        ui_.rect(r.x, r.y, r.w * target.ghost, r.h, tint(theme::Accent));
+
+    ui_.rect(r.x, r.y, r.w * target.fill, r.h,
+             tint(target.fill < 0.3f ? theme::Danger : theme::Hp));
+
+    // Деления фаз — на настоящих порогах, тех же, по которым босс
+    // меняет поведение. Считать их «на глаз равными долями» нельзя:
+    // разойдясь с bossPhaseFor, они начнут врать ровно в тот момент,
+    // когда игрок на них и смотрит.
+    for (u8 i = 1; i < target.phases; ++i) {
+        const f32 at = (f32)(target.phases - i) / (f32)target.phases;
+        ui_.rect(r.x + r.w * at - layout_.dp(1.f), r.y,
+                 layout_.dp(2.f), r.h, tint(theme::Ink));
+    }
+
+    ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
+                    tint(theme::Stroke));
+
+    // Имя — внутри полосы, по центру. Поверх заливки, а не рядом с
+    // ней: второй строки на узком экране взять негде.
+    if (target.name && target.name[0]) {
+        const f32 tw = ui_.textWidth(target.name, theme::TEXT_LABEL);
+        const f32 th = ui_.textHeight(theme::TEXT_LABEL);
+        const f32 tx = r.x + (r.w - tw) * 0.5f;
+        const f32 ty = r.y + (r.h - th) * 0.5f;
+        // Подложка под самим текстом: имя ложится то на тёмную часть
+        // полосы, то на светлую, и без неё читается через раз.
+        ui_.rect(tx - layout_.dp(theme::SPACE_XS_DP), ty,
+                 tw + layout_.dp(theme::SPACE_S_DP), th,
+                 tint(withAlpha(theme::Ink, 190)));
+        ui_.text(target.name, tx, ty, theme::TEXT_LABEL,
+                 tint(theme::TextPrimary));
+    }
 }
 
 void UiSystem::drawHudResources(player::Player& player) {

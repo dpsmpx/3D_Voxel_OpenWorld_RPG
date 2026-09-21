@@ -40,6 +40,7 @@
 #include "quests/story.h"
 #include "quests/quest_def.h"
 #include "combat/status_effects.h"
+#include "combat/focus.h"
 #include "combat/damage.h"
 #include "mobs/mob_def.h"
 #include "mobs/mob_ai.h"
@@ -114,7 +115,7 @@
 #include "player/player_rig.h"
 #include "player/player.h"
 #include "entity/rig.h"
-#include "entity/body_color.h"
+#include "entity/creature_info.h"
 #include "ui/ui_theme.h"
 #include "ui/ui_atlas.h"
 #include "ui/font_data.h"
@@ -4806,6 +4807,34 @@ void testHudAndButtonsDoNotOverlap() {
         for (u32 i = 0; i < L.hotbarVisibleSlots(); ++i)
             rects.push_back({ "ячейка пояса", L.hotbarSlot(i) });
 
+        // ---- полоса цели ----
+        //
+        // С плашкой подгрузки она делит верхнюю середину намеренно:
+        // места под две постоянные плашки на узком экране нет, а
+        // плашка подгрузки — временный слой поверх игры. Со всем
+        // остальным делить ей нечего, и это проверяется отдельно.
+        {
+            const ui::Rect tb = L.targetBar();
+            for (const auto& [name, r] : rects) {
+                if (std::strcmp(name, "плашка подгрузки") == 0) continue;
+                if (!overlaps(tb, r)) continue;
+                ++problems;
+                char msg[176];
+                std::snprintf(msg, sizeof(msg),
+                              "%s%s: полоса цели налезает на %s",
+                              sz.name, mode, name);
+                check(false, msg);
+            }
+            if (tb.x < -0.5f || tb.y < -0.5f ||
+                tb.x + tb.w > sz.w + 0.5f || tb.y + tb.h > sz.h + 0.5f) {
+                ++problems;
+                char msg[160];
+                std::snprintf(msg, sizeof(msg), "%s%s: полоса цели за краем экрана",
+                              sz.name, mode);
+                check(false, msg);
+            }
+        }
+
         // ---- ничто не уходит за экран ----
         for (const auto& [name, r] : rects) {
             if (r.x >= -0.5f && r.y >= -0.5f &&
@@ -4852,6 +4881,19 @@ void testHudAndButtonsDoNotOverlap() {
                     char msg[176];
                     std::snprintf(msg, sizeof(msg), "%s%s: кнопка %s накрывает %s",
                                   sz.name, mode, def.label, name);
+                    check(false, msg);
+                }
+                // Полоса цели в общий список не попала (место с
+                // плашкой подгрузки она делит намеренно), но кнопка
+                // накрывать её не имеет права: на неё смотрят, не
+                // отрываясь от боя, а палец в этот момент как раз на
+                // кнопках.
+                if (circleHitsRect(c.x, c.y, def.r, L.targetBar())) {
+                    ++problems;
+                    char msg[176];
+                    std::snprintf(msg, sizeof(msg),
+                                  "%s%s: кнопка %s накрывает полосу цели",
+                                  sz.name, mode, def.label);
                     check(false, msg);
                 }
             }
@@ -20909,7 +20951,7 @@ void testHitsLeaveAMark() {
         // моменту часть горсти уже погасла.
         {
             std::vector<render::MobInstance> inst;
-            render::particleInstances(p, inst);
+            render::particleInstances(p, eye, inst);
             std::snprintf(m, sizeof(m),
                           "в список рендера попали только живые: %u из %u в пуле",
                           (u32)inst.size(), (u32)p.items().size());
@@ -20965,8 +21007,10 @@ void testHitsLeaveAMark() {
         b.color = 0x40C080FFu;
         p.emit(b);
 
+        // Глаз далеко: гашение у камеры проверяется отдельно, ниже.
+        const glm::vec3 far{ 1.f, 90.f, 2.f };
         std::vector<render::MobInstance> inst;
-        render::particleInstances(p, inst);
+        render::particleInstances(p, far, inst);
         check(inst.size() == p.liveCount(),
               "инстансов ровно столько, сколько живых осколков");
         check(!inst.empty(), "и они есть");
@@ -21014,7 +21058,7 @@ void testHitsLeaveAMark() {
             world::particles().reset();
             world::blockBreakBurst({ 2, 70, 2 }, world::STONE);
             std::vector<render::MobInstance> chips;
-            render::particleInstances(world::particles(), chips);
+            render::particleInstances(world::particles(), glm::vec3(0.f, 90.f, 0.f), chips);
             const world::BlockDef& st = world::blocks().get(world::STONE);
             const i32 wantR = (i32)((st.colorTop >> 24) & 0xFFu);
             i32 sum = 0, n = 0;
@@ -21072,6 +21116,372 @@ void testHitsLeaveAMark() {
         check(!psrc.empty() &&
               psrc.find("blocks().get") != std::string::npos,
               "цвет щепок берётся из реестра блоков, а не из своей таблицы");
+    }
+}
+
+// ------------------------------------------------------------
+// Видно, с кем дерёшься.
+//
+// Три итерации подряд занимались МОМЕНТОМ удара: замахом, дугой
+// оружия, толчком камеры, осколками. У боя как у целого при этом
+// не было СОСТОЯНИЯ: попадание видно, а что оно изменило — нет.
+//
+// Поиск по проекту перед этой итерацией: healthBar, nameplate,
+// targetHealth, boss в интерфейсе — ноль совпадений. У Каменного
+// Стража три фазы, у Полого Владыки две, пороги считает
+// bossPhaseFor — и ничего из этого до игрока не доходило.
+//
+// Проверяется здесь именно это: что полоса цели заводится из
+// настоящего расчёта урона, показывает настоящее здоровье, что след
+// последнего удара отвечает на вопрос «сколько сняли», и что деления
+// фаз стоят там же, где босс меняет поведение.
+// ------------------------------------------------------------
+void testYouCanSeeWhoYouFight() {
+    group("бой: видно, с кем дерёшься");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+    combat::weapons();
+
+    using combat::FocusTarget;
+    using combat::FocusView;
+
+    // ---- Общая площадка: игрок, две твари, босс ----
+    ecs::Registry reg;
+
+    const ecs::Entity player = reg.create();
+    reg.add(player, ecs::Transform{ glm::vec3(0.f, 64.f, 0.f) });
+    reg.add(player, ecs::PlayerTag{});
+    reg.add(player, ecs::Health{ 100.f, 100.f, 0.f, 0.f });
+    reg.add(player, combat::StatusEffects{});
+    reg.add(player, FocusTarget{});
+
+    auto spawn = [&](u16 mobId, f32 hp) {
+        const ecs::Entity m = reg.create();
+        reg.add(m, ecs::Transform{ glm::vec3(3.f, 64.f, 0.f) });
+        reg.add(m, ecs::Health{ hp, hp, 0.f, 0.f });
+        reg.add(m, ecs::AIAgent{});
+        reg.add(m, mobs::MobTag{ mobId });
+        reg.add(m, combat::StatusEffects{});
+        return m;
+    };
+    auto focus = [&]() -> FocusTarget& {
+        return *reg.get<FocusTarget>(player);
+    };
+    auto hit = [&](ecs::Entity from, ecs::Entity to, f32 amount) {
+        combat::DamageInstance d;
+        d.amount = amount;
+        d.sourceEntity = (u32)from;
+        d.targetEntity = (u32)to;
+        if (auto* h = reg.get<ecs::Health>(to)) h->invulnTime = 0.f;
+        combat::applyDamage(reg, to, d);
+    };
+
+    // ---- 1. Полоса заводится настоящим ударом ----
+    {
+        check(focus().id == 0, "до первого удара цели нет");
+
+        const ecs::Entity wolf = spawn((u16)mobs::MOB_WOLF, 100.f);
+        hit(player, wolf, 25.f);
+
+        check(focus().id == (u32)wolf, "ударил — и цель появилась");
+
+        FocusView v;
+        check(combat::focusView(reg, focus(), v), "полосе есть что показать");
+        char m[190];
+        std::snprintf(m, sizeof(m), "и это «%s»", v.name);
+        check(std::strcmp(v.name, "Wolf") == 0, m);
+
+        // Здоровье берётся настоящее, а не «сколько ударов прошло».
+        combat::tickFocus(reg, focus(), 1.f / 60.f);
+        combat::focusView(reg, focus(), v);
+        std::snprintf(m, sizeof(m), "полоса показывает %.2f при здоровье %.0f из 100",
+                      (double)v.fill, (double)reg.get<ecs::Health>(wolf)->current);
+        check(std::fabs(v.fill - 0.75f) < 0.02f, m);
+    }
+
+    // ---- 2. След показывает размер удара ----
+    //
+    // Тот самый вопрос, ради которого обычно заводят всплывающие
+    // цифры. Доля понятнее абсолюта: «47» игроку нечем мерить.
+    {
+        FocusView v;
+        combat::focusView(reg, focus(), v);
+        const f32 fillAfterHit = v.fill;
+        check(v.ghost > v.fill + 0.2f,
+              "сразу после удара след заметно выше заливки");
+
+        // Держится, потом оседает.
+        for (i32 i = 0; i < 10; ++i) combat::tickFocus(reg, focus(), 1.f / 60.f);
+        combat::focusView(reg, focus(), v);
+        check(v.ghost > v.fill,
+              "первые кадры след стоит на месте, чтобы его успели увидеть");
+
+        for (i32 i = 0; i < 180; ++i) combat::tickFocus(reg, focus(), 1.f / 60.f);
+        combat::focusView(reg, focus(), v);
+        char m[190];
+        std::snprintf(m, sizeof(m), "через три секунды след догнал заливку: %.3f и %.3f",
+                      (double)v.ghost, (double)v.fill);
+        check(std::fabs(v.ghost - v.fill) < 0.01f, m);
+        check(std::fabs(v.fill - fillAfterHit) < 0.001f,
+              "а сама заливка при этом не шелохнулась");
+    }
+
+    // ---- 3. Лечение не подделывает полосу ----
+    {
+        const ecs::Entity boar = spawn((u16)mobs::MOB_WOLF, 100.f);
+        hit(player, boar, 60.f);
+        for (i32 i = 0; i < 200; ++i) combat::tickFocus(reg, focus(), 1.f / 60.f);
+
+        reg.get<ecs::Health>(boar)->current = 90.f;
+        combat::tickFocus(reg, focus(), 1.f / 60.f);
+        FocusView v;
+        combat::focusView(reg, focus(), v);
+        check(v.fill > 0.85f, "вылечилась — и полоса выросла");
+        check(v.ghost >= v.fill - 0.001f,
+              "а след догнал её вверх сразу, не оставив ложного хвоста");
+    }
+
+    // ---- 4. Новая цель не наследует чужой след ----
+    {
+        const ecs::Entity fresh = spawn((u16)mobs::MOB_GOBLIN, 100.f);
+        hit(player, fresh, 5.f);
+        combat::tickFocus(reg, focus(), 1.f / 60.f);
+
+        FocusView v;
+        combat::focusView(reg, focus(), v);
+        check(focus().id == (u32)fresh, "цель сменилась");
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "у свежей цели след %.2f при заливке %.2f — от прошлой ничего",
+                      (double)v.ghost, (double)v.fill);
+        check(v.ghost <= 1.001f && v.ghost >= v.fill, m);
+        check(v.fill > 0.9f, "и она почти цела");
+    }
+
+    // ---- 4a. След не врёт о силе удара по раненой твари ----
+    //
+    // Тварь, подраненную кем-то раньше, полоса видит впервые. Начни
+    // след с полного края — и лёгкий тычок нарисовал бы вычет во всю
+    // недостающую часть полосы.
+    {
+        const ecs::Entity wounded = spawn((u16)mobs::MOB_WOLF, 100.f);
+        reg.get<ecs::Health>(wounded)->current = 40.f;   // ранена не нами
+        hit(player, wounded, 5.f);
+        combat::tickFocus(reg, focus(), 1.f / 60.f);
+
+        FocusView v;
+        combat::focusView(reg, focus(), v);
+        char m[200];
+        std::snprintf(m, sizeof(m),
+                      "по твари на 40%% след показывает вычет %.0f%% при ударе в 5%%",
+                      (double)((v.ghost - v.fill) * 100.f));
+        check(v.ghost - v.fill < 0.09f, m);
+        check(v.ghost > v.fill + 0.02f, "но вычет всё-таки виден");
+    }
+
+    // ---- 4b. Труп не возвращает себе полосу ----
+    {
+        const ecs::Entity dying = spawn((u16)mobs::MOB_GOBLIN, 20.f);
+        hit(player, dying, 999.f);
+        combat::tickFocus(reg, focus(), 1.f / 60.f);
+        const f32 heldAfterDeath = focus().hold;
+        hit(player, dying, 999.f);          // молотим павшего
+        check(focus().hold <= heldAfterDeath + 0.001f,
+              "добивание трупа не продлевает его полосу");
+    }
+
+    // ---- 5. Бьют игрока — цель тоже видна ----
+    {
+        const ecs::Entity biter = spawn((u16)mobs::MOB_WOLF, 100.f);
+        hit(biter, player, 7.f);
+        check(focus().id == (u32)biter,
+              "укусили — и стало видно, кто кусает");
+
+        // А чужая драка игрока не касается.
+        const ecs::Entity a = spawn((u16)mobs::MOB_WOLF, 100.f);
+        const ecs::Entity b = spawn((u16)mobs::MOB_SHEEP, 100.f);
+        hit(a, b, 10.f);
+        check(focus().id == (u32)biter,
+              "а волк, задравший овцу, полосу игрока не трогает");
+    }
+
+    // ---- 6. Полоса не висит вечно ----
+    {
+        FocusView v;
+        check(combat::focusView(reg, focus(), v), "полоса ещё видна");
+
+        // Последняя секунда — затухание.
+        const f32 step = 1.f / 60.f;
+        f32 t = 0.f;
+        f32 alphaMid = 1.f;
+        while (t < combat::FOCUS_HOLD_SEC - combat::FOCUS_FADE_SEC * 0.5f) {
+            combat::tickFocus(reg, focus(), step);
+            t += step;
+        }
+        combat::focusView(reg, focus(), v);
+        alphaMid = v.alpha;
+        char m[190];
+        std::snprintf(m, sizeof(m), "к концу держания полоса растворяется (%.2f)",
+                      (double)alphaMid);
+        check(alphaMid < 0.9f && alphaMid > 0.f, m);
+
+        while (t < combat::FOCUS_HOLD_SEC + 0.5f) {
+            combat::tickFocus(reg, focus(), step);
+            t += step;
+        }
+        check(!combat::focusView(reg, focus(), v),
+              "а потом уходит совсем: драка кончилась");
+        check(focus().id == 0, "и цель забыта");
+    }
+
+    // ---- 7. Смерть цели видно ----
+    {
+        const ecs::Entity doomed = spawn((u16)mobs::MOB_GOBLIN, 30.f);
+        hit(player, doomed, 10.f);
+        combat::tickFocus(reg, focus(), 1.f / 60.f);
+        hit(player, doomed, 999.f);
+        combat::tickFocus(reg, focus(), 1.f / 60.f);
+
+        FocusView v;
+        check(combat::focusView(reg, focus(), v), "полоса ещё на экране");
+        check(v.dead, "и отмечена как пустая");
+        check(v.fill <= 0.001f, "заливки в ней не осталось");
+
+        // Но и она уходит, а не остаётся висеть.
+        for (i32 i = 0; i < (i32)(combat::FOCUS_DEATH_SEC * 60.f) + 30; ++i)
+            combat::tickFocus(reg, focus(), 1.f / 60.f);
+        check(!combat::focusView(reg, focus(), v),
+              "через полторы секунды пустая полоса уходит");
+    }
+
+    // ---- 8. Цель исчезла из мира — не падаем ----
+    {
+        const ecs::Entity ghost = spawn((u16)mobs::MOB_WOLF, 50.f);
+        hit(player, ghost, 5.f);
+        check(focus().id == (u32)ghost, "цель есть");
+        reg.destroy(ghost);
+        combat::tickFocus(reg, focus(), 1.f / 60.f);
+        FocusView v;
+        check(!combat::focusView(reg, focus(), v),
+              "исчезнувшая тварь полосу за собой не тянет");
+    }
+
+    // ---- 9. Деления стоят там, где босс меняет поведение ----
+    {
+        const auto& warden = mobs::mobRegistry().get(mobs::MOB_BOSS_WARDEN);
+        char m[190];
+        std::snprintf(m, sizeof(m), "у Каменного Стража %u фаз", (unsigned)warden.phaseCount);
+        check(warden.phaseCount > 1, m);
+
+        const ecs::Entity boss = spawn((u16)mobs::MOB_BOSS_WARDEN, 300.f);
+        hit(player, boss, 1.f);
+
+        // Фаза на полосе обязана совпадать с той, по которой босс
+        // переключается. Разойтись им нельзя: деления рисуются ровно
+        // на этих порогах.
+        i32 mismatch = 0;
+        for (i32 pct = 100; pct >= 0; pct -= 5) {
+            reg.get<ecs::Health>(boss)->current = 300.f * (f32)pct / 100.f;
+            combat::tickFocus(reg, focus(), 1.f / 60.f);
+            FocusView v;
+            if (!combat::focusView(reg, focus(), v)) { ++mismatch; continue; }
+            const u8 want = mobs::bossPhaseFor(v.fill, warden.phaseCount);
+            if (v.phase != want || v.phases != warden.phaseCount) ++mismatch;
+        }
+        std::snprintf(m, sizeof(m),
+                      "на двадцати одной отметке здоровья фаза полосы совпала с "
+                      "фазой босса (расхождений %d)", mismatch);
+        check(mismatch == 0, m);
+
+        // У обычной твари делений нет вовсе.
+        const ecs::Entity wolf = spawn((u16)mobs::MOB_WOLF, 100.f);
+        hit(player, wolf, 1.f);
+        combat::tickFocus(reg, focus(), 1.f / 60.f);
+        FocusView v;
+        combat::focusView(reg, focus(), v);
+        check(v.phases == 1, "а у волка полоса без делений: фаза у него одна");
+    }
+
+    // ---- 10. Осколки не закрывают собой камеру ----
+    //
+    // Дефект прошлой итерации. Ближняя плоскость стоит на 0.1 блока,
+    // ребро осколка — около того же: частица, прошедшая рядом с
+    // глазом, закрывает пол-экрана. Пыль при приземлении рождается у
+    // ступней и часть её летит вверх — то есть сквозь голову, а от
+    // первого лица голова и есть камера.
+    {
+        world::Particles p;
+        world::Burst b{};
+        b.origin = { 0.f, 64.f, 0.f };
+        b.count = 60; b.speed = 0.f; b.spread = 1.f;
+        b.size = 0.1f; b.life = 5.f; b.gravity = 0.f;
+        b.color = 0xFFFFFFFFu;
+        p.emit(b);
+
+        std::vector<render::MobInstance> inst;
+
+        // Глаз ровно там же, где горсть.
+        render::particleInstances(p, glm::vec3(0.f, 64.f, 0.f), inst);
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "осколков в глазу: %u из %u", (u32)inst.size(), p.liveCount());
+        check(inst.empty(), m);
+
+        // На границе полной видимости — все и в полную силу.
+        render::particleInstances(
+            p, glm::vec3(0.f, 64.f - render::PARTICLE_NEAR_FULL - 0.01f, 0.f), inst);
+        check(inst.size() == p.liveCount(), "чуть дальше — видны все");
+        u32 faded = 0;
+        for (const auto& q : inst) if (((q.colorGpu >> 24) & 0xFFu) < 250u) ++faded;
+        std::snprintf(m, sizeof(m), "и в полную силу (пригашенных %u из %u)",
+                      faded, (u32)inst.size());
+        check(faded == 0, m);
+
+        // Между порогами — видны, но пригашены.
+        const f32 mid = (render::PARTICLE_NEAR_HIDE + render::PARTICLE_NEAR_FULL) * 0.5f;
+        render::particleInstances(p, glm::vec3(0.f, 64.f - mid, 0.f), inst);
+        check(inst.size() == p.liveCount(), "посередине они ещё в кадре");
+        u32 dim = 0;
+        for (const auto& q : inst) {
+            const u32 a = (q.colorGpu >> 24) & 0xFFu;
+            if (a > 20u && a < 220u) ++dim;
+        }
+        std::snprintf(m, sizeof(m), "но растворяются, а не мигают (пригашенных %u из %u)",
+                      dim, (u32)inst.size());
+        check(dim == inst.size(), m);
+    }
+
+    // ---- 11. Полоса цели подключена к игре ----
+    {
+        struct Wiring { const char* file; const char* call; const char* why; };
+        const Wiring wiring[] = {
+            { "app/src/main/cpp/src/combat/status_effects.cpp",
+              "noticeDamage", "цель запоминается в общей воронке урона" },
+            { "app/src/main/cpp/src/player/player.cpp",
+              "tickFocus", "полоса движется каждый кадр" },
+            { "app/src/main/cpp/src/main.cpp",
+              "focusView", "и доезжает до интерфейса" },
+            { "app/src/main/cpp/src/ui/ui_system.cpp",
+              "drawTargetBar", "который её рисует" },
+        };
+        char m[220];
+        for (const Wiring& w : wiring) {
+            const std::string src = readSource(w.file);
+            if (src.empty()) {
+                std::snprintf(m, sizeof(m), "исходник %s не найден", w.file);
+                check(false, m);
+                continue;
+            }
+            std::snprintf(m, sizeof(m), "%s (%s)", w.why, w.call);
+            check(src.find(w.call) != std::string::npos, m);
+        }
+
+        // Деления берут пороги у боссовой функции, а не считают свои.
+        const std::string fsrc = readSource("app/src/main/cpp/src/combat/focus.cpp");
+        check(!fsrc.empty() && fsrc.find("bossPhaseFor") != std::string::npos,
+              "фаза на полосе считается той же функцией, что и фаза босса");
     }
 }
 
@@ -21973,6 +22383,7 @@ int main() {
     testHitsHaveWeight();
     testGuardBlocksParriesAndBreaks();
     testHitsLeaveAMark();
+    testYouCanSeeWhoYouFight();
     testLogCanBeTurnedOff();
     testCloudsAreNotOneColour();
 

@@ -56,6 +56,7 @@
 #include "world/weather.h"
 #include "world/precipitation.h"
 #include "world/particles.h"
+#include "combat/focus.h"
 #include "world/world_spec.h"
 #include "save/save_export.h"
 #include "mobs/mob_ai.h"
@@ -1762,6 +1763,14 @@ struct Engine {
             items::updateTrampolines(registry, dt);
 
             if (ui) {
+                // Кого игрок сейчас бьёт — в интерфейс обычной
+                // структурой, как и всё остальное: сам он реестр не
+                // спрашивает.
+                if (auto* f = registry.get<combat::FocusTarget>(player->entity()))
+                    combat::focusView(registry, *f, ui->target);
+                else
+                    ui->target = combat::FocusView{};
+
                 ui->nearbyStation = crafting::detectNearbyStation(
                     registry, player->controller.state().position, 3.0f);
 
@@ -2051,7 +2060,9 @@ struct Engine {
             render::precipInstances(precip, weather.snowMix(), precipInstances);
             render->setPrecip(precipInstances.data(), (u32)precipInstances.size());
 
-            render::particleInstances(world::particles(), particleInstances);
+            render::particleInstances(world::particles(),
+                                      render->camera().position(),
+                                      particleInstances);
             render->setParticles(particleInstances.data(),
                                  (u32)particleInstances.size());
 

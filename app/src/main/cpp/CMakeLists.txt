@@ -155,7 +155,7 @@ add_library(native-lib SHARED
     # Мобы
     src/mobs/mob_ai.cpp
     src/entity/beast_rig.cpp
-    src/entity/body_color.cpp
+    src/entity/creature_info.cpp
     src/entity/humanoid_rig.cpp
     src/entity/mob_rigs.cpp
     src/entity/showcase.cpp
@@ -167,6 +167,7 @@ add_library(native-lib SHARED
     src/combat/components.cpp
     src/combat/damage.cpp
     src/combat/enchantment.cpp
+    src/combat/focus.cpp
     src/combat/guard.cpp
     src/combat/hit_detection.cpp
     src/combat/projectile.cpp

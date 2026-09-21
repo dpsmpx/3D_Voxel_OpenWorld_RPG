@@ -5,6 +5,7 @@
 #include "status_effects.h"
 #include "projectile.h"
 #include "guard.h"
+#include "focus.h"
 #include "../ecs/components.h"
 #include "../mobs/mob_def.h"
 #include "../mobs/mob_ai.h"
@@ -13,7 +14,7 @@
 #include "../npc/npc_def.h"
 #include "../quests/quest.h"
 #include "../audio/audio_events.h"
-#include "../entity/body_color.h"
+#include "../entity/creature_info.h"
 #include "../world/particles.h"
 #include <algorithm>
 
@@ -209,6 +210,20 @@ f32 applyDamage(ecs::Registry& reg, ecs::Entity target, const DamageInstance& dm
 
     auto* se = reg.get<StatusEffects>(target);
     if (se) applyStatuses(*se, incoming);
+
+    // Кого игрок бьёт и кто бьёт его — здесь, в общей воронке. Значит
+    // полоса цели одинаково работает для меча, стрелы, заклинания,
+    // яда и горения, и её не надо заводить заново на каждый источник
+    // урона.
+    if (final > 0.f) {
+        // Доля здоровья ДО удара: из неё начинается след, если цель
+        // для полосы новая. Считаем здесь, потому что здесь ещё
+        // известно, сколько именно сняли.
+        const f32 maxHp = h->max > 1.f ? h->max : 1.f;
+        const f32 before = std::min(1.f, std::max(0.f,
+                                    (h->current + final) / maxHp));
+        noticeDamage(reg, target, incoming.sourceEntity, before);
+    }
 
     // Звук попадания и смерти. Эти события были написаны и
     // синтезировались при запуске, но их никто не проигрывал: бой шёл
