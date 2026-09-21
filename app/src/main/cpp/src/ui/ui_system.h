@@ -162,6 +162,19 @@ public:
     void setSurfaceRotation(u32 degrees) { renderer_.setSurfaceRotation(degrees); }
 
     u32 lastVertices() const { return renderer_.lastVertices(); }
+
+    /// Треугольники собранного кадра.
+    ///
+    /// Кадр строится целиком на процессоре (см. buildFrame), но
+    /// посмотреть на него до сих пор было нельзя: наружу торчало
+    /// только ЧИСЛО вершин. А интерфейс — единственная часть игры,
+    /// которую проверки щупают насквозь и при этом ни разу не видели.
+    ///
+    /// Отсюда их берёт `tools/uishot` и рисует настоящую картинку
+    /// программным растеризатором, без Vulkan и без устройства.
+    const std::vector<UiVertex>& frameVertices() const {
+        return renderer_.pendingVertices();
+    }
     u32 lastDrawn()    const { return renderer_.lastDrawn(); }
     u32 lastDrawCalls() const { return renderer_.lastDrawCalls(); }
 
