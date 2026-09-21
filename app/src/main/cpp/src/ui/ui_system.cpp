@@ -202,6 +202,9 @@ void UiSystem::buildFrame(player::Player& player,
     // Раскладка обходит столбец ресурсов ровно там, где он есть, —
     // и узнаёт об этом из того же списка, по которому HUD рисуется.
     layout_.setHudBehind(hudVisibleUnder(screen));
+    // Под меню столбец сжимается: там нужен факт «сколько
+    // осталось», а не половина экрана под полосами с подписями.
+    layout_.setHudCompact(screen != Screen::Hud);
 
     switch (screen) {
         case Screen::Hud:
@@ -424,7 +427,9 @@ void UiSystem::drawHud(player::Player& player,
         ui_.rect(cx - 1.f, cy - 10.f, 2.f, 20.f, COL_WHITE);
     }
 
-    drawQuestTracker(player);
+    // Строка задания — только на чистом HUD: под меню её место
+    // отдано самому меню, а цель задания там и так открыта в журнале.
+    if (!layout_.hudCompact()) drawQuestTracker(player);
     drawInteractPrompt();
 
     drawLevelUpNotification(player);
@@ -638,6 +643,8 @@ void UiSystem::drawHudResources(player::Player& player) {
         { cachedSpPct, theme::Sp, theme::SpBed, StrKey::Hud_Stamina },
     };
 
+    const bool compact = layout_.hudCompact();
+
     for (u32 i = 0; i < 3; ++i) {
         const Rect r = layout_.resourceBar(i);
         const f32 o = layout_.dp(2.f);
@@ -652,9 +659,14 @@ void UiSystem::drawHudResources(player::Player& player) {
             const f32 cx = r.x + r.w * cachedSpCeil;
             ui_.rect(cx, r.y, r.x + r.w - cx, r.h, hudTint(theme::Ink));
         }
-        ui_.text(T(bars[i].label), r.x + layout_.dp(theme::SPACE_XS_DP),
-                 r.y + (r.h - ui_.textHeight(theme::TEXT_CAPTION)) * 0.5f,
-                 theme::TEXT_CAPTION, theme::TextPrimary);
+        // Подпись — только в полном столбце: в полоску высотой в
+        // восемь точек она не поместится, а цвет и длина говорят то
+        // же самое. Читать «HP» игрок, открывший инвентарь, не
+        // нанимался.
+        if (!compact)
+            ui_.text(T(bars[i].label), r.x + layout_.dp(theme::SPACE_XS_DP),
+                     r.y + (r.h - ui_.textHeight(theme::TEXT_CAPTION)) * 0.5f,
+                     theme::TEXT_CAPTION, theme::TextPrimary);
     }
 
     // ---- Воздух ----
@@ -662,7 +674,7 @@ void UiSystem::drawHudResources(player::Player& player) {
     // Показывается только под водой: полной полоске на экране делать
     // нечего, а пустеющая — единственное, что скажет игроку, зачем
     // всплывать.
-    if (cachedAirPct < 0.999f) {
+    if (cachedAirPct < 0.999f && !compact) {
         const Rect r = layout_.airBar();
         const f32 o = layout_.dp(2.f);
         ui_.rect(r.x - o, r.y - o, r.w + o * 2.f, r.h + o * 2.f,
@@ -675,7 +687,10 @@ void UiSystem::drawHudResources(player::Player& player) {
                  theme::TEXT_CAPTION, theme::TextPrimary);
     }
 
-    if (auto* wal = player.wallet()) {
+    // Золото под меню не печатается: инвентарь и торговля показывают
+    // его сами, и две одинаковые цифры в разных углах — лишний
+    // вопрос «почему их две».
+    if (auto* wal = compact ? nullptr : player.wallet()) {
         char goldBuf[32];
         wal->format(goldBuf, sizeof(goldBuf));
         const Rect g = layout_.goldLine();
@@ -719,8 +734,13 @@ void UiSystem::drawResonanceBar(player::Player& player) {
         ui_.rect(bx + bw * at - layout_.dp(1.f), by, layout_.dp(2.f), bh,
                  hudTint(COL_BLACK));
     }
-    ui_.text(T(StrKey::Hud_Resonance), bx + layout_.dp(theme::SPACE_XS_DP),
-             by + layout_.dp(1.f), theme::TEXT_CAPTION, hudTint(COL_WHITE));
+    // Подпись — как и у остальных полос, только в полном столбце: в
+    // полоску высотой в восемь точек она не помещается и лезет
+    // наружу, а делений Резонанса и так достаточно, чтобы прочитать
+    // его одним взглядом.
+    if (!layout_.hudCompact())
+        ui_.text(T(StrKey::Hud_Resonance), bx + layout_.dp(theme::SPACE_XS_DP),
+                 by + layout_.dp(1.f), theme::TEXT_CAPTION, hudTint(COL_WHITE));
 
     if (res.finisherReady) {
         const char* txt = T(StrKey::Hud_FinisherReady);
@@ -1037,6 +1057,11 @@ void UiSystem::drawInventory(player::Player& player) {
     drawSlotGrid(player, eq, items::INV_ARMOR_OFFSET, eqCount);
 
     // ---- Пояс: здесь видны все девять ----
+    //
+    // Он есть и на HUD, но убрать его отсюда нельзя: перенос
+    // предмета пальцем работает по сеткам ЭТОГО экрана, и без сетки
+    // пояса положить в пояс стало бы нечем. Проверка на это есть, и
+    // она поймала попытку.
     const Rect eb = eq.bounds();
     const Rect hbArea{ left.x, eb.y + eb.h + layout_.dp(theme::SPACE_L_DP),
                        left.w, layout_.dp(theme::TOUCH_REGULAR_DP) };
@@ -1245,21 +1270,26 @@ void UiSystem::updateSlotDrag(items::Inventory& inv) {
 // Не стена текста: название, редкость, количество и ровно те
 // действия, которые к предмету применимы.
 void UiSystem::drawItemDetails(player::Player& player) {
+    auto* inv = player.inventory();
+
+    // Ничего не выбрано — панели НЕТ вовсе.
+    //
+    // Она стояла всегда, занимая треть экрана под одной надписью
+    // «нажми, чтобы использовать». Подсказку эту игрок прочтёт один
+    // раз в жизни, а ячейки, которых из-за неё не помещалось,
+    // нужны ему каждый раз.
+    if (!inv || selectedInvSlot < 0 ||
+        selectedInvSlot >= (i32)items::INV_TOTAL_SLOTS ||
+        inv->at((u32)selectedInvSlot).empty()) {
+        return;
+    }
+
     const Rect d = layout_.invDetails();
     ui_.rect(d.x, d.y, d.w, d.h, theme::Panel);
     ui_.rectOutline(d.x, d.y, d.w, d.h, layout_.dp(theme::STROKE_DP),
                     theme::Stroke);
 
-    auto* inv = player.inventory();
     const f32 pad = layout_.dp(theme::PANEL_PAD_DP);
-
-    if (!inv || selectedInvSlot < 0 ||
-        selectedInvSlot >= (i32)items::INV_TOTAL_SLOTS ||
-        inv->at((u32)selectedInvSlot).empty()) {
-        ui_.text(T(StrKey::Inv_Hint_Tap), d.x + pad, d.y + pad,
-                 theme::TEXT_LABEL, theme::TextDisabled);
-        return;
-    }
 
     const u32 slot = (u32)selectedInvSlot;
     auto& st = inv->at(slot);
