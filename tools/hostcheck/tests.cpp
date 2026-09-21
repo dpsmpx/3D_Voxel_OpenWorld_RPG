@@ -21440,6 +21440,21 @@ void testYouCanSeeWhoYouFight() {
                       "осколков в глазу: %u из %u", (u32)inst.size(), p.liveCount());
         check(inst.empty(), m);
 
+        // И на волос ближе порога — тоже ни одного.
+        //
+        // Без этой строки проверка держалась на совпадении: осколок
+        // РОВНО в глазу отсекался бы и с нулевым порогом, потому что
+        // ноль не меньше нуля. Мутация, обнулившая порог, прошла
+        // насквозь — и правильно сделала: сказано было не то, что
+        // имелось в виду. Имелось в виду «ближе порога не видно».
+        const f32 inside = render::PARTICLE_NEAR_HIDE * 0.7f;
+        render::particleInstances(p, glm::vec3(0.f, 64.f - inside, 0.f), inst);
+        std::snprintf(m, sizeof(m),
+                      "и на %.2f блока от глаза (порог %.2f) — тоже ни одного, а их %u",
+                      (double)inside, (double)render::PARTICLE_NEAR_HIDE,
+                      (u32)inst.size());
+        check(inst.empty(), m);
+
         // На границе полной видимости — все и в полную силу.
         render::particleInstances(
             p, glm::vec3(0.f, 64.f - render::PARTICLE_NEAR_FULL - 0.01f, 0.f), inst);
