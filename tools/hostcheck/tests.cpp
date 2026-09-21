@@ -4723,6 +4723,277 @@ void testLoadingIsAPanelNotACurtain() {
 }
 
 // ------------------------------------------------------------
+// Экраны меню не лезут на HUD.
+//
+// HUD рисуется под десятью экранами из шестнадцати, и это не
+// небрежность: `paused()` гасит только ввод и музыку, мир при
+// открытом инвентаре продолжает жить, и полоса здоровья нужна
+// игроку ровно тогда, когда он в нём копается.
+//
+// А вот знать про столбец ресурсов меню не знало. Снимки показали:
+// «INVENTORY» нарисован поверх полосы маны, «QUEST LOG» — поверх
+// неё же, «ACTIVE QUESTS» — поверх выносливости, «BUY» и «SELL» —
+// поверх здоровья и маны. Семь экранов из десяти вдобавок считали
+// себя в сырых пикселях: фон — rgba() числом, заголовок — по доле
+// ширины экрана.
+//
+// Проверяется не «красиво ли», а два факта: заголовок не
+// пересекается со столбцом там, где столбец есть, и не отступает
+// там, где его нет.
+// ------------------------------------------------------------
+void testMenusDoNotSitOnHud() {
+    group("экраны: меню не лезет на столбец HUD");
+
+    struct Size { f32 w, h; i32 dpi; const char* name; };
+    const Size sizes[] = {
+        { 2400.f, 1080.f, 440, "2400x1080 @440" },
+        { 1920.f, 1080.f, 400, "1920x1080 @400" },
+        { 1280.f,  720.f, 320, "1280x720 @320"  },
+        {  960.f,  540.f, 240, "960x540 @240"   },
+        { 2560.f, 1600.f, 280, "2560x1600 @280" },
+    };
+    auto overlaps = [](const ui::Rect& a, const ui::Rect& b) {
+        return !(a.x + a.w <= b.x + 0.01f || b.x + b.w <= a.x + 0.01f ||
+                 a.y + a.h <= b.y + 0.01f || b.y + b.h <= a.y + 0.01f);
+    };
+
+    char m[200];
+    u32 bad = 0;
+
+    for (const auto& sz : sizes)
+      for (int mirror = 0; mirror < 2; ++mirror) {
+        ui::HudLayout L(sz.w, sz.h,
+                        ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                        ui::SafeInsets{}, mirror != 0);
+
+        // ---- Там, где HUD виден, меню его обходит ----
+        L.setHudBehind(true);
+        const ui::Rect col = L.hudLeftColumn();
+        const ui::Rect title = L.menuTitle();
+        const ui::Rect area  = L.menuArea();
+
+        if (overlaps(title, col)) {
+            ++bad;
+            std::snprintf(m, sizeof(m),
+                          "%s%s: заголовок меню лежит на столбце HUD",
+                          sz.name, mirror ? " (левша)" : "");
+            check(false, m);
+        }
+        if (overlaps(area, col)) {
+            ++bad;
+            std::snprintf(m, sizeof(m),
+                          "%s%s: содержимое меню лежит на столбце HUD",
+                          sz.name, mirror ? " (левша)" : "");
+            check(false, m);
+        }
+        if (area.w <= 0.f || area.h <= 0.f) {
+            ++bad;
+            std::snprintf(m, sizeof(m), "%s%s: от области меню ничего не осталось",
+                          sz.name, mirror ? " (левша)" : "");
+            check(false, m);
+        }
+
+        // ---- Там, где HUD не рисуется, меню не отступает ----
+        //
+        // Отступ «на всякий случай» стоил экрану создания мира
+        // клавиатуры: у него под собой чистый фон, а 120 точек
+        // высоты у него отняли.
+        L.setHudBehind(false);
+        const ui::Rect freeArea = L.menuArea();
+        if (freeArea.h <= area.h + 0.01f) {
+            ++bad;
+            std::snprintf(m, sizeof(m),
+                          "%s%s: без HUD под экраном места не прибавилось "
+                          "(%.0f против %.0f)",
+                          sz.name, mirror ? " (левша)" : "",
+                          (double)freeArea.h, (double)area.h);
+            check(false, m);
+        }
+      }
+    check(bad == 0, "заголовок и содержимое меню обходят столбец HUD");
+
+    // ---- Столбец HUD — это весь столбец ----
+    //
+    // Он объединяет и полосы, и золото, и воздух, и строку задания.
+    // Пока строка задания в него не входила, она отмерялась от
+    // последней полосы ресурсов — а ниже той с шестой итерации
+    // стоят ещё три элемента, и строка ложилась на золото.
+    {
+        const ui::HudLayout L(1280.f, 720.f,
+                              ui::theme::Metrics::fromDensityDpi(320),
+                              ui::SafeInsets{});
+        const ui::Rect col = L.hudLeftColumn();
+        const ui::Rect parts[] = { L.resourceBar(0), L.resourceBar(1),
+                                   L.resourceBar(2), L.resonanceBar(),
+                                   L.goldLine(), L.airBar(), L.questTracker() };
+        u32 outside = 0;
+        for (const auto& p : parts) {
+            if (p.x < col.x - 0.01f || p.y < col.y - 0.01f ||
+                p.x + p.w > col.x + col.w + 0.01f ||
+                p.y + p.h > col.y + col.h + 0.01f) ++outside;
+        }
+        std::snprintf(m, sizeof(m),
+                      "столбец HUD накрывает все свои элементы (вне его: %u)",
+                      outside);
+        check(outside == 0, m);
+
+        // Строка задания — под золотом и воздухом, а не поверх них.
+        check(L.questTracker().y >= L.goldLine().y + L.goldLine().h - 0.01f,
+              "строка задания ниже строки золота, а не на ней");
+        check(L.questTracker().y >= L.airBar().y + L.airBar().h - 0.01f,
+              "и ниже полосы воздуха");
+        check(std::fabs(L.questTracker().w - L.goldLine().w) < 0.01f,
+              "и по ширине столбца, а не своей");
+    }
+
+    // ---- Фон и заголовок рисуются В ОДНОМ месте ----
+    //
+    // Семь экранов заводили их себе сами, сырыми числами. Проверка
+    // по исходнику, а не по картинке: ровно так эта болезнь и
+    // возвращается — новый экран пишется копированием соседнего.
+    {
+        const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+        if (!src.empty()) {
+            u32 raw = 0;
+            usize at = 0;
+            while ((at = src.find("rect(0, 0, (float)screenW_", at)) !=
+                   std::string::npos) { ++raw; at += 8; }
+            std::snprintf(m, sizeof(m),
+                          "полноэкранный фон нигде не рисуется сырыми "
+                          "пикселями (нашлось: %u)", raw);
+            check(raw == 0, m);
+
+            const usize bd = src.find("void UiSystem::drawMenuBackdrop(");
+            check(bd != std::string::npos,
+                  "фон и заголовок меню живут в одном месте");
+        }
+    }
+
+    // ---- Меню ничего не рисует в столбце HUD ----
+    //
+    // Проверяется НАРИСОВАННЫЙ КАДР, а не раскладка. Проверять по
+    // раскладке — значит сверять модель с моделью: мутация, которая
+    // оставляла вызов `layout_.menuTitle()` на месте и обнуляла
+    // координату уже после него, проходила такую проверку насквозь,
+    // хотя заголовок при ней ложился ровно на полосу здоровья.
+    //
+    // Считаются вершины, попавшие внутрь столбца, на чистом HUD и на
+    // экране меню. HUD под меню рисуется тот же самый, значит всё,
+    // что прибавилось, прибавило меню.
+    {
+        constexpr i32 W = 1280, H = 720, DPI = 320;
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        // ОБА зеркала, и это не для полноты.
+        //
+        // `joystickLeftHanded` по умолчанию включён, то есть столбец
+        // стоит СПРАВА. Проверка, написанная только под эту сторону,
+        // пропустила мутацию, клавшую заголовок на x = 0: слева
+        // столбца просто нет, и мутация там ничего не задевала.
+        // Настоящее требование стороны не выбирает.
+        const bool savedHanded = config::settingsConst().joystickLeftHanded;
+
+        auto countIn = [&](ui::Screen sc) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(DPI);
+            sys.setScreenSize(W, H);
+            sys.screen = sc;
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+            // Берётся ВЕРХ столбца — от первой полосы до низа
+            // строки золота. Весь столбец не годится: его низ
+            // накрывают круглые кнопки «PUT» и «USE» (направление
+            // 16), их вершины попадают в счёт на чистом HUD, и
+            // добавка меню в этом запасе тонет. Мутация, кладущая
+            // заголовок на x=0, именно так и уходила от проверки.
+            const ui::Rect first = sys.layout().resourceBar(0);
+            const ui::Rect gold  = sys.layout().goldLine();
+            const ui::Rect col{ first.x, first.y, first.w,
+                                (gold.y + gold.h) - first.y };
+            u32 n = 0;
+            for (const ui::UiVertex& v : sys.frameVertices()) {
+                const f32 px = (v.pos.x * 0.5f + 0.5f) * (f32)W;
+                const f32 py = (v.pos.y * 0.5f + 0.5f) * (f32)H;
+                if (px >= col.x && px <= col.x + col.w &&
+                    py >= col.y && py <= col.y + col.h) ++n;
+            }
+            return n;
+        };
+
+        for (int handed = 0; handed < 2; ++handed) {
+            config::settings().joystickLeftHanded = (handed != 0);
+            const u32 onHud  = countIn(ui::Screen::Hud);
+            const u32 onMenu = countIn(ui::Screen::QuestLog);
+            std::snprintf(m, sizeof(m),
+                          "%s: меню не добавляет в столбец HUD ни одной "
+                          "вершины (на HUD %u, на экране журнала %u)",
+                          handed ? "левша" : "правша", onHud, onMenu);
+            check(onMenu <= onHud, m);
+            std::snprintf(m, sizeof(m), "%s: и сам столбец при этом рисуется",
+                          handed ? "левша" : "правша");
+            check(onHud > 0, m);
+        }
+        config::settings().joystickLeftHanded = savedHanded;
+    }
+
+    // ---- Сетка ячеек знает про высоту ----
+    //
+    // Считала только ширину: столбцов сколько влезет, рядов сколько
+    // выйдет — и сумка уезжала за нижний край. Теперь при нехватке
+    // пробуется наименьшая нажимаемая ячейка, а непоместившееся
+    // честно считается.
+    {
+        const ui::HudLayout L(1280.f, 720.f,
+                              ui::theme::Metrics::fromDensityDpi(320),
+                              ui::SafeInsets{});
+        // Область подобрана так, что 27 ячеек влезают ТОЛЬКО при
+        // мелкой ячейке: при обычной (56+8) выходит 6 столбцов и 5
+        // рядов — 312 точек, при наименьшей нажимаемой (48+8) — 7
+        // столбцов и 4 ряда, 216. Высота 240 лежит между.
+        //
+        // Проверять «ячейка не мельче пальца и не крупнее обычной»
+        // бессмысленно: этому условию отвечает и обычная ячейка, то
+        // есть сетка, которая мелкую даже не пробовала. Мутация это
+        // и показала — она прошла проверку насквозь. Утверждать надо
+        // то, ради чего развилка писалась: здесь ячейка ОБЯЗАНА
+        // стать мельче обычной, и тогда помещается всё.
+        const ui::Rect tight{ 0.f, 0.f, L.dp(400.f), L.dp(240.f) };
+        const ui::HudLayout::CellGrid g = L.cellGrid(tight, 27);
+        check(g.total == 27, "сетка помнит, сколько ячеек просили");
+        check(g.cell >= L.dp(ui::theme::TOUCH_MIN_DP) - 0.01f,
+              "ячейка не мельче того, во что попадает палец");
+        std::snprintf(m, sizeof(m),
+                      "в тесной области ячейка ужимается (%.0f при обычной %.0f)",
+                      (double)g.cell, (double)L.dp(ui::theme::TOUCH_REGULAR_DP));
+        check(g.cell < L.dp(ui::theme::TOUCH_REGULAR_DP) - 0.01f, m);
+        std::snprintf(m, sizeof(m),
+                      "и тогда помещается всё (рядов %u, видно %u, лишних %u)",
+                      g.rows, g.rowsVisible(), g.overflow());
+        check(g.overflow() == 0, m);
+
+        // Там, где места хватает, ужимать нечего.
+        const ui::Rect roomy{ 0.f, 0.f, L.dp(600.f), L.dp(400.f) };
+        const ui::HudLayout::CellGrid g2 = L.cellGrid(roomy, 27);
+        check(g2.overflow() == 0, "просторная область вмещает всё");
+        check(g2.cell >= L.dp(ui::theme::TOUCH_REGULAR_DP) - 0.01f,
+              "и ячейки там обычного размера");
+
+        // А там, где не помогает и мелкая, переполнение считается
+        // честно, а не прячется.
+        const ui::Rect hopeless{ 0.f, 0.f, L.dp(400.f), L.dp(120.f) };
+        const ui::HudLayout::CellGrid g3 = L.cellGrid(hopeless, 27);
+        std::snprintf(m, sizeof(m),
+                      "не поместившееся считается, а не теряется "
+                      "(рядов видно %u из %u, лишних ячеек %u)",
+                      g3.rowsVisible(), g3.rows, g3.overflow());
+        check(g3.overflow() > 0 && g3.rowsVisible() < g3.rows, m);
+    }
+}
+
+// ------------------------------------------------------------
 void testHudAndButtonsDoNotOverlap() {
     group("раскладка: HUD и экранные кнопки не налезают");
 
@@ -4813,6 +5084,16 @@ void testHudAndButtonsDoNotOverlap() {
         // пояса, на 1280x720 — в полуэкране над ним. Увидели это,
         // когда на HUD впервые посмотрели глазами.
         rects.push_back({ "полоса Резонанса", L.resonanceBar() });
+        // Золота, воздуха и строки задания в этом списке не было
+        // вовсе — и ровно поэтому никто не увидел, что строка
+        // текущего задания лежит на строке золота. Она отмерялась от
+        // ПОСЛЕДНЕЙ ПОЛОСЫ РЕСУРСОВ, а ниже той с шестой итерации
+        // встали Резонанс, золото и воздух. Нашлось это глазами, на
+        // снимке, а не здесь: прямоугольник, который не проверяют,
+        // ничем не отличается от прямоугольника, которого нет.
+        rects.push_back({ "строка золота", L.goldLine() });
+        rects.push_back({ "полоса воздуха", L.airBar() });
+        rects.push_back({ "строка задания", L.questTracker() });
         for (u32 i = 0; i < ui::HudLayout::STATUS_ICONS; ++i)
             rects.push_back({ "значок состояния", L.statusIcon(i) });
         for (u32 i = 0; i < L.hotbarVisibleSlots(); ++i)
@@ -4887,6 +5168,25 @@ void testHudAndButtonsDoNotOverlap() {
                     check(false, msg);
                 }
                 for (const auto& [name, r] : rects) {
+                    // Низ левого столбца против круглых кнопок пока
+                    // НЕ сверяется, и это записано, а не умолчано.
+                    //
+                    // Столбец с золотом, воздухом и строкой задания
+                    // занимает около 180 точек из 360, что есть вся
+                    // высота бюджетного экрана; кнопки «PUT» и «USE»
+                    // стоят на 108..160. Развести их отступом
+                    // нельзя — места нет ни у столбца, ни у кнопок,
+                    // и решать надо, ЧТО из этого показывать на
+                    // мелком экране, а не двигать на пять точек.
+                    // Направление 16 в docs/AAA_DIRECTION.md.
+                    //
+                    // Друг с другом и с остальным HUD эти три
+                    // прямоугольника сверяются полностью — именно
+                    // так и нашлась строка задания, лежавшая на
+                    // строке золота.
+                    if (std::strcmp(name, "строка золота") == 0 ||
+                        std::strcmp(name, "полоса воздуха") == 0 ||
+                        std::strcmp(name, "строка задания") == 0) continue;
                     if (!circleHitsRect(c.x, c.y, def.r, r)) continue;
                     ++problems;
                     char msg[176];
@@ -6238,11 +6538,28 @@ void testAttributeSteppersArePressable() {
                 check(false, msg);
             }
             // Строки не налезают друг на друга.
-            if (i > 0) {
-                const ui::Rect prev = L.attrRow(i - 1);
-                if (row.y < prev.y + prev.h - 0.01f) {
+            //
+            // Проверяется НЕПЕРЕСЕЧЕНИЕ прямоугольников, а не
+            // «следующая ниже предыдущей». Второе — описание одного
+            // столбца, а не требования: когда строки не влезают по
+            // высоте, раскладка разбивает их на две колонки, и там
+            // соседние стоят бок о бок на одной высоте, ничего друг
+            // на друга не кладя. Прежняя формулировка объявила бы
+            // это дефектом, хотя дефекта нет.
+            for (u32 j = 0; j < i; ++j) {
+                const ui::Rect other = L.attrRow(j);
+                const bool apart =
+                    row.x + row.w <= other.x + 0.01f ||
+                    other.x + other.w <= row.x + 0.01f ||
+                    row.y + row.h <= other.y + 0.01f ||
+                    other.y + other.h <= row.y + 0.01f;
+                if (!apart) {
                     ++problems;
-                    check(false, "строки характеристик налезают");
+                    char msg[128];
+                    std::snprintf(msg, sizeof(msg),
+                                  "%s: строки характеристик %u и %u налезают",
+                                  sz.name, j, i);
+                    check(false, msg);
                 }
             }
         }
@@ -16440,22 +16757,26 @@ void testInventoryDragMovesItems() {
     sys.setScreenSize(W, H);
     sys.screen = ui::Screen::Inventory;
 
-    // Та же раскладка, по которой экран и рисует: не копия её правил,
-    // а она сама.
-    const ui::HudLayout L((f32)W, (f32)H,
-                          ui::theme::Metrics::fromDensityDpi(
-                              DPI, config::settingsConst().uiScale),
-                          ui::SafeInsets{});
+    auto frame = [&]() {
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, world, 60.f);
+    };
+
+    // Раскладка берётся У САМОЙ UiSystem, а не строится рядом по тем
+    // же правилам. Раньше строилась — и это была копия, которая
+    // разошлась с оригиналом в первый же день, когда у раскладки
+    // появилось состояние (виден ли под экраном HUD: его выставляет
+    // buildFrame). Координаты ячеек в проверке разъехались с теми,
+    // по которым экран рисует и ловит касания, — а проверка при этом
+    // уверяла в комментарии, что она «не копия правил, а она сама».
+    frame();
+    const ui::HudLayout& L = sys.layout();
     const ui::HudLayout::CellGrid mainGrid =
         L.cellGrid(L.invLeft(), items::INV_MAIN_SLOTS);
 
     auto centre = [&](u32 slot) {
         const ui::Rect r = mainGrid.at(slot);
         return glm::vec2{ r.x + r.w * 0.5f, r.y + r.h * 0.5f };
-    };
-    auto frame = [&]() {
-        sys.tickUi(1.f / 60.f);
-        sys.buildFrame(pl, world, 60.f);
     };
     auto total = [&]() {
         u32 n = 0;
@@ -22807,6 +23128,7 @@ int main() {
     testWaterSortedByWaterCenter();
     testSettingsTogglesActuallyToggle();
     testUiTapSurvivesRedraw();
+    testMenusDoNotSitOnHud();
     testHudAndButtonsDoNotOverlap();
     testLoadingIsAPanelNotACurtain();
     testUiThemeObeysItsOwnRules();

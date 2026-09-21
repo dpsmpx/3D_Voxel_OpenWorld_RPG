@@ -378,6 +378,28 @@ public:
 
     bool dialogueOpen() const { return screen == Screen::Dialogue; }
 
+    /// Виден ли HUD под этим экраном.
+    ///
+    /// Один список на два вопроса: звать ли `drawHud` и обходить ли
+    /// раскладке столбец ресурсов. Пока ответов было два, они
+    /// расходились — экран создания мира отступал от столбца,
+    /// которого под ним нет.
+    ///
+    /// Под остальными HUD рисуется намеренно: `paused()` гасит
+    /// только ввод и музыку, мир продолжает жить, и полоса здоровья
+    /// нужна игроку ровно тогда, когда он копается в сумке.
+    static bool hudVisibleUnder(Screen s) {
+        switch (s) {
+            case Screen::Settings:
+            case Screen::Worlds:
+            case Screen::NewWorld:
+            case Screen::IsoSnapshot:
+                return false;
+            default:
+                return true;
+        }
+    }
+
     // ---- Экран загрузки (ТЗ 4.6) ----
     /// Доля готовности мира вокруг игрока, 0..1. Пока меньше единицы,
     /// поверх HUD показывается прогресс-бар: чанки подгружаются
@@ -520,6 +542,15 @@ private:
     /// Подсказка «использовать»: отпирает ремесло и зачарование.
     void drawInteractPrompt();
     void drawHudResources(player::Player& player);
+
+    /// Фон и заголовок полноэкранного экрана — одним вызовом.
+    ///
+    /// Единственное место, где они появляются. До этого каждый экран
+    /// рисовал их сам, и семь из десяти — сырыми числами мимо темы и
+    /// раскладки: `rect(0, 0, screenW_, screenH_, rgba(10, 5, 30,
+    /// 235))` и заголовок по доле ширины. Отсюда и разнобой фонов, и
+    /// заголовки, лежащие на полосах HUD.
+    void drawMenuBackdrop(const char* title);
 
     void drawPauseMenu(player::Player& player);
     void drawInventory(player::Player& player);
