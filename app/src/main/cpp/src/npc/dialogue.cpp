@@ -3,6 +3,7 @@
  * @brief NPC: роли, диалоги с ветвлением, поведение жителей.
  */
 #include "dialogue.h"
+#include "../config/localization.h"
 #include "npc_def.h"
 #include "../ecs/components.h"
 #include "../factions/faction.h"
@@ -16,6 +17,8 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <string>
+#include <vector>
 
 namespace npc {
 
@@ -46,15 +49,20 @@ DialogueRegistry::DialogueRegistry() {
         DialogueNode n1{};
         n1.id = 1;
         n1.text = "Good day, traveller. The village is quiet today.";
-        n1.choices.push_back({ "What is this place?", DialogueAction::None, 2 });
-        n1.choices.push_back({ "Goodbye.", DialogueAction::EndDialogue, 0 });
+        n1.choices.push_back({ "What is this place?",
+                               DialogueAction::None, 2 });
+        n1.choices.push_back({ "Goodbye.",
+                               DialogueAction::EndDialogue, 0 });
         t.nodes.push_back(n1);
 
         DialogueNode n2{};
         n2.id = 2;
-        n2.text = "We are a small settlement. The Elder might have work for you.";
-        n2.choices.push_back({ "I'll speak with the Elder.", DialogueAction::EndDialogue, 0 });
-        n2.choices.push_back({ "Understood.", DialogueAction::EndDialogue, 0 });
+        n2.text = "We are a small settlement. The Elder might "
+                             "have work for you.";
+        n2.choices.push_back({ "I'll speak with the Elder.",
+                               DialogueAction::EndDialogue, 0 });
+        n2.choices.push_back({ "Understood.",
+                               DialogueAction::EndDialogue, 0 });
         t.nodes.push_back(n2);
 
         makeEntry("villager", std::move(t));
@@ -69,8 +77,10 @@ DialogueRegistry::DialogueRegistry() {
         n1.id = 1;
         n1.text = "Welcome, adventurer. There is much to do.";
         // Опции будут добавлены при старте диалога динамически.
-        n1.choices.push_back({ "What do you need?", DialogueAction::None, 2 });
-        n1.choices.push_back({ "Farewell.", DialogueAction::EndDialogue, 0 });
+        n1.choices.push_back({ "What do you need?",
+                               DialogueAction::None, 2 });
+        n1.choices.push_back({ "Farewell.",
+                               DialogueAction::EndDialogue, 0 });
         t.nodes.push_back(n1);
 
         DialogueNode n2{};
@@ -90,8 +100,10 @@ DialogueRegistry::DialogueRegistry() {
         DialogueNode n1{};
         n1.id = 1;
         n1.text = "Fine wares, friend. Interested?";
-        n1.choices.push_back({ "Show me your wares.", DialogueAction::OpenTrade, 0 });
-        n1.choices.push_back({ "Just looking.", DialogueAction::EndDialogue, 0 });
+        n1.choices.push_back({ "Show me your wares.",
+                               DialogueAction::OpenTrade, 0 });
+        n1.choices.push_back({ "Just looking.",
+                               DialogueAction::EndDialogue, 0 });
         t.nodes.push_back(n1);
 
         makeEntry("trader", std::move(t));
@@ -104,9 +116,11 @@ DialogueRegistry::DialogueRegistry() {
 
         DialogueNode n1{};
         n1.id = 1;
-        n1.text = "Steel and fire — that's all I need.";
-        n1.choices.push_back({ "Can you craft for me?", DialogueAction::OpenCraft, 0 });
-        n1.choices.push_back({ "Later.", DialogueAction::EndDialogue, 0 });
+        n1.text = "Steel and fire, that's all I need.";
+        n1.choices.push_back({ "Can you craft for me?",
+                               DialogueAction::OpenCraft, 0 });
+        n1.choices.push_back({ "Later.",
+                               DialogueAction::EndDialogue, 0 });
         t.nodes.push_back(n1);
 
         makeEntry("blacksmith", std::move(t));
@@ -120,14 +134,17 @@ DialogueRegistry::DialogueRegistry() {
         DialogueNode n1{};
         n1.id = 1;
         n1.text = "Halt. State your business.";
-        n1.choices.push_back({ "I mean no harm.", DialogueAction::None, 2 });
-        n1.choices.push_back({ "None of yours.", DialogueAction::EndDialogue, 0 });
+        n1.choices.push_back({ "I mean no harm.",
+                               DialogueAction::None, 2 });
+        n1.choices.push_back({ "None of yours.",
+                               DialogueAction::EndDialogue, 0 });
         t.nodes.push_back(n1);
 
         DialogueNode n2{};
         n2.id = 2;
         n2.text = "Move along, then. Keep the peace.";
-        n2.choices.push_back({ "Understood.", DialogueAction::EndDialogue, 0 });
+        n2.choices.push_back({ "Understood.",
+                               DialogueAction::EndDialogue, 0 });
         t.nodes.push_back(n2);
 
         makeEntry("guard", std::move(t));
@@ -144,11 +161,14 @@ DialogueRegistry::DialogueRegistry() {
         // Цена берётся из одной константы и подставляется в текст:
         // раньше «50 gold» было написано в строке, а списания не было
         // вовсе — целитель лечил бесплатно и сколько угодно раз.
-        char healText[64];
-        std::snprintf(healText, sizeof(healText), "Heal me (%u gold).",
-                      (unsigned)HEAL_COST);
-        n1.choices.push_back({ healText, DialogueAction::Heal, 0 });
-        n1.choices.push_back({ "Not now.", DialogueAction::EndDialogue, 0 });
+        //
+        // Подставляется она при показе, вместе с переводом, а не
+        // здесь: в реестре лежит шаблон, он же ключ словаря. См.
+        // sayLine().
+        n1.choices.push_back({ "Heal me (%u gold).",
+                               DialogueAction::Heal, 0 });
+        n1.choices.push_back({ "Not now.",
+                               DialogueAction::EndDialogue, 0 });
         t.nodes.push_back(n1);
 
         makeEntry("healer", std::move(t));
@@ -172,6 +192,38 @@ const DialogueTemplate& DialogueRegistry::get(const char* rootKey) const {
     static DialogueTemplate empty{};
     return empty;
 }
+
+namespace {
+
+/// Перевести реплику на язык игрока.
+///
+/// Реестр диалогов строится один раз, статически, до того как игра
+/// прочитала настройки, — перевести его на месте значило бы
+/// заморозить язык, который был в силе при первом обращении. Поэтому
+/// в реестре лежит английский текст, он же ключ словаря, а перевод
+/// происходит при начале разговора.
+///
+/// Единственная реплика с подстановкой — цена у целителя; цена в
+/// игре одна, поэтому и подстановка одна. Строка без процента
+/// проходит мимо snprintf: случайный процент в чужой реплике иначе
+/// стоил бы разбора аргумента, которого нет.
+std::string sayLine(const std::string& en) {
+    const char* s = config::tr(en.c_str());
+    if (std::strchr(s, '%') == nullptr) return s;
+
+    char buf[192];
+    std::snprintf(buf, sizeof(buf), s, (unsigned)HEAL_COST);
+    return buf;
+}
+
+void translateNodes(std::vector<DialogueNode>& nodes) {
+    for (auto& n : nodes) {
+        n.text = sayLine(n.text);
+        for (auto& c : n.choices) c.text = sayLine(c.text);
+    }
+}
+
+} // namespace
 
 // ============================================================
 // Условия вариантов
@@ -259,6 +311,7 @@ bool startDialogue(ecs::Registry& reg,
     active->npcEntity     = npcEntity;
     active->playerEntity  = playerEntity;
     active->nodes         = tmpl.nodes;
+    translateNodes(active->nodes);
     active->currentNodeId = tmpl.rootNodeId;
     active->highlightedChoice = -1;
 
@@ -325,19 +378,19 @@ bool startDialogue(ecs::Registry& reg,
             if (auto* q = reg.get<quests::Quest>(ai->offeredQuest)) {
                 if (q->state == quests::QuestState::Available) {
                     DialogueChoice accept{};
-                    accept.text = "Accept quest.";
+                    accept.text = config::tr("Accept quest.");
                     accept.action = DialogueAction::AcceptQuest;
                     accept.nextNodeId = 0;
                     node->choices.push_back(accept);
 
                     DialogueChoice decline{};
-                    decline.text = "Not now.";
+                    decline.text = config::tr("Not now.");
                     decline.action = DialogueAction::EndDialogue;
                     decline.nextNodeId = 0;
                     node->choices.push_back(decline);
 
                     // Обновим текст узла описанием квеста
-                    node->text = q->description;
+                    node->text = quests::questDescription(*q);
                 }
             }
         }
@@ -360,7 +413,7 @@ bool startDialogue(ecs::Registry& reg,
                 auto* root = active->findNode(tmpl.rootNodeId);
                 if (root) {
                     DialogueChoice c{};
-                    c.text   = "I have completed my task.";
+                    c.text   = config::tr("I have completed my task.");
                     c.action = DialogueAction::CompleteQuest;
                     c.nextNodeId = 0;
                     root->choices.insert(root->choices.begin(), c);
@@ -409,7 +462,7 @@ bool applyChoice(ecs::Registry& reg,
         ai->offeredQuest = 0;
         ai->offerCooldown = 5.f;
 
-        LOGI("Quest accepted: %s (id=%u)", q->title, q->id);
+        LOGI("Quest accepted: %s (id=%u)", quests::questTitle(*q).c_str(), q->id);
 
         dlg.active = false;
         return false;
@@ -438,17 +491,17 @@ bool applyChoice(ecs::Registry& reg,
             // Сюжет двигается ТОЛЬКО сдачей: дойти до места мало,
             // надо вернуться и рассказать. Иначе следующая глава
             // выдавалась бы игроку прямо посреди леса.
-            if (q->isStory)
+            if (q->isStory())
                 quests::completeStoryChapter(reg,
                                              reg.fromId(dlg.playerEntity),
                                              q->id);
 
             // Обновляем состояние и историю
             q->state = quests::QuestState::TurnedIn;
-            log->addHistory(q->id, q->state, q->title);
+            log->addHistory(*q);
             log->removeActive(qe);
 
-            LOGI("Quest turned in: %s", q->title);
+            LOGI("Quest turned in: %s", quests::questTitle(*q).c_str());
 
             // Удалить сущность квеста
             reg.destroy(qe);

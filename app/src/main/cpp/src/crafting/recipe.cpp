@@ -3,6 +3,7 @@
  * @brief Крафт: рецепты, станции, проверка требований.
  */
 #include "recipe.h"
+#include "../config/localization.h"
 #include "../core/log.h"
 #include "../items/item_def.h"
 
@@ -16,9 +17,9 @@ using namespace items;
 const char* stationName(StationType t) {
     switch (t) {
         case StationType::None:      return "-";
-        case StationType::Workbench: return "Workbench";
-        case StationType::Anvil:     return "Anvil";
-        case StationType::Alchemy:   return "Alchemy Table";
+        case StationType::Workbench: return config::tr("Workbench");
+        case StationType::Anvil:     return config::tr("Anvil");
+        case StationType::Alchemy:   return config::tr("Alchemy Table");
         default:                     return "?";
     }
 }

@@ -3,6 +3,7 @@
  * @brief Крафт: рецепты, станции, проверка требований.
  */
 #include "crafting.h"
+#include "../config/localization.h"
 #include "../ecs/components.h"
 #include "crafting_station.h"
 #include "../ecs/registry.h"
@@ -16,14 +17,14 @@ using namespace items;
 
 const char* statusString(CraftStatus s) {
     switch (s) {
-        case CraftStatus::Ok:                return "OK";
-        case CraftStatus::RecipeNotFound:    return "Recipe not found";
-        case CraftStatus::MissingIngredients:return "Missing ingredients";
-        case CraftStatus::MissingStation:    return "Requires station";
-        case CraftStatus::LevelTooLow:       return "Level too low";
-        case CraftStatus::MissingSkill:      return "Requires Craft Master";
-        case CraftStatus::InventoryFull:     return "Inventory full";
-        case CraftStatus::OutputBlocked:     return "No space for output";
+        case CraftStatus::Ok:                return config::tr("OK");
+        case CraftStatus::RecipeNotFound:    return config::tr("Recipe not found");
+        case CraftStatus::MissingIngredients:return config::tr("Missing ingredients");
+        case CraftStatus::MissingStation:    return config::tr("Requires station");
+        case CraftStatus::LevelTooLow:       return config::tr("Level too low");
+        case CraftStatus::MissingSkill:      return config::tr("Requires Craft Master");
+        case CraftStatus::InventoryFull:     return config::tr("Inventory full");
+        case CraftStatus::OutputBlocked:     return config::tr("No space for output");
     }
     return "?";
 }

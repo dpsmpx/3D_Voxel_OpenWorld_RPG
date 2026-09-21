@@ -27,20 +27,25 @@ QuestTemplateRegistry::QuestTemplateRegistry() {
     };
 
     // ---------------- Kill ----------------
+    //
+    // Имя цели стоит ПЕРВЫМ и отделено двоеточием: «Wolf: slay 5
+    // near the village.» Так у английского и русского текста
+    // совпадает порядок подстановок, а имя не приходится склонять.
+    // См. словарь содержимого, раздел про задания.
     set(QuestType::Kill, QuestDifficulty::Trivial,
-        "Cull the %s",    "Slay %d %s near the village.",
+        "Cull the %s",    "%s: slay %d near the village.",
         3, 5, 60, 10, 5);
     set(QuestType::Kill, QuestDifficulty::Easy,
-        "Clear %s",       "Cull %d %s from the surrounding lands.",
+        "Clear out %s",   "%s: cull %d from the surrounding lands.",
         5, 8, 150, 25, 10);
     set(QuestType::Kill, QuestDifficulty::Normal,
-        "Hunt %s",        "The village needs %d %s slain.",
+        "Hunt %s",        "%s: the village needs %d slain.",
         8, 12, 400, 60, 20);
     set(QuestType::Kill, QuestDifficulty::Hard,
-        "Purge the %s",   "Eliminate %d %s. Beware their numbers.",
+        "Purge the %s",   "%s: eliminate %d. Beware their numbers.",
         12, 18, 900, 120, 35);
     set(QuestType::Kill, QuestDifficulty::Epic,
-        "Extermination: %s","Only the strongest dare face %d %s.",
+        "Extermination: %s", "%s: only the strongest dare face %d.",
         20, 30, 2200, 300, 60);
 
     // ---------------- Collect ----------------
@@ -48,30 +53,37 @@ QuestTemplateRegistry::QuestTemplateRegistry() {
     // все квесты, и «Gather %d %s» её нарушал. Нарушение стоило бы
     // ровно того же, что и перепутанный порядок аргументов.
     set(QuestType::Collect, QuestDifficulty::Trivial,
-        "Gather %s",      "Bring %d %s to the village elder.",
+        "Gather %s",      "%s: bring %d to the village elder.",
         5, 10, 80, 15, 5);
     set(QuestType::Collect, QuestDifficulty::Easy,
-        "Supply %s",      "The craftsmen need %d %s.",
+        "Supply %s",      "%s: the craftsmen need %d.",
         10, 20, 180, 30, 10);
     set(QuestType::Collect, QuestDifficulty::Normal,
-        "Stockpile %s",   "A bulk order: %d %s required.",
+        "Stockpile %s",   "%s: a bulk order, %d required.",
         20, 40, 450, 70, 20);
     set(QuestType::Collect, QuestDifficulty::Hard,
-        "Bulk %s",        "Rare materials: %d %s. Take care.",
+        "Bulk %s",        "%s: rare material, %d needed. Take care.",
         40, 70, 1000, 150, 35);
     set(QuestType::Collect, QuestDifficulty::Epic,
-        "Tribute of %s",  "An epic demand: %d %s for the cause.",
+        "Tribute of %s",  "%s: an epic demand, %d for the cause.",
         80, 120, 2400, 320, 60);
 
     // ---------------- Explore ----------------
+    //
+    // Ни одной подстановки. В двух шаблонах из пяти здесь стояло
+    // «%s», которому нечего было подставить: название копировалось
+    // через snprintf(dst, "%s", pattern), подстановка не
+    // происходила никогда — и процент с эс попадали игроку в
+    // журнал как есть. Место, куда идти, называется координатами
+    // отдельной фразой, см. questDescription().
     set(QuestType::Explore, QuestDifficulty::Trivial,
         "Scout nearby",   "Explore the area near the village.",
         1, 1, 40, 8, 3);
     set(QuestType::Explore, QuestDifficulty::Easy,
-        "Scout the ruins","Locate the old ruins to the %s.",
+        "Scout the ruins","Locate the old ruins.",
         1, 1, 120, 20, 8);
     set(QuestType::Explore, QuestDifficulty::Normal,
-        "Chart %s",       "Reach the coordinates shown on your map.",
+        "Chart the way",  "Reach the coordinates shown on your map.",
         1, 1, 350, 55, 15);
     set(QuestType::Explore, QuestDifficulty::Hard,
         "Expedition",     "Travel far from safety to explore.",
@@ -108,7 +120,7 @@ QuestTemplateRegistry::QuestTemplateRegistry() {
         "Guard duty",     "Defend for %d seconds.",
         30, 45, 200, 30, 10);
     set(QuestType::Defend, QuestDifficulty::Normal,
-        "Siege defense",  "Survive a %d-second assault.",
+        "Siege defence",  "Survive an assault of %d seconds.",
         45, 60, 500, 80, 20);
     set(QuestType::Defend, QuestDifficulty::Hard,
         "Last stand",     "Hold out for %d seconds against all odds.",
@@ -128,7 +140,7 @@ QuestTemplateRegistry::QuestTemplateRegistry() {
         "Courier run",    "Deliver through dangerous territory.",
         1, 1, 400, 65, 18);
     set(QuestType::Deliver, QuestDifficulty::Hard,
-        "Urgent dispatch","Hurry — the recipient is far away.",
+        "Urgent dispatch","Hurry: the recipient is far away.",
         1, 1, 900, 130, 32);
     set(QuestType::Deliver, QuestDifficulty::Epic,
         "Legendary courier","A delivery that will be remembered.",

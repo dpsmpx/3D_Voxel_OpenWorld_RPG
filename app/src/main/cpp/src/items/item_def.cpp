@@ -3,6 +3,7 @@
  * @brief Предметы: определения, инвентарь, лут, подбор, использование.
  */
 #include "item_def.h"
+#include "../config/localization.h"
 #include "../core/log.h"
 #include <cstring>
 
@@ -237,6 +238,10 @@ const ItemRegistry& ItemRegistry::instance() {
     return r;
 }
 
+const char* ItemRegistry::name(u16 id) const {
+    return config::tr(get(id).name);
+}
+
 const ItemDef& ItemRegistry::get(u16 id) const {
     if (id >= ITEM_MAX_DEFS) return defs_[ITEM_NONE];
     return defs_[id];
@@ -249,11 +254,11 @@ u16 ItemRegistry::blockToItem(u16 blockId) const {
 
 const char* rarityName(ItemRarity r) {
     switch (r) {
-        case ItemRarity::Common:    return "Common";
-        case ItemRarity::Uncommon:  return "Uncommon";
-        case ItemRarity::Rare:      return "Rare";
-        case ItemRarity::Epic:      return "Epic";
-        case ItemRarity::Legendary: return "Legendary";
+        case ItemRarity::Common:    return config::tr("Common");
+        case ItemRarity::Uncommon:  return config::tr("Uncommon");
+        case ItemRarity::Rare:      return config::tr("Rare");
+        case ItemRarity::Epic:      return config::tr("Epic");
+        case ItemRarity::Legendary: return config::tr("Legendary");
         default:                    return "?";
     }
 }

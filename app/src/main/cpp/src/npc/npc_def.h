@@ -79,6 +79,13 @@ public:
     static const NpcRegistry& instance();
     const NpcDef& get(u16 id) const;
 
+    /// Имя на языке игрока.
+    ///
+    /// Поле `name` в определении — английский текст, он же ключ
+    /// словаря содержимого. Для показа читать его напрямую нельзя.
+    const char* name(u16 id) const;
+
+
 private:
     NpcRegistry();
     NpcDef defs_[NPC_COUNT];

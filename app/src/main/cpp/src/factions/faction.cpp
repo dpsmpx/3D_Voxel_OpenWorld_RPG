@@ -3,30 +3,31 @@
  * @brief Фракции и репутация.
  */
 #include "faction.h"
+#include "../config/localization.h"
 
 namespace factions {
 
 const char* factionName(FactionId id) {
     switch (id) {
         case FactionId::None:      return "-";
-        case FactionId::Villagers: return "Villagers";
-        case FactionId::Traders:   return "Traders";
-        case FactionId::Mages:     return "Mages";
-        case FactionId::Bandits:   return "Bandits";
-        case FactionId::Wildlings: return "Wildlings";
+        case FactionId::Villagers: return config::tr("Villagers");
+        case FactionId::Traders:   return config::tr("Traders");
+        case FactionId::Mages:     return config::tr("Mages");
+        case FactionId::Bandits:   return config::tr("Bandits");
+        case FactionId::Wildlings: return config::tr("Wildlings");
         default:                   return "?";
     }
 }
 
 const char* tierName(ReputationTier t) {
     switch (t) {
-        case ReputationTier::Hated:      return "Hated";
-        case ReputationTier::Hostile:    return "Hostile";
-        case ReputationTier::Unfriendly: return "Unfriendly";
-        case ReputationTier::Neutral:    return "Neutral";
-        case ReputationTier::Friendly:   return "Friendly";
-        case ReputationTier::Honored:    return "Honored";
-        case ReputationTier::Exalted:    return "Exalted";
+        case ReputationTier::Hated:      return config::tr("Hated");
+        case ReputationTier::Hostile:    return config::tr("Hostile");
+        case ReputationTier::Unfriendly: return config::tr("Unfriendly");
+        case ReputationTier::Neutral:    return config::tr("Neutral");
+        case ReputationTier::Friendly:   return config::tr("Friendly");
+        case ReputationTier::Honored:    return config::tr("Honored");
+        case ReputationTier::Exalted:    return config::tr("Exalted");
         default:                         return "?";
     }
 }

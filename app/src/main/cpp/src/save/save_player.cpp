@@ -38,6 +38,99 @@ void readVec3(ByteReader& r, glm::vec3& v) {
     r.f32v(v.x); r.f32v(v.y); r.f32v(v.z);
 }
 
+/// Задание целиком, одним куском.
+///
+/// Раньше запись задания была выписана в двух местах — для активных
+/// и для истории — и эти два места уже разошлись: у активных писался
+/// весь шаблон, у истории только номер, состояние и название
+/// строкой. Разошлись они и в другом: ни там, ни там не сохранялось,
+/// что задание СЮЖЕТНОЕ. После загрузки глава становилась обычным
+/// поручением, и сдача её не двигала цепочку — игрок проходил одну и
+/// ту же главу столько раз, сколько раз загружался.
+///
+/// Текста здесь нет вовсе: название и описание задание больше не
+/// хранит, а собирает при показе. Сохранение от этого перестало
+/// зависеть от языка — загруженный в русской игре английский сейв
+/// показывает русский журнал.
+void writeQuest(ByteWriter& w, const quests::Quest& q) {
+    w.writeU32(q.id);
+    w.writeU8((u8)q.tmpl.type);
+    w.writeU8((u8)q.tmpl.difficulty);
+    w.writeU16(q.tmpl.targetMobId);
+    w.writeU16(q.tmpl.targetBlockId);
+    w.writeI32(q.tmpl.targetLocation.x);
+    w.writeI32(q.tmpl.targetLocation.y);
+    w.writeI32(q.tmpl.targetLocation.z);
+    w.writeI32(q.tmpl.targetRadius);
+    w.writeI32(q.tmpl.requiredCount);
+    w.writeF32(q.tmpl.timeLimit);
+    w.writeU8((u8)q.tmpl.giverFaction);
+
+    w.writeU8((u8)q.state);
+    w.writeI32(q.progress);
+    w.writeF32(q.timeRemaining);
+    w.writeU32(q.giverEntity);
+    w.writeU32(q.ownerEntity);
+
+    w.writeU8((u8)q.textSource);
+    w.writeU8(q.storyChapter);
+
+    w.writeU64(q.rewards.xp);
+    w.writeU32(q.rewards.gold);
+    w.writeU16(q.rewards.itemBlockId);
+    w.writeU8(q.rewards.itemCount);
+    w.writeI32(q.rewards.reputationDelta);
+    w.writeU8((u8)q.rewards.reputationFaction);
+}
+
+bool readQuest(ByteReader& r, quests::Quest& q) {
+    if (!r.u32v(q.id)) return false;
+    u8 typeU = 0, diffU = 0;
+    r.u8v(typeU);
+    r.u8v(diffU);
+    q.tmpl.type = (quests::QuestType)typeU;
+    q.tmpl.difficulty = (quests::QuestDifficulty)diffU;
+    r.u16v(q.tmpl.targetMobId);
+    r.u16v(q.tmpl.targetBlockId);
+    r.i32v(q.tmpl.targetLocation.x);
+    r.i32v(q.tmpl.targetLocation.y);
+    r.i32v(q.tmpl.targetLocation.z);
+    r.i32v(q.tmpl.targetRadius);
+    r.i32v(q.tmpl.requiredCount);
+    r.f32v(q.tmpl.timeLimit);
+    u8 giverFaction = 0;
+    r.u8v(giverFaction);
+    q.tmpl.giverFaction = (factions::FactionId)giverFaction;
+
+    u8 stateU = 0;
+    r.u8v(stateU);
+    q.state = (quests::QuestState)stateU;
+    r.i32v(q.progress);
+    r.f32v(q.timeRemaining);
+    r.u32v(q.giverEntity);
+    r.u32v(q.ownerEntity);
+
+    u8 srcU = 0;
+    r.u8v(srcU);
+    // Чужое число в поле источника текста означало бы обращение к
+    // главе, которой нет: лучше обычное поручение, чем выход за
+    // край таблицы.
+    q.textSource = (srcU <= (u8)quests::QuestTextSource::FirstStepWood)
+                 ? (quests::QuestTextSource)srcU
+                 : quests::QuestTextSource::Generated;
+    r.u8v(q.storyChapter);
+
+    r.u64v(q.rewards.xp);
+    r.u32v(q.rewards.gold);
+    r.u16v(q.rewards.itemBlockId);
+    r.u8v(q.rewards.itemCount);
+    r.i32v(q.rewards.reputationDelta);
+    u8 rewardFaction = 0;
+    if (!r.u8v(rewardFaction)) return false;
+    q.rewards.reputationFaction = (factions::FactionId)rewardFaction;
+    return true;
+}
+
 // Phase 15: валидация атрибутов.
 // Атрибуты не должны превышать ATTR_MAX (99) и не быть меньше ATTR_MIN (1).
 void clampAttributes(ecs::Attributes& a) {
@@ -147,42 +240,15 @@ void serializePlayer(ByteWriter& w, ecs::Registry& reg, ecs::Entity player) {
         for (auto qe : ql->activeQuests) {
             auto* q = reg.get<quests::Quest>(qe);
             if (!q) continue;
-            w.writeU32(q->id);
-            w.writeU8((u8)q->tmpl.type);
-            w.writeU8((u8)q->tmpl.difficulty);
-            w.writeU16(q->tmpl.targetMobId);
-            w.writeU16(q->tmpl.targetBlockId);
-            w.writeI32(q->tmpl.targetLocation.x);
-            w.writeI32(q->tmpl.targetLocation.y);
-            w.writeI32(q->tmpl.targetLocation.z);
-            w.writeI32(q->tmpl.targetRadius);
-            w.writeI32(q->tmpl.requiredCount);
-            w.writeF32(q->tmpl.timeLimit);
-            w.writeU8((u8)q->tmpl.giverFaction);
-
-            w.writeU8((u8)q->state);
-            w.writeI32(q->progress);
-            w.writeF32(q->timeRemaining);
-            w.writeU32(q->giverEntity);
-            w.writeU32(q->ownerEntity);
-
-            w.writeU64(q->rewards.xp);
-            w.writeU32(q->rewards.gold);
-            w.writeU16(q->rewards.itemBlockId);
-            w.writeU8(q->rewards.itemCount);
-            w.writeI32(q->rewards.reputationDelta);
-            w.writeU8((u8)q->rewards.reputationFaction);
-
-            w.cstr(q->title);
-            w.cstr(q->description);
+            writeQuest(w, *q);
         }
 
+        // История пишется тем же кодом, что и активные задания: это
+        // те же задания, только сданные. Прежде у неё был свой,
+        // укороченный формат — номер, состояние и название строкой,
+        // — то есть второе место, где можно разойтись с первым.
         w.varU32((u32)ql->history.size());
-        for (const auto& h : ql->history) {
-            w.writeU32(h.questId);
-            w.writeU8((u8)h.state);
-            w.cstr(h.title);
-        }
+        for (const auto& h : ql->history) writeQuest(w, h);
     } else w.writeU8(0);
 
     if (auto* rep = reg.get<factions::Reputation>(player)) {
@@ -407,46 +473,7 @@ bool deserializePlayer(ByteReader& r, ecs::Registry& reg, ecs::Entity player) {
 
                 for (u32 i = 0; i < activeCount; ++i) {
                     quests::Quest q{};
-                    r.u32v(q.id);
-                    u8 typeU = 0, diffU = 0;
-                    r.u8v(typeU);
-                    r.u8v(diffU);
-                    q.tmpl.type = (quests::QuestType)typeU;
-                    q.tmpl.difficulty = (quests::QuestDifficulty)diffU;
-                    r.u16v(q.tmpl.targetMobId);
-                    r.u16v(q.tmpl.targetBlockId);
-                    r.i32v(q.tmpl.targetLocation.x);
-                    r.i32v(q.tmpl.targetLocation.y);
-                    r.i32v(q.tmpl.targetLocation.z);
-                    r.i32v(q.tmpl.targetRadius);
-                    r.i32v(q.tmpl.requiredCount);
-                    r.f32v(q.tmpl.timeLimit);
-                    u8 giverFaction = 0;
-                    r.u8v(giverFaction);
-                    q.tmpl.giverFaction = (factions::FactionId)giverFaction;
-
-                    u8 stateU = 0;
-                    r.u8v(stateU);
-                    q.state = (quests::QuestState)stateU;
-                    r.i32v(q.progress);
-                    r.f32v(q.timeRemaining);
-                    r.u32v(q.giverEntity);
-                    r.u32v(q.ownerEntity);
-
-                    r.u64v(q.rewards.xp);
-                    r.u32v(q.rewards.gold);
-                    r.u16v(q.rewards.itemBlockId);
-                    r.u8v(q.rewards.itemCount);
-                    r.i32v(q.rewards.reputationDelta);
-                    u8 rewardFaction = 0;
-                    r.u8v(rewardFaction);
-                    q.rewards.reputationFaction = (factions::FactionId)rewardFaction;
-
-                    std::string title, desc;
-                    r.strv(title);
-                    r.strv(desc);
-                    std::snprintf(q.title, sizeof(q.title), "%s", title.c_str());
-                    std::snprintf(q.description, sizeof(q.description), "%s", desc.c_str());
+                    if (!readQuest(r, q)) return false;
 
                     ecs::Entity qe = reg.create();
                     reg.add(qe, q);
@@ -460,14 +487,8 @@ bool deserializePlayer(ByteReader& r, ecs::Registry& reg, ecs::Entity player) {
                 if (historyCount > 256) return false;
 
                 for (u32 i = 0; i < historyCount; ++i) {
-                    quests::QuestLog::HistoryEntry h{};
-                    r.u32v(h.questId);
-                    u8 st = 0;
-                    r.u8v(st);
-                    h.state = (quests::QuestState)st;
-                    std::string title;
-                    r.strv(title);
-                    std::snprintf(h.title, sizeof(h.title), "%s", title.c_str());
+                    quests::Quest h{};
+                    if (!readQuest(r, h)) return false;
                     ql->history.push_back(h);
                 }
             }

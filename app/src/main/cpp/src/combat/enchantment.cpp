@@ -3,6 +3,7 @@
  * @brief Бой: урон, оружие, зачарования, система «Резонанс», статусы.
  */
 #include "enchantment.h"
+#include "../config/localization.h"
 #include <algorithm>
 
 namespace combat {
@@ -73,13 +74,13 @@ EnchantResult applyEnchantment(const DamageInstance& base,
 const char* enchantmentName(EnchantmentId id) {
     switch (id) {
         case EnchantmentId::None:     return "-";
-        case EnchantmentId::Fire:     return "Fire";
-        case EnchantmentId::Frost:    return "Frost";
-        case EnchantmentId::Shock:    return "Shock";
-        case EnchantmentId::Poison:   return "Poison";
-        case EnchantmentId::Vampiric: return "Vampiric";
-        case EnchantmentId::Sharpness:return "Sharpness";
-        case EnchantmentId::Swift:    return "Swift";
+        case EnchantmentId::Fire:     return config::tr("Fire");
+        case EnchantmentId::Frost:    return config::tr("Frost");
+        case EnchantmentId::Shock:    return config::tr("Shock");
+        case EnchantmentId::Poison:   return config::tr("Poison");
+        case EnchantmentId::Vampiric: return config::tr("Vampiric");
+        case EnchantmentId::Sharpness:return config::tr("Sharpness");
+        case EnchantmentId::Swift:    return config::tr("Swift");
         default:                      return "?";
     }
 }

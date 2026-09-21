@@ -403,7 +403,7 @@ void UiSystem::drawHud(player::Player& player,
     // частый экран. Всё прочее живёт в паузе, куда ведёт первая.
     drawMenuButton(layout_.navButton(0), "|||",
                    [this]() { screen = Screen::PauseMenu; });
-    drawMenuButton(layout_.navButton(1), "INV",
+    drawMenuButton(layout_.navButton(1), cfg::tr("INV"),
                    [this]() { screen = Screen::Inventory; drag.clear(); });
 
     drawXpBar(player);
@@ -554,7 +554,7 @@ void UiSystem::drawXpBar(player::Player& player) {
     ui_.rect(r.x, r.y, r.w * prog->levelProgress(), r.h, hudTint(theme::Xp));
 
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "LV %u", prog->level);
+    std::snprintf(buf, sizeof(buf), cfg::tr("LV %u"), prog->level);
     ui_.text(buf, r.x + layout_.dp(theme::SPACE_S_DP),
              r.y + r.h + layout_.dp(theme::SPACE_XS_DP),
              theme::TEXT_LABEL, theme::TextPrimary);
@@ -771,10 +771,10 @@ void UiSystem::drawStatusIcons(player::Player& player) {
                  theme::TEXT_CAPTION, hudTint(COL_WHITE));
     };
 
-    if (se.burnTime > 0.f)   icon(rgba(220, 100, 40, 220), "FIRE");
-    if (se.slowTime > 0.f)   icon(rgba(80, 160, 240, 220), "FROST");
-    if (se.stunTime > 0.f)   icon(rgba(240, 220, 80, 220), "STUN");
-    if (se.poisonTime > 0.f) icon(rgba(120, 220, 80, 220), "POIS");
+    if (se.burnTime > 0.f)   icon(rgba(220, 100, 40, 220), cfg::tr("FIRE"));
+    if (se.slowTime > 0.f)   icon(rgba(80, 160, 240, 220), cfg::tr("FROST"));
+    if (se.stunTime > 0.f)   icon(rgba(240, 220, 80, 220), cfg::tr("STUN"));
+    if (se.poisonTime > 0.f) icon(rgba(120, 220, 80, 220), cfg::tr("POIS"));
 }
 
 void UiSystem::drawLevelUpNotification(player::Player& player) {
@@ -858,8 +858,9 @@ void UiSystem::drawHotbar(player::Player& player) {
     const Rect hb = layout_.hotbar();
     const auto& wdef = combat::weapons().get(player.equipped.weaponId);
     if (wdef.name) {
-        const f32 tw = ui_.textWidth(wdef.name, theme::TEXT_LABEL);
-        ui_.text(wdef.name, hb.x + hb.w * 0.5f - tw * 0.5f,
+        const char* wname = cfg::tr(wdef.name);
+        const f32 tw = ui_.textWidth(wname, theme::TEXT_LABEL);
+        ui_.text(wname, hb.x + hb.w * 0.5f - tw * 0.5f,
                  hb.y - layout_.dp(theme::SPACE_L_DP),
                  theme::TEXT_LABEL, theme::TextPrimary);
     }
@@ -1377,7 +1378,7 @@ void UiSystem::drawItemDetails(player::Player& player) {
     // Название цветом редкости — и рядом словом, потому что одним
     // цветом ценность передавать нельзя.
     if (def.name) {
-        ui_.text(def.name, d.x + pad, y, theme::TEXT_BODY,
+        ui_.text(items::items().name(st.itemId), d.x + pad, y, theme::TEXT_BODY,
                  items::rarityColor(def.rarity));
         y += layout_.dp(theme::SPACE_L_DP) + ui_.textHeight(theme::TEXT_BODY);
     }
@@ -1795,13 +1796,13 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
 // Skill Tree
 // ============================================================
 void UiSystem::drawSkillTreeScreen(player::Player& player) {
-    drawMenuBackdrop("TREE OF KNOWLEDGE");
+    drawMenuBackdrop(cfg::tr("TREE OF KNOWLEDGE"));
 
     auto* tree = player.skillTree();
     if (!tree) return;
 
     char ptsBuf[64];
-    std::snprintf(ptsBuf, sizeof(ptsBuf), "Skill Points: %d", tree->unspentPoints);
+    std::snprintf(ptsBuf, sizeof(ptsBuf), cfg::tr("Skill Points: %d"), tree->unspentPoints);
     ui_.text(ptsBuf, (float)screenW_ - 340.f, 24.f, 2.f,
              tree->unspentPoints > 0 ? rgba(255, 220, 100, 255) : COL_WHITE);
 
@@ -1819,7 +1820,8 @@ void UiSystem::drawSkillTreeScreen(player::Player& player) {
     SkillBranch branches[3] = {
         SkillBranch::Strength, SkillBranch::Agility, SkillBranch::Wisdom,
     };
-    const char* branchNames[3] = { "STRENGTH", "AGILITY", "WISDOM" };
+    const char* branchNames[3] = { cfg::tr("STRENGTH"), cfg::tr("AGILITY"),
+                                  cfg::tr("WISDOM") };
     UiColor branchColors[3] = {
         rgba(220, 80, 60, 255),
         rgba(80, 200, 80, 255),
@@ -1861,7 +1863,7 @@ void UiSystem::drawSkillTreeScreen(player::Player& player) {
 
             char label[96];
             std::snprintf(label, sizeof(label), "%s  [%u/%u]",
-                          def.name, (unsigned)rank, (unsigned)def.maxRank);
+                          cfg::tr(def.name), (unsigned)rank, (unsigned)def.maxRank);
             ui_.text(label, nr.x + 8.f, nr.y + 6.f, 1.6f,
                      canOpen || maxed ? COL_WHITE : rgba(160,160,160,255));
         }
@@ -1896,13 +1898,13 @@ void UiSystem::drawAttributesScreen(player::Player& player) {
 
     struct AttrRow { const char* label; const char* desc; i32* value; UiColor color; };
     AttrRow rows[4] = {
-        { "STRENGTH",     "+MELEE DAMAGE, +CRIT DAMAGE",
+        { cfg::tr("STRENGTH"),     cfg::tr("+MELEE DAMAGE, +CRIT DAMAGE"),
           &attr->strength,     theme::Hp },
-        { "AGILITY",      "+ATTACK SPEED, +CRIT, +MOVE",
+        { cfg::tr("AGILITY"),      cfg::tr("+ATTACK SPEED, +CRIT, +MOVE"),
           &attr->agility,      theme::Sp },
-        { "INTELLIGENCE", "+MANA, +SPELL POWER",
+        { cfg::tr("INTELLIGENCE"), cfg::tr("+MANA, +SPELL POWER"),
           &attr->intelligence, theme::Mp },
-        { "ENDURANCE",    "+HEALTH, +RESIST, +STAMINA",
+        { cfg::tr("ENDURANCE"),    cfg::tr("+HEALTH, +RESIST, +STAMINA"),
           &attr->endurance,    theme::Accent },
     };
 
@@ -2029,7 +2031,7 @@ void UiSystem::drawDialogueScreen(player::Player& player) {
         if (auto* tag = reg->get<npc::NpcTag>(dlg->npcEntity)) {
             const auto& def = npc::npcRegistry().get(tag->id);
             if (def.name) {
-                ui_.text(def.name, panel.x + pad, y,
+                ui_.text(npc::npcRegistry().name(tag->id), panel.x + pad, y,
                          theme::TEXT_LABEL, theme::Accent);
                 y += ui_.textHeight(theme::TEXT_LABEL)
                    + layout_.dp(theme::SPACE_M_DP);
@@ -2110,7 +2112,8 @@ void UiSystem::drawQuestLogScreen(player::Player& player) {
     const Rect listArea = layout_.questList();
     u32 row = 0;
 
-    auto rowButton = [&](const char* label, f32 pct, bool done, i32 questIdx) {
+    auto rowButton = [&](const std::string& label, f32 pct, bool done,
+                         i32 questIdx) {
         const Rect base = layout_.questRow(row++);
         const Rect r{ base.x, base.y - questScroll.offset, base.w, base.h };
 
@@ -2165,14 +2168,14 @@ void UiSystem::drawQuestLogScreen(player::Player& player) {
     for (usize i = 0; i < log->activeQuests.size(); ++i) {
         auto* q = reg->get<quests::Quest>(log->activeQuests[i]);
         if (!q) continue;
-        rowButton(q->title[0] ? q->title : "?", q->progressPct(),
+        rowButton(quests::questTitle(*q), q->progressPct(),
                   q->isComplete(), (i32)i);
     }
 
     // Выполненные — ниже и приглушённо.
     for (usize i = 0; i < log->history.size(); ++i) {
         const auto& h = log->history[log->history.size() - 1 - i];
-        rowButton(h.title[0] ? h.title : "?", 1.f, true, -1);
+        rowButton(quests::questTitle(h), 1.f, true, -1);
     }
 
     // Сколько строк вышло — столько и прокручивается.
@@ -2212,13 +2215,15 @@ void UiSystem::drawQuestDetails(player::Player& player) {
     const f32 tw = d.w - pad * 2.f;
     f32 y = d.y + pad;
 
-    if (q->title[0]) {
-        y += ui_.textWrapped(q->title, d.x + pad, y, tw,
+    const std::string title = quests::questTitle(*q);
+    if (!title.empty()) {
+        y += ui_.textWrapped(title, d.x + pad, y, tw,
                              theme::TEXT_BODY, theme::TextPrimary);
         y += layout_.dp(theme::SPACE_M_DP);
     }
-    if (q->description[0]) {
-        y += ui_.textWrapped(q->description, d.x + pad, y, tw,
+    const std::string desc = quests::questDescription(*q);
+    if (!desc.empty()) {
+        y += ui_.textWrapped(desc, d.x + pad, y, tw,
                              theme::TEXT_CAPTION, theme::TextSecondary);
         y += layout_.dp(theme::SPACE_L_DP);
     }
@@ -2346,10 +2351,12 @@ void UiSystem::drawQuestTracker(player::Player& player) {
     for (auto e : log->activeQuests) {
         if (auto* c = reg->get<quests::Quest>(e)) { q = c; break; }
     }
-    if (!q || !q->title[0]) return;
+    if (!q) return;
+    const std::string title = quests::questTitle(*q);
+    if (title.empty()) return;
 
     const Rect r = layout_.questTracker();
-    ui_.text(q->title, r.x, r.y, theme::TEXT_CAPTION,
+    ui_.text(title, r.x, r.y, theme::TEXT_CAPTION,
              hudTint(q->isComplete() ? theme::Success : theme::TextPrimary));
 
     char prog[48];
@@ -2435,7 +2442,7 @@ void UiSystem::drawReputationScreen(player::Player& player) {
 void UiSystem::drawSaveLoadScreen(player::Player& player) {
     (void)player;
     const char* title = (saveLoadMode == SaveLoadMode::Save)
-        ? "SAVE GAME" : "LOAD GAME";
+        ? cfg::tr("SAVE GAME") : cfg::tr("LOAD GAME");
     drawMenuBackdrop(title);
 
     drawCloseButton([this]() { screen = Screen::Hud; });
@@ -2443,7 +2450,7 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
     {
         Rect r{ 40.f, 74.f, 200.f, 50.f };
         const char* label = (saveLoadMode == SaveLoadMode::Save)
-            ? "MODE: SAVE" : "MODE: LOAD";
+            ? cfg::tr("MODE: SAVE") : cfg::tr("MODE: LOAD");
         int idx = ui_.pushInteractiveRect(r, [this]() {
             saveLoadMode = (saveLoadMode == SaveLoadMode::Save)
                 ? SaveLoadMode::Load : SaveLoadMode::Save;
@@ -2497,7 +2504,7 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
                 ui_.text(meta.worldName, cell.x + 10.f, cell.y + 36.f,
                          1.6f, rgba(200, 220, 255, 255));
                 char buf[64];
-                std::snprintf(buf, sizeof(buf), "Lv %u  |  %us",
+                std::snprintf(buf, sizeof(buf), cfg::tr("Lv %u  |  %us"),
                               meta.playerLevel, meta.playtimeSec);
                 ui_.text(buf, cell.x + 10.f, cell.y + 60.f, 1.5f,
                          rgba(220, 220, 180, 255));
@@ -2509,7 +2516,7 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
                     std::snprintf(dateBuf, sizeof(dateBuf),
                                   "%02d %s %04d  %02d:%02d",
                                   tmv->tm_mday,
-                                  gMonthNames[tmv->tm_mon % 12],
+                                  cfg::tr(gMonthNames[tmv->tm_mon % 12]),
                                   tmv->tm_year + 1900,
                                   tmv->tm_hour, tmv->tm_min);
                     ui_.text(dateBuf, cell.x + 10.f, cell.y + 84.f,
@@ -2526,9 +2533,9 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
                          dpressed ? rgba(200, 60, 60, 255)
                                   : rgba(120, 40, 40, 220));
                 ui_.rectOutline(del.x, del.y, del.w, del.h, 2.f, COL_BLACK);
-                ui_.text("DEL", del.x + 20.f, del.y + 8.f, 1.8f, COL_WHITE);
+                ui_.text(cfg::tr("DEL"), del.x + 20.f, del.y + 8.f, 1.8f, COL_WHITE);
             } else {
-                ui_.text("Empty", cell.x + 10.f, cell.y + 60.f, 2.f,
+                ui_.text(cfg::tr("Empty"), cell.x + 10.f, cell.y + 60.f, 2.f,
                          rgba(160, 160, 160, 255));
             }
         }
@@ -3209,17 +3216,17 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
         ui_.rectOutline(rr.x, rr.y, rr.w, rr.h, 2.f,
                         canNow ? rgba(120, 220, 120, 255) : COL_BLACK);
 
-        const auto& outDef = items::items().get(r.output.itemId);
-        ui_.text(outDef.name, rr.x + 12.f, rr.y + 8.f, 2.f,
+        ui_.text(items::items().name(r.output.itemId), rr.x + 12.f,
+                 rr.y + 8.f, 2.f,
                  canNow ? COL_WHITE : rgba(160, 160, 160, 255));
 
         char costLine[256] = {};
         for (usize k = 0; k < r.inputs.size(); ++k) {
             const auto& in = r.inputs[k];
-            const auto& inDef = items::items().get(in.itemId);
             char piece[64];
             std::snprintf(piece, sizeof(piece), "%sx%u ",
-                          inDef.name, (unsigned)in.count);
+                          items::items().name(in.itemId),
+                          (unsigned)in.count);
             std::strncat(costLine, piece,
                          sizeof(costLine) - std::strlen(costLine) - 1);
         }
@@ -3270,12 +3277,12 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
         if (selectedRecipeIdx >= 0 && selectedRecipeIdx < total) {
             auto& ar = available[selectedRecipeIdx];
             const auto& r = *ar.recipe;
-            const auto& outDef = items::items().get(r.output.itemId);
 
-            ui_.text(outDef.name, pX + 16.f, pY + 12.f, 2.2f, COL_WHITE);
+            ui_.text(items::items().name(r.output.itemId), pX + 16.f,
+                     pY + 12.f, 2.2f, COL_WHITE);
 
             char lvlBuf[64];
-            std::snprintf(lvlBuf, sizeof(lvlBuf), "Level %u",
+            std::snprintf(lvlBuf, sizeof(lvlBuf), cfg::tr("Level %u"),
                           (unsigned)r.requiredLevel);
             ui_.text(lvlBuf, pX + 16.f, pY + 44.f, 1.5f,
                      rgba(200, 200, 200, 255));
@@ -3285,13 +3292,13 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
 
             f32 iy = pY + 110.f;
             for (const auto& in : r.inputs) {
-                const auto& inDef = items::items().get(in.itemId);
                 u32 have = inv->countOf(in.itemId);
                 bool ok = have >= in.count;
 
                 char line[128];
                 std::snprintf(line, sizeof(line), "%s  %u / %u",
-                              inDef.name, (unsigned)have, (unsigned)in.count);
+                              items::items().name(in.itemId),
+                              (unsigned)have, (unsigned)in.count);
                 ui_.text(line, pX + 24.f, iy, 1.6f,
                          ok ? rgba(180, 240, 180, 255)
                             : rgba(240, 160, 160, 255));
@@ -3507,7 +3514,7 @@ void UiSystem::drawTradeScreen(player::Player& player) {
 // Enchant Altar
 // ============================================================
 void UiSystem::drawEnchantScreen(player::Player& player) {
-    drawMenuBackdrop("ENCHANT ALTAR");
+    drawMenuBackdrop(cfg::tr("ENCHANT ALTAR"));
 
     drawCloseButton([this]() { screen = Screen::Hud; });
 
@@ -3518,13 +3525,13 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
     // Текущее оружие
     {
         const auto& wdef = combat::weapons().get(player.equipped.weaponId);
-        ui_.text("Equipped:", 40.f, 110.f, 1.8f, rgba(200, 200, 200, 255));
+        ui_.text(cfg::tr("Equipped:"), 40.f, 110.f, 1.8f, rgba(200, 200, 200, 255));
         ui_.text(wdef.name ? wdef.name : "-", 200.f, 110.f, 2.f, COL_WHITE);
 
         if (player.equipped.enchant.id != combat::EnchantmentId::None) {
             const char* en = combat::enchantmentName(player.equipped.enchant.id);
             char buf[64];
-            std::snprintf(buf, sizeof(buf), "Enchant: %s Lv%u",
+            std::snprintf(buf, sizeof(buf), cfg::tr("Enchant: %s Lv%u"),
                           en, player.equipped.enchant.level);
             ui_.text(buf, 200.f, 140.f, 1.6f, rgba(180, 120, 240, 255));
         }
@@ -3563,20 +3570,19 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
         ui_.rect(rr.x, rr.y, rr.w, rr.h, bg);
         ui_.rectOutline(rr.x, rr.y, rr.w, rr.h, 2.f, COL_BLACK);
 
-        ui_.text(r.name ? r.name : "?", rr.x + 12.f, rr.y + 8.f, 2.f, COL_WHITE);
+        ui_.text(r.name ? cfg::tr(r.name) : "?", rr.x + 12.f, rr.y + 8.f, 2.f, COL_WHITE);
 
         char cost[64];
-        std::snprintf(cost, sizeof(cost), "%u gold", r.goldCost);
+        std::snprintf(cost, sizeof(cost), cfg::tr("%u gold"), r.goldCost);
         ui_.text(cost, rr.x + 12.f, rr.y + 36.f, 1.4f,
                  rgba(255, 220, 100, 255));
 
         char mats[192] = {};
         for (usize k = 0; k < r.materials.size(); ++k) {
             const auto& m = r.materials[k];
-            const auto& md = items::items().get(m.itemId);
             char piece[64];
             std::snprintf(piece, sizeof(piece), "%sx%u ",
-                          md.name, (unsigned)m.count);
+                          items::items().name(m.itemId), (unsigned)m.count);
             std::strncat(mats, piece, sizeof(mats) - std::strlen(mats) - 1);
         }
         ui_.text(mats, rr.x + 12.f, rr.y + 52.f, 1.3f,
@@ -3597,12 +3603,12 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
             enchantCtx.selectedIdx < (i32)total)
         {
             const auto& r = recipes[(usize)enchantCtx.selectedIdx];
-            ui_.text(r.name ? r.name : "?", pX + 16.f, pY + 12.f, 2.2f, COL_WHITE);
+            ui_.text(r.name ? cfg::tr(r.name) : "?", pX + 16.f, pY + 12.f, 2.2f, COL_WHITE);
 
             // Зачарование необратимо: оно тратит предмет и золото и
             // насовсем меняет оружие. Такое спрашивает.
             const Rect cr = layout_.primaryAction();
-            const char* label = r.name ? r.name : "ENCHANT";
+            const char* label = r.name ? cfg::tr(r.name) : cfg::tr("ENCHANT");
             const int ci = ui_.pushInteractiveRect(cr,
                 [this, i = enchantCtx.selectedIdx, label]() {
                     askConfirm(label, label, [this, i]() {
@@ -3616,13 +3622,13 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
             ui_.rectOutline(cr.x, cr.y, cr.w, cr.h,
                             layout_.dp(theme::STROKE_SELECTED_DP),
                             cpress ? theme::AccentPressed : theme::Accent);
-            const f32 tw = ui_.textWidth("ENCHANT", theme::TEXT_BODY);
-            ui_.text("ENCHANT", cr.x + (cr.w - tw) * 0.5f,
+            const f32 tw = ui_.textWidth(cfg::tr("ENCHANT"), theme::TEXT_BODY);
+            ui_.text(cfg::tr("ENCHANT"), cr.x + (cr.w - tw) * 0.5f,
                      cr.y + (cr.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
                      theme::TEXT_BODY,
                      cpress ? theme::Ink : theme::TextPrimary);
         } else {
-            ui_.text("Select a recipe", pX + 16.f, pY + 40.f, 2.f,
+            ui_.text(cfg::tr("Select a recipe"), pX + 16.f, pY + 40.f, 2.f,
                      rgba(180, 180, 180, 255));
         }
     }

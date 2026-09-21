@@ -148,8 +148,6 @@ public:
     const WeatherSample& sample() const { return sample_; }
     const WeatherField&  field()  const { return field_; }
 
-    /// Насколько тучи гасят дневной свет, множитель 0.45..1.
-    f32 lightScale() const;
 
 private:
     void pull(const TerrainGenerator& terrain, const glm::vec3& pos,

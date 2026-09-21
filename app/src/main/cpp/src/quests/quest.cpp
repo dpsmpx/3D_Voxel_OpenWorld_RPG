@@ -36,15 +36,8 @@ void QuestLog::removeActive(ecs::Entity quest) {
     }
 }
 
-void QuestLog::addHistory(u32 questId, QuestState state, const char* title) {
-    HistoryEntry h{};
-    h.questId = questId;
-    h.state   = state;
-    if (title) {
-        std::strncpy(h.title, title, sizeof(h.title) - 1);
-        h.title[sizeof(h.title) - 1] = '\0';
-    }
-    history.push_back(h);
+void QuestLog::addHistory(const Quest& q) {
+    history.push_back(q);
     if (history.size() > 30) {
         history.erase(history.begin());
     }
