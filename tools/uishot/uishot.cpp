@@ -23,6 +23,7 @@
 #include "items/item_def.h"
 #include "mobs/mob_def.h"
 #include "combat/weapon.h"
+#include "combat/hurt_marks.h"
 #include "quests/quest.h"
 #include "quests/quest_def.h"
 #include "ecs/registry.h"
@@ -166,6 +167,7 @@ struct Opts {
     /// прочитать глазами, а не поверить коду на слово.
     ui::Screen screen = ui::Screen::Hud;
     int questCount = 1;          ///< сколько заданий положить в журнал
+    int hurts = 0;               ///< сколько отметок урона показать
     bool target = false;          ///< показать полосу цели
     f32  targetFill = 0.42f;
     f32  targetGhost = 0.63f;
@@ -187,6 +189,7 @@ int main(int argc, char** argv) {
         else if (k == "--dpi")    o.dpi = std::atoi(next());
         else if (k == "--mirror") o.mirror = true;
         else if (k == "--quests") o.questCount = std::atoi(next());
+        else if (k == "--hurts")  o.hurts = std::atoi(next());
         else if (k == "--screen") {
             const std::string v = next();
             if      (v == "hud")        o.screen = ui::Screen::Hud;
@@ -273,6 +276,23 @@ int main(int argc, char** argv) {
         sys.target.alpha  = 1.f;
         sys.target.phases = o.targetPhases;
         sys.target.phase  = 0;
+    }
+
+    // Отметки урона: расставляются вокруг игрока по кругу, с разной
+    // силой — слабый укус и удар в половину здоровья должны
+    // читаться по-разному.
+    if (o.hurts > 0) {
+        if (auto* hm = reg.get<combat::HurtMarks>(pl.entity())) {
+            const glm::vec3 p = { 0.f, 40.f, 0.f };
+            for (int i = 0; i < o.hurts && i < (int)combat::HurtMarks::CAPACITY; ++i) {
+                const f32 ang = 6.2831853f * (f32)i / (f32)o.hurts;
+                hm->marks[i].from = p + glm::vec3(std::sin(ang) * 6.f, 0.f,
+                                                  std::cos(ang) * 6.f);
+                hm->marks[i].life = combat::HurtMarks::LIFETIME *
+                                    (1.f - 0.15f * (f32)i);
+                hm->marks[i].weight = 0.2f + 0.8f * (f32)i / (f32)o.hurts;
+            }
+        }
     }
 
     sys.tickUi(1.f / 60.f);

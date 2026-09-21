@@ -43,6 +43,7 @@
 #include "quests/quest_def.h"
 #include "combat/status_effects.h"
 #include "combat/focus.h"
+#include "combat/hurt_marks.h"
 #include "combat/damage.h"
 #include "mobs/mob_def.h"
 #include "mobs/mob_ai.h"
@@ -5546,7 +5547,18 @@ void testQuestAndTradeListsScroll() {
             q.progress = 1;
             q.state = quests::QuestState::Active;
             q.ownerEntity = (u32)pl.entity();
-            std::snprintf(q.title, sizeof(q.title), "Quest %d", n);
+            // Название тем длиннее, чем дальше задание в списке.
+            //
+            // Иначе прокрутку не отличить от её отсутствия: строк
+            // видно поровну, и при одинаковых названиях в кадре
+            // ровно столько же вершин. Мутация, от которой строки
+            // перестали ехать, именно так и прошла проверку.
+            char title[64];
+            int at = std::snprintf(title, sizeof(title), "Q%d", n);
+            for (int k = 0; k < n * 4 && at < (int)sizeof(title) - 2; ++k)
+                title[at++] = 'x';
+            title[at] = '\0';
+            std::snprintf(q.title, sizeof(q.title), "%s", title);
             const ecs::Entity qe = reg.create();
             reg.add(qe, q);
             log->addActive(qe);
@@ -5585,10 +5597,17 @@ void testQuestAndTradeListsScroll() {
 
         const auto atTop = shot(0.f);
         const auto atEnd = shot(1e6f);
+        // Два УТВЕРЖДЕНИЯ, а не одно через «или».
+        //
+        // Сперва тут стояло `A || B`, и B («не вынесло наверх»)
+        // истинно почти всегда — мутация, от которой строки вовсе
+        // перестали ехать, прошла проверку насквозь. Дизъюнкция в
+        // проверке почти всегда значит, что проверяется слабейшее из
+        // двух.
         std::snprintf(m, sizeof(m),
                       "прокрутка меняет показанное (вершин в списке %u -> %u)",
                       atTop.first, atEnd.first);
-        check(atTop.first != atEnd.first || atEnd.second <= atTop.second, m);
+        check(atTop.first != atEnd.first, m);
         std::snprintf(m, sizeof(m),
                       "и не выносит строки поверх заголовка (%u -> %u)",
                       atTop.second, atEnd.second);
@@ -5605,9 +5624,13 @@ void testQuestAndTradeListsScroll() {
             frame();
             sys.routeTouch(11, x, y - sys.layout().dp(40.f), 2);
             frame();
+            // Смотреть надо на СМЕЩЕНИЕ, а не на максимум: максимум
+            // больше нуля и без всякого жеста — он про то, что
+            // листать есть что. Пока проверка сверяла его, мутация,
+            // отключавшая жест, проходила незамеченной.
             std::snprintf(m, sizeof(m), "палец листает журнал (смещение %.1f)",
-                          (double)sys.questScrollMax());
-            check(sys.questScrollMax() > 0.f, m);
+                          (double)sys.questScrollOffset());
+            check(sys.questScrollOffset() > 0.f, m);
             sys.routeTouch(11, x, y - sys.layout().dp(40.f), 1);
             frame();
         }
@@ -5652,6 +5675,265 @@ void testQuestAndTradeListsScroll() {
     }
 
     config::settings() = savedCfg;
+}
+
+// ------------------------------------------------------------
+// Откуда бьют.
+//
+// Полоса цели отвечает на вопрос «кого бью я». На «кто бьёт меня» не
+// отвечало ничто: обзор на телефоне узкий, и удар со спины игрок
+// читал только по убывающей полоске здоровья — то есть узнавал о нём
+// последним и не знал, куда повернуться.
+//
+// Проверяется не «рисуется ли дуга», а весь путь: удар по игроку →
+// отметка с направлением → угол относительно ВЗГЛЯДА → вершины в
+// кадре. И отдельно — что урон без источника отметки не оставляет:
+// у яда, падения и утопления направления нет, и выдумывать его
+// нельзя.
+// ------------------------------------------------------------
+void testHurtDirection() {
+    group("бой: видно, откуда бьют");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    char m[220];
+    constexpr f32 PI = 3.14159265f;
+
+    // ---- 1. Угол считается от взгляда, а не от сторон света ----
+    {
+        const glm::vec3 me{ 0.f, 40.f, 0.f };
+        // Смотрим на север (+Z): источник там же — прямо перед нами.
+        check(std::fabs(combat::hurtAngle(me, 0.f, { 0.f, 40.f, 5.f })) < 0.01f,
+              "удар спереди — угол ноль");
+
+        const f32 back = combat::hurtAngle(me, 0.f, { 0.f, 40.f, -5.f });
+        std::snprintf(m, sizeof(m), "удар в спину — угол ±π (вышло %.2f)",
+                      (double)back);
+        check(std::fabs(std::fabs(back) - PI) < 0.01f, m);
+
+        const f32 right = combat::hurtAngle(me, 0.f, { 5.f, 40.f, 0.f });
+        std::snprintf(m, sizeof(m), "удар справа — угол +π/2 (вышло %.2f)",
+                      (double)right);
+        check(std::fabs(right - PI * 0.5f) < 0.01f, m);
+
+        const f32 left = combat::hurtAngle(me, 0.f, { -5.f, 40.f, 0.f });
+        check(std::fabs(left + PI * 0.5f) < 0.01f, "удар слева — угол −π/2");
+
+        // Повернулись — и тот же удар читается иначе. Это и есть
+        // разница между «относительно взгляда» и «на север».
+        const f32 turned = combat::hurtAngle(me, PI * 0.5f, { 5.f, 40.f, 0.f });
+        std::snprintf(m, sizeof(m),
+                      "повернулся к источнику — он стал спереди (%.2f)",
+                      (double)turned);
+        check(std::fabs(turned) < 0.01f, m);
+
+        // Источник ровно под ногами направления не даёт — и не врёт
+        // о нём.
+        check(std::fabs(combat::hurtAngle(me, 0.f, { 0.f, 30.f, 0.f })) < 0.01f,
+              "источник в той же точке не даёт направления");
+
+        // ---- Угол сворачивается в (-π, π] ----
+        //
+        // Без этого проверка не трогала приведение вовсе: при взгляде
+        // «на ноль» разность и так лежит в диапазоне. А игрок
+        // крутится, и yaw у него накапливается — мутация, снявшая
+        // приведение, прошла незамеченной.
+        const f32 spun = combat::hurtAngle(me, 2.f * PI, { 0.f, 40.f, 5.f });
+        std::snprintf(m, sizeof(m),
+                      "полный оборот не сбивает направление (%.2f)",
+                      (double)spun);
+        check(std::fabs(spun) < 0.01f, m);
+
+        const f32 wide = combat::hurtAngle(me, -3.f, { 5.f, 40.f, 0.f });
+        std::snprintf(m, sizeof(m),
+                      "угол всегда в пределах ±π (вышло %.2f)", (double)wide);
+        check(std::fabs(wide) <= PI + 0.01f, m);
+    }
+
+    // ---- 2. Полный путь: удар по игроку оставляет отметку ----
+    {
+        ecs::Registry reg;
+        const ecs::Entity pl = reg.create();
+        reg.add(pl, ecs::PlayerTag{});
+        reg.add(pl, ecs::Transform{ glm::vec3(0.f, 40.f, 0.f) });
+        reg.add(pl, ecs::Health{ 100.f, 100.f, 0.f, 0.f });
+        reg.add(pl, combat::StatusEffects{});
+        reg.add(pl, combat::HurtMarks{});
+
+        auto* hm = reg.get<combat::HurtMarks>(pl);
+        check(hm && hm->liveCount() == 0, "пока не били — отметок нет");
+
+        const ecs::Entity wolf = reg.create();
+        reg.add(wolf, ecs::Transform{ glm::vec3(0.f, 40.f, -6.f) });
+        reg.add(wolf, ecs::Health{ 20.f, 20.f, 0.f, 0.f });
+        reg.add(wolf, mobs::MobTag{ 1 });
+
+        combat::DamageInstance hit;
+        hit.amount = 25.f;
+        hit.sourceEntity = (u32)wolf;
+        hit.targetEntity = (u32)pl;
+        combat::applyDamage(reg, pl, hit);
+
+        std::snprintf(m, sizeof(m), "укус со спины оставил отметку (%u)",
+                      hm->liveCount());
+        check(hm->liveCount() == 1, m);
+
+        // Направление — на волка, то есть назад.
+        const combat::HurtMark* mark = nullptr;
+        for (const auto& mk : hm->marks) if (mk.life > 0.f) { mark = &mk; break; }
+        check(mark != nullptr, "отметка найдена");
+        if (mark) {
+            const f32 a = combat::hurtAngle({ 0.f, 40.f, 0.f }, 0.f, mark->from);
+            std::snprintf(m, sizeof(m),
+                          "и показывает назад, туда, где волк (%.2f)",
+                          (double)a);
+            check(std::fabs(std::fabs(a) - PI) < 0.01f, m);
+            std::snprintf(m, sizeof(m),
+                          "сила удара запомнена долей здоровья (%.2f)",
+                          (double)mark->weight);
+            check(mark->weight > 0.2f && mark->weight <= 0.3f, m);
+        }
+
+        // ---- Урон без источника отметки не оставляет ----
+        //
+        // Яд, падение и утопление бьют ниоткуда. Показать
+        // направление неоткуда, и выдумывать его нельзя.
+        const u32 before = hm->liveCount();
+        combat::DamageInstance drown;
+        drown.amount = 5.f;
+        drown.sourceEntity = 0;
+        drown.targetEntity = (u32)pl;
+        combat::applyDamage(reg, pl, drown);
+        std::snprintf(m, sizeof(m),
+                      "урон без источника отметки не даёт (%u -> %u)",
+                      before, hm->liveCount());
+        check(hm->liveCount() == before, m);
+
+        // И от источника, которого уже нет в мире, — тоже.
+        //
+        // Это отдельный случай, а не тот же самый: номер есть, а
+        // сущности за ним нет. Спрашивать у неё место — значит
+        // читать мусор. Мутация, снявшая проверку на живость,
+        // проходила, пока здесь стоял только нулевой источник.
+        const ecs::Entity ghost = reg.create();
+        reg.add(ghost, ecs::Transform{ glm::vec3(50.f, 40.f, 0.f) });
+        const u32 ghostId = (u32)ghost;
+        reg.destroy(ghost);
+        combat::noticeHurt(reg, pl, ghostId, 7.f);
+        std::snprintf(m, sizeof(m),
+                      "исчезнувший источник отметки не даёт (%u -> %u)",
+                      before, hm->liveCount());
+        check(hm->liveCount() == before, m);
+
+        // ---- Отметки гаснут ----
+        for (int i = 0; i < 200; ++i) combat::tickHurtMarks(*hm, 1.f / 60.f);
+        check(hm->liveCount() == 0, "через свой срок отметки гаснут");
+    }
+
+    // ---- 3. Девятый удар вытесняет самый старый ----
+    {
+        combat::HurtMarks hm{};
+        for (u32 i = 0; i < combat::HurtMarks::CAPACITY; ++i) {
+            hm.marks[i].life = combat::HurtMarks::LIFETIME - (f32)i * 0.1f;
+            hm.marks[i].weight = 0.5f;
+            hm.marks[i].from = glm::vec3((f32)i, 0.f, 0.f);
+        }
+        check(hm.liveCount() == combat::HurtMarks::CAPACITY, "все места заняты");
+
+        ecs::Registry reg;
+        const ecs::Entity pl = reg.create();
+        reg.add(pl, ecs::Transform{ glm::vec3(0.f, 40.f, 0.f) });
+        reg.add(pl, ecs::Health{ 100.f, 100.f, 0.f, 0.f });
+        reg.add(pl, hm);
+        const ecs::Entity src = reg.create();
+        reg.add(src, ecs::Transform{ glm::vec3(99.f, 40.f, 0.f) });
+
+        combat::noticeHurt(reg, pl, (u32)src, 10.f);
+        auto* live = reg.get<combat::HurtMarks>(pl);
+
+        // Проверяется, что вытеснена именно САМАЯ СТАРАЯ, а не
+        // первая попавшаяся. Пока проверка спрашивала только «новая
+        // отметка где-нибудь есть?», мутация, писавшая всегда в
+        // нулевой слот, отвечала ей «есть» — и проходила, стирая при
+        // этом самую свежую.
+        bool newHere = false, oldestGone = true, freshKept = true;
+        for (const auto& mk : live->marks) {
+            if (std::fabs(mk.from.x - 99.f) < 0.01f) newHere = true;
+            // Самая старая — с наибольшим индексом: её life был
+            // меньше всех.
+            if (std::fabs(mk.from.x -
+                          (f32)(combat::HurtMarks::CAPACITY - 1)) < 0.01f)
+                oldestGone = false;
+            if (std::fabs(mk.from.x - 0.f) < 0.01f) {
+                // Слот 0 был самым свежим — он обязан уцелеть.
+            }
+        }
+        freshKept = false;
+        for (const auto& mk : live->marks)
+            if (std::fabs(mk.from.x) < 0.01f && mk.life > 0.f) freshKept = true;
+
+        check(newHere, "новый удар записан, а не потерян");
+        check(oldestGone, "и вытеснил самую старую отметку");
+        check(freshKept, "самая свежая при этом уцелела");
+        check(live->liveCount() == combat::HurtMarks::CAPACITY,
+              "и мест по-прежнему восемь");
+    }
+
+    // ---- 4. Отметки доходят до кадра ----
+    //
+    // Проверяется НАРИСОВАННОЕ: без урона вершин в кольце нет, с
+    // уроном — есть. Проверять один лишь компонент мало: ровно так в
+    // этом проекте уже оставались написанные и не подключённые вещи.
+    {
+        constexpr i32 W = 1280, H = 720, DPI = 320;
+        const config::Settings savedCfg = config::settingsConst();
+        config::settings() = config::Settings{};
+
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        auto countRing = [&](bool hurt) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(DPI);
+            sys.setScreenSize(W, H);
+            sys.screen = ui::Screen::Hud;
+            sys.setViewYaw(0.f);
+            if (auto* hm = reg.get<combat::HurtMarks>(pl.entity())) {
+                for (auto& mk : hm->marks) mk.life = 0.f;
+                if (hurt) {
+                    hm->marks[0].from = glm::vec3(0.f, 64.f, -8.f);
+                    hm->marks[0].life = combat::HurtMarks::LIFETIME;
+                    hm->marks[0].weight = 0.8f;
+                }
+            }
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+            const f32 rad = sys.layout().hurtRingRadius();
+            const f32 cx = (f32)W * 0.5f, cy = (f32)H * 0.5f;
+            u32 n = 0;
+            for (const ui::UiVertex& v : sys.frameVertices()) {
+                const f32 px = (v.pos.x * 0.5f + 0.5f) * (f32)W;
+                const f32 py = (v.pos.y * 0.5f + 0.5f) * (f32)H;
+                const f32 dx = px - cx, dy = py - cy;
+                const f32 d = std::sqrt(dx * dx + dy * dy);
+                if (d > rad * 0.8f && d < rad * 1.2f) ++n;
+            }
+            return n;
+        };
+
+        const u32 quiet = countRing(false);
+        const u32 hurt  = countRing(true);
+        std::snprintf(m, sizeof(m),
+                      "отметка доходит до кадра (вершин в кольце %u -> %u)",
+                      quiet, hurt);
+        check(hurt > quiet, m);
+
+        config::settings() = savedCfg;
+    }
 }
 
 // ------------------------------------------------------------
@@ -23793,6 +24075,7 @@ int main() {
     testCompactHudUnderMenus();
     testInventoryScrolls();
     testQuestAndTradeListsScroll();
+    testHurtDirection();
     testHudAndButtonsDoNotOverlap();
     testLoadingIsAPanelNotACurtain();
     testUiThemeObeysItsOwnRules();

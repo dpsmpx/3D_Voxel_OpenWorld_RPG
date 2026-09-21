@@ -11,6 +11,7 @@
 #include "../combat/resonance.h"
 #include "../combat/enchantment.h"
 #include "../combat/components.h"
+#include "../combat/hurt_marks.h"
 #include "../progression/progression.h"
 #include "../progression/skill_tree.h"
 #include "../quests/quest.h"
@@ -32,6 +33,7 @@
 #include <cstring>
 #include <ctime>
 #include <algorithm>
+#include <cmath>
 #include <glm/glm.hpp>
 #include <functional>
 #include <string>
@@ -427,6 +429,8 @@ void UiSystem::drawHud(player::Player& player,
         ui_.rect(cx - 10.f, cy - 1.f, 20.f, 2.f, COL_WHITE);
         ui_.rect(cx - 1.f, cy - 10.f, 2.f, 20.f, COL_WHITE);
     }
+
+    drawHurtMarks(player);
 
     // Строка задания — только на чистом HUD: под меню её место
     // отдано самому меню, а цель задания там и так открыта в журнале.
@@ -2272,6 +2276,67 @@ void UiSystem::drawQuestDetails(player::Player& player) {
 // Чтобы узнать, что делать, приходилось открывать журнал — а журнал
 // показывал только ЧИСЛО активных заданий. Строка на HUD отвечает на
 // этот вопрос, не прерывая игру.
+// ============================================================
+// Откуда бьют
+// ============================================================
+//
+// Полоса цели отвечает на вопрос «кого бью я». На «кто бьёт меня»
+// не отвечало ничто: обзор на телефоне узкий, и удар со спины игрок
+// читал только по убывающей полоске здоровья — то есть узнавал о
+// нём последним и не знал, куда повернуться.
+//
+// Дуга по краю свободного центра, а не стрелка и не мигание всего
+// экрана: направление читается мгновенно, место занято ровно то,
+// которое игра и так держит пустым, а сила удара видна по толщине и
+// яркости — слабый укус и удар в половину здоровья обязаны
+// различаться.
+void UiSystem::drawHurtMarks(player::Player& player) {
+    auto* reg = player.registryHandle();
+    if (!reg) return;
+    const auto* hm = reg->get<combat::HurtMarks>(player.entity());
+    const auto* tf = reg->get<ecs::Transform>(player.entity());
+    if (!hm || !tf) return;
+
+    const f32 cx = (f32)screenW_ * 0.5f;
+    const f32 cy = (f32)screenH_ * 0.5f;
+    const f32 radius = layout_.hurtRingRadius();
+    const f32 thick  = layout_.hurtRingThickness();
+
+    for (const combat::HurtMark& m : hm->marks) {
+        if (m.life <= 0.f) continue;
+
+        const f32 fade = m.life / combat::HurtMarks::LIFETIME;
+        const f32 a = combat::hurtAngle(tf->position, viewYaw_, m.from);
+
+        // Дуга набирается короткими отрезками: своего примитива для
+        // дуги у этого интерфейса нет, а заводить его ради одного
+        // места — лишняя сущность.
+        // Сегментов столько, чтобы квадраты перекрывались: при
+        // семи между ними оставались просветы, и дуга читалась как
+        // пунктир. Дуга должна быть дугой.
+        constexpr u32 SEGMENTS = 13;
+        const f32 half = ui::HudLayout::HURT_ARC_HALF;
+        const f32 step = (half * 2.f) / (f32)SEGMENTS;
+        const f32 grow = thick * (0.6f + 0.8f * m.weight);
+
+        for (u32 i = 0; i < SEGMENTS; ++i) {
+            const f32 ang = a - half + step * ((f32)i + 0.5f);
+            // Экранные координаты: угол ноль — вверх (прямо перед
+            // игроком), вправо — положительный.
+            const f32 px = cx + std::sin(ang) * radius;
+            const f32 py = cy - std::cos(ang) * radius;
+            // К краям дуга сходит на нет — так она читается как
+            // направление, а не как отрезок стены.
+            const f32 w = grow * (0.45f + 0.55f * std::cos(
+                              (ang - a) / half * 1.5707963f));
+            const u8 alpha = (u8)(255.f * fade *
+                                  (0.45f + 0.55f * m.weight));
+            ui_.rect(px - w * 0.5f, py - w * 0.5f, w, w,
+                     withAlpha(theme::Danger, alpha));
+        }
+    }
+}
+
 void UiSystem::drawQuestTracker(player::Player& player) {
     auto* log = player.questLog();
     auto* reg = player.registryHandle();

@@ -8,6 +8,7 @@
 #include "../ecs/components.h"
 #include "../combat/status_effects.h"
 #include "../combat/focus.h"
+#include "../combat/hurt_marks.h"
 #include "../combat/hit_detection.h"
 #include "../progression/resource_regen.h"
 #include "../items/item_pickup.h"
@@ -80,6 +81,9 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
     reg.add(entity_, combat::StatusEffects{});
     reg.add(entity_, combat::GuardState{});
     reg.add(entity_, combat::FocusTarget{});
+    // Куда смотреть, когда ударили со спины. Полоса цели отвечает на
+    // «кого бью я», отметки урона — на «кто бьёт меня».
+    reg.add(entity_, combat::HurtMarks{});
 
     progression::Progression prog{};
     prog.level = 1;

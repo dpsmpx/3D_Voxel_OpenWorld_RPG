@@ -147,9 +147,18 @@ public:
 
     /// Насколько содержимое инвентаря выше отведённой ему области.
     /// Ноль — помещается целиком.
+    /// Куда смотрит игрок, в радианах.
+    ///
+    /// Нужен отметкам урона: они показывают направление ОТНОСИТЕЛЬНО
+    /// взгляда, и поворот головы обязан их поворачивать. Yaw живёт в
+    /// игровом цикле, а не в игроке, поэтому передаётся сюда явно.
+    void setViewYaw(f32 yaw) { viewYaw_ = yaw; }
+    f32  viewYaw() const { return viewYaw_; }
+
     f32 inventoryScrollMax() const { return invScroll.maxOffset; }
     f32 inventoryScrollOffset() const { return invScroll.offset; }
     f32 questScrollMax() const { return questScroll.maxOffset; }
+    f32 questScrollOffset() const { return questScroll.offset; }
     f32 tradeScrollMax() const { return tradeScroll.maxOffset; }
     void scrollQuestsTo(f32 o) {
         questScroll.offset = o; questScroll.velocity = 0.f;
@@ -607,6 +616,8 @@ private:
     void drawQuestLogScreen(player::Player& player);
     /// Текущая цель на HUD: что делать прямо сейчас.
     void drawQuestTracker(player::Player& player);
+    /// Отметки по краю экрана: откуда игрока бьют.
+    void drawHurtMarks(player::Player& player);
     /// Подробности выбранного задания: цель, прогресс, награда.
     void drawQuestDetails(player::Player& player);
     void drawReputationScreen(player::Player& player);
@@ -679,6 +690,9 @@ private:
     /// сразу: 27 + 6 + 9 ячеек требуют около 320 точек при 232
     /// доступных. Раскладкой это не решается — только прокруткой.
     Scroll invScroll;
+
+    /// Куда смотрит игрок. Выставляет игровой цикл каждым кадром.
+    f32 viewYaw_ = 0.f;
 
     /// Очередь уведомлений. Показывается не больше
     /// theme::NOTIFY_MAX_VISIBLE сразу; важное вытесняет рядовое, а

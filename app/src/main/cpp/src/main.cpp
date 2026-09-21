@@ -57,6 +57,7 @@
 #include "world/precipitation.h"
 #include "world/particles.h"
 #include "combat/focus.h"
+#include "combat/hurt_marks.h"
 #include "world/world_spec.h"
 #include "save/save_export.h"
 #include "mobs/mob_ai.h"
@@ -1921,6 +1922,10 @@ struct Engine {
         combat::updateProjectiles(*world, registry, dt);
         combat::updateHitFx(registry, dt);
         combat::tickStatuses(registry, dt);
+        // Отметки «откуда ударили» гаснут сами: у них своё время
+        // жизни, не привязанное ни к бою, ни к здоровью.
+        if (auto* hm = registry.get<combat::HurtMarks>(player->entity()))
+            combat::tickHurtMarks(*hm, dt);
 
         progression::tickProgression(registry, dt);
         quests::tickQuestTime(registry, (u32)player->entity(), dt);
@@ -2021,7 +2026,13 @@ struct Engine {
         // территории и рендер тайлов не должны съедать кадр целиком.
         tickIso();
 
-        if (ui) ui->tickUi(dt);
+        if (ui) {
+            ui->tickUi(dt);
+            // Отметки урона показывают направление ОТНОСИТЕЛЬНО
+            // взгляда: повернулся — повернулись и они. Yaw живёт
+            // здесь, в цикле, поэтому передаётся в интерфейс явно.
+            ui->setViewYaw(cameraYawPitch.x);
+        }
 
         evJump_ = evBreak_ = evPlace_ = evAttack_ = evFinish_ =
             evInteract_ = evUseItem_ = evDash_ = evBlock_ = false;
