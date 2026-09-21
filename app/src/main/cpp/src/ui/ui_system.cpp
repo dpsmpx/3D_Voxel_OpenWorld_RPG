@@ -161,6 +161,7 @@ void UiSystem::tickUi(f32 dt) {
     craftScroll.tick(dt);
     questScroll.tick(dt);
     tradeScroll.tick(dt);
+    invScroll.tick(dt);
 
     uiDt_ = dt;
     // Пока палец на экране. После отпускания pointerX/Y остаются
@@ -1032,7 +1033,15 @@ void UiSystem::drawInventory(player::Player& player) {
                  theme::TEXT_BODY, theme::Accent);
     }
 
-    const Rect left = layout_.invLeft();
+    // Содержимое едет целиком: сумка, экипировка и пояс — один
+    // столбец, и прокручивается он как один.
+    //
+    // 27 + 6 + 9 ячеек требуют около 320 точек, а на 640x360 под
+    // содержимое остаётся 232 даже со сжатым столбцом HUD. Это не
+    // лечится раскладкой — пробовал: отнятая у сумки высота делала
+    // недоступными все двадцать семь ячеек вместо тринадцати.
+    const Rect view = layout_.invLeft();
+    const Rect left{ view.x, view.y - invScroll.offset, view.w, view.h };
 
     // ---- Сумка: ВСЕ 27 ячеек ----
     //
@@ -1041,20 +1050,27 @@ void UiSystem::drawInventory(player::Player& player) {
     // невидимую, откуда его не достать. Брони и аксессуаров не было
     // в интерфейсе тоже: игрок видел 33 ячейки из 42.
     const HudLayout::CellGrid main = layout_.cellGrid(left, items::INV_MAIN_SLOTS);
-    drawSlotGrid(player, main, items::INV_MAIN_OFFSET, items::INV_MAIN_SLOTS);
+    drawSlotGrid(player, main, items::INV_MAIN_OFFSET,
+                 items::INV_MAIN_SLOTS, view);
 
     // ---- Экипировка: броня и аксессуары ----
     const Rect mb = main.bounds();
     const Rect eqArea{ left.x, mb.y + mb.h + layout_.dp(theme::SPACE_L_DP),
                        left.w, layout_.dp(theme::TOUCH_REGULAR_DP) };
-    ui_.text(T(StrKey::Inv_Equipped), eqArea.x,
-             eqArea.y - layout_.dp(theme::SPACE_M_DP)
-                 - ui_.textHeight(theme::TEXT_LABEL),
-             theme::TEXT_LABEL, theme::TextSecondary);
+    // Подпись едет вместе со своей сеткой и пропадает вместе с ней:
+    // надпись «EQUIPPED» над пустым местом сообщала бы о ячейках,
+    // которых на экране нет.
+    const auto stripLabel = [&](StrKey key, const Rect& area) {
+        const f32 ty = area.y - layout_.dp(theme::SPACE_M_DP)
+                     - ui_.textHeight(theme::TEXT_LABEL);
+        if (ty < view.y || ty > view.y + view.h) return;
+        ui_.text(T(key), area.x, ty, theme::TEXT_LABEL, theme::TextSecondary);
+    };
+    stripLabel(StrKey::Inv_Equipped, eqArea);
 
     const u32 eqCount = items::INV_ARMOR_SLOTS + items::INV_ACC_SLOTS;
     const HudLayout::CellGrid eq = layout_.cellGrid(eqArea, eqCount);
-    drawSlotGrid(player, eq, items::INV_ARMOR_OFFSET, eqCount);
+    drawSlotGrid(player, eq, items::INV_ARMOR_OFFSET, eqCount, view);
 
     // ---- Пояс: здесь видны все девять ----
     //
@@ -1065,14 +1081,22 @@ void UiSystem::drawInventory(player::Player& player) {
     const Rect eb = eq.bounds();
     const Rect hbArea{ left.x, eb.y + eb.h + layout_.dp(theme::SPACE_L_DP),
                        left.w, layout_.dp(theme::TOUCH_REGULAR_DP) };
-    ui_.text(T(StrKey::Inv_Hotbar), hbArea.x,
-             hbArea.y - layout_.dp(theme::SPACE_M_DP)
-                 - ui_.textHeight(theme::TEXT_LABEL),
-             theme::TEXT_LABEL, theme::TextSecondary);
+    stripLabel(StrKey::Inv_Hotbar, hbArea);
 
     const HudLayout::CellGrid hb =
         layout_.cellGrid(hbArea, items::INV_HOTBAR_SLOTS);
-    drawSlotGrid(player, hb, items::INV_HOTBAR_OFFSET, items::INV_HOTBAR_SLOTS);
+    drawSlotGrid(player, hb, items::INV_HOTBAR_OFFSET,
+                 items::INV_HOTBAR_SLOTS, view);
+
+    // Сколько всего вышло содержимого — столько и прокручивается.
+    // Считается по факту, а не по формуле: сетки сами решают, во
+    // сколько рядов лечь, и повторять это решение здесь значило бы
+    // держать те же правила в двух местах.
+    {
+        const Rect hbb = hb.bounds();
+        const f32 content = (hbb.y + hbb.h) - left.y;
+        invScroll.setContentHeight(content, view.h);
+    }
 
     drawItemDetails(player);
 
@@ -1080,6 +1104,14 @@ void UiSystem::drawInventory(player::Player& player) {
     // отпустили над ячейкой. Разбираем здесь, а не внутри сетки:
     // сеток три, а перенос один.
     updateSlotDrag(*inv);
+
+    // Листать и нести — один и тот же жест, и развести их надо
+    // однозначно. Палец, опущенный на ЗАНЯТУЮ ячейку, несёт предмет:
+    // перенос возможен только оттуда. Всё остальное — пустая ячейка,
+    // зазор, поле, подпись — листает.
+    const bool carrying = drag.active ||
+        (dragPressSlot_ >= 0 && !inv->at((u32)dragPressSlot_).empty());
+    feedScrollDrag(invScroll, view, carrying);
 }
 
 // ============================================================
@@ -1091,13 +1123,22 @@ void UiSystem::drawInventory(player::Player& player) {
 // использовал предмет и начинал его перенос.
 void UiSystem::drawSlotGrid(player::Player& player,
                             const HudLayout::CellGrid& g,
-                            u32 firstSlot, u32 count)
+                            u32 firstSlot, u32 count, Rect clip)
 {
     auto* inv = player.inventory();
     if (!inv) return;
 
+    // Ячейку, уехавшую за край области прокрутки, не рисуем и
+    // касаний ей не даём: иначе она легла бы на заголовок экрана, а
+    // нажать её можно было бы там, где её не видно.
+    const bool clipped = clip.h > 0.f;
+    auto hidden = [&](const Rect& r) {
+        return clipped && (r.y + r.h <= clip.y || r.y >= clip.y + clip.h);
+    };
+
     for (u32 i = 0; i < count; ++i) {
         const Rect r = g.at(i);
+        if (hidden(r)) continue;
         const u32 slot = firstSlot + i;
 
         const int idx = ui_.pushInteractiveRect(r, [this, slot]() {
@@ -1206,6 +1247,29 @@ void moveBetweenSlots(items::Inventory& inv, u32 src, u32 dst, u16 count) {
 }
 
 } // namespace
+
+// ============================================================
+// Прокрутка пальцем
+// ============================================================
+//
+// `Scroll` умеет перетаскивание с самого своего появления, и не звал
+// его никто: списки листались одними кнопками «вверх» и «вниз».
+// Написанный и неподключённый жест — ровно та болезнь, которую в
+// этом проекте уже лечили у квестовых уведомлений и у эликсиров.
+void UiSystem::feedScrollDrag(Scroll& sc, const Rect& area, bool blocked) {
+    const bool ptr = ui_.hasActivePointer();
+
+    if (!ptr) { sc.endDrag(sc.touchId); return; }
+
+    const i32 id = ui_.activePointerId();
+    const f32 y  = ui_.pointerY();
+
+    if (sc.dragging) { sc.updateDrag(id, y); return; }
+    if (blocked) return;
+    if (sc.maxOffset <= 0.f) return;          // листать нечего
+    if (!area.contains(ui_.pointerX(), y)) return;
+    sc.beginDrag(id, y);
+}
 
 void UiSystem::updateSlotDrag(items::Inventory& inv) {
     const bool ptr = ui_.hasActivePointer();
@@ -3014,6 +3078,13 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
 
     craftScroll.setContentHeight((f32)total * (rowH + rowGap),
                                  (f32)visible * (rowH + rowGap));
+
+    // Список листается и пальцем, а не одними кнопками «вверх» и
+    // «вниз»: перетаскивание у Scroll написано с самого начала и не
+    // вызывалось отсюда ни разу.
+    feedScrollDrag(craftScroll,
+                   Rect{ listX, listY, listW,
+                         (f32)visible * (rowH + rowGap) });
 
     i32 start = (i32)(craftScroll.offset / (rowH + rowGap));
 
