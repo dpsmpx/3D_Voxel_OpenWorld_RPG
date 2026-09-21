@@ -510,7 +510,15 @@ public:
             ? hudLeftColumn().y + hudLeftColumn().h : 0.f;
         const f32 y = std::max(t.y + t.h, below) + pad;
         const f32 x = left() + pad;
-        return { x, y, (right() - pad) - x, bottom() - pad - y };
+        // Снизу меню обходит ПОЯС — по той же причине, по какой
+        // сверху обходит столбец ресурсов: HUD под ним рисуется, и
+        // класть содержимое на пояс значит закрыть игроку то, чем он
+        // пользуется не выходя из меню. Видно это стало на снимке
+        // инвентаря: нижний ряд ячеек лёг ровно на пояс.
+        const f32 floorY = hudBehind_
+            ? std::min(bottom() - pad, hotbar().y - pad)
+            : bottom() - pad;
+        return { x, y, (right() - pad) - x, floorY - y };
     }
 
     /// Заголовок меню — над областью содержимого.

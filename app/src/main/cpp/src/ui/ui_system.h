@@ -145,6 +145,17 @@ public:
     /// Единственный источник геометрии: и отрисовка, и касание.
     const HudLayout& layout() const { return layout_; }
 
+    /// Насколько содержимое инвентаря выше отведённой ему области.
+    /// Ноль — помещается целиком.
+    f32 inventoryScrollMax() const { return invScroll.maxOffset; }
+
+    /// Прокрутить инвентарь на заданное смещение. Больше края не
+    /// уедет: `Scroll` ограничивает сам.
+    void scrollInventoryTo(f32 offset) {
+        invScroll.offset = offset;
+        invScroll.clampOffset();
+    }
+
     /// Цвет слоя HUD с учётом настройки прозрачности.
     ///
     /// Слайдер `uiOpacity` двигался и сохранялся, но не читался
@@ -556,8 +567,26 @@ private:
     void drawInventory(player::Player& player);
     void drawHotbar(player::Player& player);
     /// Одна сетка ячеек: сумка, экипировка и пояс рисуются ею же.
+    ///
+    /// `clip` — что из неё видно: ячейки целиком вне этого
+    /// прямоугольника не рисуются и касаний не ловят. Пустой
+    /// прямоугольник (нулевой высоты) означает «видно всё».
     void drawSlotGrid(player::Player& player, const HudLayout::CellGrid& g,
-                      u32 firstSlot, u32 count);
+                      u32 firstSlot, u32 count, Rect clip = {});
+
+    /// Прокрутка пальцем внутри области.
+    ///
+    /// `Scroll` умеет `beginDrag`/`updateDrag`/`endDrag` с самого
+    /// своего появления — и не звал их НИКТО: списки ремесла,
+    /// журнала и торговли листались одними кнопками «вверх» и
+    /// «вниз». Написанный и неподключённый жест — ровно та болезнь,
+    /// которую в этом проекте уже лечили у квестовых уведомлений и
+    /// у эликсиров.
+    ///
+    /// `blocked` — не начинать прокрутку с этого касания: в
+    /// инвентаре палец, опущенный на занятую ячейку, несёт предмет,
+    /// а не листает. Начатую прокрутку это не прерывает.
+    void feedScrollDrag(Scroll& sc, const Rect& area, bool blocked = false);
     /// Что за предмет и что с ним можно сделать.
     void drawItemDetails(player::Player& player);
     void drawSkillTreeScreen(player::Player& player);
@@ -638,6 +667,10 @@ private:
     Scroll craftScroll;
     Scroll questScroll;
     Scroll tradeScroll;
+    /// Сумка, экипировка и пояс не помещаются на узкий экран все
+    /// сразу: 27 + 6 + 9 ячеек требуют около 320 точек при 232
+    /// доступных. Раскладкой это не решается — только прокруткой.
+    Scroll invScroll;
 
     /// Очередь уведомлений. Показывается не больше
     /// theme::NOTIFY_MAX_VISIBLE сразу; важное вытесняет рядовое, а

@@ -4894,7 +4894,14 @@ void testMenusDoNotSitOnHud() {
         // пропустила мутацию, клавшую заголовок на x = 0: слева
         // столбца просто нет, и мутация там ничего не задевала.
         // Настоящее требование стороны не выбирает.
-        const bool savedHanded = config::settingsConst().joystickLeftHanded;
+        // Настройки фиксируются ЦЕЛИКОМ, а не одним тумблером.
+        //
+        // Проверка считает вершины в прямоугольнике раскладки, а та
+        // зависит и от плотности, и от `uiScale`. Пока сохранялся
+        // один тумблер, счёт зависел от того, что оставил в
+        // настройках предыдущий тест, — и падал не от своей причины.
+        const config::Settings savedCfg = config::settingsConst();
+        config::settings() = config::Settings{};
 
         auto countIn = [&](ui::Screen sc) {
             ui::UiSystem sys;
@@ -4936,7 +4943,7 @@ void testMenusDoNotSitOnHud() {
                           handed ? "левша" : "правша");
             check(onHud > 0, m);
         }
-        config::settings().joystickLeftHanded = savedHanded;
+        config::settings() = savedCfg;
     }
 
     // ---- Сетка ячеек знает про высоту ----
@@ -5136,10 +5143,36 @@ void testCompactHudUnderMenus() {
     // задания — это вершины, и если они вернутся, счёт это покажет.
     {
         constexpr i32 W = 1280, H = 720, DPI = 320;
+        // Настройки фиксируются: раскладка зависит от `uiScale` и от
+        // тумблера левши, а счёт вершин — от раскладки. Без этого
+        // проверка меряет то, что оставил после себя предыдущий тест.
+        const config::Settings savedCfg = config::settingsConst();
+        config::settings() = config::Settings{};
+
         ecs::Registry reg;
         player::Player pl;
         pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
         world::ChunkManager wd(0x5150Bull, 1);
+
+        // Область — САМ сжатый столбец, и одна и та же для обоих
+        // кадров.
+        //
+        // Сперва тут стоял «запас вниз на 200 точек», и он захватывал
+        // верх меню: ячейки сумки попадали в счёт и ломали сравнение,
+        // стоило меню сдвинуться. Ниже сжатого столбца начинается
+        // содержимое экрана, и мерить там нечего — подписи, золото,
+        // воздух и строка задания, ради которых счёт и ведётся, все
+        // выше.
+        ui::Rect col{};
+        {
+            ui::UiSystem probe;
+            probe.setDensityDpi(DPI);
+            probe.setScreenSize(W, H);
+            probe.screen = ui::Screen::Inventory;
+            probe.tickUi(1.f / 60.f);
+            probe.buildFrame(pl, wd, 60.f);
+            col = probe.layout().hudLeftColumn();
+        }
 
         struct Shot { bool compact; u32 verts; };
         auto shoot = [&](ui::Screen sc) {
@@ -5149,12 +5182,6 @@ void testCompactHudUnderMenus() {
             sys.screen = sc;
             sys.tickUi(1.f / 60.f);
             sys.buildFrame(pl, wd, 60.f);
-            const ui::Rect first = sys.layout().resourceBar(0);
-            // Область берётся с запасом вниз: в полном виде под
-            // полосами стоят золото, воздух и строка задания, и
-            // именно их присутствие здесь и меряется.
-            const ui::Rect col{ first.x, first.y, first.w,
-                                sys.layout().dp(200.f) };
             u32 n = 0;
             for (const ui::UiVertex& v : sys.frameVertices()) {
                 const f32 px = (v.pos.x * 0.5f + 0.5f) * (f32)W;
@@ -5175,6 +5202,7 @@ void testCompactHudUnderMenus() {
                       "(%u вершин против %u)", bag.verts, hud.verts);
         check(bag.verts < hud.verts, m);
         check(hud.verts > 0, "и на HUD столбец не пуст");
+        config::settings() = savedCfg;
     }
 
     // ---- Сведения о предмете не занимают место, пока не нужны ----
@@ -5208,6 +5236,134 @@ void testCompactHudUnderMenus() {
         check(std::fabs(d.w - a.w) < 0.01f && d.y > a.y,
               "а сведения всплывают снизу, во всю ширину");
     }
+}
+
+// ------------------------------------------------------------
+// Инвентарь прокручивается, и прокрутка не дерётся с переносом.
+//
+// 27 ячеек сумки плюс 6 экипировки и 9 пояса требуют около 320
+// точек; на 640x360 под содержимое остаётся 232 даже со сжатым
+// столбцом HUD. Раскладкой это не лечится — прошлая итерация
+// проверила дважды: отъём высоты у сумки делал недоступными все
+// двадцать семь ячеек, а попытка убрать дублирующий пояс сломала
+// перенос предмета.
+//
+// Осталась прокрутка. Причём `ui::Scroll` умел перетаскивание с
+// самого своего появления — и не звал его НИКТО: списки листались
+// одними кнопками. Написано, правильно, и не вызывается — четвёртый
+// такой случай в проекте.
+// ------------------------------------------------------------
+void testInventoryScrolls() {
+    group("инвентарь: содержимое прокручивается");
+
+    world::blocks();
+    items::items();
+
+    const config::Settings savedCfg = config::settingsConst();
+    config::settings() = config::Settings{};
+
+    char m[220];
+
+    struct Size { i32 w, h, dpi; const char* name; bool tight; };
+    const Size sizes[] = {
+        { 2400, 1080, 440, "2400x1080 @440", true  },
+        { 1920, 1080, 400, "1920x1080 @400", true  },
+        { 1280,  720, 320, "1280x720 @320",  true  },
+        {  960,  540, 240, "960x540 @240",   true  },
+        // Планшет: там всё помещается, и прокручивать нечего.
+        { 2560, 1600, 280, "2560x1600 @280", false },
+    };
+
+    for (const auto& sz : sizes) {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(sz.dpi);
+        sys.setScreenSize(sz.w, sz.h);
+        sys.screen = ui::Screen::Inventory;
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, wd, 60.f);
+
+        const f32 maxOff = sys.inventoryScrollMax();
+        if (sz.tight) {
+            std::snprintf(m, sizeof(m),
+                          "%s: до пояса можно долистать (запас %.0f)",
+                          sz.name, (double)maxOff);
+            check(maxOff > 0.f, m);
+        } else {
+            std::snprintf(m, sizeof(m),
+                          "%s: всё помещается, листать нечего (запас %.0f)",
+                          sz.name, (double)maxOff);
+            check(maxOff <= 0.01f, m);
+        }
+
+        // ---- Область меню не лежит на поясе ----
+        //
+        // Сверху меню обходит столбец ресурсов с восьмой итерации, а
+        // снизу ложилось на пояс: на снимке инвентаря нижний ряд
+        // ячеек лёг прямо на него. HUD под меню рисуется намеренно, и
+        // пояс — часть того, чем игрок пользуется, не выходя из меню.
+        const ui::Rect area = sys.layout().menuArea();
+        const ui::Rect hb   = sys.layout().hotbar();
+        std::snprintf(m, sizeof(m),
+                      "%s: меню кончается выше пояса (%.0f против %.0f)",
+                      sz.name, (double)(area.y + area.h), (double)hb.y);
+        check(area.y + area.h <= hb.y + 0.01f, m);
+        check(area.h > 0.f, "и от области что-то осталось");
+    }
+
+    // ---- Прокрутка двигает содержимое, а не только счётчик ----
+    //
+    // Проверяется по НАРИСОВАННОМУ кадру: ячейки на прокрученном
+    // экране стоят выше, чем на непрокрученном. Проверять один лишь
+    // `offset` бессмысленно — он менялся бы и в том случае, если бы
+    // содержимое его не читало.
+    {
+        constexpr i32 W = 1280, H = 720, DPI = 320;
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        auto cellsInView = [&](f32 offset) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(DPI);
+            sys.setScreenSize(W, H);
+            sys.screen = ui::Screen::Inventory;
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);      // первый кадр задаёт границы
+            sys.scrollInventoryTo(offset);
+            sys.buildFrame(pl, wd, 60.f);
+            // Сколько вершин видно внутри области.
+            //
+            // Мерить «самую нижнюю вершину» бесполезно: низ области
+            // занят при любом смещении — просто разными рядами.
+            // Проверка это и показала, поймав мою же метрику. А вот
+            // СКОЛЬКО там нарисовано, различается: вверху списка
+            // видны три ряда сумки, внизу — экипировка и пояс,
+            // которых пятнадцать ячеек на две полосы.
+            const ui::Rect view = sys.layout().invLeft();
+            u32 n = 0;
+            for (const ui::UiVertex& v : sys.frameVertices()) {
+                const f32 py = (v.pos.y * 0.5f + 0.5f) * (f32)H;
+                if (py >= view.y && py <= view.y + view.h) ++n;
+            }
+            return n;
+        };
+
+        const u32 atTop = cellsInView(0.f);
+        const u32 atEnd = cellsInView(1e6f);  // до упора; Scroll ограничит сам
+        std::snprintf(m, sizeof(m),
+                      "прокрутка меняет содержимое кадра (вершин %u -> %u)",
+                      atTop, atEnd);
+        check(atTop != atEnd, m);
+        check(atTop > 0 && atEnd > 0, "и в обоих положениях что-то нарисовано");
+    }
+
+    config::settings() = savedCfg;
 }
 
 // ------------------------------------------------------------
@@ -23347,6 +23503,7 @@ int main() {
     testUiTapSurvivesRedraw();
     testMenusDoNotSitOnHud();
     testCompactHudUnderMenus();
+    testInventoryScrolls();
     testHudAndButtonsDoNotOverlap();
     testLoadingIsAPanelNotACurtain();
     testUiThemeObeysItsOwnRules();
