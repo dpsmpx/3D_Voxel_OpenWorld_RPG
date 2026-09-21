@@ -203,16 +203,17 @@ public:
     }
 
     // ---- кошелёк: сразу под полосами ----
+    /// Золото — строкой под Резонансом: он занял слот, где она была.
     Rect goldLine() const {
-        const Rect last = resourceBar(RES_BARS - 1);
-        return { last.x, last.y + last.h + dp(theme::SPACE_S_DP),
+        const Rect rb = resonanceBar();
+        return { rb.x, rb.y + rb.h + dp(theme::SPACE_XS_DP),
                  dp(RES_BAR_W_DP), dp(GOLD_LINE_H_DP) };
     }
 
     // ---- воздух: показывается только под водой ----
     Rect airBar() const {
-        const Rect last = resourceBar(RES_BARS - 1);
-        return { last.x, last.y + last.h + dp(22.f),
+        const Rect gl = goldLine();
+        return { gl.x, gl.y + gl.h + dp(theme::SPACE_XS_DP),
                  dp(RES_BAR_W_DP), dp(RES_BAR_H_DP) * 0.6f };
     }
 
@@ -345,6 +346,48 @@ public:
         const Rect hb = hotbar();
         const f32 s = hotbarSlotSize();
         return { hb.x + (f32)i * (s + hotbarGap()), hb.y, s, s };
+    }
+
+    // ---- полоса Резонанса: четвёртой в столбце ресурсов ----
+    //
+    // Раньше она считалась в ПИКСЕЛЯХ: 260 на 14 от точки (24,
+    // высота−176). Ровно та же болезнь, от которой уже вылечили
+    // счётчик кадров, и с тем же исходом. На 1920×1080 полоса
+    // оказывалась ВПРИТЫК к первой ячейке пояса — два пикселя
+    // зазора, — а на 1280×720 висела в полуэкране над ним: пояс
+    // считается от плотности, а она не считалась ни от чего.
+    //
+    // Место выбрано не «где было», а по смыслу: Резонанс — такой же
+    // ресурс игрока, как здоровье и выносливость, и читать его
+    // полагается там же, одним взглядом. Над поясом для него места
+    // нет вовсе: на узком экране туда дотягиваются экранные кнопки.
+    //
+    // Видно это стало ровно тогда, когда на HUD впервые посмотрели.
+    Rect resonanceBar() const {
+        const f32 h = dp(RES_BAR_H_DP), gap = dp(theme::SPACE_XS_DP);
+        const Rect xb = xpBar();
+        return flip({ left() + dp(theme::SPACE_L_DP),
+                      xb.y + xb.h + dp(theme::SPACE_M_DP)
+                          + (f32)RES_BARS * (h + gap),
+                      dp(RES_BAR_W_DP), h });
+    }
+
+    // ---- значки состояний: вверху справа, левее навигации ----
+    //
+    // И здесь были пиксели: (ширина−300, 440) с шагом 46. На экране
+    // высотой 720 значок «горишь» оказывался ровно посреди кадра.
+    //
+    // Привязка к столбцу навигации, а не к правому краю: столбец
+    // стоит от края на своём отступе, и значки, отмеренные от края
+    // отдельно, на плотном экране наезжали прямо на него.
+    static constexpr u32 STATUS_ICONS = 4;   ///< огонь, холод, оглушение, яд
+    Rect statusIcon(u32 i) const {
+        const f32 s = dp(STATUS_ICON_DP), g = dp(theme::SPACE_XS_DP);
+        const Rect xb = xpBar();
+        const f32 navLeft = right() - dp(theme::SPACE_L_DP)
+                          - dp(theme::TOUCH_REGULAR_DP);
+        return flip({ navLeft - dp(theme::SPACE_S_DP) - s - (f32)i * (s + g),
+                      xb.y + xb.h + dp(theme::SPACE_M_DP), s, s });
     }
 
     // ---- подсказка взаимодействия: над поясом, по центру ----
@@ -718,6 +761,8 @@ public:
     static constexpr f32 DEBUG_LINE_H_DP = 15.f;
     static constexpr f32 DEBUG_W_DP      = 200.f;
     static constexpr f32 HOTBAR_GAP_DP =  6.f;
+    /// Значок состояния: квадрат с четырёхбуквенной подписью.
+    static constexpr f32 STATUS_ICON_DP =  24.f;
     static constexpr f32 PROMPT_W_DP  = 260.f;
     /// Полоса заголовка вмещает цель касания: в ней стоит кнопка
     /// закрытия, и при 40 dp она вылезала за полосу.

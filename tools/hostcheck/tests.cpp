@@ -4804,6 +4804,15 @@ void testHudAndButtonsDoNotOverlap() {
         // Плашка подгрузки живёт поверх обычного HUD, а не вместо
         // него: пока мир достраивается, играть уже можно.
         rects.push_back({ "плашка подгрузки", L.loadingPanel() });
+        // Полоса Резонанса и значки состояний считались в ПИКСЕЛЯХ и
+        // поэтому в этот список не попадали вовсе: у них не было
+        // прямоугольника, только числа внутри отрисовки. На
+        // 1920x1080 полоса стояла в двух пикселях от первой ячейки
+        // пояса, на 1280x720 — в полуэкране над ним. Увидели это,
+        // когда на HUD впервые посмотрели глазами.
+        rects.push_back({ "полоса Резонанса", L.resonanceBar() });
+        for (u32 i = 0; i < ui::HudLayout::STATUS_ICONS; ++i)
+            rects.push_back({ "значок состояния", L.statusIcon(i) });
         for (u32 i = 0; i < L.hotbarVisibleSlots(); ++i)
             rects.push_back({ "ячейка пояса", L.hotbarSlot(i) });
 
@@ -21512,6 +21521,257 @@ void testYouCanSeeWhoYouFight() {
 }
 
 // ------------------------------------------------------------
+// На интерфейс наконец посмотрели.
+//
+// Три итерации подряд кончались записью «глазами не проверено
+// ничего», и две последние трогали ровно то, чего никто не видел.
+// Снимок HUD (tools/uishot) рисует кадр программным растеризатором
+// без Vulkan — и первое же, что он показал, было не про новое, а про
+// давно лежащее.
+//
+// Здесь закреплено числом то, что было увидено глазом.
+// ------------------------------------------------------------
+void testHudWasFinallyLookedAt() {
+    group("интерфейс: то, что увидели на снимке");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+    combat::weapons();
+
+    const config::Settings saved = config::settings();
+
+    // ---- 1. Кадр строится без Vulkan, и он НЕ пуст ----
+    //
+    // buildFrame обещает в своём комментарии, что Vulkan в построении
+    // кадра не участвует. Обещание было половинчатым: без init() у
+    // контекста не было сборщика вершин, и каждый примитив уходил в
+    // никуда. Кадр строился пустым, и заметить это было нечем —
+    // проверки, зовущие buildFrame, щупают области касания, а они
+    // собираются другим списком.
+    {
+        config::settings() = config::Settings{};
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, { 0.f, 40.f, 0.f });
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(420);
+        sys.setScreenSize(1920, 1080);
+        sys.screen = ui::Screen::Hud;
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, wd, 60.f);
+
+        const usize n = sys.frameVertices().size();
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "кадр HUD без Vulkan даёт %u вершин", (u32)n);
+        check(n >= 300, m);
+        check(n % 3 == 0, "и делится на треугольники без остатка");
+
+        // Не все они одного цвета: пустой кадр и кадр из одной
+        // заливки отличить иначе нельзя.
+        u32 distinct = 0, seen[8] = {};
+        for (const ui::UiVertex& v : sys.frameVertices()) {
+            const u32 c = ((u32)v.r << 16) | ((u32)v.g << 8) | (u32)v.b;
+            bool dup = false;
+            for (u32 i = 0; i < distinct; ++i) if (seen[i] == c) { dup = true; break; }
+            if (!dup && distinct < 8) seen[distinct++] = c;
+            if (distinct >= 8) break;
+        }
+        std::snprintf(m, sizeof(m), "и цветов в нём не меньше %u", distinct);
+        check(distinct >= 4, m);
+    }
+
+    // ---- 2. Полоса Резонанса считается от плотности, а не в пикселях ----
+    //
+    // Раньше: 260 на 14 от точки (24, высота−176). Пояс при этом
+    // считается от плотности экрана. На 1920x1080 полоса оказывалась
+    // впритык к первой ячейке пояса, на 1280x720 висела в полуэкране
+    // над ним.
+    {
+        struct S { f32 w, h; i32 dpi; };
+        const S screens[] = { { 1920, 1080, 420 }, { 1280, 720, 320 },
+                              { 2560, 1600, 280 }, {  960,  540, 240 } };
+        i32 badGap = 0, badWidth = 0;
+        char m[210];
+        for (const S& s : screens) {
+            const ui::HudLayout L(s.w, s.h,
+                                  ui::theme::Metrics::fromDensityDpi(s.dpi),
+                                  ui::SafeInsets{});
+            const ui::Rect rb = L.resonanceBar();
+            const ui::Rect hb = L.hotbar();
+
+            // Стоит она в столбце ресурсов, ровно следующей строкой
+            // после выносливости, — и на всех экранах одинаково.
+            const ui::Rect last = L.resourceBar(ui::HudLayout::RES_BARS - 1);
+            const f32 gap = rb.y - (last.y + last.h);
+            (void)hb;
+            if (gap < -0.5f || gap > L.dp(ui::theme::SPACE_S_DP) + 0.5f) {
+                ++badGap;
+                std::snprintf(m, sizeof(m),
+                              "%.0fx%.0f @%d: разрыв между выносливостью и Резонансом %.0f",
+                              (double)s.w, (double)s.h, s.dpi, (double)gap);
+                check(false, m);
+            }
+            // Ширина растёт вместе с плотностью, а не стоит на 260.
+            if (std::fabs(rb.w - L.dp(ui::HudLayout::RES_BAR_W_DP)) > 0.5f) {
+                ++badWidth;
+                check(false, "ширина полосы Резонанса не в точках");
+            }
+        }
+        std::snprintf(m, sizeof(m),
+                      "полоса Резонанса держит зазор до пояса на всех экранах "
+                      "(нарушений %d) и меряется в точках (%d)", badGap, badWidth);
+        check(badGap == 0 && badWidth == 0, m);
+    }
+
+    // ---- 3. Значки состояний не уезжают в середину экрана ----
+    //
+    // Раньше: (ширина−300, 440) с шагом 46. На экране высотой 720
+    // значок «горишь» оказывался ровно посреди кадра.
+    {
+        const ui::HudLayout L(1280.f, 720.f,
+                              ui::theme::Metrics::fromDensityDpi(320),
+                              ui::SafeInsets{});
+        const ui::Rect ic = L.statusIcon(0);
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "первый значок состояния стоит на y=%.0f при высоте 720",
+                      (double)ic.y);
+        check(ic.y < 720.f * 0.25f, m);
+        check(ic.x + ic.w <= L.navButton(0).x - 0.5f,
+              "и не наезжает на столбец навигации");
+
+        // Значки идут друг за другом справа налево, не наезжая.
+        i32 overlap = 0;
+        for (u32 i = 1; i < ui::HudLayout::STATUS_ICONS; ++i) {
+            const ui::Rect a = L.statusIcon(i - 1), b = L.statusIcon(i);
+            if (!(b.x + b.w <= a.x + 0.5f || a.x + a.w <= b.x + 0.5f)) ++overlap;
+        }
+        check(overlap == 0, "и не налезают друг на друга");
+    }
+
+    // ---- 4. Имя цели не накрывает след удара и деления фаз ----
+    //
+    // По центру полосы оно и стояло. Середина — самое содержательное
+    // её место: там граница заливки и следа, то есть размер
+    // последнего удара, и там же деления фаз босса.
+    {
+        config::settings() = config::Settings{};
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, { 0.f, 40.f, 0.f });
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        ui::UiSystem sys;
+        sys.setDensityDpi(320);
+        sys.setScreenSize(1280, 720);
+        sys.screen = ui::Screen::Hud;
+        sys.target.name   = "Stone Warden";
+        sys.target.fill   = 0.42f;
+        sys.target.ghost  = 0.63f;
+        sys.target.alpha  = 1.f;
+        sys.target.phases = 3;
+        sys.target.phase  = 1;
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, wd, 60.f);
+
+        // Непрозрачной подложки под именем быть не должно ВООБЩЕ.
+        //
+        // Сначала имя стояло по центру полосы, и его подложка
+        // накрывала и границу заливки со следом — то есть размер
+        // последнего удара, — и деления фаз босса. Имя переехало
+        // влево, но этого мало: при низком здоровье цели заливка
+        // ужимается, а имя короче не становится, и подложка снова
+        // легла бы на границу. Поэтому подложки нет совсем, а
+        // читаемость даёт тень в один пиксель.
+        //
+        // Ищем по признаку «заливка внутри полосы, не совпадающая ни
+        // с одним из её собственных сегментов».
+        const ui::Rect bar = sys.layout().targetBar();
+        auto toPx = [&](f32 clipX) { return (clipX * 0.5f + 0.5f) * 1280.f; };
+
+        // Полоса ограничена и по высоте, И ПО ШИРИНЕ. Без второго
+        // условия в выборку попадал весь ряд экрана: столбец
+        // ресурсов слева стоит на той же высоте, и его заливки
+        // считались «лишними» — восемнадцать штук.
+        i32 plateVerts = 0;
+        for (const ui::UiVertex& v : sys.frameVertices()) {
+            if (v.uv.x >= 0.f) continue;                 // это буква, не заливка
+            const f32 py = (v.pos.y * 0.5f + 0.5f) * 720.f;
+            if (py < bar.y + 1.f || py > bar.y + bar.h - 1.f) continue;
+            const f32 px = toPx(v.pos.x);
+            if (px < bar.x - 1.f || px > bar.x + bar.w + 1.f) continue;
+            // Собственные края полосы: рамка, заливка, след, деления.
+            const f32 own[] = { bar.x, bar.x + bar.w,
+                                bar.x + bar.w * sys.target.fill,
+                                bar.x + bar.w * sys.target.ghost,
+                                bar.x + bar.w / 3.f, bar.x + bar.w * 2.f / 3.f };
+            bool known = false;
+            for (f32 o : own) if (std::fabs(px - o) < 4.f) { known = true; break; }
+            if (!known) ++plateVerts;
+        }
+        char m[220];
+        std::snprintf(m, sizeof(m),
+                      "лишних заливок в полосе цели: %d", plateVerts);
+        check(plateVerts == 0, m);
+
+        // Имя при этом на месте, и стоит у левого края.
+        f32 glyphLeft = bar.x + bar.w;
+        i32 glyphs = 0;
+        for (const ui::UiVertex& v : sys.frameVertices()) {
+            if (v.uv.x < 0.f) continue;
+            const f32 py = (v.pos.y * 0.5f + 0.5f) * 720.f;
+            if (py < bar.y || py > bar.y + bar.h) continue;
+            const f32 px = toPx(v.pos.x);
+            if (px < bar.x - 1.f || px > bar.x + bar.w + 1.f) continue;
+            glyphLeft = std::min(glyphLeft, px);
+            ++glyphs;
+        }
+        std::snprintf(m, sizeof(m),
+                      "имя нарисовано (вершин-букв %d) и начинается на %.0f "
+                      "при левом крае полосы %.0f",
+                      glyphs, (double)glyphLeft, (double)bar.x);
+        check(glyphs > 0 && glyphLeft < bar.x + bar.w * 0.15f, m);
+    }
+
+    // ---- 5. Тумблер левши доходит до раскладки ----
+    //
+    // HudLayout умеет зеркалить весь экран, у этого есть своя ветка в
+    // проверке раскладки. А rebuildLayout строил раскладку всегда без
+    // зеркала: настройка доходила до одного джойстика.
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, { 0.f, 40.f, 0.f });
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        auto navX = [&](bool lefty) {
+            config::settings() = config::Settings{};
+            config::settings().joystickLeftHanded = lefty;
+            ui::UiSystem sys;
+            sys.setDensityDpi(320);
+            sys.setScreenSize(1280, 720);
+            return sys.layout().navButton(0).x;
+        };
+
+        const f32 right = navX(false);
+        const f32 left  = navX(true);
+        char m[190];
+        std::snprintf(m, sizeof(m),
+                      "столбец навигации: для правши x=%.0f, для левши x=%.0f",
+                      (double)right, (double)left);
+        check(std::fabs(right - left) > 100.f, m);
+        check(left < 1280.f * 0.5f, "у левши он уезжает на левую половину");
+        check(right > 1280.f * 0.5f, "у правши остаётся на правой");
+    }
+
+    config::settings() = saved;
+}
+
+// ------------------------------------------------------------
 // Защита: блок, парирование, пробитие.
 //
 // До этой ревизии решение в бою было ровно одно — отойти. Замах
@@ -22410,6 +22670,7 @@ int main() {
     testGuardBlocksParriesAndBreaks();
     testHitsLeaveAMark();
     testYouCanSeeWhoYouFight();
+    testHudWasFinallyLookedAt();
     testLogCanBeTurnedOff();
     testCloudsAreNotOneColour();
 

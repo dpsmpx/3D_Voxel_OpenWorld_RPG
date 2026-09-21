@@ -66,7 +66,16 @@ bool UiSystem::init(vk::Context& ctx, AAssetManager* mgr) {
 void UiSystem::setScreenSize(i32 w, i32 h) {
     screenW_ = w;
     screenH_ = h;
-    ui_.setScreen(w, h);
+    // Привязка к сборщику вершин — ЗДЕСЬ, а не в init(): тот требует
+    // устройство.
+    //
+    // buildFrame() обещает в своём же комментарии, что Vulkan в
+    // построении кадра не участвует. Обещание было половинчатым: без
+    // init() у контекста не было сборщика, и каждый примитив молча
+    // уходил в никуда. Кадр строился — пустой. Заметить это было
+    // нечем: проверки, зовущие buildFrame, щупали области касания, а
+    // они собираются другим списком и работали.
+    ui_.init(&renderer_, w, h);
     rebuildLayout();
 }
 
@@ -84,7 +93,17 @@ void UiSystem::rebuildLayout() {
     // Безопасная зона пока нулевая: система сама держит окно вне
     // выреза, пока манифест не просит SHORT_EDGES. Место для неё
     // заведено, чтобы правка была в одном месте, а не в четырнадцати.
-    layout_ = HudLayout((f32)screenW_, (f32)screenH_, m, SafeInsets{});
+    // Зеркало — из настройки, а не «всегда нет».
+    //
+    // HudLayout умеет отражать весь экран, у этого есть своя ветка в
+    // проверке раскладки и подробное объяснение, почему иначе «PUT»
+    // приезжает под столбец навигации. Настройка `joystickLeftHanded`
+    // есть, сохраняется и переключается тумблером — а сюда не
+    // доходила: до сих пор она двигала один джойстик. Левша
+    // переключал тумблер, палка переезжала, а кнопки оставались на
+    // месте.
+    layout_ = HudLayout((f32)screenW_, (f32)screenH_, m, SafeInsets{},
+                        cfg::settingsConst().joystickLeftHanded);
 }
 
 bool UiSystem::routeTouch(i32 id, float px, float py, int phase) {
@@ -577,18 +596,30 @@ void UiSystem::drawTargetBar() {
     ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
                     tint(theme::Stroke));
 
-    // Имя — внутри полосы, по центру. Поверх заливки, а не рядом с
-    // ней: второй строки на узком экране взять негде.
+    // Имя — внутри полосы, но ПРИЖАТО К ЛЕВОМУ КРАЮ, а не по центру.
+    //
+    // По центру оно и стояло, пока на HUD не посмотрели. Середина
+    // полосы — самое содержательное её место: там граница заливки и
+    // следа, то есть ровно размер последнего удара, и там же стоят
+    // деления фаз босса. Подложка под именем накрывала и то и
+    // другое.
+    //
+    // Слева она не накрывает ничего: левый край полосы полон, пока
+    // цель жива, и имя ложится на ровную заливку.
     if (target.name && target.name[0]) {
-        const f32 tw = ui_.textWidth(target.name, theme::TEXT_LABEL);
         const f32 th = ui_.textHeight(theme::TEXT_LABEL);
-        const f32 tx = r.x + (r.w - tw) * 0.5f;
+        const f32 pad = layout_.dp(theme::SPACE_XS_DP);
+        const f32 tx = r.x + pad * 2.f;
         const f32 ty = r.y + (r.h - th) * 0.5f;
-        // Подложка под самим текстом: имя ложится то на тёмную часть
-        // полосы, то на светлую, и без неё читается через раз.
-        ui_.rect(tx - layout_.dp(theme::SPACE_XS_DP), ty,
-                 tw + layout_.dp(theme::SPACE_S_DP), th,
-                 tint(withAlpha(theme::Ink, 190)));
+
+        // Тень, а не подложка. Подложка — это непрозрачный
+        // прямоугольник, и при низком здоровье цели она снова
+        // накрыла бы границу заливки и следа: имя-то не короче, а
+        // заливка ужалась. Тень в один пиксель читается так же, но
+        // не закрывает собой ничего.
+        const f32 off = layout_.dp(1.f);
+        ui_.text(target.name, tx + off, ty + off, theme::TEXT_LABEL,
+                 tint(withAlpha(theme::Ink, 220)));
         ui_.text(target.name, tx, ty, theme::TEXT_LABEL,
                  tint(theme::TextPrimary));
     }
@@ -652,13 +683,16 @@ void UiSystem::drawHudResources(player::Player& player) {
 
 void UiSystem::drawResonanceBar(player::Player& player) {
     const auto& res = player.resonance;
-    const float bw = 260.f;
-    const float bh = 14.f;
-    const float bx = 24.f;
-    const float by = (float)screenH_ - 176.f;
+    const Rect r = layout_.resonanceBar();
+    const float bw = r.w;
+    const float bh = r.h;
+    const float bx = r.x;
+    const float by = r.y;
+    const float pad = layout_.dp(2.f);
 
-    ui_.rect(bx - 2, by - 2, bw + 4, bh + 4, COL_BLACK);
-    ui_.rect(bx, by, bw, bh, rgba(40,20,60,255));
+    ui_.rect(bx - pad, by - pad, bw + pad * 2.f, bh + pad * 2.f,
+             hudTint(COL_BLACK));
+    ui_.rect(bx, by, bw, bh, hudTint(rgba(40,20,60,255)));
 
     UiColor fillColor = rgba(140, 90, 220, 255);
     if (res.stack >= combat::RESONANCE_MAX_STACKS)
@@ -666,7 +700,7 @@ void UiSystem::drawResonanceBar(player::Player& player) {
     else if (res.stack >= 3)
         fillColor = rgba(200, 100, 240, 255);
 
-    ui_.rect(bx, by, bw * res.fill(), bh, fillColor);
+    ui_.rect(bx, by, bw * res.fill(), bh, hudTint(fillColor));
 
     // Деления — на АБСОЛЮТНЫХ отметках ступеней, а не на равных долях
     // полосы. У игрока с «Resonance Master» потолок выше, ступени
@@ -678,29 +712,34 @@ void UiSystem::drawResonanceBar(player::Player& player) {
     for (i32 i = 1; i <= combat::RESONANCE_MAX_STACKS; ++i) {
         const f32 at = perStack * (f32)i / span;
         if (at >= 0.999f) continue;
-        ui_.rect(bx + bw * at - 1.f, by, 2.f, bh, COL_BLACK);
+        ui_.rect(bx + bw * at - layout_.dp(1.f), by, layout_.dp(2.f), bh,
+                 hudTint(COL_BLACK));
     }
-    ui_.text(T(StrKey::Hud_Resonance), bx + 4.f, by + 1.f, 1.5f, COL_WHITE);
+    ui_.text(T(StrKey::Hud_Resonance), bx + layout_.dp(theme::SPACE_XS_DP),
+             by + layout_.dp(1.f), theme::TEXT_CAPTION, hudTint(COL_WHITE));
 
     if (res.finisherReady) {
         const char* txt = T(StrKey::Hud_FinisherReady);
-        float tw = ui_.textWidth(txt, 2.f);
-        ui_.text(txt, bx + bw - tw - 4.f, by - 22.f, 2.f,
-                 rgba(255, 220, 60, 255));
+        const float tw = ui_.textWidth(txt, theme::TEXT_LABEL);
+        ui_.text(txt, bx + bw - tw, by - layout_.dp(theme::SPACE_L_DP),
+                 theme::TEXT_LABEL, hudTint(rgba(255, 220, 60, 255)));
     }
 }
 
 void UiSystem::drawStatusIcons(player::Player& player) {
     const auto& se = player.statuses;
-    float x = (float)screenW_ - 300.f;
-    float y = 440.f;
-    const float step = 46.f;
+    u32 slot = 0;
 
     auto icon = [&](UiColor c, const char* label) {
-        ui_.rect(x, y, 40.f, 40.f, c);
-        ui_.rectOutline(x, y, 40.f, 40.f, 2.f, COL_BLACK);
-        ui_.text(label, x + 4.f, y + 14.f, 1.5f, COL_WHITE);
-        x -= step;
+        if (slot >= HudLayout::STATUS_ICONS) return;
+        const Rect r = layout_.statusIcon(slot++);
+        ui_.rect(r.x, r.y, r.w, r.h, hudTint(c));
+        ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
+                        hudTint(COL_BLACK));
+        const float tw = ui_.textWidth(label, theme::TEXT_CAPTION);
+        const float th = ui_.textHeight(theme::TEXT_CAPTION);
+        ui_.text(label, r.x + (r.w - tw) * 0.5f, r.y + (r.h - th) * 0.5f,
+                 theme::TEXT_CAPTION, hudTint(COL_WHITE));
     };
 
     if (se.burnTime > 0.f)   icon(rgba(220, 100, 40, 220), "FIRE");
