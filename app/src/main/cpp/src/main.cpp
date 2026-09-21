@@ -70,6 +70,7 @@
 #include "progression/progression.h"
 
 #include "quests/quest.h"
+#include "quests/story.h"
 #include "factions/faction.h"
 #include "npc/npc_spawner.h"
 #include "npc/npc_ai.h"
@@ -294,6 +295,9 @@ struct Engine {
     f32  ambienceTimer_    = 1e9f;   ///< музыкальный контекст, 4 раза в секунду
     f32  loadProgressTimer_= 1e9f;   ///< индикатор загрузки, 4 раза в секунду
     f32  locCheckTimer_    = 0.f;    ///< цели квестов «дойти до места»
+    /// Первая цель выдана. Без неё первые минуты — лес, пустые руки
+    /// и строка «текущее задание», которой нечего показать.
+    bool firstStepsDone_   = false;
     i32  cachedHostiles_   = 0;
     bool cachedUnderground_= false;
 
@@ -1938,8 +1942,19 @@ struct Engine {
         if (locCheckTimer_ >= 0.5f) {
             locCheckTimer_ = 0.f;
             auto p = player->controller.state().position;
-            quests::notifyLocationReached(registry, (u32)player->entity(),
-                                          { (i32)p.x, (i32)p.y, (i32)p.z });
+            const glm::ivec3 ip{ (i32)p.x, (i32)p.y, (i32)p.z };
+            quests::notifyLocationReached(registry, (u32)player->entity(), ip);
+
+            // Первая цель. Выдаётся здесь, а не при рождении: цель
+            // ищется В МИРЕ, а мир вокруг игрока к первому кадру ещё
+            // не готов. Проверяется на той же полусекундной доле,
+            // что и «дошёл ли» — чаще незачем, а сама выдача
+            // случается ровно однажды: журнал перестаёт быть пустым.
+            if (!firstStepsDone_) {
+                firstStepsDone_ =
+                    quests::offerFirstSteps(registry, *world,
+                                            player->entity(), ip).valid();
+            }
         }
 
         // Phase 14: audio update

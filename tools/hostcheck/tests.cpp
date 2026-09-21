@@ -5937,6 +5937,244 @@ void testHurtDirection() {
 }
 
 // ------------------------------------------------------------
+// Первые минуты: игроку есть что делать.
+//
+// Измерено до правки: новый игрок начинает с ПУСТЫМИ РУКАМИ, со ста
+// золотыми и БЕЗ ЕДИНОГО ЗАДАНИЯ. Строка текущей цели на HUD есть —
+// и ей нечего показать. Сюжет при этом написан целиком, но его
+// первая глава выдаётся ТОЛЬКО через разговор с раздатчиком
+// заданий, а узнать, что надо искать людей, игроку было неоткуда.
+//
+// Глава 0 на роль первой цели не годится: она ищет деревню «кроме
+// той, в которой стоим», то есть рассчитана на игрока, уже
+// пришедшего к людям.
+// ------------------------------------------------------------
+void testFirstStepsGiveAGoal() {
+    group("первые минуты: есть что делать");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+
+    char m[220];
+
+    auto freshPlayer = [](ecs::Registry& reg, player::Player& pl) {
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+    };
+
+    // ---- 1. Цель выдаётся, и она не пустая ----
+    //
+    // Проверяется на нескольких зёрнах: мир у каждого свой, и цель
+    // ищется в нём по-настоящему.
+    {
+        const u64 seeds[] = { 0x5150Bull, 12345ull, 777ull, 2024ull, 99ull };
+        u32 without = 0, nameless = 0, unaimed = 0;
+        for (u64 sd : seeds) {
+            ecs::Registry reg;
+            player::Player pl;
+            freshPlayer(reg, pl);
+            world::ChunkManager wd(sd, 1);
+
+            auto* log = pl.questLog();
+            check(log && log->activeQuests.empty(),
+                  "новый игрок начинает без заданий");
+
+            const ecs::Entity qe = quests::offerFirstSteps(
+                reg, wd, pl.entity(), { 0, 64, 0 });
+            if (!qe.valid()) { ++without; continue; }
+
+            const auto* q = reg.get<quests::Quest>(qe);
+            if (!q) { ++without; continue; }
+            if (q->title[0] == '\0') ++nameless;
+
+            // У цели должно быть КУДА идти или ЧТО нести. Задание без
+            // того и другого — строка в журнале, которую нельзя
+            // выполнить.
+            const bool aimed =
+                (q->tmpl.type == quests::QuestType::Explore &&
+                 q->tmpl.targetRadius > 0) ||
+                (q->tmpl.type == quests::QuestType::Collect &&
+                 q->tmpl.targetBlockId != 0 && q->tmpl.requiredCount > 0);
+            if (!aimed) ++unaimed;
+
+            // Принимать не у кого: задание уже на руках.
+            check(q->state == quests::QuestState::Active,
+                  "первая цель сразу принята");
+            check(log->activeQuests.size() == 1,
+                  "и лежит в журнале");
+        }
+        std::snprintf(m, sizeof(m),
+                      "цель находится на всех зёрнах (без цели: %u)", without);
+        check(without == 0, m);
+        check(nameless == 0, "и у неё есть название");
+        std::snprintf(m, sizeof(m),
+                      "и есть куда идти или что нести (без цели: %u)", unaimed);
+        check(unaimed == 0, m);
+    }
+
+    // ---- 1b. Запасной путь: людей рядом нет ----
+    //
+    // Ветка редкая, но достижимая: перебор по миру нашёл точки, где
+    // в радиусе трёх суперчанков деревень нет вовсе. Пока проверка
+    // брала только обжитые места, ветка не проверялась ни разу —
+    // мутация, оставившая запасную цель без предмета, прошла
+    // насквозь.
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        freshPlayer(reg, pl);
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        // Точка найдена перебором для этого зерна.
+        const glm::ivec3 far{ -10240, 64, -8448 };
+        const ecs::Entity qe = quests::offerFirstSteps(reg, wd, pl.entity(), far);
+        check(qe.valid(), "вдали от людей цель всё равно находится");
+        if (qe.valid()) {
+            const auto* q = reg.get<quests::Quest>(qe);
+            check(q && q->tmpl.type == quests::QuestType::Collect,
+                  "и это «набрать дерева», а не дорога в никуда");
+            std::snprintf(m, sizeof(m),
+                          "у запасной цели есть предмет и счёт (%u x%d)",
+                          (unsigned)(q ? q->tmpl.targetBlockId : 0),
+                          q ? q->tmpl.requiredCount : 0);
+            check(q && q->tmpl.targetBlockId != 0 &&
+                  q->tmpl.requiredCount > 0, m);
+        }
+    }
+
+    // ---- 2. Второй раз не выдаётся ----
+    //
+    // Иначе журнал зарастал бы одинаковыми строками: проверка
+    // зовётся из игрового цикла дважды в секунду.
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        freshPlayer(reg, pl);
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        const ecs::Entity first = quests::offerFirstSteps(
+            reg, wd, pl.entity(), { 0, 64, 0 });
+        check(first.valid(), "первая выдача прошла");
+
+        u32 extra = 0;
+        for (int i = 0; i < 5; ++i)
+            if (quests::offerFirstSteps(reg, wd, pl.entity(),
+                                        { 0, 64, 0 }).valid()) ++extra;
+        std::snprintf(m, sizeof(m), "повторные вызовы ничего не добавляют (%u)",
+                      extra);
+        check(extra == 0, m);
+        check(pl.questLog()->activeQuests.size() == 1,
+              "и в журнале по-прежнему одна строка");
+    }
+
+    // ---- 3. Занятому игроку не подсказывают ----
+    //
+    // Журнал не пуст — значит игрок уже нашёл, чем заняться, и
+    // навязывать ему первую цель незачем.
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        freshPlayer(reg, pl);
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        quests::Quest own{};
+        own.id = quests::nextQuestId();
+        own.state = quests::QuestState::Active;
+        own.ownerEntity = (u32)pl.entity();
+        std::snprintf(own.title, sizeof(own.title), "%s", "Своё дело");
+        const ecs::Entity oe = reg.create();
+        reg.add(oe, own);
+        pl.questLog()->addActive(oe);
+
+        check(!quests::offerFirstSteps(reg, wd, pl.entity(),
+                                       { 0, 64, 0 }).valid(),
+              "занятому игроку первая цель не навязывается");
+        check(pl.questLog()->activeQuests.size() == 1,
+              "и журнал не растёт");
+    }
+
+    // ---- 4. Начатый сюжет тоже считается ----
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        freshPlayer(reg, pl);
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        reg.add(pl.entity(), quests::StoryProgress{ 1, 0 });
+        check(!quests::offerFirstSteps(reg, wd, pl.entity(),
+                                       { 0, 64, 0 }).valid(),
+              "прошедшему главу сюжета первая цель не нужна");
+    }
+
+    // ---- 4b. Игровой цикл её действительно выдаёт ----
+    //
+    // Проверка по ИСХОДНИКУ, и это вынужденно: игровой цикл на хосте
+    // не запускается. Поэтому утверждение выбрано так, чтобы его
+    // нельзя было пройти, оставив вызов «для вида»: результат обязан
+    // попасть в признак «выдано». Мутация, заменившая присваивание
+    // на `true`, вызов оставляла — и грубая проверка на имя функции
+    // её пропускала.
+    {
+        const std::string src = readSource("app/src/main/cpp/src/main.cpp");
+        if (!src.empty()) {
+            const usize at = src.find("firstStepsDone_ =");
+            check(at != std::string::npos, "игровой цикл помнит о первой цели");
+            if (at != std::string::npos) {
+                const std::string tail = src.substr(at, 220);
+                check(tail.find("offerFirstSteps") != std::string::npos,
+                      "и признак выставляется ИМЕННО по итогу выдачи");
+                check(tail.find(".valid()") != std::string::npos,
+                      "то есть по тому, выдалось ли задание на самом деле");
+            }
+        }
+    }
+
+    // ---- 5. Цель доходит до строки на HUD ----
+    //
+    // Проверяется НАРИСОВАННОЕ: строка текущей цели берёт задание из
+    // журнала, и без задания ей нечего показать — ровно то, что
+    // видел игрок в первые минуты.
+    {
+        constexpr i32 W = 1280, H = 720, DPI = 320;
+        const config::Settings savedCfg = config::settingsConst();
+        config::settings() = config::Settings{};
+
+        ecs::Registry reg;
+        player::Player pl;
+        freshPlayer(reg, pl);
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        auto trackerVerts = [&]() {
+            ui::UiSystem sys;
+            sys.setDensityDpi(DPI);
+            sys.setScreenSize(W, H);
+            sys.screen = ui::Screen::Hud;
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+            const ui::Rect t = sys.layout().questTracker();
+            u32 n = 0;
+            for (const ui::UiVertex& v : sys.frameVertices()) {
+                const f32 px = (v.pos.x * 0.5f + 0.5f) * (f32)W;
+                const f32 py = (v.pos.y * 0.5f + 0.5f) * (f32)H;
+                if (px >= t.x && px <= t.x + t.w &&
+                    py >= t.y && py <= t.y + t.h) ++n;
+            }
+            return n;
+        };
+
+        const u32 empty = trackerVerts();
+        quests::offerFirstSteps(reg, wd, pl.entity(), { 0, 64, 0 });
+        const u32 withGoal = trackerVerts();
+        std::snprintf(m, sizeof(m),
+                      "первая цель видна в строке на HUD (вершин %u -> %u)",
+                      empty, withGoal);
+        check(withGoal > empty, m);
+
+        config::settings() = savedCfg;
+    }
+}
+
+// ------------------------------------------------------------
 void testHudAndButtonsDoNotOverlap() {
     group("раскладка: HUD и экранные кнопки не налезают");
 
@@ -24076,6 +24314,7 @@ int main() {
     testInventoryScrolls();
     testQuestAndTradeListsScroll();
     testHurtDirection();
+    testFirstStepsGiveAGoal();
     testHudAndButtonsDoNotOverlap();
     testLoadingIsAPanelNotACurtain();
     testUiThemeObeysItsOwnRules();

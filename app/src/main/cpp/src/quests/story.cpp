@@ -61,6 +61,76 @@ bool storyFinished(ecs::Registry& reg, ecs::Entity player) {
     return sp && sp->chapter >= STORY_CHAPTERS;
 }
 
+ecs::Entity offerFirstSteps(ecs::Registry& reg,
+                            world::ChunkManager& world,
+                            ecs::Entity player,
+                            const glm::ivec3& around)
+{
+    auto* log = reg.get<QuestLog>(player);
+    if (!log) return {};
+    // Журнал не пуст — игроку есть чем заняться, и подсказывать
+    // незачем. Это же условие бережёт от повторной выдачи.
+    if (!log->activeQuests.empty()) return {};
+    if (auto* sp = reg.get<StoryProgress>(player))
+        if (sp->chapter > 0 || sp->activeId != 0) return {};
+
+    const auto& gen = world.generator();
+    const u64 seed = world.seed();
+
+    Quest q{};
+    q.id          = nextQuestId();
+    q.state       = QuestState::Active;   // принимать не у кого
+    q.ownerEntity = (u32)player;
+    q.tmpl.type   = QuestType::Explore;
+    q.tmpl.difficulty   = QuestDifficulty::Easy;
+    q.tmpl.giverFaction = factions::FactionId::Villagers;
+    q.tmpl.requiredCount = 1;
+    q.rewards.xp   = 40;
+    q.rewards.gold = 25;
+
+    // Ближайшая деревня — ЛЮБАЯ, включая ту, рядом с которой игрок
+    // мог родиться: цель здесь «найти людей», а не «дойти до
+    // соседей».
+    const i32 sc0x = (i32)std::floor((f32)around.x / (f32)world::SUPER_CHUNK_BLOCKS);
+    const i32 sc0z = (i32)std::floor((f32)around.z / (f32)world::SUPER_CHUNK_BLOCKS);
+    i64 best = 900LL * 900LL;
+    bool targeted = false;
+    for (i32 dz = -3; dz <= 3; ++dz)
+        for (i32 dx = -3; dx <= 3; ++dx) {
+            const auto v = world::villageAt(sc0x + dx, sc0z + dz, seed, &gen);
+            if (!v.exists) continue;
+            const i64 ddx = v.center.x - around.x;
+            const i64 ddz = v.center.z - around.z;
+            const i64 d2 = ddx * ddx + ddz * ddz;
+            if (d2 < best) { best = d2; q.tmpl.targetLocation = v.center;
+                             targeted = true; }
+        }
+
+    if (targeted) {
+        q.tmpl.targetRadius = 16;
+        std::snprintf(q.title, sizeof(q.title), "%s", "Найти людей");
+        std::snprintf(q.description, sizeof(q.description), "%s",
+                      "Где-то рядом есть деревня. Дойти до неё и "
+                      "поговорить с теми, кто там живёт.");
+    } else {
+        // Людей рядом нет — тогда первое, что можно сделать голыми
+        // руками: набрать дерева. С него начинается всё остальное.
+        q.tmpl.type = QuestType::Collect;
+        q.tmpl.targetBlockId = world::WOOD;
+        q.tmpl.requiredCount = 4;
+        std::snprintf(q.title, sizeof(q.title), "%s", "Первое дерево");
+        std::snprintf(q.description, sizeof(q.description), "%s",
+                      "Людей поблизости не видно. Набрать дерева — "
+                      "с него начинается и топор, и всё остальное.");
+    }
+
+    const ecs::Entity qe = reg.create();
+    reg.add(qe, q);
+    log->addActive(qe);
+    LOGI("First steps: %s", q.title);
+    return qe;
+}
+
 ecs::Entity offerStoryChapter(ecs::Registry& reg,
                               world::ChunkManager& world,
                               ecs::Entity player,
