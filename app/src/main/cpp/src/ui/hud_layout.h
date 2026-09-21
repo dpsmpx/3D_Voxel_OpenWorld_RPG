@@ -195,7 +195,7 @@ public:
     // ---- полосы ресурсов: слева под опытом ----
     static constexpr u32 RES_BARS = 3;   ///< здоровье, мана, выносливость
     Rect resourceBar(u32 i) const {
-        const f32 h = dp(RES_BAR_H_DP), gap = dp(theme::SPACE_XS_DP);
+        const f32 h = resBarH(), gap = dp(theme::SPACE_XS_DP);
         const Rect xb = xpBar();
         return flip({ left() + dp(theme::SPACE_L_DP),
                       xb.y + xb.h + dp(theme::SPACE_M_DP) + (f32)i * (h + gap),
@@ -364,7 +364,7 @@ public:
     //
     // Видно это стало ровно тогда, когда на HUD впервые посмотрели.
     Rect resonanceBar() const {
-        const f32 h = dp(RES_BAR_H_DP), gap = dp(theme::SPACE_XS_DP);
+        const f32 h = resBarH(), gap = dp(theme::SPACE_XS_DP);
         const Rect xb = xpBar();
         return flip({ left() + dp(theme::SPACE_L_DP),
                       xb.y + xb.h + dp(theme::SPACE_M_DP)
@@ -434,9 +434,34 @@ public:
     void setHudBehind(bool v) { hudBehind_ = v; }
     bool hudBehind() const { return hudBehind_; }
 
+    /// Показывать ли столбец СЖАТО — тонкими полосками без подписей.
+    ///
+    /// Под полноэкранным экраном игроку нужен факт «сколько
+    /// осталось», а не полноразмерный столбец: подписи «HP/MP/SP» он
+    /// и так помнит, а золото, воздух и строку задания читать в
+    /// инвентаре незачем — золото там своё, воздух показывается
+    /// только под водой, задание стоит в журнале.
+    ///
+    /// Разница не косметическая. В полном виде столбец занимает
+    /// около 180 точек из 360 — половину бюджетного экрана, — и
+    /// из-за этого на пяти экранах из шести сумка показывала не все
+    /// ячейки: на 1280x720 недоступными оказывались 13 из 27, а
+    /// экипировка и пояс не помещались вовсе. Сжатый столбец
+    /// занимает около 70 и возвращает меню больше сотни точек.
+    void setHudCompact(bool v) { hudCompact_ = v; }
+    bool hudCompact() const { return hudCompact_; }
+
+    /// Высота полосы ресурса — своя в каждом из двух видов столбца.
+    f32 resBarH() const {
+        return dp(hudCompact_ ? RES_BAR_COMPACT_H_DP : RES_BAR_H_DP);
+    }
+
     Rect hudLeftColumn() const {
         const Rect first = resourceBar(0);
-        const Rect last  = questTracker();
+        // В сжатом виде столбец кончается на Резонансе: золото,
+        // воздух и строка задания под экраном меню не рисуются, и
+        // резервировать под них место незачем.
+        const Rect last  = hudCompact_ ? resonanceBar() : questTracker();
         const f32 x = std::min(first.x, last.x);
         const f32 wdt = std::max(first.x + first.w, last.x + last.w) - x;
         return { x, first.y, wdt, (last.y + last.h) - first.y };
@@ -851,16 +876,37 @@ public:
     // Слева сумка и экипировка, справа — сведения о выбранном
     // предмете. Игрок должен понимать, что это и можно ли с этим
     // что-то сделать, не гадая по цвету рамки.
+    /// Сведения о предмете — ВСПЛЫВАЮТ, а не стоят колонкой.
+    ///
+    /// Колонка занимала треть ширины постоянно, даже когда ничего не
+    /// выбрано и в ней стояла одна надпись «нажми, чтобы
+    /// использовать». Эту треть отнимали у ячеек — и на 1280x720
+    /// тринадцать ячеек сумки из двадцати семи оказывались за
+    /// нижним краем, куда не дотянуться пальцем, хотя `sortMain`
+    /// вправе положить предмет в любую.
+    ///
+    /// Теперь панель появляется снизу и только при выбранном
+    /// предмете, накрывая нижний ряд, — там её и ждут, потому что
+    /// туда же смотрит палец.
     Rect invDetails() const {
         const Rect a = menuArea();
-        const f32 wdt = a.w * INV_DETAILS_FRAC;
-        return { a.x + a.w - wdt, a.y, wdt, a.h };
+        const f32 hgt = a.h * INV_DETAILS_FRAC;
+        return { a.x, a.y + a.h - hgt, a.w, hgt };
     }
-    Rect invLeft() const {
-        const Rect a = menuArea();
-        return { a.x, a.y, a.w * (1.f - INV_DETAILS_FRAC)
-                            - dp(theme::SPACE_L_DP), a.h };
-    }
+    /// Ячейки сумки — во всю ширину области.
+    ///
+    /// Треть ширины раньше держала колонка сведений; теперь та
+    /// всплывает снизу и только при выбранном предмете, а ширина
+    /// вернулась ячейкам. Вместе со сжатым столбцом HUD это и
+    /// убрало недоступные ячейки: их было тринадцать из двадцати
+    /// семи на 1280x720.
+    ///
+    /// Высота берётся вся: экипировка и пояс идут под сумкой и на
+    /// узком экране пока не помещаются — это направление 17, и
+    /// закрывается оно прокруткой (`ui::Scroll`, та же, что у
+    /// ремесла и журнала), а не отъёмом места у ячеек. Отнять
+    /// пробовал: сумка тогда теряла все двадцать семь.
+    Rect invLeft() const { return menuArea(); }
 
     /// Кнопка действия над предметом, внизу панели сведений.
     Rect invAction(u32 i, u32 count) const {
@@ -873,7 +919,7 @@ public:
                  d.w - pad * 2.f, bh };
     }
 
-    static constexpr f32 INV_DETAILS_FRAC = 0.30f;
+    static constexpr f32 INV_DETAILS_FRAC = 0.45f;
 
     // ---- свободный центр: сюда не залезает ничто ----
     Rect clearCenter() const {
@@ -919,6 +965,8 @@ public:
     static constexpr f32 TARGET_W_DP      = 260.f;
     static constexpr f32 TARGET_H_DP      =  20.f;
     static constexpr f32 RES_BAR_H_DP =  14.f;
+    /// Полоска сжатого столбца: читается цветом и длиной, без подписи.
+    static constexpr f32 RES_BAR_COMPACT_H_DP = 8.f;
     static constexpr f32 RES_BAR_W_DP = 160.f;
     static constexpr f32 GOLD_LINE_H_DP  = 12.f;
     static constexpr f32 DEBUG_LINE_H_DP = 15.f;
@@ -942,6 +990,7 @@ private:
     SafeInsets     si_{};
     bool           mirror_ = false;
     bool           hudBehind_ = false;
+    bool           hudCompact_ = false;
 };
 
 } // namespace ui

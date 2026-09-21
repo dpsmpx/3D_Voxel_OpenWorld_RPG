@@ -4994,6 +4994,223 @@ void testMenusDoNotSitOnHud() {
 }
 
 // ------------------------------------------------------------
+// Сжатый столбец HUD под полноэкранными экранами.
+//
+// В полном виде столбец занимает около 180 точек из 360 — половину
+// бюджетного экрана. Убрать его нельзя: мир под меню продолжает
+// жить, и полоса здоровья нужна игроку ровно тогда, когда он
+// копается в сумке. Но и показывать там подписи «HP/MP/SP», золото,
+// воздух и строку задания незачем: золото инвентарь печатает сам,
+// воздух бывает только под водой, задание открыто в журнале.
+//
+// Цена этой половины экрана была измерена, а не предположена: на
+// 1280x720 тринадцать ячеек сумки из двадцати семи оказывались за
+// нижним краем — там, куда не дотянуться пальцем, хотя `sortMain`
+// вправе положить предмет в любую.
+// ------------------------------------------------------------
+void testCompactHudUnderMenus() {
+    group("HUD: под меню столбец сжимается");
+
+    items::items();
+
+    struct Size { f32 w, h; i32 dpi; const char* name; };
+    const Size sizes[] = {
+        { 2400.f, 1080.f, 440, "2400x1080 @440" },
+        { 1920.f, 1080.f, 400, "1920x1080 @400" },
+        { 1280.f,  720.f, 320, "1280x720 @320"  },
+        {  960.f,  540.f, 240, "960x540 @240"   },
+        { 2560.f, 1600.f, 280, "2560x1600 @280" },
+        { 3200.f, 1440.f, 560, "3200x1440 @560" },
+    };
+
+    char m[220];
+    u32 unreachable = 0, shrunk = 0;
+    const char* worst = nullptr;
+    u32 worstCount = 0;
+
+    for (const auto& sz : sizes) {
+        ui::HudLayout full(sz.w, sz.h,
+                           ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                           ui::SafeInsets{});
+        full.setHudBehind(true);
+
+        ui::HudLayout lean = full;
+        lean.setHudCompact(true);
+
+        // ---- Сами полосы тоньше ----
+        //
+        // Проверять один лишь «столбец короче» бессмысленно: он
+        // короче и оттого, что кончается на Резонансе, даже если
+        // полосы остались прежней высоты. Мутация, вернувшая полную
+        // высоту полосы, прошла такую проверку насквозь. Проверять
+        // надо оба изменения по отдельности.
+        if (lean.resourceBar(0).h >= full.resourceBar(0).h - 0.01f) {
+            ++shrunk;
+            std::snprintf(m, sizeof(m),
+                          "%s: полоса ресурса в сжатом виде не тоньше "
+                          "(%.0f против %.0f)", sz.name,
+                          (double)lean.resourceBar(0).h,
+                          (double)full.resourceBar(0).h);
+            check(false, m);
+        }
+
+        // ---- И столбец кончается там, где должен ----
+        //
+        // В сжатом виде — на Резонансе; в полном — на строке
+        // задания. Мутация, оставившая полный состав, прошла проверку
+        // «столбец короче»: полосы-то стали тоньше, и он всё равно
+        // выходил короче.
+        {
+            const f32 leanBottom = lean.hudLeftColumn().y + lean.hudLeftColumn().h;
+            const f32 res = lean.resonanceBar().y + lean.resonanceBar().h;
+            if (std::fabs(leanBottom - res) > 0.01f) {
+                ++shrunk;
+                std::snprintf(m, sizeof(m),
+                              "%s: сжатый столбец не кончается на Резонансе "
+                              "(%.0f против %.0f)", sz.name,
+                              (double)leanBottom, (double)res);
+                check(false, m);
+            }
+            const f32 fullBottom = full.hudLeftColumn().y + full.hudLeftColumn().h;
+            const f32 trk = full.questTracker().y + full.questTracker().h;
+            if (std::fabs(fullBottom - trk) > 0.01f) {
+                ++shrunk;
+                std::snprintf(m, sizeof(m),
+                              "%s: полный столбец не кончается строкой задания",
+                              sz.name);
+                check(false, m);
+            }
+        }
+
+        const f32 tall = full.hudLeftColumn().h;
+        const f32 low  = lean.hudLeftColumn().h;
+        if (low >= tall - 0.01f) {
+            ++shrunk;
+            std::snprintf(m, sizeof(m), "%s: сжатый столбец не короче полного "
+                          "(%.0f против %.0f)", sz.name, (double)low, (double)tall);
+            check(false, m);
+        }
+
+        // ---- И это возвращает меню место ----
+        if (lean.menuArea().h <= full.menuArea().h + 0.01f) {
+            ++shrunk;
+            std::snprintf(m, sizeof(m),
+                          "%s: меню не получило высоты (%.0f против %.0f)",
+                          sz.name, (double)lean.menuArea().h,
+                          (double)full.menuArea().h);
+            check(false, m);
+        }
+
+        // ---- Ни одна ячейка сумки не остаётся недоступной ----
+        //
+        // Это и есть то, ради чего столбец сжимается. Проверяется на
+        // ВСЕХ размерах: дыру создаёт как раз тот экран, который не
+        // посмотрели.
+        const auto g = lean.cellGrid(lean.invLeft(), items::INV_MAIN_SLOTS);
+        if (g.overflow() > 0) {
+            ++unreachable;
+            if (g.overflow() > worstCount) { worstCount = g.overflow(); worst = sz.name; }
+        }
+    }
+
+    check(shrunk == 0, "сжатый столбец короче полного и возвращает меню высоту");
+    std::snprintf(m, sizeof(m),
+                  "во всех размерах видны все %u ячеек сумки%s%s (недоступных "
+                  "больше всего: %u)", (unsigned)items::INV_MAIN_SLOTS,
+                  worst ? ", хуже всего на " : "", worst ? worst : "",
+                  worstCount);
+    check(unreachable == 0, m);
+
+    // ---- Сжатый вид включает сама UiSystem, и в столбце рисуется
+    //      меньше ----
+    //
+    // Проверять это по ИСХОДНИКУ бесполезно: мутация, менявшая
+    // `if (!compact)` на `if (true)`, оставляла вызов
+    // `layout_.hudCompact()` на месте — строка находилась, проверка
+    // проходила, подписи рисовались. Ровно та же сверка модели с
+    // моделью, на которой я попался итерацией раньше.
+    //
+    // Поэтому здесь — настоящий кадр: сжатый вид должен включаться
+    // от самого экрана, и вершин в столбце при нём должно быть
+    // МЕНЬШЕ, чем на чистом HUD. Подписи, золото, воздух и строка
+    // задания — это вершины, и если они вернутся, счёт это покажет.
+    {
+        constexpr i32 W = 1280, H = 720, DPI = 320;
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+
+        struct Shot { bool compact; u32 verts; };
+        auto shoot = [&](ui::Screen sc) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(DPI);
+            sys.setScreenSize(W, H);
+            sys.screen = sc;
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+            const ui::Rect first = sys.layout().resourceBar(0);
+            // Область берётся с запасом вниз: в полном виде под
+            // полосами стоят золото, воздух и строка задания, и
+            // именно их присутствие здесь и меряется.
+            const ui::Rect col{ first.x, first.y, first.w,
+                                sys.layout().dp(200.f) };
+            u32 n = 0;
+            for (const ui::UiVertex& v : sys.frameVertices()) {
+                const f32 px = (v.pos.x * 0.5f + 0.5f) * (f32)W;
+                const f32 py = (v.pos.y * 0.5f + 0.5f) * (f32)H;
+                if (px >= col.x && px <= col.x + col.w &&
+                    py >= col.y && py <= col.y + col.h) ++n;
+            }
+            return Shot{ sys.layout().hudCompact(), n };
+        };
+
+        const Shot hud = shoot(ui::Screen::Hud);
+        const Shot bag = shoot(ui::Screen::Inventory);
+
+        check(!hud.compact, "на чистом HUD столбец полный");
+        check(bag.compact, "а под инвентарём — сжатый");
+        std::snprintf(m, sizeof(m),
+                      "в сжатом столбце рисуется меньше, чем в полном "
+                      "(%u вершин против %u)", bag.verts, hud.verts);
+        check(bag.verts < hud.verts, m);
+        check(hud.verts > 0, "и на HUD столбец не пуст");
+    }
+
+    // ---- Сведения о предмете не занимают место, пока не нужны ----
+    //
+    // Колонка в треть ширины стояла всегда, даже когда в ней была
+    // одна надпись «нажми, чтобы использовать». Подсказку эту игрок
+    // читает один раз, а ячейки нужны каждый раз.
+    {
+        const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+        if (!src.empty()) {
+            const usize d = src.find("void UiSystem::drawItemDetails(");
+            check(d != std::string::npos, "панель сведений на месте");
+            if (d != std::string::npos) {
+                const std::string head = src.substr(d, 900);
+                const usize ret  = head.find("return;");
+                const usize rect = head.find("ui_.rect(");
+                std::snprintf(m, sizeof(m),
+                              "пустая панель сведений не рисуется вовсе");
+                check(ret != std::string::npos && rect != std::string::npos &&
+                      ret < rect, m);
+            }
+        }
+        const ui::HudLayout L(1280.f, 720.f,
+                              ui::theme::Metrics::fromDensityDpi(320),
+                              ui::SafeInsets{});
+        const ui::Rect a = L.menuArea();
+        const ui::Rect bag = L.invLeft();
+        check(std::fabs(bag.w - a.w) < 0.01f,
+              "ячейки сумки занимают всю ширину области");
+        const ui::Rect d = L.invDetails();
+        check(std::fabs(d.w - a.w) < 0.01f && d.y > a.y,
+              "а сведения всплывают снизу, во всю ширину");
+    }
+}
+
+// ------------------------------------------------------------
 void testHudAndButtonsDoNotOverlap() {
     group("раскладка: HUD и экранные кнопки не налезают");
 
@@ -23129,6 +23346,7 @@ int main() {
     testSettingsTogglesActuallyToggle();
     testUiTapSurvivesRedraw();
     testMenusDoNotSitOnHud();
+    testCompactHudUnderMenus();
     testHudAndButtonsDoNotOverlap();
     testLoadingIsAPanelNotACurtain();
     testUiThemeObeysItsOwnRules();
