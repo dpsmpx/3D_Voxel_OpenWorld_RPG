@@ -62,6 +62,7 @@
 #include "ui/font_data.h"
 #include "world/biome.h"
 #include "world/features.h"
+#include "world/village_deeds.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
 #include "save/save_format.h"
@@ -6786,6 +6787,365 @@ void testMenuAreasAvoidWhatIsTaken() {
     std::snprintf(m, sizeof(m), "областей сверено %d", checked);
     check(checked == 4 * 2 * 6, m);
     check(bad == 0, "ни одна область меню не налезает на занятое");
+}
+
+// Довести мир до готовности вокруг колодца.
+//
+// Ставить факел в ещё не порождённый чанк бессмысленно: генерация
+// перезапишет его собой. Тот же цикл, каким это делают остальные
+// проверки, работающие с деревнями.
+static bool loadAroundWell(world::ChunkManager& w,
+                           const world::VillageSite& site) {
+    const glm::vec3 well{ (f32)site.center.x + 0.5f,
+                          (f32)site.center.y,
+                          (f32)site.center.z + 0.5f };
+    for (int i = 0; i < 900; ++i) {
+        w.update(well);
+        if (w.isReadyAt(site.center.x, site.center.z) && w.pendingJobs() == 0)
+            return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    check(false, "чанк с колодцем так и не построился");
+    return false;
+}
+
+// ------------------------------------------------------------
+// Деревня помнит.
+//
+// Сдал квест — и мир остался ровно таким же: золото, опыт и
+// репутация начислялись, деревня после работы игрока не менялась
+// ничем. Это было единственное звено петли, где обратная связь шла
+// только числами.
+//
+// Теперь за сделанное для деревни в ней зажигается факел. Проверки
+// спрашивают мир, а не таблицу: таблицы и нет — память о работе
+// игрока это сам изменённый блок, и едет он в сохранении вместе с
+// остальной дельтой мира.
+// ------------------------------------------------------------
+void testVillageRemembers() {
+    group("деревня: за сделанное зажигается факел");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+    npc::npcRegistry();
+
+    jobs::gJobs.start(2);
+
+    constexpr u64 SEED = 0xDEED16ull;
+    world::ChunkManager wd(SEED, 2);
+
+    // Настоящая деревня в настоящем мире: перебираем супер-чанки,
+    // пока не найдётся та, что и правда существует (в воде и на
+    // круче villageAt их не ставит).
+    world::VillageSite site{};
+    for (i32 sz = -3; sz <= 3 && !site.exists; ++sz)
+        for (i32 sx = -3; sx <= 3 && !site.exists; ++sx) {
+            const auto v = world::villageAt(sx, sz, SEED, &wd.generator());
+            if (v.exists) site = v;
+        }
+    check(site.exists, "деревня в мире нашлась");
+    if (!site.exists) { jobs::gJobs.stop(); return; }
+
+    char m[220];
+    std::snprintf(m, sizeof(m), "колодец в (%d, %d, %d)",
+                  site.center.x, site.center.y, site.center.z);
+    check(true, m);
+
+    // Чанки вокруг колодца — иначе ставить факел некуда: мир их
+    // ещё не породил.
+    if (!loadAroundWell(wd, site)) { jobs::gJobs.stop(); return; }
+
+    // ---- 1. До работы следов нет ----
+    check(world::villageDeeds(wd, site) == 0,
+          "в нетронутой деревне факелов нет");
+
+    // ---- 2. Один сданный квест — один факел ----
+    check(world::lightVillageDeed(wd, site), "факел зажёгся");
+    const u32 afterOne = world::villageDeeds(wd, site);
+    std::snprintf(m, sizeof(m), "после первого факелов %u", afterOne);
+    check(afterOne == 1, m);
+
+    // ---- 3. Каждый следующий добавляет свой ----
+    check(world::lightVillageDeed(wd, site), "второй факел зажёгся");
+    check(world::villageDeeds(wd, site) == 2, "и он не встал на место первого");
+
+    // ---- 4. Места кончаются, а не растут без счёта ----
+    {
+        u32 lit = 2;
+        while (lit < world::VILLAGE_DEED_SPOTS + 4 &&
+               world::lightVillageDeed(wd, site)) ++lit;
+        const u32 total = world::villageDeeds(wd, site);
+        std::snprintf(m, sizeof(m), "мест под факелы %u, зажжено %u",
+                      (unsigned)world::VILLAGE_DEED_SPOTS, total);
+        check(true, m);
+        check(total <= world::VILLAGE_DEED_SPOTS,
+              "деревня не превращается в костёр: мест ограниченное число");
+        check(total >= 2, "но зажглось больше одного");
+    }
+
+    // ---- 4a. И каждый стоит на земле, а не висит в воздухе ----
+    //
+    // Кольцо радиусом в четыре блока задевает склон, и место под
+    // факел ищется по высоте. Без опоры под ним факел выглядит
+    // поломкой, а не наградой.
+    {
+        world::VoxelReader vr(wd);
+        u32 lit = 0, floating = 0;
+        for (u32 i = 0; i < world::VILLAGE_DEED_SPOTS; ++i) {
+            const glm::ivec3 col = world::villageDeedSpot(site, i);
+            for (i32 dy = 4; dy >= -4; --dy) {
+                if (vr.at(col.x, col.y + dy, col.z) != world::TORCH) continue;
+                ++lit;
+                if (!vr.isSolid(col.x, col.y + dy - 1, col.z)) ++floating;
+                break;
+            }
+        }
+        std::snprintf(m, sizeof(m), "факелов %u, висящих в воздухе %u",
+                      lit, floating);
+        check(true, m);
+        check(lit > 0, "факелы нашлись там, где их и ставили");
+        check(floating == 0, "и каждый стоит на твёрдом");
+    }
+
+    // ---- 5. Факел — настоящий источник света ----
+    //
+    // Ради этого всё и делается: деревня, которой помогли, видна
+    // ночью. Если бы блок света не давал, последствие было бы
+    // невидимым.
+    {
+        const auto& def = world::blocks().get(world::TORCH);
+        check(def.isEmissive != 0, "факел светит");
+        check(def.lightLevel > 0, "и уровень света у него ненулевой");
+    }
+
+    // ---- 6. Жителя деревни узнают по его месту ----
+    {
+        const glm::ivec3 atWell = site.center;
+        const world::VillageSite found = world::villageAtPoint(wd, atWell);
+        check(found.exists && found.center == site.center,
+              "стоящий у колодца принадлежит этой деревне");
+
+        // А стоящий за тридевять земель — ничьей. Число заведомо
+        // больше и радиуса принадлежности, и шага сетки деревень.
+        const glm::ivec3 far{ site.center.x + 4000, site.center.y,
+                              site.center.z + 4000 };
+        const world::VillageSite none = world::villageAtPoint(wd, far);
+        check(!none.exists || none.center != site.center,
+              "а стоящий далеко — не из неё");
+    }
+
+    jobs::gJobs.stop();
+}
+
+
+// ------------------------------------------------------------
+// Факел зажигает СДАЧА ЗАДАНИЯ.
+//
+// Проверки выше спрашивают модуль: умеет ли мир зажечь факел.
+// Умеет он и тогда, когда сдача его не зовёт, — ровно так уходила
+// мутация прошлой итерации, снявшая одну строку в игровом цикле.
+// Поэтому здесь настоящая сдача через applyChoice, в своём мире, где
+// ни одного факела ещё нет.
+// ------------------------------------------------------------
+void testTurnInLightsTheVillage() {
+    group("деревня: факел зажигает сдача задания");
+
+    world::blocks();
+    items::items();
+    jobs::gJobs.start(2);
+
+    constexpr u64 SEED = 0xDEED18ull;
+    world::ChunkManager wd(SEED, 2);
+
+    world::VillageSite site{};
+    for (i32 sz = -3; sz <= 3 && !site.exists; ++sz)
+        for (i32 sx = -3; sx <= 3 && !site.exists; ++sx) {
+            const auto v = world::villageAt(sx, sz, SEED, &wd.generator());
+            if (v.exists) site = v;
+        }
+    check(site.exists, "деревня в мире нашлась");
+    if (!site.exists) { jobs::gJobs.stop(); return; }
+    if (!loadAroundWell(wd, site)) { jobs::gJobs.stop(); return; }
+
+    check(world::villageDeeds(wd, site) == 0, "до сдачи факелов нет");
+
+    ecs::Registry reg;
+
+    const ecs::Entity player = reg.create();
+    reg.add(player, ecs::Transform{ glm::vec3((f32)site.center.x,
+                                              (f32)site.center.y,
+                                              (f32)site.center.z) });
+    reg.add(player, items::Inventory{});
+    reg.add(player, items::Wallet{});
+    reg.add(player, progression::Progression{});
+    reg.add(player, factions::Reputation{});
+    reg.add(player, quests::QuestLog{});
+
+    // Раздатчик стоит у колодца — то есть в этой деревне.
+    const ecs::Entity giver = reg.create();
+    reg.add(giver, ecs::Transform{ glm::vec3((f32)site.center.x + 1.f,
+                                             (f32)site.center.y,
+                                             (f32)site.center.z + 1.f) });
+
+    quests::Quest q{};
+    q.id = quests::nextQuestId();
+    q.state = quests::QuestState::Completed;
+    q.tmpl.type = quests::QuestType::Explore;
+    q.tmpl.difficulty = quests::QuestDifficulty::Easy;
+    q.giverEntity = (u32)giver;
+    q.ownerEntity = (u32)player;
+    const ecs::Entity qe = reg.create();
+    reg.add(qe, q);
+    reg.get<quests::QuestLog>(player)->addActive(qe);
+
+    npc::ActiveDialogue dlg;
+    dlg.active = true;
+    dlg.playerEntity = (u32)player;
+    dlg.npcEntity = (u32)giver;
+
+    npc::DialogueChoice done;
+    done.action = npc::DialogueAction::CompleteQuest;
+    npc::applyChoice(reg, wd, dlg, done);
+
+    char m[160];
+    const u32 after = world::villageDeeds(wd, site);
+    std::snprintf(m, sizeof(m), "после сдачи факелов %u", after);
+    check(true, m);
+
+    check(reg.get<quests::QuestLog>(player)->activeQuests.empty(),
+          "задание сдано");
+    check(after == 1, "и деревня отметила это факелом");
+
+    // ---- Житель здоровается иначе ----
+    //
+    // Факелы видно глазами, но последствие должно ещё и называться
+    // словами. Сравниваются две деревни: эта — с факелом, и любая
+    // другая — нетронутая. Сравнение с самим собой «до и после» не
+    // годится: реестр диалогов один, и если бы приветствие не
+    // зависело от деревни вовсе, такая проверка этого не заметила
+    // бы.
+    {
+        const ecs::Entity villager = reg.create();
+        reg.add(villager, ecs::Transform{ glm::vec3((f32)site.center.x + 2.f,
+                                                    (f32)site.center.y,
+                                                    (f32)site.center.z) });
+        npc::NpcTag tag; tag.id = npc::NPC_VILLAGER; tag.persistKey = 7;
+        reg.add(villager, tag);
+        reg.add(villager, npc::NpcAI{});
+        reg.add(player, npc::ActiveDialogue{});
+
+        const char* root = npc::npcRegistry().get(npc::NPC_VILLAGER).dialogueRoot;
+
+        auto greeting = [&](const glm::vec3& where) {
+            reg.get<ecs::Transform>(villager)->position = where;
+            npc::startDialogue(reg, wd, (u32)player, (u32)villager, root);
+            auto* d = reg.get<npc::ActiveDialogue>(player);
+            if (!d) return std::string();
+            auto* n = d->findNode(d->currentNodeId);
+            return n ? n->text : std::string();
+        };
+
+        const std::string helped = greeting(
+            glm::vec3((f32)site.center.x + 2.f, (f32)site.center.y,
+                      (f32)site.center.z));
+        const std::string stranger = greeting(
+            glm::vec3((f32)site.center.x + 4000.f, (f32)site.center.y,
+                      (f32)site.center.z + 4000.f));
+
+        std::snprintf(m, sizeof(m), "в своей деревне: «%s»", helped.c_str());
+        check(true, m);
+        check(!helped.empty() && !stranger.empty(), "оба приветствия не пусты");
+        check(helped != stranger,
+              "житель деревни, которой помогали, здоровается иначе");
+    }
+
+    // А сдача задания раздатчику, стоящему в чистом поле, деревню
+    // не трогает: иначе проверка выше проходила бы от чего угодно.
+    {
+        const glm::ivec3 far{ site.center.x + 4000, site.center.y,
+                              site.center.z + 4000 };
+        auto* gtf = reg.get<ecs::Transform>(giver);
+        gtf->position = glm::vec3((f32)far.x, (f32)far.y, (f32)far.z);
+
+        quests::Quest q2{};
+        q2.id = quests::nextQuestId();
+        q2.state = quests::QuestState::Completed;
+        q2.tmpl.type = quests::QuestType::Explore;
+        q2.giverEntity = (u32)giver;
+        q2.ownerEntity = (u32)player;
+        const ecs::Entity qe2 = reg.create();
+        reg.add(qe2, q2);
+        reg.get<quests::QuestLog>(player)->addActive(qe2);
+
+        dlg.active = true;
+        npc::applyChoice(reg, wd, dlg, done);
+
+        check(world::villageDeeds(wd, site) == after,
+              "сдача вдали от деревни её факелов не прибавляет");
+    }
+
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+// След переживает сохранение.
+//
+// Отдельной таблицы «сколько сдано в деревне» нет намеренно: память
+// о работе игрока — сам изменённый блок. Значит, и сохраняется она
+// тем же, чем сохраняются все изменённые блоки, — дельтой мира.
+// Проверка на это и смотрит: без неё «мир помнит» держалось бы на
+// одном рассуждении.
+// ------------------------------------------------------------
+void testVillageDeedSurvivesSave() {
+    group("деревня: след переживает сохранение");
+
+    world::blocks();
+    jobs::gJobs.start(2);
+
+    constexpr u64 SEED = 0xDEED17ull;
+    world::ChunkManager wd(SEED, 2);
+
+    world::VillageSite site{};
+    for (i32 sz = -3; sz <= 3 && !site.exists; ++sz)
+        for (i32 sx = -3; sx <= 3 && !site.exists; ++sx) {
+            const auto v = world::villageAt(sx, sz, SEED, &wd.generator());
+            if (v.exists) site = v;
+        }
+    check(site.exists, "деревня в мире нашлась");
+    if (!site.exists) { jobs::gJobs.stop(); return; }
+
+    if (!loadAroundWell(wd, site)) { jobs::gJobs.stop(); return; }
+
+    // Дельта наполняется через обратный вызов мира — тем же путём,
+    // каким это происходит в игре.
+    save::WorldDeltaStore deltas;
+    wd.setBlockModifyCallback([&deltas](i32 wx, i32 wy, i32 wz, u16 id) {
+        deltas.recordBlock(wx, wy, wz, id);
+    });
+
+    check(world::lightVillageDeed(wd, site), "факел зажёгся");
+    check(world::villageDeeds(wd, site) == 1, "и виден в мире");
+
+    save::ByteWriter w;
+    deltas.write(w);
+
+    save::WorldDeltaStore loaded;
+    save::ByteReader r(w.data());
+    check(loaded.read(r), "дельта прочитана обратно");
+
+    // Новый мир с тем же зерном: факела в нём нет, пока не
+    // применена дельта.
+    world::ChunkManager wd2(SEED, 2);
+    if (!loadAroundWell(wd2, site)) { jobs::gJobs.stop(); return; }
+    check(world::villageDeeds(wd2, site) == 0,
+          "в заново порождённом мире следа нет");
+
+    loaded.applyAll(wd2);
+    check(world::villageDeeds(wd2, site) == 1,
+          "а после загрузки дельты — есть");
+
+    jobs::gJobs.stop();
 }
 
 // ------------------------------------------------------------
@@ -22127,6 +22487,10 @@ void testTrade() {
 void testDialogueOpensScreens() {
     group("npc: диалог просит открыть экран");
 
+    // Сдача задания теперь ставит в мир факел, поэтому диалогу
+    // нужен мир. Здесь он пустой: проверяются переходы, а не деревня.
+    world::ChunkManager wd(0xD1A106ull, 1);
+
     ecs::Registry reg;
     npc::ActiveDialogue dlg;
     dlg.active = true;
@@ -22134,7 +22498,7 @@ void testDialogueOpensScreens() {
 
     npc::DialogueChoice trade;
     trade.action = npc::DialogueAction::OpenTrade;
-    npc::applyChoice(reg, dlg, trade);
+    npc::applyChoice(reg, wd, dlg, trade);
     check(dlg.pendingAction == npc::DialogueAction::OpenTrade,
           "выбор «покажи товар» оставляет намерение открыть торговлю");
     check(!dlg.active, "диалог при этом закрывается");
@@ -22143,7 +22507,7 @@ void testDialogueOpensScreens() {
     dlg.active = true;
     npc::DialogueChoice craft;
     craft.action = npc::DialogueAction::OpenCraft;
-    npc::applyChoice(reg, dlg, craft);
+    npc::applyChoice(reg, wd, dlg, craft);
     check(dlg.pendingAction == npc::DialogueAction::OpenCraft,
           "выбор «скуй мне» оставляет намерение открыть крафт");
 
@@ -22153,7 +22517,7 @@ void testDialogueOpensScreens() {
     dlg.active = true;
     npc::DialogueChoice bye;
     bye.action = npc::DialogueAction::EndDialogue;
-    npc::applyChoice(reg, dlg, bye);
+    npc::applyChoice(reg, wd, dlg, bye);
     check(dlg.pendingAction == npc::DialogueAction::None,
           "прощание не открывает никаких экранов");
 
@@ -22174,21 +22538,21 @@ void testDialogueOpensScreens() {
         npc::DialogueChoice heal;
         heal.action = npc::DialogueAction::Heal;
 
-        npc::applyChoice(reg, hd, heal);
+        npc::applyChoice(reg, wd, hd, heal);
         check(hp->current == hp->max, "целитель восстанавливает здоровье");
         check(w->gold < 120, "и берёт за это деньги");
         const u64 afterFirst = w->gold;
 
         // Полностью здоровому лечиться незачем — и платить тоже.
         hd.active = true;
-        npc::applyChoice(reg, hd, heal);
+        npc::applyChoice(reg, wd, hd, heal);
         check(w->gold == afterFirst, "со здорового денег не берут");
 
         // Без денег не лечат.
         hp->current = 5.f;
         w->gold = 1;
         hd.active = true;
-        npc::applyChoice(reg, hd, heal);
+        npc::applyChoice(reg, wd, hd, heal);
         check(hp->current == 5.f, "без денег не лечат");
         check(w->gold == 1, "и денег не списывают");
     }
@@ -22536,6 +22900,10 @@ void testQuestRewardsReachThePlayer() {
         ecs::Entity player{};
         ecs::Entity npc{};
         ecs::Entity questEnt{};
+        // Сдача ставит в мир факел за сделанное для деревни.
+        // Раздатчик здесь стоит в чистом поле, деревни рядом нет —
+        // проверяется награда, а не след.
+        world::ChunkManager wd{ 0x4E77A2ull, 1 };
     };
 
     auto makeWorld = [&](World& w) {
@@ -22564,7 +22932,7 @@ void testQuestRewardsReachThePlayer() {
         dlg.npcEntity    = (u32)w.npc;
         npc::DialogueChoice choice;
         choice.action = npc::DialogueAction::CompleteQuest;
-        npc::applyChoice(w.reg, dlg, choice);
+        npc::applyChoice(w.reg, w.wd, dlg, choice);
         return dlg.lastRewards;
     };
 
@@ -25300,6 +25668,9 @@ int main() {
     testFirstStepsGiveAGoal();
     testOneLanguageEverywhere();
     testSaveKeepsQuestsWithoutText();
+    testVillageRemembers();
+    testTurnInLightsTheVillage();
+    testVillageDeedSurvivesSave();
     testNoEnglishOnScreen();
     testScreensStayOnScreen();
     testMenuAreasAvoidWhatIsTaken();

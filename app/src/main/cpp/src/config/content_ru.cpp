@@ -391,6 +391,8 @@ const ContentPair CONTENT_RU[] = {
     // ---- Реплики жителей ----
     { "Good day, traveller. The village is quiet today.",
       "Доброго дня, странник. В деревне сегодня тихо." },
+    { "Good to see you again. The village remembers what you did.",
+      "Рад тебя видеть. Деревня помнит, что ты для неё сделал." },
     { "What is this place?",    "Что это за место?" },
     { "We are a small settlement. The Elder might have work for you.",
       "Мы небольшое поселение. У старосты, может, найдётся для "

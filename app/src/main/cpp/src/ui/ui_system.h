@@ -616,7 +616,8 @@ private:
     void drawStepper(const Rect& r, const char* label,
                      bool pressed, bool enabled);
 
-    void drawDialogueScreen(player::Player& player);
+    void drawDialogueScreen(player::Player& player,
+                            world::ChunkManager& world);
     void drawQuestLogScreen(player::Player& player);
     /// Текущая цель на HUD: что делать прямо сейчас.
     void drawQuestTracker(player::Player& player);

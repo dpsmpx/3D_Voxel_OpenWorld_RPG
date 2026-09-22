@@ -10,6 +10,7 @@
 #include "../quests/quest.h"
 #include "../quests/quest_generator.h"
 #include "../quests/story.h"
+#include "../world/village_deeds.h"
 #include "../progression/progression.h"
 #include "../progression/resource_regen.h"
 #include "../items/currency.h"
@@ -311,6 +312,26 @@ bool startDialogue(ecs::Registry& reg,
     active->npcEntity     = npcEntity;
     active->playerEntity  = playerEntity;
     active->nodes         = tmpl.nodes;
+
+    // ---- Деревня узнаёт того, кто ей помогал ----
+    //
+    // Факелы у колодца видно глазами, но последствие должно ещё и
+    // называться словами: иначе игрок решит, что деревня всегда так
+    // и стояла. Здоровается иначе всякий её житель, а не только
+    // раздатчик заданий: помогали деревне, а не ему лично.
+    {
+        glm::ivec3 at{ 0 };
+        if (auto* tf = reg.get<ecs::Transform>(npcEntity))
+            at = { (i32)tf->position.x, (i32)tf->position.y,
+                   (i32)tf->position.z };
+        const world::VillageSite v = world::villageAtPoint(world, at);
+        if (v.exists && world::villageDeeds(world, v) > 0) {
+            if (auto* root = active->findNode(tmpl.rootNodeId))
+                root->text = "Good to see you again. The village "
+                             "remembers what you did.";
+        }
+    }
+
     translateNodes(active->nodes);
     active->currentNodeId = tmpl.rootNodeId;
     active->highlightedChoice = -1;
@@ -429,6 +450,7 @@ bool startDialogue(ecs::Registry& reg,
 // applyChoice
 // ============================================================
 bool applyChoice(ecs::Registry& reg,
+                 world::ChunkManager& world,
                  ActiveDialogue& dlg,
                  const DialogueChoice& choice)
 {
@@ -495,6 +517,24 @@ bool applyChoice(ecs::Registry& reg,
                 quests::completeStoryChapter(reg,
                                              reg.fromId(dlg.playerEntity),
                                              q->id);
+
+            // ---- След в мире ----
+            //
+            // За сделанное для деревни в ней зажигается факел. Это
+            // и есть память о работе игрока: блок записан в дельту
+            // мира, дельта едет в сохранении, а ночью деревня,
+            // которой он помог, светится — соседняя нет.
+            //
+            // Отдельной таблицы «сколько сдано в деревне (sx, sz)»
+            // нет намеренно: она была бы вторым местом, где живёт
+            // одно и то же, и разойтись с миром могла бы молча.
+            if (auto* gtf = reg.get<ecs::Transform>(q->giverEntity)) {
+                const glm::ivec3 at{ (i32)gtf->position.x,
+                                     (i32)gtf->position.y,
+                                     (i32)gtf->position.z };
+                const world::VillageSite v = world::villageAtPoint(world, at);
+                if (v.exists) world::lightVillageDeed(world, v);
+            }
 
             // Обновляем состояние и историю
             q->state = quests::QuestState::TurnedIn;
