@@ -3,6 +3,7 @@
  * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
  */
 #include "enchant_altar.h"
+#include "../config/localization.h"
 #include "../ecs/components.h"
 #include "../items/currency.h"
 #include "../items/item_def.h"
@@ -117,13 +118,13 @@ const EnchantRecipe* EnchantRecipeRegistry::get(u16 id) const {
 
 const char* enchantResultString(EnchantResult r) {
     switch (r) {
-        case EnchantResult::Ok:              return "Enchanted!";
-        case EnchantResult::NoWeapon:        return "No weapon equipped";
-        case EnchantResult::AlreadyThis:     return "Already enchanted this way";
-        case EnchantResult::MissingMaterials:return "Missing materials";
-        case EnchantResult::NotEnoughGold:   return "Not enough gold";
-        case EnchantResult::UnknownRecipe:   return "Unknown recipe";
-        case EnchantResult::LowerLevel:      return "Weaker than current";
+        case EnchantResult::Ok:              return config::tr("Enchanted!");
+        case EnchantResult::NoWeapon:        return config::tr("No weapon equipped");
+        case EnchantResult::AlreadyThis:     return config::tr("Already enchanted this way");
+        case EnchantResult::MissingMaterials:return config::tr("Missing materials");
+        case EnchantResult::NotEnoughGold:   return config::tr("Not enough gold");
+        case EnchantResult::UnknownRecipe:   return config::tr("Unknown recipe");
+        case EnchantResult::LowerLevel:      return config::tr("Weaker than current");
     }
     return "?";
 }

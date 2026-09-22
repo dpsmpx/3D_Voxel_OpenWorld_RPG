@@ -85,6 +85,7 @@ void UiContext::rectOutline(float x, float y, float w, float h, float th, UiColo
 }
 
 void UiContext::text(const std::string& s, float x, float y, float scale, UiColor c) {
+    if (textSink_) textSink_->push_back(s);
     if (!r_) return;
     float cx = x;
     const float cw = 6.f * scale;
@@ -216,6 +217,7 @@ static std::vector<std::string> wrapLines(const std::string& s,
 float UiContext::textWrapped(const std::string& s, float x, float y,
                              float maxWidth, float scale, UiColor c)
 {
+    if (textSink_) textSink_->push_back(s);
     const auto lines = wrapLines(s, maxWidth, scale);
     const float step = 9.f * scale;
     for (usize i = 0; i < lines.size(); ++i)

@@ -43,6 +43,17 @@ public:
     /// Картинка для imageQuad; владеет ею вызывающий.
     void setImage(VkImageView view, VkSampler sampler);
     void text(const std::string& s, float x, float y, float scale, UiColor c);
+
+    /// Куда складывать всё, что вышло на экран буквами.
+    ///
+    /// Спросить «что написано на экране» иначе нечем: интерфейс
+    /// собирается в вершины, и по ним строку обратно не прочесть.
+    /// Проверка языка, спрашивавшая вместо экрана словарь, ровно на
+    /// этом и промахнулась: перевод существовал, а место показа
+    /// звало имя напрямую и об этом никто не знал.
+    ///
+    /// В игре указатель нулевой, и цена — одна проверка на строку.
+    void setTextSink(std::vector<std::string>* sink) { textSink_ = sink; }
     /// Круг и кольцо в пикселях экрана. Экранные кнопки и джойстик
     /// круглые: из прямоугольников они выглядят как лесенка.
     void circle(float cx, float cy, float r, UiColor c, int segments = 24);
@@ -121,6 +132,7 @@ private:
     };
 
     UiRenderer* r_ = nullptr;
+    std::vector<std::string>* textSink_ = nullptr;
     i32 screenW_ = 1080;
     i32 screenH_ = 1920;
 

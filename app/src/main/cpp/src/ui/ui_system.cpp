@@ -161,6 +161,10 @@ void UiSystem::tickUi(f32 dt) {
                    notices_.end());
 
     craftScroll.tick(dt);
+    enchantScroll.tick(dt);
+    saveScroll.tick(dt);
+    skillScroll.tick(dt);
+    pauseScroll.tick(dt);
     questScroll.tick(dt);
     tradeScroll.tick(dt);
     invScroll.tick(dt);
@@ -208,6 +212,8 @@ void UiSystem::buildFrame(player::Player& player,
     // Под меню столбец сжимается: там нужен факт «сколько
     // осталось», а не половина экрана под полосами с подписями.
     layout_.setHudCompact(screen != Screen::Hud);
+    // Пояс уступает место только паузе: там игра стоит.
+    layout_.setMenuOverHotbar(screen == Screen::PauseMenu);
 
     switch (screen) {
         case Screen::Hud:
@@ -935,16 +941,59 @@ void UiSystem::drawPauseMenu(player::Player& player) {
 
     const auto& items = menuEntries();
     const u32 ITEM_COUNT = (u32)items.size();
-    constexpr u32 COLS = 3;
     // Первый ряд занят «Продолжить», последний — выходом.
-    const u32 ROWS = 2 + (ITEM_COUNT + COLS - 1) / COLS;
+    //
+    // Столбцов не три постоянных, а столько, чтобы всё поместилось:
+    // на 1280x720 пять рядов не влезали, и нижние кнопки вместе с
+    // «выходом» уезжали за край экрана.
+    const u32 COLS = layout_.menuColsFor(ITEM_COUNT, 2);
 
-    auto cell = [&](u32 c, u32 r) { return layout_.menuCell(c, r, COLS, ROWS); };
+    // Одна сетка на всё: «продолжить» первым рядом во всю ширину,
+    // разделы следом, «выход» последним рядом. Прокручивается
+    // целиком.
+    //
+    // Раньше рядов было столько, сколько выходило, и когда они не
+    // помещались по высоте, ряд поднимали до цели касания — а сетка
+    // уезжала за нижний край экрана. На 1280x720 за краем
+    // оказывались нижние разделы вместе с «выходом»: из паузы
+    // нельзя было выйти.
+    //
+    // Закрепить «продолжить» и «выход» по краям не вышло: на
+    // 1280x720 они вдвоём съедают 256 точек из 328, и разделам не
+    // остаётся ни одного ряда. Поэтому едут все вместе.
+    const Rect area = layout_.menuArea();
+    const auto grid = layout_.cardGrid(area, COLS, theme::TOUCH_REGULAR_DP);
+    const u32 sectionRows = (ITEM_COUNT + COLS - 1) / COLS;
+    // «Продолжить» и «выход» делят первый ряд, разделы идут следом.
+    //
+    // «Выход» стоял последним рядом — и на 1280x720 оказывался за
+    // прокруткой: из трёх видимых рядов два занимали разделы. В
+    // паузе выход ищут первым делом, и заставлять его листать — это
+    // ровно тот же дефект, что и уехавший за край.
+    const u32 totalRows = 1 + sectionRows;
 
-    // ---- Продолжить: во всю ширину, главное действие ----
-    {
-        const Rect a = cell(0, 0), c2 = cell(COLS - 1, 0);
-        const Rect r{ a.x, a.y, (c2.x + c2.w) - a.x, a.h };
+    pauseScroll.setContentHeight((f32)totalRows * grid.rowStride(),
+                                 (f32)grid.rowsVisible() * grid.rowStride());
+    feedScrollDrag(pauseScroll, area);
+
+    // Ряд виден, только если помещается целиком: половина кнопки
+    // поверх пояса хуже, чем её отсутствие.
+    auto rowRect = [&](u32 row, u32 col, bool full) -> Rect {
+        Rect r = grid.at(col, row);
+        if (full) r.w = area.w;
+        r.y -= pauseScroll.offset;
+        return r;
+    };
+    auto visible = [&](const Rect& r) {
+        return r.y >= area.y - 0.5f && r.y + r.h <= area.y + area.h + 0.5f;
+    };
+
+    // ---- Продолжить: почти во всю ширину, главное действие ----
+    const Rect topRow = rowRect(0, 0, true);
+    const f32 exitW = (topRow.w - layout_.dp(theme::SPACE_M_DP)
+                       * (f32)(COLS - 1)) / (f32)COLS;
+    if (Rect r = topRow; visible(r)) {
+        r.w -= exitW + layout_.dp(theme::SPACE_M_DP);
         const int idx = ui_.pushInteractiveRect(r, [this]() {
             screen = Screen::Hud;
             returnTo = Screen::Hud;
@@ -963,7 +1012,9 @@ void UiSystem::drawPauseMenu(player::Player& player) {
 
     // ---- Разделы: одинаковые кнопки, один вид на всю игру ----
     for (u32 i = 0; i < ITEM_COUNT; ++i) {
-        const Rect r = cell(i % COLS, 1 + i / COLS);
+        const Rect r = rowRect(1 + i / COLS, i % COLS, false);
+        if (!visible(r)) continue;
+
         const Screen target = items[i].target;
         const int idx = ui_.pushInteractiveRect(r, [this, target]() {
             // Крафт открывается с тем станком, который рядом СЕЙЧАС:
@@ -997,8 +1048,8 @@ void UiSystem::drawPauseMenu(player::Player& player) {
     }
 
     // ---- Выход: необратимо, поэтому в опасном виде и с вопросом ----
-    {
-        const Rect r = cell(COLS - 1, ROWS - 1);
+    if (const Rect r{ topRow.x + topRow.w - exitW, topRow.y,
+                      exitW, topRow.h }; visible(r)) {
         const int idx = ui_.pushInteractiveRect(r, [this]() {
             askConfirm(T(StrKey::Menu_Quit), T(StrKey::Menu_Quit),
                        [this]() { if (onQuit) onQuit(); });
@@ -1801,45 +1852,89 @@ void UiSystem::drawSkillTreeScreen(player::Player& player) {
     auto* tree = player.skillTree();
     if (!tree) return;
 
-    char ptsBuf[64];
-    std::snprintf(ptsBuf, sizeof(ptsBuf), cfg::tr("Skill Points: %d"), tree->unspentPoints);
-    ui_.text(ptsBuf, (float)screenW_ - 340.f, 24.f, 2.f,
-             tree->unspentPoints > 0 ? rgba(255, 220, 100, 255) : COL_WHITE);
-
     drawCloseButton([this]() { screen = Screen::Hud; });
 
-    const f32 colW = (f32)screenW_ * 0.30f;
-    const f32 gap  = (f32)screenW_ * 0.02f;
-    const f32 totalW = colW * 3.f + gap * 2.f;
-    const f32 x0 = ((f32)screenW_ - totalW) * 0.5f;
+    // Сколько очков осталось — в строке заголовка, слева от кнопки
+    // закрытия.
+    //
+    // Стояло это по `screenW_ - 340.f` от верха, то есть на кнопке
+    // закрытия при узком экране и в пустоте при широком.
+    {
+        const Rect r = layout_.titleAction(POINTS_LABEL_W_DP);
+        char ptsBuf[64];
+        std::snprintf(ptsBuf, sizeof(ptsBuf), cfg::tr("Skill Points: %d"),
+                      tree->unspentPoints);
+        const f32 tw = ui_.textWidth(ptsBuf, theme::TEXT_LABEL);
+        ui_.text(ptsBuf, r.x + r.w - tw,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f,
+                 theme::TEXT_LABEL,
+                 tree->unspentPoints > 0 ? theme::Accent : theme::TextPrimary);
+    }
 
-    const f32 nodeH = (f32)screenH_ * 0.062f;
-    const f32 nodeGap = (f32)screenH_ * 0.012f;
-    const f32 colTop = 150.f;
+    // Три столбца ветвей.
+    //
+    // Раньше столбцы считались от ширины экрана и начинались с
+    // постоянных 150 точек сверху: на 1280x720 шапки ветвей
+    // ложились на заголовок экрана, а третий столбец накрывал
+    // кнопку закрытия — экран нельзя было закрыть.
+    const Rect area = layout_.menuArea();
+    const f32 gap   = layout_.dp(theme::SPACE_M_DP);
+    const f32 colW  = (area.w - gap * 2.f) / 3.f;
+    const f32 headH = layout_.dp(theme::SPACE_XXL_DP);
 
-    SkillBranch branches[3] = {
+    const SkillBranch branches[3] = {
         SkillBranch::Strength, SkillBranch::Agility, SkillBranch::Wisdom,
     };
     const char* branchNames[3] = { cfg::tr("STRENGTH"), cfg::tr("AGILITY"),
-                                  cfg::tr("WISDOM") };
+                                   cfg::tr("WISDOM") };
     UiColor branchColors[3] = {
         rgba(220, 80, 60, 255),
         rgba(80, 200, 80, 255),
         rgba(80, 140, 240, 255),
     };
 
+    // Сколько узлов в самой длинной ветви — столько рядов и считаем.
+    u16 maxNodes = 1;
     for (int b = 0; b < 3; ++b) {
-        const f32 cx = x0 + b * (colW + gap);
-        ui_.rect(cx, colTop - 40.f, colW, 32.f, branchColors[b]);
-        f32 tw = ui_.textWidth(branchNames[b], 2.f);
-        ui_.text(branchNames[b], cx + (colW - tw) * 0.5f, colTop - 36.f, 2.f, COL_WHITE);
+        u16 n = 0;
+        skillTree().nodesInBranch(branches[b], n);
+        if (n > maxNodes) maxNodes = n;
+    }
+
+    // Восемь узлов в столбце не помещаются ни на один телефон в
+    // портретной высоте 720: ряд ниже цели касания делать нельзя, а
+    // восемь целей касания — это 384 точки при 200 доступных.
+    // Поэтому столбцы прокручиваются, все три разом: это
+    // параллельные списки одной длины.
+    const Rect rows{ area.x, area.y + headH + gap,
+                     area.w, area.h - headH - gap };
+    const auto grid = layout_.cardGrid(rows, 3, theme::TOUCH_MIN_DP);
+
+    skillScroll.setContentHeight((f32)maxNodes * grid.rowStride(),
+                                 (f32)grid.rowsVisible() * grid.rowStride());
+    feedScrollDrag(skillScroll, rows);
+
+    for (int b = 0; b < 3; ++b) {
+        const f32 cx = area.x + (f32)b * (colW + gap);
+
+        ui_.rect(cx, area.y, colW, headH, branchColors[b]);
+        const f32 tw = ui_.textWidth(branchNames[b], theme::TEXT_LABEL);
+        ui_.text(branchNames[b], cx + (colW - tw) * 0.5f,
+                 area.y + (headH - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f,
+                 theme::TEXT_LABEL, COL_WHITE);
 
         u16 nodeCount = 0;
         const auto* nodes = skillTree().nodesInBranch(branches[b], nodeCount);
 
         for (u16 i = 0; i < nodeCount; ++i) {
             const auto& def = nodes[i];
-            f32 ny = colTop + i * (nodeH + nodeGap);
+            Rect nr = grid.at((u32)b, (u32)i);
+            nr.y -= skillScroll.offset;
+            // Ряд, не поместившийся целиком, не рисуется и не ловит
+            // касаний: половина ряда поверх пояса хуже, чем её
+            // отсутствие. То же правило, что у сумки и журнала.
+            if (nr.y < rows.y - 0.5f) continue;
+            if (nr.y + nr.h > rows.y + rows.h + 0.5f) break;
 
             bool maxed   = tree->rank(def.id) >= def.maxRank;
             bool canOpen = tree->canUnlock(def.id);
@@ -1850,7 +1945,6 @@ void UiSystem::drawSkillTreeScreen(player::Player& player) {
             else if (canOpen) bg = rgba(60, 100, 60, 220);
             else              bg = rgba(40, 40, 40, 200);
 
-            Rect nr{ cx, ny, colW, nodeH };
             int ni = ui_.pushInteractiveRect(nr, [tree, id = def.id]() {
                 tree->unlock(id);
             });
@@ -1859,13 +1953,17 @@ void UiSystem::drawSkillTreeScreen(player::Player& player) {
             if (pressed) bg = rgba(140, 140, 200, 255);
 
             ui_.rect(nr.x, nr.y, nr.w, nr.h, bg);
-            ui_.rectOutline(nr.x, nr.y, nr.w, nr.h, 2.f, COL_BLACK);
+            ui_.rectOutline(nr.x, nr.y, nr.w, nr.h,
+                            layout_.dp(theme::STROKE_DP), COL_BLACK);
 
             char label[96];
             std::snprintf(label, sizeof(label), "%s  [%u/%u]",
-                          cfg::tr(def.name), (unsigned)rank, (unsigned)def.maxRank);
-            ui_.text(label, nr.x + 8.f, nr.y + 6.f, 1.6f,
-                     canOpen || maxed ? COL_WHITE : rgba(160,160,160,255));
+                          cfg::tr(def.name), (unsigned)rank,
+                          (unsigned)def.maxRank);
+            ui_.text(label, nr.x + layout_.dp(theme::SPACE_S_DP),
+                     nr.y + (nr.h - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f,
+                     theme::TEXT_LABEL,
+                     canOpen || maxed ? COL_WHITE : rgba(160, 160, 160, 255));
         }
     }
 }
@@ -2378,11 +2476,11 @@ void UiSystem::drawReputationScreen(player::Player& player) {
 
     drawCloseButton([this]() { screen = Screen::Hud; });
 
-    const f32 panelX = 80.f;
-    const f32 panelY = 150.f;
-    const f32 panelW = (f32)screenW_ - 160.f;
-    const f32 rowH  = layout_.dp(theme::TOUCH_REGULAR_DP);
-    const f32 gap   = 14.f;
+    // Ряды фракций — в области меню, а не от постоянных 80 и 150
+    // точек: пять рядов по 56 dp плюс отступы не помещались в
+    // высоту 720 и уезжали на пояс и за край.
+    const Rect area = layout_.menuArea();
+    const auto grid = layout_.cardGrid(area, 1, REP_ROW_H_DP);
 
     using factions::FactionId;
     FactionId facs[] = {
@@ -2404,35 +2502,48 @@ void UiSystem::drawReputationScreen(player::Player& player) {
         return COL_WHITE;
     };
 
-    f32 y = panelY;
+    const f32 pad    = layout_.dp(theme::SPACE_L_DP);
+    const f32 stroke = layout_.dp(theme::STROKE_DP);
+
+    u32 i = 0;
     for (factions::FactionId f : facs) {
+        const Rect r = grid.at(0, i++);
+        // Ряд, не поместившийся целиком, не рисуется: фракций пять,
+        // и на самом тесном экране видно не все. Лучше четыре
+        // целых, чем пятая половиной поверх пояса.
+        if (r.y + r.h > area.y + area.h + 0.5f) break;
+
         i32 v = rep->get(f);
         auto tier = rep->tier(f);
 
-        ui_.rect(panelX, y, panelW, rowH, rgba(30, 40, 55, 240));
-        ui_.rectOutline(panelX, y, panelW, rowH, 2.f, COL_BLACK);
+        ui_.rect(r.x, r.y, r.w, r.h, rgba(30, 40, 55, 240));
+        ui_.rectOutline(r.x, r.y, r.w, r.h, stroke, COL_BLACK);
 
-        ui_.text(factions::factionName(f), panelX + 20.f, y + 12.f, 2.2f, COL_WHITE);
+        const f32 tx = r.x + pad;
+        f32 ty = r.y + pad;
+        ui_.text(factions::factionName(f), tx, ty, theme::TEXT_BODY,
+                 COL_WHITE);
+        ty += ui_.textHeight(theme::TEXT_BODY)
+            + layout_.dp(theme::SPACE_S_DP);
 
         char valueBuf[64];
         std::snprintf(valueBuf, sizeof(valueBuf), "%d  (%s)",
                       v, factions::tierName(tier));
-        ui_.text(valueBuf, panelX + 20.f, y + 44.f, 1.8f, colorFor(tier));
+        ui_.text(valueBuf, tx, ty, theme::TEXT_LABEL, colorFor(tier));
 
         f32 norm = ((f32)v + 1000.f) / 2000.f;
         if (norm < 0.f) norm = 0.f;
         if (norm > 1.f) norm = 1.f;
 
-        const f32 barX = panelX + panelW * 0.55f;
-        const f32 barY = y + 26.f;
-        const f32 barW = panelW * 0.40f;
-        const f32 barH = 20.f;
+        const f32 barW = r.w * 0.40f;
+        const f32 barH = layout_.dp(theme::SPACE_L_DP);
+        const f32 barX = r.x + r.w - pad - barW;
+        const f32 barY = r.y + (r.h - barH) * 0.5f;
 
-        ui_.rect(barX - 2, barY - 2, barW + 4, barH + 4, COL_BLACK);
+        ui_.rect(barX - stroke, barY - stroke,
+                 barW + stroke * 2.f, barH + stroke * 2.f, COL_BLACK);
         ui_.rect(barX, barY, barW, barH, rgba(40, 40, 40, 255));
         ui_.rect(barX, barY, barW * norm, barH, colorFor(tier));
-
-        y += rowH + gap;
     }
 }
 
@@ -2447,8 +2558,15 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
 
     drawCloseButton([this]() { screen = Screen::Hud; });
 
+    // Переключатель режима — в строке заголовка, слева от кнопки
+    // закрытия.
+    //
+    // Стоял он по постоянным (40, 74) — то есть ровно на полосах
+    // здоровья и маны, которые считаются от плотности экрана и
+    // кончаются кто где. Под вкладкой ему тоже не место: единственная
+    // кнопка съедала бы целый ряд, а на 1280x720 это ряд карточек.
     {
-        Rect r{ 40.f, 74.f, 200.f, 50.f };
+        const Rect r = layout_.titleAction(MODE_BUTTON_W_DP);
         const char* label = (saveLoadMode == SaveLoadMode::Save)
             ? cfg::tr("MODE: SAVE") : cfg::tr("MODE: LOAD");
         int idx = ui_.pushInteractiveRect(r, [this]() {
@@ -2464,19 +2582,31 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
     const u32 P = save::SaveSlotManager::NUM_PROFILES;
     const u32 S = save::SaveSlotManager::NUM_SLOTS;
 
-    const f32 gridX = 60.f;
-    const f32 gridY = 150.f;
-    const f32 cellW = ((f32)screenW_ - gridX * 2.f) / (f32)S - 16.f;
-    const f32 cellH = 180.f;
-    const f32 gap   = 16.f;
+    // Сетка считается от области под вкладками, а не от постоянных
+    // чисел: девять ячеек обязаны быть достижимы на любом экране.
+    //
+    // Достижимы — не значит «видны разом». На 1280x720 три ряда
+    // карточек в полный рост не помещаются, и раньше нижний ряд
+    // просто уходил за край экрана: три сохранения из девяти
+    // достать было нельзя. Теперь ряды прокручиваются, а ряд, не
+    // поместившийся целиком, не рисуется и не ловит касаний.
+    const Rect area = layout_.menuArea();
+    const auto grid = layout_.cardGrid(area, S, ui::HudLayout::SAVE_CARD_H_DP);
+    const f32 pad = layout_.dp(theme::SPACE_M_DP);
+    const f32 line = ui_.textHeight(theme::TEXT_LABEL)
+                   + layout_.dp(theme::SPACE_XS_DP);
+
+    saveScroll.setContentHeight((f32)P * grid.rowStride(),
+                                (f32)grid.rowsVisible() * grid.rowStride());
+    feedScrollDrag(saveScroll, area);
 
     for (u32 p = 0; p < P; ++p) {
         for (u32 s = 0; s < S; ++s) {
-            const f32 x = gridX + (f32)s * (cellW + gap);
-            const f32 y = gridY + (f32)p * (cellH + gap);
-
             const auto& meta = slotMeta[p][s];
-            Rect cell{ x, y, cellW, cellH };
+            Rect cell = grid.at(s, p);
+            cell.y -= saveScroll.offset;
+            if (cell.y < area.y - 0.5f) continue;
+            if (cell.y + cell.h > area.y + area.h + 0.5f) continue;
 
             int idx = ui_.pushInteractiveRect(cell, [this, p, s]() {
                 if (saveLoadMode == SaveLoadMode::Save) {
@@ -2492,22 +2622,30 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
                 : (pressed ? rgba(80, 60, 60, 240) : rgba(40, 30, 30, 240));
 
             ui_.rect(cell.x, cell.y, cell.w, cell.h, bg);
-            ui_.rectOutline(cell.x, cell.y, cell.w, cell.h, 2.f,
+            ui_.rectOutline(cell.x, cell.y, cell.w, cell.h,
+                            layout_.dp(theme::STROKE_DP),
                             meta.exists ? rgba(180, 200, 160, 255)
                                         : rgba(120, 100, 100, 255));
 
+            const f32 tx = cell.x + pad;
+            f32 y = cell.y + pad;
+
             char hdr[48];
-            std::snprintf(hdr, sizeof(hdr), "P%u  S%u", p + 1, s + 1);
-            ui_.text(hdr, cell.x + 10.f, cell.y + 8.f, 1.8f, COL_WHITE);
+            std::snprintf(hdr, sizeof(hdr), cfg::tr("P%u  S%u"), p + 1, s + 1);
+            ui_.text(hdr, tx, y, theme::TEXT_LABEL, COL_WHITE);
+            y += line;
 
             if (meta.exists) {
-                ui_.text(meta.worldName, cell.x + 10.f, cell.y + 36.f,
-                         1.6f, rgba(200, 220, 255, 255));
+                ui_.text(meta.worldName, tx, y, theme::TEXT_LABEL,
+                         rgba(200, 220, 255, 255));
+                y += line;
+
                 char buf[64];
                 std::snprintf(buf, sizeof(buf), cfg::tr("Lv %u  |  %us"),
                               meta.playerLevel, meta.playtimeSec);
-                ui_.text(buf, cell.x + 10.f, cell.y + 60.f, 1.5f,
+                ui_.text(buf, tx, y, theme::TEXT_CAPTION,
                          rgba(220, 220, 180, 255));
+                y += line;
 
                 time_t ts = (time_t)(meta.timestampMs / 1000ULL);
                 struct tm* tmv = std::localtime(&ts);
@@ -2519,12 +2657,17 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
                                   cfg::tr(gMonthNames[tmv->tm_mon % 12]),
                                   tmv->tm_year + 1900,
                                   tmv->tm_hour, tmv->tm_min);
-                    ui_.text(dateBuf, cell.x + 10.f, cell.y + 84.f,
-                             1.4f, rgba(200,200,200,255));
+                    ui_.text(dateBuf, tx, y, theme::TEXT_CAPTION,
+                             rgba(200, 200, 200, 255));
                 }
 
-                Rect del{ cell.x + cell.w - 90.f, cell.y + cell.h - 46.f,
-                          80.f, 36.f };
+                // Кнопка удаления — цель касания обычного размера, а
+                // не 36 точек, и прижата к правому нижнему углу
+                // ячейки.
+                const f32 delW = layout_.dp(theme::TOUCH_PRIMARY_DP);
+                const f32 delH = layout_.dp(theme::TOUCH_MIN_DP);
+                Rect del{ cell.x + cell.w - delW - pad,
+                          cell.y + cell.h - delH - pad, delW, delH };
                 int di = ui_.pushInteractiveRect(del, [this, p, s]() {
                     if (onDeleteRequested) onDeleteRequested(p, s);
                 });
@@ -2532,10 +2675,15 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
                 ui_.rect(del.x, del.y, del.w, del.h,
                          dpressed ? rgba(200, 60, 60, 255)
                                   : rgba(120, 40, 40, 220));
-                ui_.rectOutline(del.x, del.y, del.w, del.h, 2.f, COL_BLACK);
-                ui_.text(cfg::tr("DEL"), del.x + 20.f, del.y + 8.f, 1.8f, COL_WHITE);
+                ui_.rectOutline(del.x, del.y, del.w, del.h,
+                                layout_.dp(theme::STROKE_DP), COL_BLACK);
+                const char* dl = cfg::tr("DEL");
+                const f32 dw = ui_.textWidth(dl, theme::TEXT_LABEL);
+                ui_.text(dl, del.x + (del.w - dw) * 0.5f,
+                         del.y + (del.h - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f,
+                         theme::TEXT_LABEL, COL_WHITE);
             } else {
-                ui_.text(cfg::tr("Empty"), cell.x + 10.f, cell.y + 60.f, 2.f,
+                ui_.text(cfg::tr("Empty"), tx, y, theme::TEXT_BODY,
                          rgba(160, 160, 160, 255));
             }
         }
@@ -3168,14 +3316,21 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
     std::vector<crafting::AvailableRecipe> available;
     crafting::gatherAvailable(ctx, available);
 
-    const f32 listX = 40.f;
-    const f32 listY = 130.f;
-    const f32 listW = (f32)screenW_ * 0.55f;
-    const f32 rowH  = layout_.dp(theme::TOUCH_REGULAR_DP);
-    const f32 rowGap = 8.f;
+    // Список слева, подробности справа — та самая форма, ради
+    // которой в раскладке есть paneLeft/paneRight/paneRow. Написаны
+    // они были давно и не звались ни одним экраном: ремесло считало
+    // своё место само, от постоянных 40 и 130 точек и доли ширины
+    // экрана. На 1280x720 первая строка ложилась на полосы
+    // ресурсов, правая панель накрывала кнопку закрытия, а список и
+    // панель заходили на пояс.
+    const Rect listArea = layout_.paneLeft();
+    const Rect pane     = layout_.paneRight();
+    const f32 rowH   = layout_.dp(theme::TOUCH_REGULAR_DP);
+    const f32 rowGap = layout_.dp(theme::SPACE_S_DP);
+    const f32 pad    = layout_.dp(theme::PANEL_PAD_DP);
 
-    i32 visible = (i32)(((f32)screenH_ - listY - 40.f) / (rowH + rowGap));
-    i32 total = (i32)available.size();
+    const i32 visible = (i32)layout_.paneRowsVisible();
+    const i32 total = (i32)available.size();
 
     craftScroll.setContentHeight((f32)total * (rowH + rowGap),
                                  (f32)visible * (rowH + rowGap));
@@ -3183,9 +3338,7 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
     // Список листается и пальцем, а не одними кнопками «вверх» и
     // «вниз»: перетаскивание у Scroll написано с самого начала и не
     // вызывалось отсюда ни разу.
-    feedScrollDrag(craftScroll,
-                   Rect{ listX, listY, listW,
-                         (f32)visible * (rowH + rowGap) });
+    feedScrollDrag(craftScroll, listArea);
 
     i32 start = (i32)(craftScroll.offset / (rowH + rowGap));
 
@@ -3194,8 +3347,11 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
         auto& ar = available[idx];
         const auto& r = *ar.recipe;
 
-        f32 y = listY + i * (rowH + rowGap) - (craftScroll.offset -
-                  start * (rowH + rowGap));
+        Rect rr = layout_.paneRow((u32)i);
+        rr.y -= (craftScroll.offset - (f32)start * (rowH + rowGap));
+        // Строка, не поместившаяся целиком, не рисуется: графической
+        // обрезки здесь нет.
+        if (rr.y + rr.h > listArea.y + listArea.h + 0.5f) break;
 
         bool canNow = (ar.status == crafting::CraftStatus::Ok);
         bool isSel  = (selectedRecipeIdx == idx);
@@ -3204,7 +3360,6 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
             ? rgba(120, 100, 60, 240)
             : (canNow ? rgba(40, 60, 40, 220) : rgba(40, 40, 40, 180));
 
-        Rect rr{ listX, y, listW, rowH };
         int ri = ui_.pushInteractiveRect(rr, [this, idx]() {
             selectedRecipeIdx = idx;
         });
@@ -3213,12 +3368,16 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
         if (pressed) bg = rgba(150, 130, 80, 255);
 
         ui_.rect(rr.x, rr.y, rr.w, rr.h, bg);
-        ui_.rectOutline(rr.x, rr.y, rr.w, rr.h, 2.f,
+        ui_.rectOutline(rr.x, rr.y, rr.w, rr.h,
+                        layout_.dp(theme::STROKE_DP),
                         canNow ? rgba(120, 220, 120, 255) : COL_BLACK);
 
-        ui_.text(items::items().name(r.output.itemId), rr.x + 12.f,
-                 rr.y + 8.f, 2.f,
+        const f32 tx = rr.x + layout_.dp(theme::SPACE_M_DP);
+        f32 ty = rr.y + layout_.dp(theme::SPACE_XS_DP);
+        ui_.text(items::items().name(r.output.itemId), tx, ty,
+                 theme::TEXT_LABEL,
                  canNow ? COL_WHITE : rgba(160, 160, 160, 255));
+        ty += ui_.textHeight(theme::TEXT_LABEL) + layout_.dp(theme::SPACE_XS_DP);
 
         char costLine[256] = {};
         for (usize k = 0; k < r.inputs.size(); ++k) {
@@ -3230,68 +3389,55 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
             std::strncat(costLine, piece,
                          sizeof(costLine) - std::strlen(costLine) - 1);
         }
-        ui_.text(costLine, rr.x + 12.f, rr.y + 36.f, 1.4f,
+        ui_.text(costLine, tx, ty, theme::TEXT_CAPTION,
                  rgba(200, 200, 200, 255));
+        ty += ui_.textHeight(theme::TEXT_CAPTION)
+            + layout_.dp(theme::SPACE_XS_DP);
 
         if (!canNow) {
-            ui_.text(crafting::statusString(ar.status),
-                     rr.x + 12.f, rr.y + 52.f, 1.3f,
-                     rgba(220, 120, 120, 255));
+            ui_.text(crafting::statusString(ar.status), tx, ty,
+                     theme::TEXT_CAPTION, rgba(220, 120, 120, 255));
         }
     }
 
-    if (total > visible) {
-        Rect upBtn{ listX + listW + 10.f, listY, 60.f, 60.f };
-        int ui = ui_.pushInteractiveRect(upBtn, [this]() {
-            craftScroll.offset -= 60.f;
-            craftScroll.clampOffset();
-        });
-        bool up = ui_.isInteractivePressed(ui);
-        ui_.rect(upBtn.x, upBtn.y, upBtn.w, upBtn.h,
-                 up ? rgba(180,180,180,255) : rgba(60,60,60,220));
-        ui_.rectOutline(upBtn.x, upBtn.y, upBtn.w, upBtn.h, 2.f, COL_BLACK);
-        ui_.text("^", upBtn.x + 20.f, upBtn.y + 16.f, 2.f, COL_WHITE);
-
-        Rect downBtn{ listX + listW + 10.f, listY + 70.f, 60.f, 60.f };
-        int di = ui_.pushInteractiveRect(downBtn, [this]() {
-            craftScroll.offset += 60.f;
-            craftScroll.clampOffset();
-        });
-        bool dn = ui_.isInteractivePressed(di);
-        ui_.rect(downBtn.x, downBtn.y, downBtn.w, downBtn.h,
-                 dn ? rgba(180,180,180,255) : rgba(60,60,60,220));
-        ui_.rectOutline(downBtn.x, downBtn.y, downBtn.w, downBtn.h, 2.f, COL_BLACK);
-        ui_.text("v", downBtn.x + 20.f, downBtn.y + 16.f, 2.f, COL_WHITE);
-    }
-
-    // Правая панель
+    // Правая панель — подробности выбранного рецепта.
     {
-        const f32 pX = (f32)screenW_ * 0.62f;
-        const f32 pY = 130.f;
-        const f32 pW = (f32)screenW_ - pX - 40.f;
-        const f32 pH = (f32)screenH_ - pY - 40.f;
+        ui_.rect(pane.x, pane.y, pane.w, pane.h, rgba(30, 25, 20, 240));
+        ui_.rectOutline(pane.x, pane.y, pane.w, pane.h,
+                        layout_.dp(theme::STROKE_DP), COL_BLACK);
 
-        ui_.rect(pX, pY, pW, pH, rgba(30, 25, 20, 240));
-        ui_.rectOutline(pX, pY, pW, pH, 2.f, COL_BLACK);
+        const f32 px = pane.x + pad;
+        f32 py = pane.y + pad;
 
         if (selectedRecipeIdx >= 0 && selectedRecipeIdx < total) {
             auto& ar = available[selectedRecipeIdx];
             const auto& r = *ar.recipe;
 
-            ui_.text(items::items().name(r.output.itemId), pX + 16.f,
-                     pY + 12.f, 2.2f, COL_WHITE);
+            ui_.text(items::items().name(r.output.itemId), px, py,
+                     theme::TEXT_TITLE, COL_WHITE);
+            py += ui_.textHeight(theme::TEXT_TITLE)
+                + layout_.dp(theme::SPACE_M_DP);
 
             char lvlBuf[64];
             std::snprintf(lvlBuf, sizeof(lvlBuf), cfg::tr("Level %u"),
                           (unsigned)r.requiredLevel);
-            ui_.text(lvlBuf, pX + 16.f, pY + 44.f, 1.5f,
+            ui_.text(lvlBuf, px, py, theme::TEXT_CAPTION,
                      rgba(200, 200, 200, 255));
+            py += ui_.textHeight(theme::TEXT_CAPTION)
+                + layout_.dp(theme::SPACE_L_DP);
 
-            ui_.text(T(StrKey::Craft_Ingredients), pX + 16.f, pY + 80.f,
-                     1.8f, rgba(255, 220, 120, 255));
+            ui_.text(T(StrKey::Craft_Ingredients), px, py, theme::TEXT_LABEL,
+                     rgba(255, 220, 120, 255));
+            py += ui_.textHeight(theme::TEXT_LABEL)
+                + layout_.dp(theme::SPACE_M_DP);
 
-            f32 iy = pY + 110.f;
+            const Rect act = layout_.primaryAction();
             for (const auto& in : r.inputs) {
+                // Ниже кнопки действия материалы не пишем: она
+                // стоит на своём месте у низа панели, и список,
+                // доехав до неё, уходил бы под неё.
+                if (py + ui_.textHeight(theme::TEXT_LABEL) > act.y) break;
+
                 u32 have = inv->countOf(in.itemId);
                 bool ok = have >= in.count;
 
@@ -3299,37 +3445,42 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
                 std::snprintf(line, sizeof(line), "%s  %u / %u",
                               items::items().name(in.itemId),
                               (unsigned)have, (unsigned)in.count);
-                ui_.text(line, pX + 24.f, iy, 1.6f,
+                ui_.text(line, px + layout_.dp(theme::SPACE_S_DP), py,
+                         theme::TEXT_LABEL,
                          ok ? rgba(180, 240, 180, 255)
                             : rgba(240, 160, 160, 255));
-                iy += 26.f;
+                py += ui_.textHeight(theme::TEXT_LABEL)
+                    + layout_.dp(theme::SPACE_S_DP);
             }
 
             if (ar.status == crafting::CraftStatus::Ok) {
-                Rect cr{ pX + 16.f, pY + pH - 80.f, pW - 32.f, 60.f };
-                int ci = ui_.pushInteractiveRect(cr, [this, r]() {
+                int ci = ui_.pushInteractiveRect(act, [this, r]() {
                     if (onCraft) onCraft(r.id);
                 });
                 bool cpress = ui_.isInteractivePressed(ci);
                 UiColor c = cpress ? rgba(80, 200, 80, 255)
                                    : rgba(40, 120, 40, 255);
-                ui_.rect(cr.x, cr.y, cr.w, cr.h, c);
-                ui_.rectOutline(cr.x, cr.y, cr.w, cr.h, 2.f, COL_BLACK);
-                float tw = ui_.textWidth(T(StrKey::Craft_Button), 2.4f);
+                ui_.rect(act.x, act.y, act.w, act.h, c);
+                ui_.rectOutline(act.x, act.y, act.w, act.h,
+                                layout_.dp(theme::STROKE_DP), COL_BLACK);
+                const f32 tw = ui_.textWidth(T(StrKey::Craft_Button),
+                                             theme::TEXT_BODY);
                 ui_.text(T(StrKey::Craft_Button),
-                         cr.x + (cr.w - tw) * 0.5f, cr.y + 16.f,
-                         2.4f, COL_WHITE);
+                         act.x + (act.w - tw) * 0.5f,
+                         act.y + (act.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                         theme::TEXT_BODY, COL_WHITE);
             } else {
-                Rect cr{ pX + 16.f, pY + pH - 80.f, pW - 32.f, 60.f };
-                ui_.rect(cr.x, cr.y, cr.w, cr.h, rgba(60, 40, 40, 255));
-                ui_.rectOutline(cr.x, cr.y, cr.w, cr.h, 2.f, COL_BLACK);
-                float tw = ui_.textWidth(crafting::statusString(ar.status), 1.8f);
-                ui_.text(crafting::statusString(ar.status),
-                         cr.x + (cr.w - tw) * 0.5f, cr.y + 22.f,
-                         1.8f, rgba(220, 160, 160, 255));
+                ui_.rect(act.x, act.y, act.w, act.h, rgba(60, 40, 40, 255));
+                ui_.rectOutline(act.x, act.y, act.w, act.h,
+                                layout_.dp(theme::STROKE_DP), COL_BLACK);
+                const char* why = crafting::statusString(ar.status);
+                const f32 tw = ui_.textWidth(why, theme::TEXT_LABEL);
+                ui_.text(why, act.x + (act.w - tw) * 0.5f,
+                         act.y + (act.h - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f,
+                         theme::TEXT_LABEL, rgba(220, 160, 160, 255));
             }
         } else {
-            ui_.text(T(StrKey::Craft_Select), pX + 16.f, pY + 40.f, 2.f,
+            ui_.text(T(StrKey::Craft_Select), px, py, theme::TEXT_BODY,
                      rgba(180, 180, 180, 255));
         }
     }
@@ -3416,7 +3567,6 @@ void UiSystem::drawTradeScreen(player::Player& player) {
                 const int c = shown % cols, rrow = shown / cols;
                 ++shown;
 
-                const auto& def = items::items().get(e.itemId);
                 const auto price = trade::priceFor(e.itemId, e.basePrice, tier,
                                                    e.isBuyable, e.isSellable);
 
@@ -3447,7 +3597,8 @@ void UiSystem::drawTradeScreen(player::Player& player) {
 
                 char lbl[64];
                 std::snprintf(lbl, sizeof(lbl), "%s x%u",
-                              def.name, (unsigned)e.stock);
+                              items::items().name(e.itemId),
+                              (unsigned)e.stock);
                 ui_.text(lbl, rr.x + 6.f, rr.y + 8.f, 1.4f,
                          affordable ? COL_WHITE : rgba(130, 130, 130, 255));
 
@@ -3495,7 +3646,8 @@ void UiSystem::drawTradeScreen(player::Player& player) {
 
                 char lbl[64];
                 std::snprintf(lbl, sizeof(lbl), "%s x%u",
-                              def.name, (unsigned)s.count);
+                              items::items().name(s.itemId),
+                              (unsigned)s.count);
                 ui_.text(lbl, rr.x + 6.f, rr.y + 8.f, 1.4f, COL_WHITE);
 
                 u32 sellPrice = def.value / 2;
@@ -3522,60 +3674,85 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
     auto* wal = player.wallet();
     if (!inv) return;
 
-    // Текущее оружие
+    const Rect body     = layout_.menuBelowTabs();
+    const Rect listArea = layout_.paneLeftIn(body);
+    const Rect pane     = layout_.paneRightIn(body);
+    const f32 rowH   = layout_.dp(theme::TOUCH_REGULAR_DP);
+    const f32 rowGap = layout_.dp(theme::SPACE_S_DP);
+    const f32 pad    = layout_.dp(theme::PANEL_PAD_DP);
+
+    // Что в руках и сколько золота — одной строкой над панелями, а
+    // не по постоянным (40, 110) и (screenW - 40, 24): там они
+    // ложились на полосы ресурсов и на кнопку закрытия. Одной, а не
+    // двумя половинами: правая половина приходится ровно на столбец
+    // навигации.
     {
+        const Rect r = layout_.menuTab(0, 1);
+        const f32 ty = r.y + (r.h - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f;
         const auto& wdef = combat::weapons().get(player.equipped.weaponId);
-        ui_.text(cfg::tr("Equipped:"), 40.f, 110.f, 1.8f, rgba(200, 200, 200, 255));
-        ui_.text(wdef.name ? wdef.name : "-", 200.f, 110.f, 2.f, COL_WHITE);
 
+        char line[192];
+        int at = std::snprintf(line, sizeof(line), "%s %s",
+                               cfg::tr("Equipped:"),
+                               wdef.name ? cfg::tr(wdef.name) : "-");
         if (player.equipped.enchant.id != combat::EnchantmentId::None) {
-            const char* en = combat::enchantmentName(player.equipped.enchant.id);
-            char buf[64];
-            std::snprintf(buf, sizeof(buf), cfg::tr("Enchant: %s Lv%u"),
-                          en, player.equipped.enchant.level);
-            ui_.text(buf, 200.f, 140.f, 1.6f, rgba(180, 120, 240, 255));
+            char ench[64];
+            std::snprintf(ench, sizeof(ench), cfg::tr("Enchant: %s Lv%u"),
+                          combat::enchantmentName(player.equipped.enchant.id),
+                          player.equipped.enchant.level);
+            at += std::snprintf(line + at, sizeof(line) - (usize)at,
+                                "   %s", ench);
         }
-    }
-
-    if (wal) {
-        char gbuf[32];
-        wal->format(gbuf, sizeof(gbuf));
-        float tw = ui_.textWidth(gbuf, 2.f);
-        ui_.text(gbuf, (float)screenW_ - tw - 40.f, 24.f, 2.f,
-                 rgba(255, 220, 100, 255));
+        if (wal) {
+            char gbuf[32];
+            wal->format(gbuf, sizeof(gbuf));
+            std::snprintf(line + at, sizeof(line) - (usize)at, "   %s", gbuf);
+        }
+        ui_.text(line, r.x, ty, theme::TEXT_LABEL, COL_WHITE);
     }
 
     const auto& recipes = world::enchantRecipes().all();
-    const f32 listX = 40.f;
-    const f32 listY = 200.f;
-    const f32 listW = (f32)screenW_ * 0.55f;
-    const f32 rowH  = layout_.dp(theme::TOUCH_REGULAR_DP);
-    const f32 rowGap = 8.f;
-    i32 total = (i32)recipes.size();
+    const i32 total = (i32)recipes.size();
+    const i32 visible = (i32)layout_.paneRowsVisible();
 
-    for (i32 i = 0; i < total; ++i) {
-        const auto& r = recipes[(usize)i];
-        f32 y = listY + i * (rowH + rowGap);
-        if (y + rowH > (f32)screenH_ - 40.f) break;
+    enchantScroll.setContentHeight((f32)total * (rowH + rowGap),
+                                   (f32)visible * (rowH + rowGap));
+    feedScrollDrag(enchantScroll, listArea);
 
-        bool isSel = (enchantCtx.selectedIdx == i);
+    const i32 start = (i32)(enchantScroll.offset / (rowH + rowGap));
+
+    for (i32 i = 0; i < visible && (start + i) < total; ++i) {
+        const i32 idxR = start + i;
+        const auto& r = recipes[(usize)idxR];
+
+        Rect rr = layout_.paneRow((u32)i);
+        rr.y -= (enchantScroll.offset - (f32)start * (rowH + rowGap));
+        if (rr.y + rr.h > listArea.y + listArea.h + 0.5f) break;
+
+        bool isSel = (enchantCtx.selectedIdx == idxR);
         UiColor bg = isSel ? rgba(120, 100, 60, 240) : rgba(50, 40, 60, 220);
 
-        Rect rr{ listX, y, listW, rowH };
-        int idx = ui_.pushInteractiveRect(rr, [this, i]() {
-            enchantCtx.selectedIdx = i;
+        int idx = ui_.pushInteractiveRect(rr, [this, idxR]() {
+            enchantCtx.selectedIdx = idxR;
         });
         if (ui_.isInteractivePressed(idx)) bg = rgba(140, 120, 80, 255);
 
         ui_.rect(rr.x, rr.y, rr.w, rr.h, bg);
-        ui_.rectOutline(rr.x, rr.y, rr.w, rr.h, 2.f, COL_BLACK);
+        ui_.rectOutline(rr.x, rr.y, rr.w, rr.h,
+                        layout_.dp(theme::STROKE_DP), COL_BLACK);
 
-        ui_.text(r.name ? cfg::tr(r.name) : "?", rr.x + 12.f, rr.y + 8.f, 2.f, COL_WHITE);
+        const f32 tx = rr.x + layout_.dp(theme::SPACE_M_DP);
+        f32 ty = rr.y + layout_.dp(theme::SPACE_XS_DP);
+
+        ui_.text(r.name ? cfg::tr(r.name) : "?", tx, ty, theme::TEXT_LABEL,
+                 COL_WHITE);
+        ty += ui_.textHeight(theme::TEXT_LABEL) + layout_.dp(theme::SPACE_XS_DP);
 
         char cost[64];
         std::snprintf(cost, sizeof(cost), cfg::tr("%u gold"), r.goldCost);
-        ui_.text(cost, rr.x + 12.f, rr.y + 36.f, 1.4f,
-                 rgba(255, 220, 100, 255));
+        ui_.text(cost, tx, ty, theme::TEXT_CAPTION, rgba(255, 220, 100, 255));
+        ty += ui_.textHeight(theme::TEXT_CAPTION)
+            + layout_.dp(theme::SPACE_XS_DP);
 
         char mats[192] = {};
         for (usize k = 0; k < r.materials.size(); ++k) {
@@ -3585,29 +3762,28 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
                           items::items().name(m.itemId), (unsigned)m.count);
             std::strncat(mats, piece, sizeof(mats) - std::strlen(mats) - 1);
         }
-        ui_.text(mats, rr.x + 12.f, rr.y + 52.f, 1.3f,
-                 rgba(200, 200, 200, 255));
+        ui_.text(mats, tx, ty, theme::TEXT_CAPTION, rgba(200, 200, 200, 255));
     }
 
-    // Правая панель — кнопка ENCHANT
+    // Правая панель — что выбрано и кнопка «зачаровать».
     {
-        const f32 pX = (f32)screenW_ * 0.62f;
-        const f32 pY = 200.f;
-        const f32 pW = (f32)screenW_ - pX - 40.f;
-        const f32 pH = (f32)screenH_ - pY - 40.f;
+        ui_.rect(pane.x, pane.y, pane.w, pane.h, rgba(30, 20, 40, 240));
+        ui_.rectOutline(pane.x, pane.y, pane.w, pane.h,
+                        layout_.dp(theme::STROKE_DP), COL_BLACK);
 
-        ui_.rect(pX, pY, pW, pH, rgba(30, 20, 40, 240));
-        ui_.rectOutline(pX, pY, pW, pH, 2.f, COL_BLACK);
+        const f32 px = pane.x + pad;
+        const f32 py = pane.y + pad;
 
         if (enchantCtx.selectedIdx >= 0 &&
-            enchantCtx.selectedIdx < (i32)total)
+            enchantCtx.selectedIdx < total)
         {
             const auto& r = recipes[(usize)enchantCtx.selectedIdx];
-            ui_.text(r.name ? cfg::tr(r.name) : "?", pX + 16.f, pY + 12.f, 2.2f, COL_WHITE);
+            ui_.text(r.name ? cfg::tr(r.name) : "?", px, py,
+                     theme::TEXT_TITLE, COL_WHITE);
 
             // Зачарование необратимо: оно тратит предмет и золото и
             // насовсем меняет оружие. Такое спрашивает.
-            const Rect cr = layout_.primaryAction();
+            const Rect cr = layout_.primaryActionIn(pane);
             const char* label = r.name ? cfg::tr(r.name) : cfg::tr("ENCHANT");
             const int ci = ui_.pushInteractiveRect(cr,
                 [this, i = enchantCtx.selectedIdx, label]() {
@@ -3628,7 +3804,7 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
                      theme::TEXT_BODY,
                      cpress ? theme::Ink : theme::TextPrimary);
         } else {
-            ui_.text(cfg::tr("Select a recipe"), pX + 16.f, pY + 40.f, 2.f,
+            ui_.text(cfg::tr("Select a recipe"), px, py, theme::TEXT_BODY,
                      rgba(180, 180, 180, 255));
         }
     }
