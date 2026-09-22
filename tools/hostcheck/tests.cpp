@@ -7394,6 +7394,77 @@ void testLostGoldSurvivesSave() {
 }
 
 // ------------------------------------------------------------
+// Указатель на оставленное доходит до кадра.
+//
+// Проверяется НАРИСОВАННОЕ: в этом проекте уже оставались написанные
+// и не подключённые вещи, и «функция считает верный угол» об этом
+// ничего не говорит.
+// ------------------------------------------------------------
+void testLostGoldMarkOnScreen() {
+    group("HUD: указатель на оставленное золото");
+
+    constexpr i32 W = 1280, H = 720, DPI = 320;
+    const config::Settings savedCfg = config::settingsConst();
+    config::settings() = config::Settings{};
+
+    world::blocks();
+    items::items();
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+    world::ChunkManager wd(0x901Dull, 1);
+
+    auto ringVerts = [&]() {
+        ui::UiSystem sys;
+        sys.setDensityDpi(DPI);
+        sys.setScreenSize(W, H);
+        sys.screen = ui::Screen::Hud;
+        sys.setViewYaw(0.f);
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, wd, 60.f);
+        const f32 rad = sys.layout().hurtRingRadius();
+        const f32 cx = (f32)W * 0.5f, cy = (f32)H * 0.5f;
+        u32 n = 0;
+        for (const ui::UiVertex& v : sys.frameVertices()) {
+            const f32 px = (v.pos.x * 0.5f + 0.5f) * (f32)W;
+            const f32 py = (v.pos.y * 0.5f + 0.5f) * (f32)H;
+            const f32 dx = px - cx, dy = py - cy;
+            const f32 d = std::sqrt(dx * dx + dy * dy);
+            if (d > rad * 0.8f && d < rad * 1.2f) ++n;
+        }
+        return n;
+    };
+
+    const u32 quiet = ringVerts();
+
+    items::ItemStack coins{};
+    coins.itemId = items::ITEM_GOLD_COIN;
+    coins.count  = 60;
+    const ecs::Entity e = items::spawnPickup(
+        reg, glm::vec3(0.f, 64.f, -20.f), coins);
+
+    const u32 decaying = ringVerts();
+    if (auto* p = reg.get<items::ItemPickup>(e)) p->waits = true;
+    const u32 waitingFar = ringVerts();
+
+    char m[160];
+    std::snprintf(m, sizeof(m),
+                  "вершин в кольце: пусто %u, истлевающее %u, ждущее %u",
+                  quiet, decaying, waitingFar);
+    check(true, m);
+    check(decaying == quiet, "истлевающий предмет указателя не даёт");
+    check(waitingFar > quiet, "а оставленное на месте гибели — даёт");
+
+    // Пришёл — указатель гаснет: узелок виден глазами.
+    if (auto* tf = reg.get<ecs::Transform>(e))
+        tf->position = glm::vec3(0.f, 64.f, -1.f);
+    check(ringVerts() == quiet, "у самого узелка указатель не нужен");
+
+    config::settings() = savedCfg;
+}
+
+// ------------------------------------------------------------
 void testSaveKeepsQuestsWithoutText() {
     group("сохранение: задания без текста, глава остаётся главой");
 
@@ -25916,6 +25987,7 @@ int main() {
     testDeathCostsGold();
     testCoinsGoToTheWallet();
     testLostGoldSurvivesSave();
+    testLostGoldMarkOnScreen();
     testVillageRemembers();
     testTurnInLightsTheVillage();
     testVillageDeedSurvivesSave();
