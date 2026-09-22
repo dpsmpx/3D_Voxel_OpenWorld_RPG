@@ -3,6 +3,7 @@
  * @brief Предметы: определения, инвентарь, лут, подбор, использование.
  */
 #include "item_pickup.h"
+#include "currency.h"
 #include "../quests/quest.h"
 #include "../audio/audio_events.h"
 #include "../ecs/components.h"
@@ -65,7 +66,7 @@ void updatePickups(world::ChunkManager& world,
         auto* v  = reg.get<Velocity>(e);
         if (!p || !tf || !v) continue;
 
-        p->lifeRemaining -= dt;
+        if (!p->waits) p->lifeRemaining -= dt;
         if (p->lifeRemaining <= 0.f) {
             toRemove.push_back(e);
             continue;
@@ -131,6 +132,23 @@ void updatePickups(world::ChunkManager& world,
         d.y *= 0.5f;
         f32 d2 = glm::dot(d, d);
         if (d2 > p->pickupRadius * p->pickupRadius) continue;
+
+        // ---- Монеты идут в КОШЕЛЁК ----
+        //
+        // Иначе они ложились в сумку предметом, которым нельзя ни
+        // заплатить, ни воспользоваться: категория Currency в
+        // item_use объявлена неиспользуемой. А золото в мире уже
+        // лежало — тайник под руинами выдаёт от шестидесяти до
+        // двухсот монет, и это была обещанная награда, на которую
+        // нельзя купить ничего.
+        if (p->stack.itemId == ITEM_GOLD_COIN) {
+            if (auto* wal = reg.get<Wallet>(playerEntity)) {
+                wal->receive((u64)p->stack.count);
+                audio::events().pickupItem();
+                toRemove.push_back(e);
+            }
+            continue;
+        }
 
         // Вид предмета запоминаем до того, как стек опустеет.
         const u16 pickedId = p->stack.itemId;

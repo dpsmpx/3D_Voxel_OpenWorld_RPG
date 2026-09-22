@@ -623,6 +623,8 @@ private:
     void drawQuestTracker(player::Player& player);
     /// Отметки по краю экрана: откуда игрока бьют.
     void drawHurtMarks(player::Player& player);
+    /// Указатель на оставленное там, где игрок пал.
+    void drawLostGoldMark(player::Player& player);
     /// Подробности выбранного задания: цель, прогресс, награда.
     void drawQuestDetails(player::Player& player);
     void drawReputationScreen(player::Player& player);

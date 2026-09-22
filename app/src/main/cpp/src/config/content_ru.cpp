@@ -462,6 +462,8 @@ const ContentPair CONTENT_RU[] = {
     { "%u gold",                "%u золота" },
     { "ENCHANT",                "ЗАЧАРОВАТЬ" },
     { "Select a recipe",        "Выберите рецепт" },
+    { "Lost %llu gold — it waits where you fell",
+      "Потеряно %llu золота — оно ждёт там, где вы пали" },
     { "g",                      "з" },
     { "P%u  S%u",               "П%u  С%u" },
     { "INV",                    "СУМКА" },

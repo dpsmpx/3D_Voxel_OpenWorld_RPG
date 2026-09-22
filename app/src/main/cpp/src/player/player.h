@@ -241,6 +241,9 @@ public:
     bool enteredLair = false;             ///< поднят на кадре входа
     world::LairKind lairKind = world::LairKind::None; ///< где стоим
     bool justDied      = false;   ///< поднят на кадре смерти
+    /// Сколько золота осталось на месте гибели. Нужно кадру
+    /// смерти, чтобы сказать игроку цену вслух.
+    u64  lostGold      = 0;
     bool justRespawned = false;   ///< поднят на кадре возвращения
     f32  deathTimer    = 0.f;     ///< сколько лежать осталось
     bool dead          = false;

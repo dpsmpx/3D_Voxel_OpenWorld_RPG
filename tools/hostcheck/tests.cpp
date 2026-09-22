@@ -7149,6 +7149,171 @@ void testVillageDeedSurvivesSave() {
 }
 
 // ------------------------------------------------------------
+// Смерть стоит.
+//
+// Раньше она не стоила ничего: через две секунды игрок оказывался у
+// колодца с полными полосами, сброшенной усталостью и снятыми
+// статусами. Она была даже ПОЛЕЗНА — быстрый способ вернуться домой
+// подлечившись. А значит, замах, от которого можно уйти,
+// выносливость, парирование и рывок не имели ставки.
+//
+// Теперь половина носимого золота остаётся там, где игрок пал, и
+// ждёт его столько, сколько нужно.
+// ------------------------------------------------------------
+void testDeathCostsGold() {
+    group("смерть: половина золота остаётся там, где пал");
+
+    world::blocks();
+    items::items();
+    jobs::gJobs.start(2);
+
+    world::ChunkManager wd(0xDEA74ull, 1);
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 80.f, 0.f));
+
+    auto* wal = pl.wallet();
+    check(wal != nullptr, "кошелёк у игрока есть");
+    if (!wal) { jobs::gJobs.stop(); return; }
+    // Игрок начинает не с нуля, и сколько именно — дело инициализации,
+    // а не этой проверки: берём, сколько есть, и добавляем сверху.
+    wal->receive(500);
+    const u64 carried = wal->gold;
+
+    auto pickupsWaiting = [&]() {
+        u32 n = 0;
+        auto& pool = reg.pool<items::ItemPickup>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            const auto* p = pool.get(pool.entityAt((u32)i));
+            if (p && p->waits) ++n;
+        }
+        return n;
+    };
+
+    check(pickupsWaiting() == 0, "до смерти ждущих узелков нет");
+
+    // ---- Убиваем ----
+    auto* hp = reg.get<ecs::Health>(pl.entity());
+    check(hp != nullptr, "здоровье у игрока есть");
+    if (!hp) { jobs::gJobs.stop(); return; }
+    hp->current = 0.f;
+
+    char m[200];
+    pl.update(wd, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+
+    std::snprintf(m, sizeof(m), "в кошельке после смерти %llu из %llu",
+                  (unsigned long long)wal->gold,
+                  (unsigned long long)carried);
+    check(true, m);
+    check(wal->gold == carried - carried / 2, "половина золота списана");
+    check(pl.lostGold == carried / 2, "и игроку названа ровно эта цена");
+    check(pickupsWaiting() == 1, "а на месте гибели остался узелок");
+
+    // ---- Узелок не истлевает ----
+    //
+    // Обычный выпавший предмет живёт пять минут. Погибший в дальнем
+    // логове за пять минут не успеет и полпути.
+    {
+        auto& pool = reg.pool<items::ItemPickup>();
+        const items::ItemPickup* waiting = nullptr;
+        for (usize i = 0; i < pool.size(); ++i) {
+            const auto* p = pool.get(pool.entityAt((u32)i));
+            if (p && p->waits) waiting = p;
+        }
+        check(waiting != nullptr, "узелок найден");
+        if (waiting) {
+            check(waiting->stack.itemId == items::ITEM_GOLD_COIN,
+                  "в нём монеты");
+            check(waiting->stack.count == (u16)(carried / 2),
+                  "и ровно потерянное");
+        }
+
+        // Прогоняем больше времени, чем живёт обычный предмет.
+        const glm::vec3 far{ 1000.f, 80.f, 1000.f };
+        for (int i = 0; i < 400; ++i)
+            items::updatePickups(wd, reg, pl.entity(), far, 1.f);
+
+        check(pickupsWaiting() == 1,
+              "и через четыреста секунд он всё ещё ждёт");
+    }
+
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+// Монеты идут в кошелёк, а не в сумку.
+//
+// Тайник под руинами выдаёт от шестидесяти до двухсот монет — и они
+// ложились в сумку предметом, которым нельзя ни заплатить, ни
+// воспользоваться: категория Currency в item_use объявлена
+// неиспользуемой. Обещанная награда, на которую нельзя купить
+// ничего, — ровно тот же дефект, что был у золота за квест.
+// ------------------------------------------------------------
+void testCoinsGoToTheWallet() {
+    group("золото: монеты с земли попадают в кошелёк");
+
+    world::blocks();
+    items::items();
+    jobs::gJobs.start(2);
+
+    world::ChunkManager wd(0xC01A4ull, 1);
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 80.f, 0.f));
+
+    auto* wal = pl.wallet();
+    auto* inv = pl.inventory();
+    check(wal && inv, "кошелёк и сумка у игрока есть");
+    if (!wal || !inv) { jobs::gJobs.stop(); return; }
+
+    const u64 before = wal->gold;
+    const u32 bagBefore = inv->countOf(items::ITEM_GOLD_COIN);
+
+    auto* tf = reg.get<ecs::Transform>(pl.entity());
+    check(tf != nullptr, "положение игрока известно");
+    if (!tf) { jobs::gJobs.stop(); return; }
+
+    // Мир вокруг игрока должен быть порождён: подбор идёт после
+    // физики, а та в непорождённом мире считает, что предмет
+    // упёрся в стену, и до подбора дело не доходит.
+    {
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            wd.update(tf->position);
+            ready = wd.isReadyAt((i32)tf->position.x, (i32)tf->position.z) &&
+                    wd.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир вокруг игрока порождён");
+        if (!ready) { jobs::gJobs.stop(); return; }
+        tf->position.y = (f32)wd.generator().surfaceHeight(
+                             (i32)tf->position.x, (i32)tf->position.z) + 1.f;
+    }
+
+    items::ItemStack coins{};
+    coins.itemId = items::ITEM_GOLD_COIN;
+    coins.count  = 120;
+    const ecs::Entity e = items::spawnPickup(reg, tf->position, coins);
+    if (auto* p = reg.get<items::ItemPickup>(e)) p->pickDelay = 0.f;
+
+    for (int i = 0; i < 60; ++i)
+        items::updatePickups(wd, reg, pl.entity(), tf->position, 1.f / 60.f);
+
+    char m[200];
+    std::snprintf(m, sizeof(m), "кошелёк %llu -> %llu, в сумке монет %u",
+                  (unsigned long long)before, (unsigned long long)wal->gold,
+                  inv->countOf(items::ITEM_GOLD_COIN));
+    check(true, m);
+    check(wal->gold == before + 120, "золото доехало до кошелька");
+    check(inv->countOf(items::ITEM_GOLD_COIN) == bagBefore,
+          "и не осело в сумке мёртвым грузом");
+
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testSaveKeepsQuestsWithoutText() {
     group("сохранение: задания без текста, глава остаётся главой");
 
@@ -25668,6 +25833,8 @@ int main() {
     testFirstStepsGiveAGoal();
     testOneLanguageEverywhere();
     testSaveKeepsQuestsWithoutText();
+    testDeathCostsGold();
+    testCoinsGoToTheWallet();
     testVillageRemembers();
     testTurnInLightsTheVillage();
     testVillageDeedSurvivesSave();

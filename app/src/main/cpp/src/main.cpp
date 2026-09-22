@@ -1619,9 +1619,21 @@ struct Engine {
                 // Смерть, возвращение и запомненный колодец — игрок
                 // должен узнать о каждом.
                 if (ui) {
-                    if (player->justDied)
-                        ui->notify(cfg::T(cfg::StrKey::Notif_Died),
-                                   ui::theme::NotifyPriority::High);
+                    if (player->justDied) {
+                        // Цена поражения называется вслух и сразу:
+                        // молча отнятое золото читается как поломка,
+                        // а не как правило игры.
+                        if (player->lostGold > 0) {
+                            ui->notify(cfg::trf("Lost %llu gold — it waits "
+                                                "where you fell",
+                                                (unsigned long long)player->lostGold),
+                                       ui::theme::NotifyPriority::High);
+                        } else {
+                            ui->notify(cfg::T(cfg::StrKey::Notif_Died),
+                                       ui::theme::NotifyPriority::High);
+                        }
+                        player->lostGold = 0;
+                    }
                     if (player->justRespawned)
                         ui->notify(cfg::T(cfg::StrKey::Notif_Respawned),
                                    ui::theme::NotifyPriority::High);
