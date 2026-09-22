@@ -161,6 +161,7 @@ void serializePickups(ByteWriter& w, ecs::Registry& reg) {
         w.writeU16(p->stack.itemId);
         w.writeU16(p->stack.count);
         w.writeF32(p->lifeRemaining);
+        w.writeU8(p->waits ? 1 : 0);
     }
 }
 
@@ -189,6 +190,8 @@ bool deserializePickups(ByteReader& r, ecs::Registry& reg) {
         if (!r.u16v(id)) return false;
         if (!r.u16v(cnt)) return false;
         if (!r.f32v(life)) return false;
+        u8 waits = 0;
+        if (!r.u8v(waits)) return false;
 
         items::ItemStack s;
         s.itemId = id;
@@ -198,6 +201,7 @@ bool deserializePickups(ByteReader& r, ecs::Registry& reg) {
         ecs::Entity e = items::spawnPickup(reg, glm::vec3(x, y, z), s);
         if (auto* p = reg.get<items::ItemPickup>(e)) {
             p->lifeRemaining = life;
+            p->waits = (waits != 0);
             p->pickDelay = 0.f;
         }
     }

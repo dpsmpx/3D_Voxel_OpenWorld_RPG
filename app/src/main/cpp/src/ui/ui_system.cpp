@@ -21,6 +21,7 @@
 #include "../factions/faction.h"
 #include "../items/item_def.h"
 #include "../items/item_use.h"
+#include "../items/item_pickup.h"
 #include "../trade/trade.h"
 #include "../world/enchant_altar.h"
 #include "../world/world_spec.h"
@@ -437,6 +438,7 @@ void UiSystem::drawHud(player::Player& player,
     }
 
     drawHurtMarks(player);
+    drawLostGoldMark(player);
 
     // Строка задания — только на чистом HUD: под меню её место
     // отдано самому меню, а цель задания там и так открыта в журнале.
@@ -2395,6 +2397,54 @@ void UiSystem::drawQuestDetails(player::Player& player) {
 // которое игра и так держит пустым, а сила удара видна по толщине и
 // яркости — слабый укус и удар в половину здоровья обязаны
 // различаться.
+/// Куда идти за оставленным на месте гибели.
+///
+/// В воксельном мире ночью место гибели не найти: примет нет, а
+/// узелок размером с блок. Поэтому — указатель на краю круга, тем
+/// же углом, каким считается направление удара.
+///
+/// Отдельного поля «где я умер» нет: узелок и есть эта память.
+/// Ищется он по признаку «ждёт» — истлевающие выпавшие предметы
+/// таким не помечены, и указатель на них не наводится.
+void UiSystem::drawLostGoldMark(player::Player& player) {
+    auto* reg = player.registryHandle();
+    if (!reg) return;
+    const auto* tf = reg->get<ecs::Transform>(player.entity());
+    if (!tf) return;
+
+    // Ближайший из ждущих: умереть можно и дважды, не собрав первый.
+    const glm::vec3* best = nullptr;
+    f32 bestD2 = 0.f;
+    auto& pool = reg->pool<items::ItemPickup>();
+    for (usize i = 0; i < pool.size(); ++i) {
+        const ecs::Entity e = pool.entityAt((u32)i);
+        const auto* pk = pool.get(e);
+        if (!pk || !pk->waits) continue;
+        const auto* ptf = reg->get<ecs::Transform>(e);
+        if (!ptf) continue;
+        const glm::vec3 d = ptf->position - tf->position;
+        const f32 d2 = glm::dot(d, d);
+        if (!best || d2 < bestD2) { best = &ptf->position; bestD2 = d2; }
+    }
+    if (!best) return;
+
+    // Пришёл — указатель не нужен: узелок виден глазами и вот-вот
+    // подберётся сам.
+    if (bestD2 < 4.f) return;
+
+    const f32 cx = (f32)screenW_ * 0.5f;
+    const f32 cy = (f32)screenH_ * 0.5f;
+    const f32 radius = layout_.hurtRingRadius();
+    const f32 size   = layout_.hurtRingThickness();
+
+    const f32 a = combat::hurtAngle(tf->position, viewYaw_, *best);
+    const f32 px = cx + std::sin(a) * radius;
+    const f32 py = cy - std::cos(a) * radius;
+
+    ui_.rect(px - size * 0.5f, py - size * 0.5f, size, size,
+             rgba(255, 220, 100, 210));
+}
+
 void UiSystem::drawHurtMarks(player::Player& player) {
     auto* reg = player.registryHandle();
     if (!reg) return;

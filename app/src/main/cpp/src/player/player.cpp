@@ -939,6 +939,36 @@ void Player::tickDeath(world::ChunkManager& world, f32 dt) {
         dead       = true;
         deathTimer = DEATH_DELAY;
         justDied   = true;
+
+        // ---- Цена поражения ----
+        //
+        // До этого смерть не стоила ничего: через две секунды игрок
+        // оказывался у колодца с полными полосами. Она была даже
+        // ПОЛЕЗНА — быстрый способ вернуться домой и подлечиться.
+        // А значит, замах, от которого можно уйти, выносливость,
+        // парирование и рывок не имели ставки.
+        //
+        // Теперь половина носимого золота остаётся там, где игрок
+        // пал, и ждёт его. Настоящая цена — не число, а дорога
+        // обратно через то, что его убило.
+        //
+        // Именно половина: отнять всё значило бы сделать смерть
+        // катастрофой и подтолкнуть к перезагрузке вместо игры.
+        if (auto* wal = reg_->get<items::Wallet>(entity_)) {
+            const u64 lost = wal->gold / 2;
+            if (lost > 0 && wal->spend(lost)) {
+                items::ItemStack drop{};
+                drop.itemId = items::ITEM_GOLD_COIN;
+                drop.count  = (u16)(lost > 9999 ? 9999 : lost);
+
+                const ecs::Entity e = items::spawnPickup(
+                    *reg_, controller.state().position + glm::vec3(0.f, 0.6f, 0.f),
+                    drop, glm::vec3(0.f, 2.f, 0.f));
+                if (auto* pk = reg_->get<items::ItemPickup>(e)) pk->waits = true;
+
+                lostGold = lost;
+            }
+        }
         return;
     }
 

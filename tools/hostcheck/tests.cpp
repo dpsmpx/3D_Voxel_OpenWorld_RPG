@@ -7149,6 +7149,322 @@ void testVillageDeedSurvivesSave() {
 }
 
 // ------------------------------------------------------------
+// Смерть стоит.
+//
+// Раньше она не стоила ничего: через две секунды игрок оказывался у
+// колодца с полными полосами, сброшенной усталостью и снятыми
+// статусами. Она была даже ПОЛЕЗНА — быстрый способ вернуться домой
+// подлечившись. А значит, замах, от которого можно уйти,
+// выносливость, парирование и рывок не имели ставки.
+//
+// Теперь половина носимого золота остаётся там, где игрок пал, и
+// ждёт его столько, сколько нужно.
+// ------------------------------------------------------------
+void testDeathCostsGold() {
+    group("смерть: половина золота остаётся там, где пал");
+
+    world::blocks();
+    items::items();
+    jobs::gJobs.start(2);
+
+    world::ChunkManager wd(0xDEA74ull, 1);
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 80.f, 0.f));
+
+    auto* wal = pl.wallet();
+    check(wal != nullptr, "кошелёк у игрока есть");
+    if (!wal) { jobs::gJobs.stop(); return; }
+    // Игрок начинает не с нуля, и сколько именно — дело инициализации,
+    // а не этой проверки: берём, сколько есть, и добавляем сверху.
+    wal->receive(500);
+    const u64 carried = wal->gold;
+
+    auto pickupsWaiting = [&]() {
+        u32 n = 0;
+        auto& pool = reg.pool<items::ItemPickup>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            const auto* p = pool.get(pool.entityAt((u32)i));
+            if (p && p->waits) ++n;
+        }
+        return n;
+    };
+
+    check(pickupsWaiting() == 0, "до смерти ждущих узелков нет");
+
+    // ---- Убиваем ----
+    auto* hp = reg.get<ecs::Health>(pl.entity());
+    check(hp != nullptr, "здоровье у игрока есть");
+    if (!hp) { jobs::gJobs.stop(); return; }
+    hp->current = 0.f;
+
+    char m[200];
+    pl.update(wd, player::PlayerInput{}, 1.f / 60.f, 0.f, 0.f);
+
+    std::snprintf(m, sizeof(m), "в кошельке после смерти %llu из %llu",
+                  (unsigned long long)wal->gold,
+                  (unsigned long long)carried);
+    check(true, m);
+    check(wal->gold == carried - carried / 2, "половина золота списана");
+    check(pl.lostGold == carried / 2, "и игроку названа ровно эта цена");
+    check(pickupsWaiting() == 1, "а на месте гибели остался узелок");
+
+    // ---- Узелок не истлевает ----
+    //
+    // Обычный выпавший предмет живёт пять минут. Погибший в дальнем
+    // логове за пять минут не успеет и полпути.
+    {
+        auto& pool = reg.pool<items::ItemPickup>();
+        const items::ItemPickup* waiting = nullptr;
+        for (usize i = 0; i < pool.size(); ++i) {
+            const auto* p = pool.get(pool.entityAt((u32)i));
+            if (p && p->waits) waiting = p;
+        }
+        check(waiting != nullptr, "узелок найден");
+        if (waiting) {
+            check(waiting->stack.itemId == items::ITEM_GOLD_COIN,
+                  "в нём монеты");
+            check(waiting->stack.count == (u16)(carried / 2),
+                  "и ровно потерянное");
+        }
+
+        // Прогоняем больше времени, чем живёт обычный предмет.
+        const glm::vec3 far{ 1000.f, 80.f, 1000.f };
+        for (int i = 0; i < 400; ++i)
+            items::updatePickups(wd, reg, pl.entity(), far, 1.f);
+
+        check(pickupsWaiting() == 1,
+              "и через четыреста секунд он всё ещё ждёт");
+    }
+
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+// Монеты идут в кошелёк, а не в сумку.
+//
+// Тайник под руинами выдаёт от шестидесяти до двухсот монет — и они
+// ложились в сумку предметом, которым нельзя ни заплатить, ни
+// воспользоваться: категория Currency в item_use объявлена
+// неиспользуемой. Обещанная награда, на которую нельзя купить
+// ничего, — ровно тот же дефект, что был у золота за квест.
+// ------------------------------------------------------------
+void testCoinsGoToTheWallet() {
+    group("золото: монеты с земли попадают в кошелёк");
+
+    world::blocks();
+    items::items();
+    jobs::gJobs.start(2);
+
+    world::ChunkManager wd(0xC01A4ull, 1);
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 80.f, 0.f));
+
+    auto* wal = pl.wallet();
+    auto* inv = pl.inventory();
+    check(wal && inv, "кошелёк и сумка у игрока есть");
+    if (!wal || !inv) { jobs::gJobs.stop(); return; }
+
+    const u64 before = wal->gold;
+    const u32 bagBefore = inv->countOf(items::ITEM_GOLD_COIN);
+
+    auto* tf = reg.get<ecs::Transform>(pl.entity());
+    check(tf != nullptr, "положение игрока известно");
+    if (!tf) { jobs::gJobs.stop(); return; }
+
+    // Мир вокруг игрока должен быть порождён: подбор идёт после
+    // физики, а та в непорождённом мире считает, что предмет
+    // упёрся в стену, и до подбора дело не доходит.
+    {
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            wd.update(tf->position);
+            ready = wd.isReadyAt((i32)tf->position.x, (i32)tf->position.z) &&
+                    wd.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир вокруг игрока порождён");
+        if (!ready) { jobs::gJobs.stop(); return; }
+        tf->position.y = (f32)wd.generator().surfaceHeight(
+                             (i32)tf->position.x, (i32)tf->position.z) + 1.f;
+    }
+
+    items::ItemStack coins{};
+    coins.itemId = items::ITEM_GOLD_COIN;
+    coins.count  = 120;
+    const ecs::Entity e = items::spawnPickup(reg, tf->position, coins);
+    if (auto* p = reg.get<items::ItemPickup>(e)) p->pickDelay = 0.f;
+
+    for (int i = 0; i < 60; ++i)
+        items::updatePickups(wd, reg, pl.entity(), tf->position, 1.f / 60.f);
+
+    char m[200];
+    std::snprintf(m, sizeof(m), "кошелёк %llu -> %llu, в сумке монет %u",
+                  (unsigned long long)before, (unsigned long long)wal->gold,
+                  inv->countOf(items::ITEM_GOLD_COIN));
+    check(true, m);
+    check(wal->gold == before + 120, "золото доехало до кошелька");
+    check(inv->countOf(items::ITEM_GOLD_COIN) == bagBefore,
+          "и не осело в сумке мёртвым грузом");
+
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+// Оставленное золото переживает выход из игры.
+//
+// Признак «ждёт» — это и есть цена смерти: без него узелок
+// истлевает за пять минут вместе с ней. Сохранение спрашивается
+// напрямую, потому что прочитанный обратно предмет — единственное,
+// что игрок увидит, вернувшись в игру.
+// ------------------------------------------------------------
+void testLostGoldSurvivesSave() {
+    group("сохранение: оставленное золото не истлевает и после загрузки");
+
+    items::items();
+
+    ecs::Registry reg;
+
+    items::ItemStack coins{};
+    coins.itemId = items::ITEM_GOLD_COIN;
+    coins.count  = 250;
+    const ecs::Entity bundle = items::spawnPickup(
+        reg, glm::vec3(12.f, 64.f, -3.f), coins);
+    if (auto* p = reg.get<items::ItemPickup>(bundle)) p->waits = true;
+
+    // Рядом — обычный выпавший предмет: он истлевать обязан, и
+    // проверка должна это различать.
+    items::ItemStack scrap{};
+    scrap.itemId = items::ITEM_WOOD;
+    scrap.count  = 4;
+    items::spawnPickup(reg, glm::vec3(2.f, 64.f, 2.f), scrap);
+
+    save::ByteWriter w;
+    save::serializePickups(w, reg);
+
+    ecs::Registry reg2;
+    save::ByteReader r(w.data());
+    check(save::deserializePickups(r, reg2), "предметы прочитаны обратно");
+
+    u32 total = 0, waiting = 0;
+    u16 waitingId = 0;
+    u16 waitingCount = 0;
+    {
+        auto& pool = reg2.pool<items::ItemPickup>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            const auto* p = pool.get(pool.entityAt((u32)i));
+            if (!p) continue;
+            ++total;
+            if (p->waits) {
+                ++waiting;
+                waitingId    = p->stack.itemId;
+                waitingCount = p->stack.count;
+            }
+        }
+    }
+
+    char m[160];
+    std::snprintf(m, sizeof(m), "предметов после загрузки %u, ждущих %u",
+                  total, waiting);
+    check(true, m);
+    check(total == 2, "оба предмета на месте");
+    check(waiting == 1, "ждёт ровно один");
+    check(waitingId == items::ITEM_GOLD_COIN, "и это монеты");
+    check(waitingCount == 250, "все до одной");
+
+    // Самое главное: после загрузки узелок по-прежнему не стареет.
+    world::blocks();
+    jobs::gJobs.start(2);
+    world::ChunkManager wd(0x5A7Eull, 1);
+    const glm::vec3 far{ 900.f, 80.f, 900.f };
+    for (int i = 0; i < 400; ++i)
+        items::updatePickups(wd, reg2, ecs::Entity{}, far, 1.f);
+
+    u32 left = 0;
+    {
+        auto& pool = reg2.pool<items::ItemPickup>();
+        for (usize i = 0; i < pool.size(); ++i)
+            if (pool.get(pool.entityAt((u32)i))) ++left;
+    }
+    check(left == 1, "обычный предмет истлел, оставленное золото ждёт");
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+// Указатель на оставленное доходит до кадра.
+//
+// Проверяется НАРИСОВАННОЕ: в этом проекте уже оставались написанные
+// и не подключённые вещи, и «функция считает верный угол» об этом
+// ничего не говорит.
+// ------------------------------------------------------------
+void testLostGoldMarkOnScreen() {
+    group("HUD: указатель на оставленное золото");
+
+    constexpr i32 W = 1280, H = 720, DPI = 320;
+    const config::Settings savedCfg = config::settingsConst();
+    config::settings() = config::Settings{};
+
+    world::blocks();
+    items::items();
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+    world::ChunkManager wd(0x901Dull, 1);
+
+    auto ringVerts = [&]() {
+        ui::UiSystem sys;
+        sys.setDensityDpi(DPI);
+        sys.setScreenSize(W, H);
+        sys.screen = ui::Screen::Hud;
+        sys.setViewYaw(0.f);
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, wd, 60.f);
+        const f32 rad = sys.layout().hurtRingRadius();
+        const f32 cx = (f32)W * 0.5f, cy = (f32)H * 0.5f;
+        u32 n = 0;
+        for (const ui::UiVertex& v : sys.frameVertices()) {
+            const f32 px = (v.pos.x * 0.5f + 0.5f) * (f32)W;
+            const f32 py = (v.pos.y * 0.5f + 0.5f) * (f32)H;
+            const f32 dx = px - cx, dy = py - cy;
+            const f32 d = std::sqrt(dx * dx + dy * dy);
+            if (d > rad * 0.8f && d < rad * 1.2f) ++n;
+        }
+        return n;
+    };
+
+    const u32 quiet = ringVerts();
+
+    items::ItemStack coins{};
+    coins.itemId = items::ITEM_GOLD_COIN;
+    coins.count  = 60;
+    const ecs::Entity e = items::spawnPickup(
+        reg, glm::vec3(0.f, 64.f, -20.f), coins);
+
+    const u32 decaying = ringVerts();
+    if (auto* p = reg.get<items::ItemPickup>(e)) p->waits = true;
+    const u32 waitingFar = ringVerts();
+
+    char m[160];
+    std::snprintf(m, sizeof(m),
+                  "вершин в кольце: пусто %u, истлевающее %u, ждущее %u",
+                  quiet, decaying, waitingFar);
+    check(true, m);
+    check(decaying == quiet, "истлевающий предмет указателя не даёт");
+    check(waitingFar > quiet, "а оставленное на месте гибели — даёт");
+
+    // Пришёл — указатель гаснет: узелок виден глазами.
+    if (auto* tf = reg.get<ecs::Transform>(e))
+        tf->position = glm::vec3(0.f, 64.f, -1.f);
+    check(ringVerts() == quiet, "у самого узелка указатель не нужен");
+
+    config::settings() = savedCfg;
+}
+
+// ------------------------------------------------------------
 void testSaveKeepsQuestsWithoutText() {
     group("сохранение: задания без текста, глава остаётся главой");
 
@@ -25668,6 +25984,10 @@ int main() {
     testFirstStepsGiveAGoal();
     testOneLanguageEverywhere();
     testSaveKeepsQuestsWithoutText();
+    testDeathCostsGold();
+    testCoinsGoToTheWallet();
+    testLostGoldSurvivesSave();
+    testLostGoldMarkOnScreen();
     testVillageRemembers();
     testTurnInLightsTheVillage();
     testVillageDeedSurvivesSave();
