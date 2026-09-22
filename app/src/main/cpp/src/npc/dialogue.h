@@ -133,7 +133,13 @@ bool startDialogue(ecs::Registry& reg,
 
 /// Применить выбор. Возвращает true, если диалог продолжается.
 /// Если choice.action == EndDialogue — закрывает диалог.
+///
+/// Мир нужен сдаче задания: за сделанное для деревни в ней
+/// зажигается факел, и ставится он в мир. Раньше сдача меняла
+/// только числа у игрока, и деревня после его работы оставалась
+/// ровно такой же, какой была.
 bool applyChoice(ecs::Registry& reg,
+                 world::ChunkManager& world,
                  ActiveDialogue& dlg,
                  const DialogueChoice& choice);
 

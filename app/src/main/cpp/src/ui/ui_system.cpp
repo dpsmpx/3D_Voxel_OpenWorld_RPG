@@ -242,7 +242,7 @@ void UiSystem::buildFrame(player::Player& player,
             break;
         case Screen::Dialogue:
             drawHud(player, world, fps);
-            drawDialogueScreen(player);
+            drawDialogueScreen(player, world);
             break;
         case Screen::QuestLog:
             drawHud(player, world, fps);
@@ -2100,7 +2100,8 @@ void UiSystem::drawStepper(const Rect& r, const char* label,
 // ============================================================
 // Dialogue
 // ============================================================
-void UiSystem::drawDialogueScreen(player::Player& player) {
+void UiSystem::drawDialogueScreen(player::Player& player,
+                                  world::ChunkManager& world) {
     auto* dlg = player.activeDialogue();
     if (!dlg || !dlg->active) { screen = Screen::Hud; return; }
 
@@ -2152,7 +2153,8 @@ void UiSystem::drawDialogueScreen(player::Player& player) {
 
         // Игрока берём указателем, а не ссылкой на ссылку: обработчик
         // переживает кадр, а ссылочная переменная — нет.
-        const int idx = ui_.pushInteractiveRect(cr, [this, pl = &player, i]() {
+        const int idx = ui_.pushInteractiveRect(cr,
+            [this, pl = &player, wd = &world, i]() {
             auto* d = pl->activeDialogue();
             auto* reg = pl->registryHandle();
             if (!d || !d->active || !reg) return;
@@ -2162,7 +2164,7 @@ void UiSystem::drawDialogueScreen(player::Player& player) {
             // Копия: applyChoice может сменить узел, а ссылка на
             // выбор живёт внутри прежнего.
             const npc::DialogueChoice chosen = n->choices[i];
-            if (!npc::applyChoice(*reg, *d, chosen)) {
+            if (!npc::applyChoice(*reg, *wd, *d, chosen)) {
                 if (onCloseDialogue) onCloseDialogue();
                 screen = Screen::Hud;
             }

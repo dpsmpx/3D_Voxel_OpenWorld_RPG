@@ -106,6 +106,7 @@ add_library(native-lib SHARED
     src/world/debug_scene.cpp
     src/world/enchant_altar.cpp
     src/world/features.cpp
+    src/world/village_deeds.cpp
     src/world/hazards.cpp
     src/world/noise.cpp
     src/world/precipitation.cpp
