@@ -460,6 +460,8 @@ const ContentPair CONTENT_RU[] = {
     { "%u gold",                "%u золота" },
     { "ENCHANT",                "ЗАЧАРОВАТЬ" },
     { "Select a recipe",        "Выберите рецепт" },
+    { "g",                      "з" },
+    { "P%u  S%u",               "П%u  С%u" },
     { "INV",                    "СУМКА" },
     { "FIRE",                   "ОГОНЬ" },
     { "FROST",                  "МОРОЗ" },
@@ -494,6 +496,35 @@ const ContentPair CONTENT_RU[] = {
     { "Oct",                    "окт" },
     { "Nov",                    "ноя" },
     { "Dec",                    "дек" },
+    // ---- Рецепты алтаря зачарования ----
+    //
+    // Название рецепта — само зачарование и его ступень. Ступень
+    // римская и в переводе не нуждается; переводится слово.
+    { "Fire I",                 "Огонь I" },
+    { "Fire II",                "Огонь II" },
+    { "Fire III",               "Огонь III" },
+    { "Frost I",                "Мороз I" },
+    { "Frost II",               "Мороз II" },
+    { "Frost III",              "Мороз III" },
+    { "Shock I",                "Разряд I" },
+    { "Shock II",               "Разряд II" },
+    { "Shock III",              "Разряд III" },
+    { "Poison I",               "Яд I" },
+    { "Poison II",              "Яд II" },
+    { "Sharpness I",            "Острота I" },
+    { "Sharpness II",           "Острота II" },
+    { "Swift I",                "Быстрота I" },
+    { "Swift II",               "Быстрота II" },
+    { "Vampiric I",             "Вампиризм I" },
+
+    // ---- Алтарь: чем кончилась попытка ----
+    { "Enchanted!",             "Зачаровано!" },
+    { "No weapon equipped",     "В руках ничего нет" },
+    { "Unknown recipe",         "Неизвестный рецепт" },
+    { "Not enough gold",        "Не хватает золота" },
+    { "Missing materials",      "Не хватает материалов" },
+    { "Already enchanted this way", "Такое зачарование уже стоит" },
+    { "Weaker than current",    "Слабее нынешнего" },
 };
 
 const usize CONTENT_RU_COUNT = sizeof(CONTENT_RU) / sizeof(CONTENT_RU[0]);

@@ -3,6 +3,7 @@
  * @brief Предметы: определения, инвентарь, лут, подбор, использование.
  */
 #include "currency.h"
+#include "../config/localization.h"
 #include <cstdio>
 
 namespace items {
@@ -24,10 +25,11 @@ void Wallet::format(char* buf, usize bufSize) const {
         }
         buf[out++] = tmp[i];
     }
-    if (out + 2 < bufSize) {
-        buf[out++] = ' ';
-        buf[out++] = 'g';
-    }
+    // Значок валюты — из словаря: в русской игре кошелёк писал
+    // «600 g».
+    const char* mark = config::tr("g");
+    if (out + 1 < bufSize) buf[out++] = ' ';
+    for (const char* m = mark; *m && out + 1 < bufSize; ++m) buf[out++] = *m;
     buf[out] = '\0';
 }
 

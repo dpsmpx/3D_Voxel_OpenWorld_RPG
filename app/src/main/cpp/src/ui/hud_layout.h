@@ -449,6 +449,16 @@ public:
     /// экипировка и пояс не помещались вовсе. Сжатый столбец
     /// занимает около 70 и возвращает меню больше сотни точек.
     void setHudCompact(bool v) { hudCompact_ = v; }
+
+    /// Можно ли меню занять место пояса.
+    ///
+    /// Обычно нельзя: мир под меню живёт, и пояс игроку нужен, не
+    /// выходя из сумки. Пауза — исключение и единственное: там игра
+    /// стоит, нажимать пояс незачем, а высоты не хватает. Без этого
+    /// на 1280x720 в паузе помещалось два ряда из трёх, и «выход»
+    /// приходилось прокручивать.
+    void setMenuOverHotbar(bool v) { menuOverHotbar_ = v; }
+    bool menuOverHotbar() const { return menuOverHotbar_; }
     bool hudCompact() const { return hudCompact_; }
 
     /// Высота полосы ресурса — своя в каждом из двух видов столбца.
@@ -515,9 +525,20 @@ public:
         // класть содержимое на пояс значит закрыть игроку то, чем он
         // пользуется не выходя из меню. Видно это стало на снимке
         // инвентаря: нижний ряд ячеек лёг ровно на пояс.
-        const f32 floorY = hudBehind_
+        f32 floorY = (hudBehind_ && !menuOverHotbar_)
             ? std::min(bottom() - pad, hotbar().y - pad)
             : bottom() - pad;
+
+        // ...но только пока после этого что-то остаётся.
+        //
+        // На 640x360 обход столбца сверху и пояса снизу оставлял
+        // меню 87 точек из 360: ни одна карточка сохранения туда не
+        // влезала, и экран выходил пустым. Пояс полезен, но не
+        // ценой экрана, на котором нечего показать, — поэтому ниже
+        // трёх целей касания меню забирает и его место.
+        const f32 MIN_USEFUL = dp(theme::TOUCH_MIN_DP) * 3.f;
+        if (floorY - y < MIN_USEFUL) floorY = bottom() - pad;
+
         return { x, y, (right() - pad) - x, floorY - y };
     }
 
@@ -554,11 +575,65 @@ public:
     /// рядов столько, что не помещаются, виновата не ячейка, а
     /// количество пунктов — их и надо группировать.
     Rect menuCell(u32 col, u32 row, u32 cols, u32 rows) const {
-        const Rect a = menuArea();
+        return cellIn(menuArea(), col, row, cols, rows);
+    }
+
+    /// Сетка прямоугольных ячеек заданного роста в области.
+    ///
+    /// От `cellIn` отличается тем, что рост ячейки задан, а не
+    /// поделён поровну: карточке сохранения нужны четыре строки
+    /// текста, и делить на три ряда что осталось — значит либо
+    /// обрезать текст, либо уехать за край экрана. Что не влезло по
+    /// высоте, достаётся прокруткой; ряд, не поместившийся целиком,
+    /// не рисуется вовсе — то же правило, что у сумки и журнала.
+    struct CardGrid {
+        Rect area;
+        f32  cellW = 0.f, cellH = 0.f, gap = 0.f;
+        u32  cols = 1;
+
+        u32 rowsVisible() const {
+            if (cellH <= 0.f) return 0;
+            const f32 n = (area.h + gap) / (cellH + gap);
+            return n < 1.f ? 0u : (u32)n;
+        }
+        f32 rowStride() const { return cellH + gap; }
+        Rect at(u32 col, u32 row) const {
+            return { area.x + (f32)col * (cellW + gap),
+                     area.y + (f32)row * (cellH + gap), cellW, cellH };
+        }
+    };
+
+    CardGrid cardGrid(const Rect& a, u32 cols, f32 cellHDp) const {
+        CardGrid g;
+        g.area = a;
+        g.cols = cols ? cols : 1;
+        g.gap  = dp(theme::SPACE_M_DP);
+        g.cellW = (a.w - g.gap * (f32)(g.cols - 1)) / (f32)g.cols;
+        const f32 minH = minCellH();
+        g.cellH = dp(cellHDp);
+        // Ячейка выше отведённой области — это ноль видимых рядов,
+        // то есть пустой экран. Лучше ряд пониже: пока он не мельче
+        // цели касания, он работает.
+        if (g.cellH > a.h && a.h >= minH) g.cellH = a.h;
+        if (g.cellH < minH) g.cellH = minH;
+        return g;
+    }
+
+    /// Карточка сохранения: четыре строки и кнопка удаления.
+    static constexpr f32 SAVE_CARD_H_DP = 64.f;
+
+    /// Та же сетка, но в заданной области.
+    ///
+    /// Нужна там, где над сеткой есть ещё что-то: ряд вкладок,
+    /// кнопка режима. Экран сохранений считал такую сетку сам —
+    /// `gridY = 150.f`, `cellH = 180.f`, — и на 1280x720 нижний ряд
+    /// из девяти ячеек уходил за край экрана: три сохранения были
+    /// недостижимы.
+    Rect cellIn(const Rect& a, u32 col, u32 row, u32 cols, u32 rows) const {
         const f32 gap = dp(theme::SPACE_M_DP);
-        const f32 cw = (a.w - gap * (f32)(cols - 1)) / (f32)cols;
-        f32 ch = (a.h - gap * (f32)(rows - 1)) / (f32)rows;
-        const f32 minH = dp(theme::TOUCH_REGULAR_DP);
+        const f32 cw = cols ? (a.w - gap * (f32)(cols - 1)) / (f32)cols : a.w;
+        f32 ch = rows ? (a.h - gap * (f32)(rows - 1)) / (f32)rows : a.h;
+        const f32 minH = minCellH();
         if (ch < minH) ch = minH;
         return { a.x + (f32)col * (cw + gap),
                  a.y + (f32)row * (ch + gap), cw, ch };
@@ -702,17 +777,74 @@ public:
         return { t.x + t.w - sz, t.y + (t.h - sz) * 0.5f, sz, sz };
     }
 
-    /// Две панели: список слева, подробности справа.
-    Rect paneLeft() const {
+    /// Ниже этого ряд делать нельзя: палец промахивается.
+    ///
+    /// Одно место на все сетки меню. Их было два, и в одном стояла
+    /// «удобная» TOUCH_REGULAR вместо нижней границы: ряды
+    /// поднимали до 56 dp каждый, и меню паузы из пяти рядов
+    /// уезжало за нижний край экрана на 1280x720, хотя места было
+    /// на 23 dp ряд. Порознь их и меняли, порознь и забывали.
+    f32 minCellH() const { return dp(theme::TOUCH_MIN_DP); }
+
+    /// Сколько столбцов взять, чтобы всё поместилось.
+    ///
+    /// `count` кнопок плюс `extraRows` служебных рядов (у паузы это
+    /// «продолжить» сверху и «выход» снизу). Столбцов берём
+    /// наименьшее число, при котором ряд ещё не мельче цели
+    /// касания: три столбца в девять кнопок дают пять рядов, а в
+    /// высоту 1280x720 помещается три.
+    ///
+    /// То же правило, что у сетки сумки: подбирается не размер
+    /// ячейки, а число столбцов.
+    u32 menuColsFor(u32 count, u32 extraRows, u32 maxCols = 4) const {
         const Rect a = menuArea();
+        const f32 gap = dp(theme::SPACE_M_DP);
+        const f32 minH = minCellH();
+        for (u32 cols = 1; cols < maxCols; ++cols) {
+            const u32 rows = extraRows + (count + cols - 1) / cols;
+            if (rows == 0) return cols;
+            const f32 ch = (a.h - gap * (f32)(rows - 1)) / (f32)rows;
+            if (ch >= minH) return cols;
+        }
+        return maxCols;
+    }
+
+    /// Действие в строке заголовка — слева от кнопки закрытия.
+    ///
+    /// Строка заголовка высотой в цель касания и занята одним
+    /// словом; отдавать под единственную кнопку («режим: сохранить»)
+    /// целый ряд вкладок — значит отнять у содержимого полторы сотни
+    /// точек высоты. На бюджетном экране это ряд карточек.
+    Rect titleAction(f32 widthDp) const {
+        const Rect c = closeButton();
+        const Rect t = menuTitle();
+        const f32 gap = dp(theme::SPACE_M_DP);
+        // Не больше половины строки заголовка: на 640x360 кнопка
+        // шириной 160 dp начиналась левее самого заголовка и
+        // закрывала его собой.
+        const f32 maxW = (c.x - t.x) * 0.5f;
+        f32 wdt = dp(widthDp);
+        if (wdt > maxW) wdt = maxW;
+        if (wdt < 0.f) wdt = 0.f;
+        return { c.x - gap - wdt, c.y, wdt, c.h };
+    }
+
+    /// Две панели: список слева, подробности справа.
+    ///
+    /// Форма с заданной областью нужна экранам, у которых над
+    /// панелями есть ещё строка: алтарь зачарования пишет там, что
+    /// в руках и сколько золота. Без неё панели начинались ровно
+    /// там же, где эта строка, и ложились на неё.
+    Rect paneLeftIn(const Rect& a) const {
         return { a.x, a.y, a.w * (1.f - PANE_RIGHT_FRAC)
                             - dp(theme::SPACE_L_DP), a.h };
     }
-    Rect paneRight() const {
-        const Rect a = menuArea();
+    Rect paneRightIn(const Rect& a) const {
         const f32 wdt = a.w * PANE_RIGHT_FRAC;
         return { a.x + a.w - wdt, a.y, wdt, a.h };
     }
+    Rect paneLeft()  const { return paneLeftIn(menuArea()); }
+    Rect paneRight() const { return paneRightIn(menuArea()); }
 
     /// Строка списка в левой панели.
     Rect paneRow(u32 i) const {
@@ -729,6 +861,12 @@ public:
     }
 
     /// Главное действие экрана — внизу правой панели.
+    Rect primaryActionIn(const Rect& pane) const {
+        const f32 pad = dp(theme::PANEL_PAD_DP);
+        const f32 h = dp(theme::TOUCH_PRIMARY_DP);
+        return { pane.x + pad, pane.y + pane.h - pad - h,
+                 pane.w - pad * 2.f, h };
+    }
     Rect primaryAction() const {
         const Rect r = paneRight();
         const f32 pad = dp(theme::PANEL_PAD_DP);
@@ -1018,6 +1156,7 @@ private:
     bool           mirror_ = false;
     bool           hudBehind_ = false;
     bool           hudCompact_ = false;
+    bool           menuOverHotbar_ = false;
 };
 
 } // namespace ui

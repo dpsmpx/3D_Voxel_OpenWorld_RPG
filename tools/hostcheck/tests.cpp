@@ -53,6 +53,7 @@
 #include "world/weather.h"
 #include "world/precipitation.h"
 #include "world/particles.h"
+#include "world/enchant_altar.h"
 #include "render/projectile_renderer.h"
 #include "world/world_spec.h"
 #include "save/save_export.h"
@@ -5969,15 +5970,35 @@ void testHurtDirection() {
 // из него доезжает до экрана. Реестр знает.
 // ------------------------------------------------------------
 
-/// Есть ли в строке латиница — за вычетом подстановок.
+/// Есть ли в строке английское СЛОВО — за вычетом подстановок.
 ///
-/// «%d» — это латинская «d», и без вычета непереведённой оказалась
-/// бы каждая строка с числом. Сами подстановки сверяются отдельно.
+/// Слово, а не буква: одиночная латинская буква в русском тексте
+/// законна и переводу не подлежит. Это названия осей («Инверсия по
+/// X»), множитель («Деревоx1») и значки, нарисованные буквой, —
+/// крестик закрытия, стрелки прокрутки. Требуй перевода от них —
+/// и получишь кириллический омоглиф вместо значка, то есть враньё.
+///
+/// Два подряд — уже слово: «ON», «OFF», «IRON SWORD», «FPS».
+///
+/// «%d» — это латинская «d», и без вычета подстановок
+/// непереведённой оказалась бы каждая строка с числом. Сами
+/// подстановки сверяются отдельно.
 static bool hasLatin(const char* s) {
     if (!s) return false;
+    // Римская цифра словом не считается: «Огонь III» — это
+    // ступень зачарования, и в кириллицу её переводят разве что
+    // омоглифом. Буквы взяты ровно те, из которых цифры и состоят;
+    // английского слова из одних I, V и X не выходит.
+    auto roman = [](char c) { return c == 'I' || c == 'V' || c == 'X'; };
+
+    int run = 0, romanRun = 0;
     for (const char* p = s; *p; ++p) {
-        if (*p == '%') { if (p[1]) ++p; continue; }
-        if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) return true;
+        if (*p == '%') { if (p[1]) ++p; run = romanRun = 0; continue; }
+        const bool latin = (*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z');
+        if (!latin) { run = romanRun = 0; continue; }
+        ++run;
+        if (roman(*p)) ++romanRun; else romanRun = 0;
+        if (run >= 2 && romanRun != run) return true;
     }
     return false;
 }
@@ -6335,6 +6356,438 @@ void testOneLanguageEverywhere() {
 // русскую. И отдельно: признак «это глава сюжета» не сохранялся
 // ВОВСЕ — после загрузки глава становилась обычным поручением, и
 // сдача её не двигала цепочку.
+// ------------------------------------------------------------
+// На экране нет английских слов.
+//
+// Проверка итерации 14 спрашивала СЛОВАРЬ: «есть ли перевод у имени
+// оружия». Перевод был и есть. А место показа звало `wdef.name`
+// напрямую, мимо перевода, и на алтаре зачарования висело
+// «IRON SWORD» — проверка об этом месте не знала ничего.
+//
+// Правильный вопрос — не «есть ли перевод», а «что написано на
+// экране». Спросить его иначе нечем: интерфейс собирается в
+// вершины, и строку по ним обратно не прочесть. Поэтому UiContext
+// умеет складывать всё, что вышло буквами, в список — и здесь
+// перебираются ВСЕ экраны игры.
+// ------------------------------------------------------------
+void testNoEnglishOnScreen() {
+    group("язык: на экране нет английских слов");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+    npc::npcRegistry();
+    crafting::recipes();
+    world::enchantRecipes();
+
+    const config::Settings savedCfg = config::settingsConst();
+    const auto wasLanguage = config::L().language();
+    config::settings() = config::Settings{};
+    // Отладочные надписи — не игроку: их читает разработчик, и они
+    // по-английски намеренно.
+    config::settings().showFps = false;
+    config::settings().showDebugPos = false;
+    config::L().setLanguage(config::Language::Russian);
+
+    constexpr i32 W = 1280, H = 720, DPI = 320;
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+    world::ChunkManager wd(0x15A9Cull, 1);
+
+    // Чтобы экраны были не пустыми: задание в журнале, предметы в
+    // сумке, золото в кошельке. Пустой экран нечего проверять.
+    if (auto* inv = pl.inventory()) {
+        inv->addItem(items::ITEM_IRON_SWORD, 1);
+        inv->addItem(items::ITEM_IRON_INGOT, 8);
+        inv->addItem(items::ITEM_POTION_HEALTH_SMALL, 3);
+    }
+    if (auto* wal = pl.wallet()) wal->receive(500);
+    if (auto* log = pl.questLog()) {
+        quests::Quest q{};
+        q.id = quests::nextQuestId();
+        q.tmpl.type = quests::QuestType::Kill;
+        q.tmpl.difficulty = quests::QuestDifficulty::Normal;
+        q.tmpl.targetMobId = mobs::MOB_WOLF;
+        q.tmpl.requiredCount = 6;
+        q.state = quests::QuestState::Active;
+        q.ownerEntity = (u32)pl.entity();
+        const ecs::Entity qe = reg.create();
+        reg.add(qe, q);
+        log->addActive(qe);
+    }
+
+    const ui::Screen SCREENS[] = {
+        ui::Screen::Hud,        ui::Screen::PauseMenu,
+        ui::Screen::Inventory,  ui::Screen::Settings,
+        ui::Screen::SkillTree,  ui::Screen::Attributes,
+        ui::Screen::QuestLog,   ui::Screen::Reputation,
+        ui::Screen::SaveLoad,   ui::Screen::Crafting,
+        ui::Screen::Trade,      ui::Screen::Enchant,
+        ui::Screen::Worlds,     ui::Screen::NewWorld,
+        ui::Screen::IsoSnapshot,
+    };
+
+    char m[220];
+    int english = 0, strings = 0;
+
+    for (ui::Screen sc : SCREENS) {
+        std::vector<std::string> drawn;
+        ui::UiSystem sys;
+        sys.setDensityDpi(DPI);
+        sys.setScreenSize(W, H);
+        sys.screen = sc;
+        sys.selectedQuest = 0;
+        // Счётчик кадров — разработчику, не игроку.
+        sys.showFps = false;
+        sys.tickUi(1.f / 60.f);
+        sys.setTextSink(&drawn);
+        sys.buildFrame(pl, wd, 60.f);
+        sys.setTextSink(nullptr);
+
+        for (const auto& s : drawn) {
+            ++strings;
+            if (!hasLatin(s.c_str())) continue;
+            ++english;
+            std::snprintf(m, sizeof(m), "экран %d: «%s»", (int)sc, s.c_str());
+            check(false, m);
+        }
+    }
+
+    std::snprintf(m, sizeof(m), "экранов %d, надписей %d",
+                  (int)(sizeof(SCREENS) / sizeof(SCREENS[0])), strings);
+    check(true, m);
+    // Пустой список означал бы, что проверка не смотрит никуда.
+    check(strings > 100, "экраны и правда рисуют текст");
+    check(english == 0, "английских надписей на экранах нет");
+
+    config::L().setLanguage(wasLanguage);
+    config::settings() = savedCfg;
+}
+
+
+// ------------------------------------------------------------
+// Экраны не уезжают за край.
+//
+// Четыре экрана — ремесло, алтарь зачарования, древо навыков и
+// сохранения — были написаны до HudLayout и считали место сами:
+// `colTop = 150.f`, `gridY = 150.f`, `cellH = 180.f`. На 1920x1080
+// числа подобраны и всё сходится; на 1280x720 не сходится ничего.
+// Нижний ряд карточек сохранений уходил ЗА КРАЙ ЭКРАНА — три
+// сохранения из девяти нельзя было ни увидеть, ни нажать.
+//
+// Проверка спрашивает не исходник, а кадр: где оказались вершины.
+// Координаты у них в пространстве отсечения, и «за краем» — это
+// ровно выход за [-1, 1].
+// ------------------------------------------------------------
+void testScreensStayOnScreen() {
+    group("экраны: ничего не уезжает за край");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+    crafting::recipes();
+    world::enchantRecipes();
+
+    const config::Settings savedCfg = config::settingsConst();
+    config::settings() = config::Settings{};
+
+    struct Size { const char* name; i32 w, h, dpi; };
+    const Size SIZES[] = {
+        { "1280x720 @320",  1280,  720, 320 },
+        { "1920x1080 @400", 1920, 1080, 400 },
+        { "2400x1080 @440", 2400, 1080, 440 },
+        { "640x360 @240",    640,  360, 240 },
+    };
+
+    const ui::Screen SCREENS[] = {
+        ui::Screen::Hud,
+        ui::Screen::Inventory,  ui::Screen::SkillTree,
+        ui::Screen::Attributes, ui::Screen::QuestLog,
+        ui::Screen::Reputation, ui::Screen::SaveLoad,
+        ui::Screen::Crafting,   ui::Screen::Trade,
+        ui::Screen::Enchant,    ui::Screen::PauseMenu,
+    };
+
+    char m[220];
+    int outside = 0, frames = 0;
+
+    for (const Size& sz : SIZES) {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5C7EEllu, 1);
+        if (auto* inv = pl.inventory()) {
+            inv->addItem(items::ITEM_IRON_INGOT, 32);
+            inv->addItem(items::ITEM_WOOD, 40);
+        }
+        if (auto* wal = pl.wallet()) wal->receive(2000);
+
+        for (ui::Screen sc : SCREENS) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(sz.dpi);
+            sys.setScreenSize(sz.w, sz.h);
+            sys.screen = sc;
+            sys.showFps = false;
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+            ++frames;
+
+            // Худшей считается ОДНА вершина — та, что дальше всех
+            // вышла за край. Иначе в сообщении оказываются x от
+            // одной вершины и y от другой, и искать по нему нечего.
+            f32 worstX = 0.f, worstY = 0.f, worstOut = 0.f;
+            for (const ui::UiVertex& v : sys.frameVertices()) {
+                const f32 out = std::max(std::fabs(v.pos.x),
+                                         std::fabs(v.pos.y));
+                if (out > worstOut) {
+                    worstOut = out;
+                    worstX = v.pos.x;
+                    worstY = v.pos.y;
+                }
+            }
+            // Допуск в полпикселя: округление при переводе точек в
+            // пиксели законно и за край не уводит.
+            const f32 tolX = 1.f / (f32)sz.w;
+            const f32 tolY = 1.f / (f32)sz.h;
+            if (std::fabs(worstX) > 1.f + tolX ||
+                std::fabs(worstY) > 1.f + tolY)
+            {
+                ++outside;
+                std::snprintf(m, sizeof(m),
+                              "%s экран %d: вершина в (%.3f, %.3f)",
+                              sz.name, (int)sc, (double)worstX, (double)worstY);
+                check(false, m);
+            }
+        }
+    }
+
+    // ---- И не рисуют поверх пояса ----
+    //
+    // За край такое не выходит, и первая проверка его не видит: на
+    // 1280x720 список ремесла и правая панель ложились ровно на
+    // пояс. Считаем вершины В ПОЯСЕ на чистом HUD и под меню: пояс
+    // рисует HUD, он одинаков, и всякая лишняя вершина под меню —
+    // это меню, залезшее на пояс.
+    for (const Size& sz : SIZES) {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5C7EEllu, 1);
+        if (auto* inv = pl.inventory()) {
+            inv->addItem(items::ITEM_IRON_INGOT, 32);
+            inv->addItem(items::ITEM_WOOD, 40);
+        }
+        if (auto* wal = pl.wallet()) wal->receive(2000);
+
+        struct Shot { u32 inHotbar; bool menuTakesHotbar; };
+        auto shoot = [&](ui::Screen sc) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(sz.dpi);
+            sys.setScreenSize(sz.w, sz.h);
+            sys.screen = sc;
+            sys.showFps = false;
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+            const ui::Rect hb = sys.layout().hotbar();
+            const ui::Rect ma = sys.layout().menuArea();
+            u32 n = 0;
+            for (const ui::UiVertex& v : sys.frameVertices()) {
+                const f32 px = (v.pos.x * 0.5f + 0.5f) * (f32)sz.w;
+                const f32 py = (v.pos.y * 0.5f + 0.5f) * (f32)sz.h;
+                if (px > hb.x && px < hb.x + hb.w &&
+                    py > hb.y && py < hb.y + hb.h) ++n;
+            }
+            return Shot{ n, ma.y + ma.h > hb.y + 0.5f };
+        };
+
+        const u32 bare = shoot(ui::Screen::Hud).inHotbar;
+        for (ui::Screen sc : SCREENS) {
+            if (sc == ui::Screen::Hud) continue;
+            const Shot s = shoot(sc);
+            // На совсем тесном экране меню забирает место пояса
+            // намеренно: обходя и столбец, и пояс, ему остаётся 87
+            // точек из 360, и показывать там нечего. Решает это
+            // раскладка, у неё и спрашиваем.
+            if (s.menuTakesHotbar) continue;
+            if (s.inHotbar > bare) {
+                ++outside;
+                std::snprintf(m, sizeof(m),
+                              "%s экран %d: на поясе лишних вершин %u",
+                              sz.name, (int)sc, (unsigned)(s.inHotbar - bare));
+                check(false, m);
+            }
+        }
+    }
+
+    std::snprintf(m, sizeof(m), "кадров проверено %d", frames);
+    check(frames == (int)(sizeof(SIZES) / sizeof(SIZES[0])) *
+                    (int)(sizeof(SCREENS) / sizeof(SCREENS[0])), m);
+    check(outside == 0, "ни один экран не уезжает за край и не лезет на пояс");
+
+    config::settings() = savedCfg;
+}
+
+
+// ------------------------------------------------------------
+// Области меню не налезают на то, что уже занято.
+//
+// Проверка «ничего не уезжает за край» ловит выход за экран, но не
+// перекрытие: третий столбец древа навыков накрывал кнопку
+// закрытия, и экран нельзя было закрыть, — а за край при этом не
+// выходило ничто.
+//
+// Здесь спрашивается сама раскладка: области, из которых экраны
+// берут своё место, обязаны обходить кнопку закрытия, столбец HUD и
+// пояс. Пока это так, экрану достаточно взять область — и он ни на
+// что не наложится.
+// ------------------------------------------------------------
+void testMenuAreasAvoidWhatIsTaken() {
+    group("раскладка: области меню обходят занятое");
+
+    struct Size { const char* name; i32 w, h, dpi; };
+    const Size SIZES[] = {
+        { "1280x720 @320",  1280,  720, 320 },
+        { "1920x1080 @400", 1920, 1080, 400 },
+        { "2400x1080 @440", 2400, 1080, 440 },
+        { "640x360 @240",    640,  360, 240 },
+    };
+
+    auto overlaps = [](const ui::Rect& a, const ui::Rect& b) {
+        return a.x < b.x + b.w && b.x < a.x + a.w &&
+               a.y < b.y + b.h && b.y < a.y + a.h;
+    };
+
+    char m[220];
+    int bad = 0, checked = 0;
+
+    for (const Size& sz : SIZES) {
+        for (int mirror = 0; mirror < 2; ++mirror) {
+            ui::HudLayout L((f32)sz.w, (f32)sz.h,
+                            ui::theme::Metrics::fromDensityDpi(sz.dpi),
+                            ui::SafeInsets{}, mirror != 0);
+            L.setHudBehind(true);
+            L.setHudCompact(true);
+
+            const ui::Rect close = L.closeButton();
+            const ui::Rect col   = L.hudLeftColumn();
+
+            struct Named { const char* name; ui::Rect r; };
+            const Named areas[] = {
+                { "область меню",   L.menuArea() },
+                { "под вкладками",  L.menuBelowTabs() },
+                { "панель слева",   L.paneLeft() },
+                { "панель справа",  L.paneRight() },
+                { "главное действие", L.primaryAction() },
+            };
+
+            for (const Named& a : areas) {
+                ++checked;
+                if (overlaps(a.r, close)) {
+                    ++bad;
+                    std::snprintf(m, sizeof(m),
+                                  "%s%s: «%s» накрывает кнопку закрытия",
+                                  sz.name, mirror ? " (левша)" : "", a.name);
+                    check(false, m);
+                }
+                if (overlaps(a.r, col)) {
+                    ++bad;
+                    std::snprintf(m, sizeof(m),
+                                  "%s%s: «%s» лежит на столбце HUD",
+                                  sz.name, mirror ? " (левша)" : "", a.name);
+                    check(false, m);
+                }
+            }
+
+            // Кнопка в строке заголовка не должна закрывать сам
+            // заголовок: на 640x360 она начиналась левее него.
+            const ui::Rect ta = L.titleAction(160.f);
+            ++checked;
+            if (ta.w > 0.f && ta.x < L.menuTitle().x) {
+                ++bad;
+                std::snprintf(m, sizeof(m),
+                              "%s%s: действие в заголовке залезло на заголовок",
+                              sz.name, mirror ? " (левша)" : "");
+                check(false, m);
+            }
+        }
+    }
+
+    // ---- И в них помещается не по одному ряду ----
+    //
+    // «Не уезжает за край» само по себе выполняется и тогда, когда
+    // на экране виден один ряд из восьми: лишнее просто не
+    // рисуется. Поэтому отдельно спрашиваем, сколько рядов видно.
+    // Именно это и стерегла нижняя граница ряда: подними её с
+    // «минимальной» до «удобной» — и у столбца навыков из двух
+    // рядов остаётся один.
+    {
+        ui::HudLayout L(1280.f, 720.f,
+                        ui::theme::Metrics::fromDensityDpi(320),
+                        ui::SafeInsets{}, false);
+        L.setHudBehind(true);
+        L.setHudCompact(true);
+
+        const ui::Rect a = L.menuArea();
+        const f32 gap = L.dp(ui::theme::SPACE_M_DP);
+        const f32 headH = L.dp(ui::theme::SPACE_XXL_DP);
+        const ui::Rect rows{ a.x, a.y + headH + gap,
+                             a.w, a.h - headH - gap };
+        const u32 skillRows =
+            L.cardGrid(rows, 3, ui::theme::TOUCH_MIN_DP).rowsVisible();
+        std::snprintf(m, sizeof(m), "1280x720: рядов навыков видно %u",
+                      skillRows);
+        check(skillRows >= 2, m);
+
+        const u32 saveRows =
+            L.cardGrid(a, 3, ui::HudLayout::SAVE_CARD_H_DP).rowsVisible();
+        std::snprintf(m, sizeof(m), "1280x720: рядов сохранений видно %u",
+                      saveRows);
+        check(saveRows >= 2, m);
+
+        // Место пояса паузе уступает ИГРА, а не проверка: иначе
+        // сверялась бы возможность, а не то, что её включают.
+        // Мутация, снявшая уступку в buildFrame, именно так и
+        // уходила.
+        {
+            ecs::Registry reg;
+            player::Player pl;
+            pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+            world::ChunkManager wd(0x9A17Eull, 1);
+
+            auto overHotbar = [&](ui::Screen sc) {
+                ui::UiSystem sys;
+                sys.setDensityDpi(320);
+                sys.setScreenSize(1280, 720);
+                sys.screen = sc;
+                sys.showFps = false;
+                sys.tickUi(1.f / 60.f);
+                sys.buildFrame(pl, wd, 60.f);
+                return sys.layout().menuOverHotbar();
+            };
+            check(overHotbar(ui::Screen::PauseMenu),
+                  "в паузе меню занимает место пояса: игра стоит");
+            check(!overHotbar(ui::Screen::Inventory),
+                  "а в сумке — нет: мир живёт, и пояс нужен");
+        }
+
+        L.setMenuOverHotbar(true);
+        const u32 pauseRows =
+            L.cardGrid(L.menuArea(), 3,
+                       ui::theme::TOUCH_REGULAR_DP).rowsVisible();
+        L.setMenuOverHotbar(false);
+        std::snprintf(m, sizeof(m), "1280x720: рядов паузы видно %u",
+                      pauseRows);
+        // «Продолжить», хотя бы ряд разделов и «выход».
+        check(pauseRows >= 3, m);
+    }
+
+    std::snprintf(m, sizeof(m), "областей сверено %d", checked);
+    check(checked == 4 * 2 * 6, m);
+    check(bad == 0, "ни одна область меню не налезает на занятое");
+}
+
 // ------------------------------------------------------------
 void testSaveKeepsQuestsWithoutText() {
     group("сохранение: задания без текста, глава остаётся главой");
@@ -7491,8 +7944,22 @@ void testPauseMenuIsGroupedAndComplete() {
 
     // Сетка, а не столбец: в альбомной ориентации столбец — худшая
     // из форм, по вертикали места меньше всего.
-    check(body.find("menuCell(") != NONE,
+    check(body.find("cardGrid(") != NONE,
           "разделы разложены сеткой из раскладки");
+    // И сетка эта на настоящем экране и правда в несколько
+    // столбцов. Поиск по исходнику этого не знает: `cardGrid` с
+    // одним столбцом — тот же столбец, от которого уходили.
+    {
+        ui::HudLayout L(1920.f, 1080.f,
+                        ui::theme::Metrics::fromDensityDpi(400),
+                        ui::SafeInsets{}, false);
+        L.setHudBehind(true);
+        L.setHudCompact(true);
+        char m[120];
+        const u32 cols = L.menuColsFor((u32)ui::menuEntries().size(), 2);
+        std::snprintf(m, sizeof(m), "столбцов в сетке паузы: %u", cols);
+        check(cols >= 2, m);
+    }
 
     // Выход спрашивает.
     check(body.find("askConfirm(") != NONE,
@@ -8282,7 +8749,7 @@ void testCraftTradeEnchantShareOneLook() {
         const usize act = body.find("onEnchant(");
         check(ask != NONE && act != NONE && ask < act,
               "вопрос задаётся раньше действия");
-        check(body.find("layout_.primaryAction()") != NONE,
+        check(body.find("layout_.primaryAction") != NONE,
               "главное действие берёт геометрию из раскладки");
     }
 
@@ -24833,6 +25300,9 @@ int main() {
     testFirstStepsGiveAGoal();
     testOneLanguageEverywhere();
     testSaveKeepsQuestsWithoutText();
+    testNoEnglishOnScreen();
+    testScreensStayOnScreen();
+    testMenuAreasAvoidWhatIsTaken();
     testHudAndButtonsDoNotOverlap();
     testLoadingIsAPanelNotACurtain();
     testUiThemeObeysItsOwnRules();

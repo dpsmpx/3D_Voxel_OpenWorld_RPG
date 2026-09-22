@@ -3,6 +3,7 @@
  * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню.
  */
 #include "slider.h"
+#include "../config/localization.h"
 #include "../core/log.h"
 #include <algorithm>
 #include <cstdio>
@@ -125,7 +126,12 @@ void toggleWidget(UiContext& ui,
                 1.6f, COL_WHITE);
     }
 
-    const char* stateStr = *value ? "ON" : "OFF";
+    // Ключи On и Off в таблице строк были с самого начала и не
+    // звались ни разу: тумблеры настроек писали «ON» и «OFF»
+    // литералом, и русский экран настроек был наполовину
+    // английским.
+    const char* stateStr = config::T(*value ? config::StrKey::On
+                                            : config::StrKey::Off);
     float sw = ui.textWidth(stateStr, 1.6f);
     ui.text(stateStr, r.x + r.w - sw - 12.f,
             r.y + (r.h - ui.textHeight(1.6f)) * 0.5f, 1.6f, COL_WHITE);
