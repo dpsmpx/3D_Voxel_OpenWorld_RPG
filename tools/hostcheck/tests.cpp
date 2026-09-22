@@ -7314,6 +7314,86 @@ void testCoinsGoToTheWallet() {
 }
 
 // ------------------------------------------------------------
+// Оставленное золото переживает выход из игры.
+//
+// Признак «ждёт» — это и есть цена смерти: без него узелок
+// истлевает за пять минут вместе с ней. Сохранение спрашивается
+// напрямую, потому что прочитанный обратно предмет — единственное,
+// что игрок увидит, вернувшись в игру.
+// ------------------------------------------------------------
+void testLostGoldSurvivesSave() {
+    group("сохранение: оставленное золото не истлевает и после загрузки");
+
+    items::items();
+
+    ecs::Registry reg;
+
+    items::ItemStack coins{};
+    coins.itemId = items::ITEM_GOLD_COIN;
+    coins.count  = 250;
+    const ecs::Entity bundle = items::spawnPickup(
+        reg, glm::vec3(12.f, 64.f, -3.f), coins);
+    if (auto* p = reg.get<items::ItemPickup>(bundle)) p->waits = true;
+
+    // Рядом — обычный выпавший предмет: он истлевать обязан, и
+    // проверка должна это различать.
+    items::ItemStack scrap{};
+    scrap.itemId = items::ITEM_WOOD;
+    scrap.count  = 4;
+    items::spawnPickup(reg, glm::vec3(2.f, 64.f, 2.f), scrap);
+
+    save::ByteWriter w;
+    save::serializePickups(w, reg);
+
+    ecs::Registry reg2;
+    save::ByteReader r(w.data());
+    check(save::deserializePickups(r, reg2), "предметы прочитаны обратно");
+
+    u32 total = 0, waiting = 0;
+    u16 waitingId = 0;
+    u16 waitingCount = 0;
+    {
+        auto& pool = reg2.pool<items::ItemPickup>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            const auto* p = pool.get(pool.entityAt((u32)i));
+            if (!p) continue;
+            ++total;
+            if (p->waits) {
+                ++waiting;
+                waitingId    = p->stack.itemId;
+                waitingCount = p->stack.count;
+            }
+        }
+    }
+
+    char m[160];
+    std::snprintf(m, sizeof(m), "предметов после загрузки %u, ждущих %u",
+                  total, waiting);
+    check(true, m);
+    check(total == 2, "оба предмета на месте");
+    check(waiting == 1, "ждёт ровно один");
+    check(waitingId == items::ITEM_GOLD_COIN, "и это монеты");
+    check(waitingCount == 250, "все до одной");
+
+    // Самое главное: после загрузки узелок по-прежнему не стареет.
+    world::blocks();
+    jobs::gJobs.start(2);
+    world::ChunkManager wd(0x5A7Eull, 1);
+    const glm::vec3 far{ 900.f, 80.f, 900.f };
+    for (int i = 0; i < 400; ++i)
+        items::updatePickups(wd, reg2, ecs::Entity{}, far, 1.f);
+
+    u32 left = 0;
+    {
+        auto& pool = reg2.pool<items::ItemPickup>();
+        for (usize i = 0; i < pool.size(); ++i)
+            if (pool.get(pool.entityAt((u32)i))) ++left;
+    }
+    check(left == 1, "обычный предмет истлел, оставленное золото ждёт");
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testSaveKeepsQuestsWithoutText() {
     group("сохранение: задания без текста, глава остаётся главой");
 
@@ -25835,6 +25915,7 @@ int main() {
     testSaveKeepsQuestsWithoutText();
     testDeathCostsGold();
     testCoinsGoToTheWallet();
+    testLostGoldSurvivesSave();
     testVillageRemembers();
     testTurnInLightsTheVillage();
     testVillageDeedSurvivesSave();
