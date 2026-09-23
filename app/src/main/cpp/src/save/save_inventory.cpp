@@ -197,7 +197,7 @@ bool deserializePickups(ByteReader& r, ecs::Registry& reg) {
         if (!r.u8v(waits)) return false;
         sp.waits = waits != 0;
         if (sp.id == 0 || sp.count == 0) return false;
-        if (sp.id == ITEM_GOLD_COIN && sp.currencyAmount == 0) return false;
+        if (sp.id == items::ITEM_GOLD_COIN && sp.currencyAmount == 0) return false;
         saved.push_back(sp);
     }
 
