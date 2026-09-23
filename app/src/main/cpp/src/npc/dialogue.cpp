@@ -388,6 +388,12 @@ bool startDialogue(ecs::Registry& reg,
                                                    npcPos);
             }
             if (!qe.valid()) qe = quests::generateQuest(reg, world, opts);
+            if (qe.valid()) {
+                if (auto* q = reg.get<quests::Quest>(qe)) {
+                    q->giverEntity = npcEntity;
+                    q->giverPersistKey = npcTag->persistKey;
+                }
+            }
             ai->offeredQuest = (u32)qe;
         }
 
@@ -422,12 +428,14 @@ bool startDialogue(ecs::Registry& reg,
         auto* log = reg.get<quests::QuestLog>(playerEntity);
         if (log) {
             bool anyReady = false;
+            const auto* currentTag = reg.get<NpcTag>(npcEntity);
             for (auto qe : log->activeQuests) {
                 auto* q = reg.get<quests::Quest>(qe);
-                if (q && q->state == quests::QuestState::Completed) {
-                    anyReady = true;
-                    break;
-                }
+                if (!q || q->state != quests::QuestState::Completed) continue;
+                const bool sameGiver = q->giverPersistKey != 0 && currentTag
+                    ? q->giverPersistKey == currentTag->persistKey
+                    : q->giverEntity == npcEntity;
+                if (sameGiver) { anyReady = true; break; }
             }
             if (anyReady) {
                 // Добавляем к корневому узлу вариант «сдать квест»
@@ -494,11 +502,17 @@ bool applyChoice(ecs::Registry& reg,
         auto* log = reg.get<quests::QuestLog>(dlg.playerEntity);
         if (!log) { dlg.active = false; return false; }
 
-        // Находим завершённый квест, сдаём первый подходящий
+        // Сдаём только квест этого NPC. После перезапуска сравниваем
+        // стабильный persistKey, а runtime ECS ID используем как fallback.
+        const auto* currentTag = reg.get<NpcTag>(dlg.npcEntity);
         for (auto qe : log->activeQuests) {
             auto* q = reg.get<quests::Quest>(qe);
             if (!q) continue;
             if (q->state != quests::QuestState::Completed) continue;
+            const bool sameGiver = q->giverPersistKey != 0 && currentTag
+                ? q->giverPersistKey == currentTag->persistKey
+                : q->giverEntity == dlg.npcEntity;
+            if (!sameGiver) continue;
 
             // «Принеси» — это обмен: сперва отдать, потом получить.
             // Не хватило принесённого — квест не сдаётся, и игрок
@@ -528,7 +542,7 @@ bool applyChoice(ecs::Registry& reg,
             // Отдельной таблицы «сколько сдано в деревне (sx, sz)»
             // нет намеренно: она была бы вторым местом, где живёт
             // одно и то же, и разойтись с миром могла бы молча.
-            if (auto* gtf = reg.get<ecs::Transform>(q->giverEntity)) {
+            if (auto* gtf = reg.get<ecs::Transform>(dlg.npcEntity)) {
                 const glm::ivec3 at{ (i32)gtf->position.x,
                                      (i32)gtf->position.y,
                                      (i32)gtf->position.z };

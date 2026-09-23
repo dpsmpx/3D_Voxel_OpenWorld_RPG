@@ -25,6 +25,15 @@ u32 nextQuestId() {
     return gQuestIdCounter.fetch_add(1, std::memory_order_relaxed);
 }
 
+void ensureQuestIdAbove(u32 id) {
+    if (id == 0xFFFFFFFFu) return;
+    const u32 wanted = id + 1;
+    u32 cur = gQuestIdCounter.load(std::memory_order_relaxed);
+    while (cur < wanted &&
+           !gQuestIdCounter.compare_exchange_weak(cur, wanted,
+                                                   std::memory_order_relaxed)) {}
+}
+
 void QuestLog::addActive(ecs::Entity quest) {
     for (auto e : activeQuests) if (e == quest) return;
     activeQuests.push_back(quest);

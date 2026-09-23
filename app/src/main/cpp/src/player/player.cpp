@@ -964,7 +964,10 @@ void Player::tickDeath(world::ChunkManager& world, f32 dt) {
                 const ecs::Entity e = items::spawnPickup(
                     *reg_, controller.state().position + glm::vec3(0.f, 0.6f, 0.f),
                     drop, glm::vec3(0.f, 2.f, 0.f));
-                if (auto* pk = reg_->get<items::ItemPickup>(e)) pk->waits = true;
+                if (auto* pk = reg_->get<items::ItemPickup>(e)) {
+                    pk->waits = true;
+                    pk->currencyAmount = lost;
+                }
 
                 lostGold = lost;
             }

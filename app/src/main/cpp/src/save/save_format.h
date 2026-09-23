@@ -71,7 +71,7 @@ static_assert(SAVE_HEADER_SIZE == 48, "изменили состав загол�
 ///
 /// Загрузчик отвергает файлы другой версии: лучше честно сказать
 /// «не поддерживается», чем прочитать данные со сдвигом.
-constexpr u32 SAVE_VERSION = 9;
+constexpr u32 SAVE_VERSION = 10;
 
 /// ByteWriter — аккумулирует байты, пишет всё LE.
 /// Имена методов с префиксом write*, чтобы не затенять
@@ -218,65 +218,3 @@ public:
         std::memcpy(&out, &bits, sizeof(out));
         return true;
     }
-
-    bool varU32v(u32& out) {
-        out = 0;
-        int shift = 0;
-        for (int i = 0; i < 5; ++i) {
-            if (pos_ >= size_) { error_ = true; return false; }
-            u8 b = data_[pos_++];
-            out |= (u32)(b & 0x7F) << shift;
-            if (!(b & 0x80)) return true;
-            shift += 7;
-        }
-        error_ = true;
-        return false;
-    }
-    bool varU64v(u64& out) {
-        out = 0;
-        int shift = 0;
-        for (int i = 0; i < 10; ++i) {
-            if (pos_ >= size_) { error_ = true; return false; }
-            u8 b = data_[pos_++];
-            out |= (u64)(b & 0x7F) << shift;
-            if (!(b & 0x80)) return true;
-            shift += 7;
-        }
-        error_ = true;
-        return false;
-    }
-    bool varI32v(i32& out) {
-        u32 zz;
-        if (!varU32v(zz)) return false;
-        out = (i32)((zz >> 1) ^ (~(zz & 1) + 1));
-        return true;
-    }
-
-    bool strv(std::string& out) {
-        u32 n = 0;
-        if (!varU32v(n)) return false;
-        if (pos_ + n > size_) { error_ = true; return false; }
-        out.assign((const char*)(data_ + pos_), n);
-        pos_ += n;
-        return true;
-    }
-    bool rawv(void* dst, usize n) {
-        if (pos_ + n > size_) { error_ = true; return false; }
-        std::memcpy(dst, data_ + pos_, n);
-        pos_ += n;
-        return true;
-    }
-    bool skip(usize n) {
-        if (pos_ + n > size_) { error_ = true; return false; }
-        pos_ += n;
-        return true;
-    }
-
-private:
-    const u8* data_  = nullptr;
-    usize     size_  = 0;
-    usize     pos_   = 0;
-    bool      error_ = false;
-};
-
-} // namespace save

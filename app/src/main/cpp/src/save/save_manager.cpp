@@ -16,6 +16,7 @@
 #include <ctime>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 namespace save {
 
@@ -87,9 +88,10 @@ SaveStatus SaveManager::save(const SaveSlot& slot,
     header.writeU32(crc32_compute(compressed.data(), compressed.size()));
 
     std::string path = slot.dataPath();
-    FILE* f = std::fopen(path.c_str(), "wb");
+    const std::string tmpPath = path + ".tmp";
+    FILE* f = std::fopen(tmpPath.c_str(), "wb");
     if (!f) {
-        LOGE("Save: не удалось открыть %s", path.c_str());
+        LOGE("Save: не удалось открыть %s", tmpPath.c_str());
         return SaveStatus::WriteError;
     }
 
@@ -100,17 +102,17 @@ SaveStatus SaveManager::save(const SaveSlot& slot,
         LOGE("Save: заголовок %zu байт вместо %u", header.size(),
              (unsigned)SAVE_HEADER_SIZE);
         std::fclose(f);
-        std::remove(path.c_str());
+        std::remove(tmpPath.c_str());
         return SaveStatus::WriteError;
     }
 
     bool ok = true;
     ok = ok && std::fwrite(header.data().data(), 1, header.size(), f) == header.size();
     ok = ok && std::fwrite(compressed.data(), 1, compressed.size(), f) == compressed.size();
+    if (std::fflush(f) != 0 || ::fsync(::fileno(f)) != 0) ok = false;
     std::fclose(f);
-
-    if (!ok) {
-        std::remove(path.c_str());
+    if (!ok || std::rename(tmpPath.c_str(), path.c_str()) != 0) {
+        std::remove(tmpPath.c_str());
         return SaveStatus::WriteError;
     }
 
@@ -136,7 +138,7 @@ SaveStatus SaveManager::save(const SaveSlot& slot,
         world::defaultWorldName(meta.worldName, sizeof(meta.worldName), worldSeed);
     std::snprintf(meta.playerName, sizeof(meta.playerName), "Adventurer");
 
-    slot.writeMeta(meta);
+    if (!slot.writeMeta(meta)) return SaveStatus::WriteError;
 
     LOGI("Save OK: %s  body=%zu  comp=%zu  delta_chunks=%zu  mods=%zu",
          path.c_str(), body.size(), compressed.size(),
@@ -268,7 +270,7 @@ SaveStatus SaveManager::load(const SaveSlot& slot,
         return SaveStatus::CorruptedData;
     }
 
-    deltas.applyAll(world);
+    if (!deltas.applyAll(world)) return SaveStatus::CorruptedData;
 
     if (outSeed)        *outSeed = seed;
     if (outPlaytimeSec) *outPlaytimeSec = playtime;

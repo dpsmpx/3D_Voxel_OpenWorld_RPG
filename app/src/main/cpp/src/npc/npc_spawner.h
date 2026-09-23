@@ -71,7 +71,8 @@ public:
     void update(world::ChunkManager& world,
                 ecs::Registry& reg,
                 const glm::vec3& playerPos,
-                u64 worldSeed);
+                u64 worldSeed,
+                f32 dt = 1.f / 60.f);
 
     u32 activeNpcCount() const { return activeCount_; }
 

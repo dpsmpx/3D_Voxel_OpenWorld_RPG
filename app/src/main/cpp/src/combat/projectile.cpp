@@ -18,6 +18,8 @@ namespace combat {
 ecs::Entity spawnProjectile(ecs::Registry& reg,
                             const ProjectileSpawnParams& p)
 {
+    const f32 dirLenSq = glm::dot(p.direction, p.direction);
+    if (dirLenSq < 1e-8f || !std::isfinite(dirLenSq) || !std::isfinite(p.speed)) return {};
     ecs::Entity e = reg.create();
 
     ecs::Transform tf;
@@ -25,7 +27,7 @@ ecs::Entity spawnProjectile(ecs::Registry& reg,
     reg.add(e, tf);
 
     ecs::Velocity vel;
-    vel.linear = glm::normalize(p.direction) * p.speed;
+    vel.linear = p.direction * (p.speed / std::sqrt(dirLenSq));
     reg.add(e, vel);
 
     Projectile proj{};
@@ -80,11 +82,13 @@ ecs::Entity spawnHitFx(ecs::Registry& reg,
 
 namespace {
 
-ecs::Entity checkOneCandidate(ecs::Registry& reg,
-                              const glm::vec3& pos,
-                              f32 projRadius,
-                              u32 ownerFaction,
-                              ecs::Entity ownerEntity)
+ecs::Entity checkSegmentCandidate(ecs::Registry& reg,
+                                  const glm::vec3& from,
+                                  const glm::vec3& to,
+                                  f32 projRadius,
+                                  u32 ownerFaction,
+                                  ecs::Entity ownerEntity,
+                                  f32& outT)
 {
     std::vector<ecs::Entity> candidates;
 
@@ -95,6 +99,11 @@ ecs::Entity checkOneCandidate(ecs::Registry& reg,
         if (!reg.get<ecs::Transform>(e)) continue;
         candidates.push_back(e);
     }
+
+    const glm::vec3 segment = to - from;
+    const f32 segLenSq = glm::dot(segment, segment);
+    f32 bestT = 2.f;
+    ecs::Entity best{};
 
     for (ecs::Entity e : candidates) {
         const u32 f = Faction::of(reg, e);
@@ -108,13 +117,19 @@ ecs::Entity checkOneCandidate(ecs::Registry& reg,
         f32 er = col ? (col->halfExtents.x + col->halfExtents.z) * 0.5f : 0.4f;
 
         glm::vec3 center = tf->position + glm::vec3(0.f, eh * 0.5f, 0.f);
-        glm::vec3 d = center - pos;
-        f32 dist = glm::length(d);
-        if (dist > er + projRadius) continue;
-
-        return e;
+        f32 t = 0.f;
+        if (segLenSq > 1e-8f) {
+            t = glm::dot(center - from, segment) / segLenSq;
+            t = std::clamp(t, 0.f, 1.f);
+        }
+        const glm::vec3 closest = from + segment * t;
+        const glm::vec3 d = center - closest;
+        const f32 radius = er + projRadius;
+        if (glm::dot(d, d) > radius * radius) continue;
+        if (t < bestT) { bestT = t; best = e; }
     }
-    return {};
+    outT = best.valid() ? bestT : 0.f;
+    return best;
 }
 
 /// Звук попадания снаряда.
@@ -154,14 +169,20 @@ void updateProjectiles(world::ChunkManager& world,
             vel->linear = proj->velocity;
         }
 
+        const glm::vec3 startPos = tf->position;
         const glm::vec3 step = proj->velocity * dt;
+        const glm::vec3 endPos = startPos + step;
         const f32 stepLen = glm::length(step);
+        f32 entityT = 0.f;
+        ecs::Entity entityTarget = checkSegmentCandidate(
+            reg, startPos, endPos, proj->scale,
+            proj->ownerFaction, reg.fromId(proj->ownerEntity), entityT);
 
         if (stepLen > 1e-5f) {
             const glm::vec3 dir = step / stepLen;
-            auto vhit = physics::raycastVoxels(world, tf->position, dir, stepLen);
-            if (vhit.hit) {
-                tf->position += dir * vhit.distance;
+            auto vhit = physics::raycastVoxels(world, startPos, dir, stepLen);
+            if (vhit.hit && (!entityTarget.valid() || entityT * stepLen > vhit.distance)) {
+                tf->position = startPos + dir * vhit.distance;
                 spawnHitFx(reg, tf->position, proj->colorRGBA,
                            0.15f, 0.55f, 0.18f);
                 projectileImpactSound(*proj, tf->position);
@@ -170,13 +191,10 @@ void updateProjectiles(world::ChunkManager& world,
             }
         }
 
-        tf->position += step;
+        if (entityTarget.valid()) {
+            tf->position = startPos + step * entityT;
+            ecs::Entity target = entityTarget;
 
-        ecs::Entity target = checkOneCandidate(
-            reg, tf->position, proj->scale,
-            proj->ownerFaction, reg.fromId(proj->ownerEntity));
-
-        if (target.valid()) {
             const f32 dmgMain = applyDamage(reg, target, proj->damage);
 
             if (proj->secondary.amount > 0.f ||
@@ -207,6 +225,7 @@ void updateProjectiles(world::ChunkManager& world,
             continue;
         }
 
+        tf->position = endPos;
         proj->lifeRemaining -= dt;
         if (proj->lifeRemaining <= 0.f) {
             toDestroy.push_back(e);

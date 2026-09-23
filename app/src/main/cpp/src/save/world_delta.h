@@ -39,7 +39,7 @@ public:
     void clearAll();
 
     /// Применить все сохранённые дельты к миру (после создания чанков).
-    void applyAll(world::ChunkManager& world) const;
+    bool applyAll(world::ChunkManager& world) const;
 
     /// ---- Сериализация ----
     void write(ByteWriter& w) const;

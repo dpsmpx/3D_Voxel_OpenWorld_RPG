@@ -161,47 +161,62 @@ void serializePickups(ByteWriter& w, ecs::Registry& reg) {
         w.writeU16(p->stack.itemId);
         w.writeU16(p->stack.count);
         w.writeF32(p->lifeRemaining);
+        w.writeU64(p->currencyAmount);
         w.writeU8(p->waits ? 1 : 0);
     }
 }
 
 bool deserializePickups(ByteReader& r, ecs::Registry& reg) {
-    // Удаляем существующие пикапы.
-    {
-        auto& pool = reg.pool<items::ItemPickup>();
-        std::vector<ecs::Entity> toRemove;
-        for (usize i = 0; i < pool.size(); ++i) {
-            toRemove.push_back(pool.entityAt((u32)i));
-        }
-        for (auto e : toRemove) reg.destroy(e);
-    }
+    struct SavedPickup {
+        glm::vec3 position{0};
+        u16 id = 0;
+        u16 count = 0;
+        f32 life = 300.f;
+        u64 currencyAmount = 0;
+        bool waits = false;
+    };
 
     u32 count = 0;
     if (!r.varU32v(count)) return false;
     if (count > 2000) return false;
+    std::vector<SavedPickup> saved;
+    saved.reserve(count);
 
+    // Полностью разбираем вход до изменения live Registry. Повреждённый
+    // сейв не должен уничтожать уже лежащие предметы.
     for (u32 i = 0; i < count; ++i) {
-        f32 x = 0, y = 0, z = 0;
-        u16 id = 0, cnt = 0;
-        f32 life = 300.f;
-        if (!r.f32v(x)) return false;
-        if (!r.f32v(y)) return false;
-        if (!r.f32v(z)) return false;
-        if (!r.u16v(id)) return false;
-        if (!r.u16v(cnt)) return false;
-        if (!r.f32v(life)) return false;
+        SavedPickup sp;
+        if (!r.f32v(sp.position.x)) return false;
+        if (!r.f32v(sp.position.y)) return false;
+        if (!r.f32v(sp.position.z)) return false;
+        if (!r.u16v(sp.id)) return false;
+        if (!r.u16v(sp.count)) return false;
+        if (!r.f32v(sp.life)) return false;
+        if (!r.u64v(sp.currencyAmount)) return false;
         u8 waits = 0;
         if (!r.u8v(waits)) return false;
+        sp.waits = waits != 0;
+        if (sp.id == 0 || sp.count == 0) return false;
+        if (sp.id == ITEM_GOLD_COIN && sp.currencyAmount == 0) return false;
+        saved.push_back(sp);
+    }
 
+    auto& pool = reg.pool<items::ItemPickup>();
+    std::vector<ecs::Entity> toRemove;
+    toRemove.reserve(pool.size());
+    for (usize i = 0; i < pool.size(); ++i)
+        toRemove.push_back(pool.entityAt((u32)i));
+    for (auto e : toRemove) reg.destroy(e);
+
+    for (const auto& sp : saved) {
         items::ItemStack s;
-        s.itemId = id;
-        s.count  = cnt;
-        if (s.empty()) continue;
-
-        ecs::Entity e = items::spawnPickup(reg, glm::vec3(x, y, z), s);
+        s.itemId = sp.id;
+        s.count = sp.count;
+        ecs::Entity e = items::spawnPickup(reg, sp.position, s);
         if (auto* p = reg.get<items::ItemPickup>(e)) {
-            p->lifeRemaining = life;
-            p->waits = (waits != 0);
+            p->lifeRemaining = sp.life;
+            p->currencyAmount = sp.currencyAmount;
+            p->waits = sp.waits;
             p->pickDelay = 0.f;
         }
     }

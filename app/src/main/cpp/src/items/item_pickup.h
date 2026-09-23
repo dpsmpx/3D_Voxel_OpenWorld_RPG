@@ -26,6 +26,9 @@ struct ItemPickup {
     /// Phase 15: физика
     bool      onGround = false;
 
+    /// Полная сумма валютного pickup. ItemStack::count ограничен maxStack.
+    u64       currencyAmount = 0;
+
     /// Не истлевает.
     ///
     /// Обычный выпавший предмет живёт пять минут: иначе поле боя

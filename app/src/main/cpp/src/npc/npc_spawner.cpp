@@ -325,10 +325,12 @@ void NpcSpawner::updateCouriers(world::ChunkManager& world, ecs::Registry& reg,
 void NpcSpawner::update(world::ChunkManager& world,
                         ecs::Registry& reg,
                         const glm::vec3& playerPos,
-                        u64 worldSeed)
+                        u64 worldSeed,
+                        f32 dt)
 {
-    spawnTimer_ += 1.f / 60.f;
-    despawnTimer_ += 1.f / 60.f;
+    dt = std::clamp(dt, 0.f, 0.25f);
+    spawnTimer_ += dt;
+    despawnTimer_ += dt;
 
     // ---- Кто умер, тот больше не появится ----
     //
@@ -455,7 +457,7 @@ void NpcSpawner::update(world::ChunkManager& world,
     // Раз в четыре секунды, а не каждый кадр: проход перебирает
     // двадцать пять super-chunk'ов и для каждого спрашивает раскладку
     // деревни. Дорога не появляется и не исчезает, спешить некуда.
-    courierTimer_ += 1.f / 60.f;
+    courierTimer_ += dt;
     if (courierTimer_ >= 4.0f) {
         courierTimer_ = 0.f;
         updateCouriers(world, reg, playerPos, worldSeed);

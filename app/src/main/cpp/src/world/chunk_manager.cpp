@@ -344,10 +344,11 @@ void ChunkManager::requeueMesh(const std::shared_ptr<Chunk>& chunk) {
     if (!chunk) return;
     if (chunk->removed.load(std::memory_order_acquire)) return;
     {
-        // Квадов нет — выгружать нечего, и вернуть в очередь значит
-        // отправить рендер за ними ещё раз, и ещё, и так каждый кадр.
         std::lock_guard lk(chunk->meshMutex);
-        if (!chunk->mesh.built) return;
+        if (!chunk->mesh.built) {
+            enqueueMesh(chunk->coord);
+            return;
+        }
     }
     // Тот же отбой дубликатов, что и в jobMesh: пока меш ездил в
     // рендер и обратно, задача меширования могла поставить его

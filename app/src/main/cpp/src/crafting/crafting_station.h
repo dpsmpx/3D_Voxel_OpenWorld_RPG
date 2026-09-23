@@ -33,7 +33,8 @@ public:
     void update(ecs::Registry& reg,
                 world::ChunkManager& world,
                 const glm::vec3& playerPos,
-                u64 worldSeed);
+                u64 worldSeed,
+                f32 dt = 1.f / 60.f);
 
     u32 activeStationCount() const { return activeCount_; }
 
