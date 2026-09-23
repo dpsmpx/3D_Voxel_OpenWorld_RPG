@@ -346,7 +346,7 @@ void ChunkManager::requeueMesh(const std::shared_ptr<Chunk>& chunk) {
     {
         std::lock_guard lk(chunk->meshMutex);
         if (!chunk->mesh.built) {
-            enqueueMesh(chunk->coord);
+            enqueueMesh({ chunk->coord.x, chunk->coord.z });
             return;
         }
     }
