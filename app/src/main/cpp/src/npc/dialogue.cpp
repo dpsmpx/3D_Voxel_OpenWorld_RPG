@@ -432,9 +432,12 @@ bool startDialogue(ecs::Registry& reg,
             for (auto qe : log->activeQuests) {
                 auto* q = reg.get<quests::Quest>(qe);
                 if (!q || q->state != quests::QuestState::Completed) continue;
-                const bool sameGiver = q->giverPersistKey != 0 && currentTag
-                    ? q->giverPersistKey == currentTag->persistKey
-                    : q->giverEntity == npcEntity;
+                const bool sameGiver =
+                    (q->giverPersistKey != 0 && currentTag)
+                        ? q->giverPersistKey == currentTag->persistKey
+                        : (q->giverEntity != 0
+                            ? q->giverEntity == npcEntity
+                            : true);
                 if (sameGiver) { anyReady = true; break; }
             }
             if (anyReady) {
@@ -509,9 +512,12 @@ bool applyChoice(ecs::Registry& reg,
             auto* q = reg.get<quests::Quest>(qe);
             if (!q) continue;
             if (q->state != quests::QuestState::Completed) continue;
-            const bool sameGiver = q->giverPersistKey != 0 && currentTag
-                ? q->giverPersistKey == currentTag->persistKey
-                : q->giverEntity == dlg.npcEntity;
+            const bool sameGiver =
+                (q->giverPersistKey != 0 && currentTag)
+                    ? q->giverPersistKey == currentTag->persistKey
+                    : (q->giverEntity != 0
+                        ? q->giverEntity == dlg.npcEntity
+                        : true);
             if (!sameGiver) continue;
 
             // «Принеси» — это обмен: сперва отдать, потом получить.
