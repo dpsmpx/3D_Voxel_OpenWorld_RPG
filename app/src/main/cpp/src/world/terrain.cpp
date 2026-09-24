@@ -28,8 +28,8 @@ namespace {
 
 constexpr i32 RIVER_STEP = 8;
 constexpr i32 RIVER_SOURCE_MARGIN = 96;
-constexpr i32 RIVER_SOURCE_CANDIDATES = 12;
-constexpr u32 RIVER_SOURCE_CHANCE = 82;
+constexpr i32 RIVER_SOURCE_CANDIDATES = 20;
+constexpr u32 RIVER_SOURCE_CHANCE = 128;
 constexpr u32 RIVER_CACHE_MAX = 512;
 constexpr i32 WORLD_TOP_SAFE = 118;
 
@@ -285,8 +285,8 @@ static TerrainGenerator::RiverPath traceRiver(
             const f32 depthPenalty =
                 channelDepth > 6.f ? (channelDepth - 6.f) * 1.8f : 0.f;
 
-            const f32 targetPull = tributary ? 0.14f : 0.075f;
-            const f32 targetSteer = tributary ? 1.55f : 0.85f;
+            const f32 targetPull = tributary ? 0.12f : 0.032f;
+            const f32 targetSteer = tributary ? 1.60f : 0.f;
 
             f32 score = drop * 3.4f
                       + targetGain * targetPull
@@ -380,7 +380,7 @@ static bool findTributarySource(const TerrainGenerator& terrain,
                         - jitter * (D16X[d] != 0 ? 1 : 0);
             const auto col = terrain.column(x, z);
 
-            if (col.surface < junction.waterY + 10) continue;
+            if (col.surface < junction.waterY + 6) continue;
             if (col.surface < TerrainGenerator::SEA_LEVEL + 20) continue;
             if (col.surface > WORLD_TOP_SAFE) continue;
             if (col.climate.biome == Ocean || col.climate.biome == Beach ||
@@ -468,8 +468,13 @@ static TerrainGenerator::RiverNetwork buildRiverNetwork(
         const TerrainGenerator::RiverPoint& junction = net.paths.front().points[idx];
 
         i32 bx = 0, bz = 0, by = 0;
-        if (!findTributarySource(terrain, junction, (i32)bi, bx, bz, by))
-            continue;
+        bool sourceFound = findTributarySource(
+            terrain, junction, (i32)bi, bx, bz, by);
+        if (!sourceFound) {
+            sourceFound = findTributarySource(
+                terrain, junction, (i32)bi + 11, bx, bz, by);
+        }
+        if (!sourceFound) continue;
 
         const RiverTarget branchTarget{
             junction.x, junction.z, junction.terrainY, false
@@ -480,8 +485,8 @@ static TerrainGenerator::RiverNetwork buildRiverNetwork(
             riverHash(bx ^ (i32)(bi * 37),
                       bz ^ (i32)(bi * 53),
                       terrain.seed() ^ 0x7B1BULL),
-            1.15f, 3.3f, 192, true,
-            junction.x, junction.z, 18, junction.waterY);
+            1.15f, 3.3f, 224, true,
+            junction.x, junction.z, 22, junction.waterY);
 
         if (branch.points.size() < 16) continue;
 
