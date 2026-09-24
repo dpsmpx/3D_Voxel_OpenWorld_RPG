@@ -39,7 +39,11 @@ void emitQuad(const world::Quad& q, const world::BlockDef& def,
     const u32 rgba = def.faceColor(q.v0.face);
     const u8 cr = (u8)(rgba >> 24), cg = (u8)(rgba >> 16);
     const u8 cb = (u8)(rgba >>  8);
-    const u8 ca = forceOpaque ? (u8)255 : (u8)(rgba);
+    const bool waterTop = q.v0.block == world::WATER && q.v0.face == 2;
+    // Top-water alpha is reused as an 8-bit flow payload. The fragment
+    // shader restores the real material alpha, so VoxelVertex stays 8 bytes.
+    const u8 ca = forceOpaque ? (u8)255
+                              : (waterTop ? q.waterFlow : (u8)(rgba));
 
     const glm::vec3 corners[4] = {
         q.v0.pos,

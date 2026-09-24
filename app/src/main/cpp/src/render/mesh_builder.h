@@ -44,8 +44,16 @@ namespace render {
 /// РАВНОМЕРНО по миру и не зависит ни от биома, ни от высоты.
 struct VoxelVertex {
     u32 packed;      // 4
-    u8  r, g, b, a;  // 4 — цвет материала грани
+    u8  r, g, b, a;  // 4 — material color; top-water alpha carries an 8-bit flow payload
 };                   // = 8
+
+/// Documents the 8-bit flow payload used by top-water vertex alpha:
+/// direction 0..7, speed 0..7, turbulence 0..3.
+constexpr u8 WATER_FLOW_DIR_MASK = 0x07;
+constexpr u8 WATER_FLOW_SPEED_MASK = 0x38;
+constexpr u8 WATER_FLOW_TURB_MASK = 0xC0;
+
+
 static_assert(sizeof(VoxelVertex) == 8, "VoxelVertex должен быть 8 байт");
 
 /// Сборка упакованной позиции. Вынесена, чтобы тест проверял ровно
