@@ -3,6 +3,8 @@
  * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
  */
 #include "features.h"
+#include <array>
+#include <memory>
 #include "../core/log.h"
 #include <cmath>
 #include <algorithm>
