@@ -4,8 +4,12 @@
  */
 #include "terrain.h"
 #include "block.h"
-#include <cmath>
+#include "chunk.h"
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <unordered_set>
+#include <vector>
 
 namespace world {
 
