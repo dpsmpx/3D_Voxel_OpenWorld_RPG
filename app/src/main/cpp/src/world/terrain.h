@@ -122,6 +122,9 @@ public:
     void riverNetworksNear(i32 chunkX, i32 chunkZ,
                            std::vector<std::shared_ptr<const RiverNetwork>>& out) const;
 
+    /// Seed мира — нужен процедурным features без дублирования состояния.
+    u64 seed() const { return seed_; }
+
     /// Доступ к климату и шуму для features
     const BiomeField& field() const { return biome_; }
     const SimplexNoise& noise() const { return cavesA_; }

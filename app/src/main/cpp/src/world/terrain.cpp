@@ -432,7 +432,7 @@ static TerrainGenerator::RiverNetwork buildRiverNetwork(
     net.source = {sx, sy, sz};
 
     const RiverTarget target = findRiverTarget(terrain, sx, sz);
-    RiverPath main = traceRiver(
+    TerrainGenerator::RiverPath main = traceRiver(
         terrain, sx, sz, sy - 1, target,
         riverHash(cellX, cellZ, terrain.seed() ^ 0xC011DULL),
         1.7f, 7.0f, TerrainGenerator::RIVER_MAX_LENGTH / RIVER_STEP,
@@ -449,7 +449,7 @@ static TerrainGenerator::RiverNetwork buildRiverNetwork(
                                   (junctionCount + 1));
         if (idx < 24 || idx + 16 >= mainSize) continue;
 
-        const RiverPoint& junction = net.paths.front().points[idx];
+        const TerrainGenerator::RiverPoint& junction = net.paths.front().points[idx];
 
         i32 bx = 0, bz = 0, by = 0;
         if (!findTributarySource(terrain, junction, (i32)bi, bx, bz, by))
@@ -459,7 +459,7 @@ static TerrainGenerator::RiverNetwork buildRiverNetwork(
             junction.x, junction.z, junction.terrainY, false
         };
 
-        RiverPath branch = traceRiver(
+        TerrainGenerator::RiverPath branch = traceRiver(
             terrain, bx, bz, by - 1, branchTarget,
             riverHash(bx ^ (i32)(bi * 37),
                       bz ^ (i32)(bi * 53),
@@ -512,8 +512,8 @@ void TerrainGenerator::riverNetworksNear(
 {
     out.clear();
 
-    const i32 wx = chunkX * CHUNK_SIZE + CHUNK_SIZE / 2;
-    const i32 wz = chunkZ * CHUNK_SIZE + CHUNK_SIZE / 2;
+    const i32 wx = chunkX * RIVER_CHUNK_SIZE + RIVER_CHUNK_SIZE / 2;
+    const i32 wz = chunkZ * RIVER_CHUNK_SIZE + RIVER_CHUNK_SIZE / 2;
     const i32 cx = (i32)std::floor((f32)wx / (f32)RIVER_CELL_SIZE);
     const i32 cz = (i32)std::floor((f32)wz / (f32)RIVER_CELL_SIZE);
 
