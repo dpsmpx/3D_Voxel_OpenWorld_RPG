@@ -512,8 +512,8 @@ void TerrainGenerator::riverNetworksNear(
 {
     out.clear();
 
-    const i32 wx = chunkX * RIVER_CHUNK_SIZE + RIVER_CHUNK_SIZE / 2;
-    const i32 wz = chunkZ * RIVER_CHUNK_SIZE + RIVER_CHUNK_SIZE / 2;
+    const i32 wx = chunkX * CHUNK_SIZE + CHUNK_SIZE / 2;
+    const i32 wz = chunkZ * CHUNK_SIZE + CHUNK_SIZE / 2;
     const i32 cx = (i32)std::floor((f32)wx / (f32)RIVER_CELL_SIZE);
     const i32 cz = (i32)std::floor((f32)wz / (f32)RIVER_CELL_SIZE);
 
