@@ -543,6 +543,132 @@ void applyLiquids(Chunk& chunk, const FeatureContext& ctx) {
 }
 
 // ============================================================
+// РЕКИ
+//
+// RiverGenerator строит мировую сеть независимо от границ чанков.
+// Здесь сеть превращается в непрерывное воксельное русло: сегменты
+// интерполируются каждые ~2 блока, waterY спускается вместе с
+// рельефом, а ширина растёт по пути к устью.
+// ============================================================
+
+void applyRivers(Chunk& chunk, const FeatureContext& ctx) {
+    if (!ctx.terrain) return;
+
+    std::vector<std::shared_ptr<const TerrainGenerator::RiverNetwork>> nets;
+    ctx.terrain->riverNetworksNear(chunk.coord.x, chunk.coord.z, nets);
+    if (nets.empty()) return;
+
+    std::array<i16, CHUNK_SIZE * CHUNK_SIZE> waterTop;
+    std::array<f32, CHUNK_SIZE * CHUNK_SIZE> waterWidth;
+    waterTop.fill((i16)-1);
+    waterWidth.fill(0.f);
+
+    const i32 bx0 = chunk.coord.x * CHUNK_SIZE;
+    const i32 bz0 = chunk.coord.z * CHUNK_SIZE;
+
+    auto markSample = [&](f32 fx, f32 fz, f32 fy, f32 width) {
+        const i32 cx = (i32)std::lround(fx);
+        const i32 cz = (i32)std::lround(fz);
+        const i32 radius = std::max(1, (i32)std::ceil(width + 0.75f));
+
+        for (i32 dz = -radius; dz <= radius; ++dz) {
+            for (i32 dx = -radius; dx <= radius; ++dx) {
+                const f32 ddx = (f32)dx;
+                const f32 ddz = (f32)dz;
+                if (ddx * ddx + ddz * ddz > width * width) continue;
+
+                const i32 wx = cx + dx;
+                const i32 wz = cz + dz;
+                const i32 lx = wx - bx0;
+                const i32 lz = wz - bz0;
+                if ((u32)lx >= (u32)CHUNK_SIZE ||
+                    (u32)lz >= (u32)CHUNK_SIZE) continue;
+
+                const usize k = (usize)lx * CHUNK_SIZE + lz;
+                const i16 top = (i16)std::clamp(
+                    (i32)std::lround(fy), 1, CHUNK_SIZE_Y - 2);
+
+                // На слиянии рек более низкая отметка побеждает: приток
+                // не может образовать полку выше основного русла.
+                if (waterTop[k] < 0 || top < waterTop[k]) {
+                    waterTop[k] = top;
+                    waterWidth[k] = width;
+                } else if (top == waterTop[k] && width > waterWidth[k]) {
+                    waterWidth[k] = width;
+                }
+            }
+        }
+    };
+
+    for (const auto& net : nets) {
+        if (!net) continue;
+        for (const auto& path : net->paths) {
+            if (path.points.empty()) continue;
+
+            if (path.points.size() == 1) {
+                const auto& p = path.points.front();
+                markSample((f32)p.x, (f32)p.z, (f32)p.waterY, p.width);
+                continue;
+            }
+
+            for (usize i = 0; i + 1 < path.points.size(); ++i) {
+                const auto& a = path.points[i];
+                const auto& b = path.points[i + 1];
+
+                const f32 dx = (f32)b.x - (f32)a.x;
+                const f32 dz = (f32)b.z - (f32)a.z;
+                const f32 len = std::hypot(dx, dz);
+                const i32 steps = std::max(1, (i32)std::ceil(len / 2.f));
+
+                for (i32 s = 0; s <= steps; ++s) {
+                    const f32 t = (f32)s / (f32)steps;
+                    const f32 x = (f32)a.x + dx * t;
+                    const f32 z = (f32)a.z + dz * t;
+                    const f32 y = (f32)a.waterY +
+                                  ((f32)b.waterY - (f32)a.waterY) * t;
+                    const f32 w = a.width + (b.width - a.width) * t;
+                    markSample(x, z, y, w);
+                }
+            }
+        }
+    }
+
+    // Одно применение к вокселям вместо перезаписи одной и той же
+    // колонки сотни раз при прохождении длинного русла через чанк.
+    for (i32 lx = 0; lx < CHUNK_SIZE; ++lx) {
+        for (i32 lz = 0; lz < CHUNK_SIZE; ++lz) {
+            const usize k = (usize)lx * CHUNK_SIZE + lz;
+            if (waterTop[k] < 0 || waterWidth[k] <= 0.f) continue;
+
+            const i32 wx = bx0 + lx;
+            const i32 wz = bz0 + lz;
+            const i32 surface = ctx.columnAt(lx, lz, wx, wz).surface;
+
+            // Под общим уровнем моря applyLiquids уже залил воду. Устье
+            // не должно вырезать из моря собственный более низкий уровень.
+            if (surface <= TerrainGenerator::SEA_LEVEL) continue;
+
+            const i32 top = std::min((i32)waterTop[k], surface);
+            if (top < 2) continue;
+
+            const u32 h = feat_util::hashXZ(wx, wz, ctx.seed ^ 0x51F3E7ULL);
+            i32 depth = 2 + (i32)std::floor(waterWidth[k] * 0.35f)
+                        + (i32)(h & 1u);
+            depth = std::clamp(depth, 2, 6);
+
+            const i32 bed = std::max(1, top - depth);
+
+            // Вода заполняет русло от дна до поверхности. Всё выше
+            // поверхности до старой земли вырезается.
+            for (i32 y = bed; y < surface; ++y) {
+                chunk.voxels[chunkIndex(lx, y, lz)] =
+                    y <= top ? WATER : AIR;
+            }
+        }
+    }
+}
+
+// ============================================================
 // STRUCTURES — через super-chunk grid 8×8 чанков
 // ============================================================
 namespace structs {
@@ -2256,6 +2382,7 @@ void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
     applyCaves(chunk, fctx);
     applyOres(chunk, fctx);
     applyLiquids(chunk, fctx);
+    applyRivers(chunk, fctx);
     applyStructures(chunk, fctx);
     // Дороги ПОСЛЕ построек: они идут от деревни к деревне, и
     // деревенская мостовая должна остаться сверху, а не под ними.

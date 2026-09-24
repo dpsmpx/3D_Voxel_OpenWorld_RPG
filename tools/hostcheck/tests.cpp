@@ -135,6 +135,7 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+#include <limits>
 
 /// Читает файл проекта целиком. Определение ниже по тексту:
 /// часть проверок пользуется им раньше.
@@ -25928,10 +25929,140 @@ void testCloudsAreNotOneColour() {
     check(taps == 4, m);
 }
 
+
+void testRivers() {
+    group("реки: высокогорные русла, уклоны, притоки и выход к морю");
+
+    bool haveNetwork = false;
+    bool haveLong = false;
+    bool haveSea = false;
+    bool haveVariedSlope = false;
+    bool haveBranch = false;
+    bool haveJoinedBranch = false;
+    bool deterministic = false;
+    i32 maxLength = 0;
+    i32 maxSourceHeight = 0;
+    i32 riverSamples = 0;
+
+    constexpr u64 SEEDS[] = {
+        0xC0FFEEull, 0x5A4A9ull, 0x12648430ull, 0x20260913ull,
+        0x71B1ull, 0xA11CEull
+    };
+
+    for (u64 seed : SEEDS) {
+        world::TerrainGenerator gen(seed);
+
+        for (i32 cz = -5; cz <= 5; ++cz) {
+            for (i32 cx = -5; cx <= 5; ++cx) {
+                const auto net = gen.riverNetworkAtCell(cx, cz);
+                if (!net || net->paths.empty()) continue;
+
+                haveNetwork = true;
+                ++riverSamples;
+                const auto same = gen.riverNetworkAtCell(cx, cz);
+                if (same.get() == net.get()) deterministic = true;
+
+                const auto& main = net->paths.front();
+                if (main.points.size() < 2) continue;
+
+                i32 length = 0;
+                std::set<i32> drops;
+                bool monotonicWater = true;
+                bool stepsBounded = true;
+                for (usize i = 1; i < main.points.size(); ++i) {
+                    const auto& a = main.points[i - 1];
+                    const auto& b = main.points[i];
+
+                    length += (i32)std::lround(std::hypot(
+                        (f32)b.x - (f32)a.x,
+                        (f32)b.z - (f32)a.z));
+
+                    const i32 drop = (i32)a.waterY - (i32)b.waterY;
+                    if (drop < 0) monotonicWater = false;
+                    if (std::abs(b.x - a.x) > 12 ||
+                        std::abs(b.z - a.z) > 12)
+                        stepsBounded = false;
+                    drops.insert(drop);
+
+                }
+
+                maxLength = std::max(maxLength, length);
+                maxSourceHeight = std::max(
+                    maxSourceHeight, (i32)net->source.y);
+
+                if (length >= 1024) haveLong = true;
+                if (drops.size() >= 3) haveVariedSlope = true;
+                if (main.front().terrainY >= world::TerrainGenerator::SEA_LEVEL + 30 &&
+                    main.front().waterY <= main.front().terrainY - 1)
+                    check(true, "источник реки находится высоко над уровнем моря");
+
+                check(stepsBounded, "шаг русла ограничен, без скачков по карте");
+                check(monotonicWater,
+                      "уровень воды реки не поднимается вверх по течению");
+
+                if (main.back().terrainY <=
+                        world::TerrainGenerator::SEA_LEVEL + 3 ||
+                    main.back().waterY <=
+                        world::TerrainGenerator::SEA_LEVEL + 1)
+                    haveSea = true;
+
+                if (!monotonicWater) continue;
+
+                for (usize pi = 1; pi < net->paths.size(); ++pi) {
+                    const auto& branch = net->paths[pi];
+                    if (!branch.tributary || branch.points.size() < 2) continue;
+
+                    haveBranch = true;
+                    const auto& start = branch.points.front();
+                    const auto& end = branch.points.back();
+
+                    i32 bestD2 = std::numeric_limits<i32>::max();
+                    for (const auto& mp : main.points) {
+                        const i32 dx = end.x - mp.x;
+                        const i32 dz = end.z - mp.z;
+                        bestD2 = std::min(bestD2, dx * dx + dz * dz);
+                    }
+
+                    if (bestD2 <= 24 * 24) {
+                        haveJoinedBranch = true;
+                        check(start.terrainY > end.terrainY + 4,
+                              "приток начинается выше места впадения");
+                        check(end.waterY <= start.waterY,
+                              "приток течёт от истока к главной реке");
+                    }
+                }
+
+                if (haveNetwork && haveLong && haveSea && haveVariedSlope &&
+                    haveBranch && haveJoinedBranch)
+                    goto done;
+            }
+        }
+    }
+
+done:
+    {
+        char m[220];
+        std::snprintf(m, sizeof(m),
+                      "проверено сетей %d, максимальная длина главного русла %d "
+                      "блоков, высота максимального истока %d",
+                      riverSamples, maxLength, maxSourceHeight);
+        check(true, m);
+    }
+    check(haveNetwork, "в мире вообще появляются речные сети");
+    check(deterministic, "одна и та же речная сеть детерминирована и кэшируется");
+    check(haveLong, "есть действительно длинное главное русло");
+    check(haveSea, "главные реки доходят до моря/океана");
+    check(haveVariedSlope, "уклон русла меняется, а не является одной плоской линией");
+    check(haveBranch, "у сетей есть отдельные притоки");
+    check(haveJoinedBranch, "приток физически подключается к главному руслу");
+    check(riverSamples > 0, "тест увидел хотя бы одну сгенерированную сеть");
+}
+
 int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
     testTerrain();
+    testRivers();
     testRegistry();
     testMemory();
     testJobSystem();

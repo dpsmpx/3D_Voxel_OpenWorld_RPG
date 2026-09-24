@@ -362,17 +362,19 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
     // Теперь размер — под фактическую грань, и чистится только
     // использованная часть.
     static thread_local std::vector<u16> mask;
-    // Затенение углов и открытость неба идут параллельными масками:
-    // слияние требует совпадения всех трёх, иначе тень свода
-    // растеклась бы по освещённому склону.
+    // Затенение углов, открытость неба и направление течения идут
+    // параллельными масками: одинаковые WATER-квады с разным потоком
+    // нельзя сливать в один большой шейдерный участок.
     static thread_local std::vector<u8>  aoMask;
     static thread_local std::vector<u16> skyMask;
+    static thread_local std::vector<u8>  flowMask;
 
     const i32 maxDim = vol.dimY > vol.dimX ? vol.dimY : vol.dimX;
     const usize need = (usize)maxDim * maxDim;
-    if (mask.size()    < need) mask.assign(need, 0);
-    if (aoMask.size()  < need) aoMask.assign(need, 0);
-    if (skyMask.size() < need) skyMask.assign(need, 0);
+    if (mask.size()     < need) mask.assign(need, 0);
+    if (aoMask.size()   < need) aoMask.assign(need, 0);
+    if (skyMask.size()  < need) skyMask.assign(need, 0);
+    if (flowMask.size() < need) flowMask.assign(need, 0);
 
     static thread_local SkyMap skyMap;
     auto& reg = blocks();
@@ -390,9 +392,10 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
 
             for (i32 iu = 0; iu < dimU; ++iu) {
                 // Чистим только ту строку, которую сейчас заполняем.
-                std::memset(mask.data()    + (usize)iu * strideU, 0, sizeof(u16) * (usize)dimV);
-                std::memset(aoMask.data()  + (usize)iu * strideU, 0, sizeof(u8)  * (usize)dimV);
-                std::memset(skyMask.data() + (usize)iu * strideU, 0, sizeof(u16) * (usize)dimV);
+                std::memset(mask.data()     + (usize)iu * strideU, 0, sizeof(u16) * (usize)dimV);
+                std::memset(aoMask.data()   + (usize)iu * strideU, 0, sizeof(u8)  * (usize)dimV);
+                std::memset(skyMask.data()  + (usize)iu * strideU, 0, sizeof(u16) * (usize)dimV);
+                std::memset(flowMask.data() + (usize)iu * strideU, 0, sizeof(u8)  * (usize)dimV);
 
                 for (i32 iv = 0; iv < dimV; ++iv) {
                     i32 c[3];
@@ -441,6 +444,11 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                         mask[k]    = cur;
                         aoMask[k]  = faceAo(vol, reg, n, ax);
                         skyMask[k] = faceSky(skyMap, n, ax);
+                        if (cur == WATER && face == 2) {
+                            const i32 sx = c[0];
+                            const i32 sz = c[2];
+                            flowMask[k] = estimateWaterFlow(chunk, nb, sx, sz, c[1] + 1);
+                        }
                         anyFace = true;
                     }
                 }
@@ -456,10 +464,14 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                     if (!b) { ++iu; continue; }
                     const u8  ao  = aoMask[k0];
                     const u16 sky = skyMask[k0];
+                    const u8  flow = flowMask[k0];
 
                     auto same = [&](i32 u2, i32 v2) {
                         const usize k = (usize)u2 * strideU + v2;
-                        return mask[k] == b && aoMask[k] == ao && skyMask[k] == sky;
+                        return mask[k] == b &&
+                               aoMask[k] == ao &&
+                               skyMask[k] == sky &&
+                               flowMask[k] == flow;
                     };
 
                     i32 wU = 1;
@@ -497,13 +509,7 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                     q.sky[2] = (u8)((sky >>  6) & 7);
                     q.sky[3] = (u8)((sky >>  9) & 7);
 
-                    if (b == WATER && face == 2) {
-                        const i32 sampleX = (i32)(org.x + (f32)wU * 0.5f);
-                        const i32 sampleZ = (i32)(org.z + (f32)wV * 0.5f);
-                        q.waterFlow = estimateWaterFlow(chunk, nb,
-                                                         sampleX, sampleZ,
-                                                         (i32)org.y);
-                    }
+                    q.waterFlow = (b == WATER && face == 2) ? flow : 0;
 
                     outQuads.push_back(q);
 
@@ -511,6 +517,7 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                         for (i32 x = 0; x < wU; ++x) {
                             const usize k = (usize)(iu + x) * strideU + (iv + y);
                             mask[k] = 0; aoMask[k] = 0; skyMask[k] = 0;
+                            flowMask[k] = 0;
                         }
 
                     iu += wU;
