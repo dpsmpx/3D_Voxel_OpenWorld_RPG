@@ -122,8 +122,10 @@ static RiverTarget findRiverTarget(const TerrainGenerator& terrain,
 {
     RiverTarget best{};
     i64 bestDist2 = std::numeric_limits<i64>::max();
-    i32 bestLowScore = std::numeric_limits<i32>::max();
 
+    // A river network is only valid when it has a real outlet.
+    // Never substitute an inland low point: that creates a decorative
+    // trench with no hydrological destination.
     constexpr i32 DISTANCES[] = {
         256, 512, 768, 1024, 1536, 2048, 3072, 4096
     };
@@ -133,34 +135,22 @@ static RiverTarget findRiverTarget(const TerrainGenerator& terrain,
             const i32 x = sx + D16X[d] * dist / 2;
             const i32 z = sz + D16Z[d] * dist / 2;
             const auto col = terrain.column(x, z);
-            if (col.surface <= TerrainGenerator::SEA_LEVEL + 3 ||
-                col.climate.biome == Ocean) {
-                const i64 dx = (i64)x - sx;
-                const i64 dz = (i64)z - sz;
-                const i64 d2 = dx * dx + dz * dz;
-                if (d2 < bestDist2) {
-                    bestDist2 = d2;
-                    best = {x, z, col.surface, true};
-                }
+            if (col.surface > TerrainGenerator::SEA_LEVEL + 3 &&
+                col.climate.biome != Ocean)
+                continue;
+
+            const i64 dx = (i64)x - sx;
+            const i64 dz = (i64)z - sz;
+            const i64 d2 = dx * dx + dz * dz;
+            if (d2 < bestDist2) {
+                bestDist2 = d2;
+                best = {x, z, col.surface, true};
             }
         }
         if (best.sea) return best;
     }
 
-    for (i32 dist : DISTANCES) {
-        for (i32 d = 0; d < 16; ++d) {
-            const i32 x = sx + D16X[d] * dist / 2;
-            const i32 z = sz + D16Z[d] * dist / 2;
-            const auto col = terrain.column(x, z);
-            const i32 score = col.surface +
-                              (i32)std::max(0.f, col.climate.continent) * 12;
-            if (score < bestLowScore) {
-                bestLowScore = score;
-                best = {x, z, col.surface, false};
-            }
-        }
-    }
-    return best;
+    return {};
 }
 
 static bool tooRecentlyVisited(
@@ -448,13 +438,27 @@ static TerrainGenerator::RiverNetwork buildRiverNetwork(
     net.source = {sx, sy, sz};
 
     const RiverTarget target = findRiverTarget(terrain, sx, sz);
+    if (!target.sea)
+        return net;
+
     TerrainGenerator::RiverPath main = traceRiver(
         terrain, sx, sz, sy - 1, target,
         riverHash(cellX, cellZ, terrain.seed() ^ 0xC011DULL),
-        1.7f, 7.0f, TerrainGenerator::RIVER_MAX_LENGTH / RIVER_STEP,
+        1.7f, 10.0f, TerrainGenerator::RIVER_MAX_LENGTH / RIVER_STEP,
         false);
 
-    if (main.points.size() < 24) return net;
+    if (main.points.size() < 32) return net;
+    if (main.points.back().terrainY >
+        TerrainGenerator::SEA_LEVEL + 3)
+        return net;
+
+    i32 totalDrop = 0;
+    for (usize i = 1; i < main.points.size(); ++i)
+        totalDrop += std::max(
+            0, (i32)main.points[i - 1].waterY -
+               (i32)main.points[i].waterY);
+    if (totalDrop < 20) return net;
+
     net.paths.push_back(std::move(main));
 
     const usize mainSize = net.paths.front().points.size();
