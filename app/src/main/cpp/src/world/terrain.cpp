@@ -194,6 +194,9 @@ static TerrainGenerator::RiverPath traceRiver(
     });
 
     i32 previousDir = nearestDirTo(sx, sz, target.x, target.z);
+    const f32 initialTargetDist =
+        std::max(1.f, std::hypot((f32)(target.x - sx),
+                                 (f32)(target.z - sz)));
 
     std::unordered_set<u64> visited;
     visited.reserve((usize)maxSteps * 2);
@@ -316,12 +319,18 @@ static TerrainGenerator::RiverPath traceRiver(
         if (target.sea && nextY <= TerrainGenerator::SEA_LEVEL + 3)
             nextWaterY = std::min(nextWaterY, TerrainGenerator::SEA_LEVEL);
 
+        const f32 progress = std::clamp(
+            1.f - currentTargetDist / initialTargetDist, 0.f, 1.f);
+        const f32 widthProgress =
+            progress * progress * (3.f - 2.f * progress);
         const f32 n =
             (f32)(riverHash(nextX, nextZ,
                             (u64)seedSalt ^ 0xBADC0DEULL) & 0xFFFF) / 65535.f;
+        const f32 widthBase =
+            widthStart + (widthEnd - widthStart) * widthProgress;
         const f32 width = std::clamp(
-            widthStart + (widthEnd - widthStart) * t + (n - 0.5f) * 0.7f,
-            widthStart * 0.8f, widthEnd * 1.12f);
+            widthBase + (n - 0.5f) * 0.45f,
+            widthStart * 0.8f, widthEnd * 1.05f);
 
         path.points.push_back({
             nextX, nextZ, (i16)nextY, (i16)nextWaterY, width
