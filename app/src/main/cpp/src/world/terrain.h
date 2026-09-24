@@ -7,6 +7,10 @@
 #include "noise.h"
 #include "../core/types.h"
 #include <glm/glm.hpp>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 
 namespace world {
 
@@ -77,6 +81,56 @@ public:
     /// Уровень моря (для воды)
     static constexpr i32 SEA_LEVEL = 24;
 
+    // ------------------------------------------------------------
+    // Реки
+    //
+    // Реки процедурны, но не рисуются как полосы фиксированного уровня.
+    // Сначала строится детерминированная сеть: источник в высокогорье,
+    // русло спускается по полю рельефа к побережью, а затем от главного
+    // русла проводятся более короткие притоки. Воксельный генератор
+    // использует эту сеть только для пересекающегося чанка.
+    // ------------------------------------------------------------
+    static constexpr i32 RIVER_CELL_SIZE = 1024;
+    static constexpr i32 RIVER_MAX_LENGTH = 4096;
+
+    struct RiverPoint {
+        i32 x = 0;
+        i32 z = 0;
+        i16 terrainY = 0;
+        i16 waterY = 0;   ///< высота верхнего водного блока
+        f32 width = 0.f; ///< радиус русла в блоках
+    };
+
+    struct RiverPath {
+        std::vector<RiverPoint> points;
+        bool tributary = false;
+
+        RiverPoint& front() { return points.front(); }
+        const RiverPoint& front() const { return points.front(); }
+        RiverPoint& back() { return points.back(); }
+        const RiverPoint& back() const { return points.back(); }
+    };
+
+    struct RiverNetwork {
+        glm::ivec3 source{0};
+        std::vector<RiverPath> paths;
+    };
+
+    /// Детерминированная сеть для ячейки 1024x1024 блоков.
+    /// Пустой результат означает, что подходящего высокогорного
+    /// истока в этой ячейке нет.
+    std::shared_ptr<const RiverNetwork> riverNetworkAtCell(i32 cellX,
+                                                             i32 cellZ) const;
+
+    /// Все сети, которые потенциально могут пересечь указанный чанк.
+    /// Результат владеет объектами через shared_ptr, поэтому кэш можно
+    /// безопасно ограничивать без висячих ссылок.
+    void riverNetworksNear(i32 chunkX, i32 chunkZ,
+                           std::vector<std::shared_ptr<const RiverNetwork>>& out) const;
+
+    /// Seed мира — нужен процедурным features без дублирования состояния.
+    u64 seed() const { return seed_; }
+
     /// Доступ к климату и шуму для features
     const BiomeField& field() const { return biome_; }
     const SimplexNoise& noise() const { return cavesA_; }
@@ -87,6 +141,12 @@ private:
     SimplexNoise cavesA_;
     SimplexNoise cavesB_;
     u64 seed_;
+
+    // Кэш детерминированных river networks. Он разделяется всеми
+    // рабочими потоками генерации чанков; копии одной и той же сети
+    // поэтому не строятся заново для каждого чанка.
+    mutable std::mutex riverCacheMtx_;
+    mutable std::unordered_map<u64, std::shared_ptr<const RiverNetwork>> riverCache_;
 };
 
 } // namespace world
