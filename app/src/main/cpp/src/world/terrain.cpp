@@ -272,6 +272,12 @@ static TerrainGenerator::RiverPath traceRiver(
                 (f32)(D8X[d] * D8X[previousDir] +
                       D8Z[d] * D8Z[previousDir]);
 
+            const i32 targetDir = nearestDirTo(
+                currentX, currentZ, target.x, target.z);
+            const f32 targetForward =
+                (f32)(D8X[d] * D8X[targetDir] +
+                      D8Z[d] * D8Z[targetDir]);
+
             const f32 uphill = drop < 0.f ? -drop : 0.f;
             const f32 noise =
                 (f32)(riverHash(nx, nz, (u64)seedSalt) & 0xFFFF) / 65535.f;
@@ -279,8 +285,12 @@ static TerrainGenerator::RiverPath traceRiver(
             const f32 depthPenalty =
                 channelDepth > 6.f ? (channelDepth - 6.f) * 1.8f : 0.f;
 
+            const f32 targetPull = tributary ? 0.14f : 0.075f;
+            const f32 targetSteer = tributary ? 1.55f : 0.85f;
+
             f32 score = drop * 3.4f
-                      + targetGain * 0.032f
+                      + targetGain * targetPull
+                      + targetForward * targetSteer
                       + forward * 1.1f
                       + noise * 0.28f
                       - uphill * 4.8f
@@ -356,7 +366,7 @@ static bool findTributarySource(const TerrainGenerator& terrain,
     i32 bestScore = std::numeric_limits<i32>::min();
     bool found = false;
 
-    constexpr i32 RADII[] = {128, 192, 256, 320};
+    constexpr i32 RADII[] = {128, 192, 256, 320, 384};
     for (i32 radius : RADII) {
         const u32 jh = riverHash(junction.x + branchIndex * 71,
                                  junction.z - branchIndex * 97,
