@@ -104,6 +104,11 @@ public:
     struct RiverPath {
         std::vector<RiverPoint> points;
         bool tributary = false;
+
+        RiverPoint& front() { return points.front(); }
+        const RiverPoint& front() const { return points.front(); }
+        RiverPoint& back() { return points.back(); }
+        const RiverPoint& back() const { return points.back(); }
     };
 
     struct RiverNetwork {
