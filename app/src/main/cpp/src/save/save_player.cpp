@@ -70,6 +70,7 @@ void writeQuest(ByteWriter& w, const quests::Quest& q) {
     w.writeI32(q.progress);
     w.writeF32(q.timeRemaining);
     w.writeU32(q.giverEntity);
+    w.writeU64(q.giverPersistKey);
     w.writeU32(q.ownerEntity);
 
     w.writeU8((u8)q.textSource);
@@ -88,6 +89,8 @@ bool readQuest(ByteReader& r, quests::Quest& q) {
     u8 typeU = 0, diffU = 0;
     r.u8v(typeU);
     r.u8v(diffU);
+    if (typeU >= (u8)quests::QuestType::Count ||
+        diffU >= (u8)quests::QuestDifficulty::Count) return false;
     q.tmpl.type = (quests::QuestType)typeU;
     q.tmpl.difficulty = (quests::QuestDifficulty)diffU;
     r.u16v(q.tmpl.targetMobId);
@@ -103,12 +106,15 @@ bool readQuest(ByteReader& r, quests::Quest& q) {
     q.tmpl.giverFaction = (factions::FactionId)giverFaction;
 
     u8 stateU = 0;
-    r.u8v(stateU);
+    if (!r.u8v(stateU)) return false;
+    if (stateU > (u8)quests::QuestState::Abandoned) return false;
     q.state = (quests::QuestState)stateU;
     r.i32v(q.progress);
     r.f32v(q.timeRemaining);
-    r.u32v(q.giverEntity);
-    r.u32v(q.ownerEntity);
+    if (!r.u32v(q.giverEntity)) return false;
+    if (!r.u64v(q.giverPersistKey)) return false;
+    if (!r.u32v(q.ownerEntity)) return false;
+    quests::ensureQuestIdAbove(q.id);
 
     u8 srcU = 0;
     r.u8v(srcU);

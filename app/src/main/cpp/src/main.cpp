@@ -1905,7 +1905,7 @@ struct Engine {
         }
         if (npcSpawner && player) {
             const glm::vec3 ppos = player->controller.state().position;
-            npcSpawner->update(*world, registry, ppos, worldSeed);
+            npcSpawner->update(*world, registry, ppos, worldSeed, dt);
             npc::updateNpcs(*world, registry, player->entity(), ppos, dt);
         }
         // Ловушки: сперва заводим и перезаряжаем, потом смотрим,
@@ -1928,11 +1928,11 @@ struct Engine {
         }
         if (stationSpawner && player) {
             const glm::vec3 ppos = player->controller.state().position;
-            stationSpawner->update(registry, *world, ppos, worldSeed);
+            stationSpawner->update(registry, *world, ppos, worldSeed, dt);
         }
         if (altarSpawner && player) {
             const glm::vec3 ppos = player->controller.state().position;
-            altarSpawner->update(registry, *world, ppos, worldSeed);
+            altarSpawner->update(registry, *world, ppos, worldSeed, dt);
         }
 
         combat::updateProjectiles(*world, registry, dt);

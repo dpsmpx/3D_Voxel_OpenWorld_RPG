@@ -10,6 +10,7 @@
 #include "../combat/components.h"
 #include "../combat/weapon.h"
 #include "../core/log.h"
+#include <algorithm>
 #include <cmath>
 #include <vector>
 #include <utility>
@@ -207,10 +208,12 @@ bool isVillage(i32 sx, i32 sz, u64 worldSeed) {
 void EnchantAltarSpawner::update(ecs::Registry& reg,
                                  ChunkManager& world,
                                  const glm::vec3& playerPos,
-                                 u64 worldSeed)
+                                 u64 worldSeed,
+                                 f32 dt)
 {
-    spawnTimer_ += 1.f / 60.f;
-    despawnTimer_ += 1.f / 60.f;
+    dt = std::clamp(dt, 0.f, 0.25f);
+    spawnTimer_ += dt;
+    despawnTimer_ += dt;
 
     // ---- Спавн ----
     if (spawnTimer_ >= 0.75f) {

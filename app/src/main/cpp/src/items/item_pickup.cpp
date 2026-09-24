@@ -37,6 +37,7 @@ ecs::Entity spawnPickup(ecs::Registry& reg,
 
     ItemPickup p;
     p.stack = stack;
+    p.currencyAmount = (stack.itemId == ITEM_GOLD_COIN) ? (u64)stack.count : 0;
     p.velocity = initialVelocity;
     reg.add(e, p);
 
@@ -143,7 +144,10 @@ void updatePickups(world::ChunkManager& world,
         // нельзя купить ничего.
         if (p->stack.itemId == ITEM_GOLD_COIN) {
             if (auto* wal = reg.get<Wallet>(playerEntity)) {
-                wal->receive((u64)p->stack.count);
+                const u64 amount = p->currencyAmount > 0 ? p->currencyAmount
+                                                         : (u64)p->stack.count;
+                if (amount == 0) { toRemove.push_back(e); continue; }
+                wal->receive(amount);
                 audio::events().pickupItem();
                 toRemove.push_back(e);
             }

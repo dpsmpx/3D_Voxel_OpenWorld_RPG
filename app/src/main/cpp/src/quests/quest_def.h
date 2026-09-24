@@ -109,8 +109,9 @@ struct Quest {
     QuestTextSource textSource   = QuestTextSource::Generated;
     u8             storyChapter  = 0;
 
-    u32            giverEntity   = 0;    // NPC, выдавший квест
-    u32            ownerEntity   = 0;    // игрок, взявший квест
+    u32            giverEntity   = 0;    // runtime NPC entity
+    u64            giverPersistKey = 0; // стабильный ключ NPC между загрузками
+    u32            ownerEntity   = 0;    // runtime player entity
 
     /// Для Defend
     u32            defendTarget  = 0;

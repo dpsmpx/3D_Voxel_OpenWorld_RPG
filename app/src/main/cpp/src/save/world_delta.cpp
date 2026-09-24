@@ -7,6 +7,10 @@
 #include <atomic>
 #include <mutex>
 #include <utility>
+#include <unordered_map>
+#include <chrono>
+#include <thread>
+#include "../core/job_system.h"
 #include "../core/log.h"
 #include "../world/block.h"
 
@@ -64,12 +68,19 @@ void WorldDeltaStore::clearAll() {
     deltas_.clear();
 }
 
-void WorldDeltaStore::applyAll(world::ChunkManager& world) const {
+bool WorldDeltaStore::applyAll(world::ChunkManager& world) const {
     std::lock_guard lk(mtx_);
 
     for (const auto& [coord, delta] : deltas_) {
         auto c = world.getChunk(coord.x, coord.z);
-        if (!c) continue;
+        if (!c) return false;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (!c->generated.load(std::memory_order_acquire)) {
+            if (!jobs::gJobs.running()) return false;
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (c->removed.load(std::memory_order_acquire)) return false;
 
         {
             // Пишем весь набор изменений под одним замком: меширование
@@ -82,7 +93,9 @@ void WorldDeltaStore::applyAll(world::ChunkManager& world) const {
             }
         }
         c->version.fetch_add(1, std::memory_order_release);
+        world.requeueMesh(c);
     }
+    return true;
 }
 
 void WorldDeltaStore::write(ByteWriter& w) const {
@@ -103,8 +116,7 @@ void WorldDeltaStore::write(ByteWriter& w) const {
 }
 
 bool WorldDeltaStore::read(ByteReader& r) {
-    std::lock_guard lk(mtx_);
-    deltas_.clear();
+    std::unordered_map<world::ChunkCoord, ChunkDelta, world::ChunkCoordHash> parsed;
 
     u32 chunkCount = 0;
     if (!r.varU32v(chunkCount)) return false;
@@ -129,11 +141,14 @@ bool WorldDeltaStore::read(ByteReader& r) {
         for (u32 j = 0; j < modCount; ++j) {
             BlockMod m;
             if (!r.varU32v(m.index)) return false;
+            if (m.index >= (u32)(CHUNK_SIZE_Y * CHUNK_SIZE * CHUNK_SIZE)) return false;
             if (!r.u16v(m.block))    return false;
             d.mods.push_back(m);
         }
-        deltas_[d.coord] = std::move(d);
+        parsed[d.coord] = std::move(d);
     }
+    std::lock_guard lk(mtx_);
+    deltas_.swap(parsed);
     return true;
 }
 

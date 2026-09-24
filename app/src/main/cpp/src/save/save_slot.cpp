@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 namespace save {
 
@@ -65,14 +66,16 @@ bool SaveSlot::writeMeta(const SlotMeta& meta) const {
     std::memcpy(wname, meta.worldName, 31);
     w.raw(wname, 32);
 
-    FILE* f = std::fopen(metaPath().c_str(), "wb");
-    if (!f) {
-        LOGE("writeMeta: не удалось открыть %s", metaPath().c_str());
-        return false;
-    }
-    usize written = std::fwrite(w.data().data(), 1, w.size(), f);
+    const std::string path = metaPath();
+    const std::string tmpPath = path + ".tmp";
+    FILE* f = std::fopen(tmpPath.c_str(), "wb");
+    if (!f) return false;
+    const usize written = std::fwrite(w.data().data(), 1, w.size(), f);
+    const bool flushed = std::fflush(f) == 0 && ::fsync(::fileno(f)) == 0;
     std::fclose(f);
-    return written == w.size();
+    if (written != w.size() || !flushed) { std::remove(tmpPath.c_str()); return false; }
+    if (std::rename(tmpPath.c_str(), path.c_str()) != 0) { std::remove(tmpPath.c_str()); return false; }
+    return true;
 }
 
 bool SaveSlot::readMeta(SlotMeta& out) const {

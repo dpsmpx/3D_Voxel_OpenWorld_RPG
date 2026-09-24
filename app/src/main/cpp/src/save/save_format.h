@@ -3,6 +3,7 @@
  * @brief Сохранения: бинарный формат, сжатие, дельты мира, слоты.
  */
 #pragma once
+// Save format v10: pickup currency payloads and stable quest giver keys.
 #include "../core/types.h"
 #include <vector>
 #include <string>
@@ -71,7 +72,7 @@ static_assert(SAVE_HEADER_SIZE == 48, "изменили состав загол�
 ///
 /// Загрузчик отвергает файлы другой версии: лучше честно сказать
 /// «не поддерживается», чем прочитать данные со сдвигом.
-constexpr u32 SAVE_VERSION = 9;
+constexpr u32 SAVE_VERSION = 10;
 
 /// ByteWriter — аккумулирует байты, пишет всё LE.
 /// Имена методов с префиксом write*, чтобы не затенять
