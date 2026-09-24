@@ -39,14 +39,12 @@ int main() {
 
             i32 positiveDrops = 0;
             i32 totalDrop = 0;
-            i32 largestDrop = 0;
             for (usize i = 1; i < main.points.size(); ++i) {
                 const i32 drop = (i32)main.points[i - 1].waterY -
                                  (i32)main.points[i].waterY;
                 if (drop > 0) {
                     ++positiveDrops;
                     totalDrop += drop;
-                    if (drop > largestDrop) largestDrop = drop;
                 } else if (drop < 0) {
                     std::fprintf(stderr,
                                  "rivercheck: water rises on main river cell %d,%d at point %zu\n",
