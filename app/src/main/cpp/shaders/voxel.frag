@@ -382,18 +382,87 @@ void main() {
 
     vec3 lit = albedo * (ambient + sun + torch);
 
-    // Блик на полупрозрачном. Вода и лёд отличаются от камня не
-    // цветом, а тем, что отражают небо: без блика вода читается как
-    // синее стекло, положенное на дно. Ветка динамическая и работает
-    // только на пикселях воды и льда — на террейне её нет.
-    if (vColor.a < 0.99) {
+    // ------------------------------------------------------------
+    // WATER SURFACE
+    //
+    // Top-water alpha is temporarily reused as an 8-bit payload:
+    // bits 0..2 direction, 3..5 speed, 6..7 turbulence.
+    // The material alpha is restored after lighting.
+    //
+    // No textures, normal maps, trigonometry, geometry deformation or
+    // per-frame CPU work are needed. Flow direction/speed are baked while
+    // the chunk mesh is built from terrain slope and neighbouring water.
+    // ------------------------------------------------------------
+    const vec3 WATER_RGB = vec3(58.0, 117.0, 188.0) / 255.0;
+    const float WATER_ALPHA = 160.0 / 255.0;
+    const bool waterTop =
+        face == 2u &&
+        all(lessThan(abs(vColor.rgb - WATER_RGB), vec3(0.002)));
+
+    if (vColor.a < 0.99 || waterTop) {
         highp vec3 V = normalize(cam.cameraPos.xyz - vWorldPos);
         highp vec3 H = normalize(V + cam.sunDir.xyz);
         highp float spec = pow64(max(dot(N, H), 0.0)) * sunUp;
         // Скользящий взгляд отражает сильнее — приближение Френеля.
         highp float fres = pow4(1.0 - clamp(dot(N, V), 0.0, 1.0));
-        lit += sunTint * float(spec) * 0.9;
-        lit += skyLin * float(fres) * 0.35;
+
+        if (waterTop) {
+            uint flowMeta = uint(clamp(vColor.a * 255.0 + 0.5, 0.0, 255.0));
+            uint dirQ = flowMeta & 7u;
+            uint speedQ = (flowMeta >> 3) & 7u;
+            uint turbQ = (flowMeta >> 6) & 3u;
+
+            const vec2 FLOW_DIR[8] = vec2[8](
+                vec2( 1.0,  0.0), vec2( 0.7071,  0.7071),
+                vec2( 0.0,  1.0), vec2(-0.7071,  0.7071),
+                vec2(-1.0,  0.0), vec2(-0.7071,-0.7071),
+                vec2( 0.0, -1.0), vec2( 0.7071,-0.7071));
+
+            highp vec2 dir = FLOW_DIR[int(dirQ)];
+            highp vec2 side = vec2(-dir.y, dir.x);
+            highp float flow = float(speedQ) * (1.0 / 7.0);
+            highp float time = cam.wind.z;
+            highp vec2 p = vWorldPos.xz;
+            highp vec2 adv = p - dir * time * (0.10 + 1.10 * flow);
+
+            // Triangle waves: fract + smoothstep only. No sin/cos.
+            highp float triA = 1.0 - abs(fract(
+                dot(adv, dir * 0.62 + side * 0.20) + time * 0.07) * 2.0 - 1.0);
+            highp float triB = 1.0 - abs(fract(
+                dot(p - side * time * 0.045, side * 1.15 - dir * 0.18)
+                - time * 0.05) * 2.0 - 1.0);
+            highp float triC = 1.0 - abs(fract(
+                dot(p + vec2(0.31, -0.17) * time * 0.03,
+                    vec2(0.82, 0.57)) * 0.88 - time * 0.04) * 2.0 - 1.0);
+
+            highp float waveA = smoothstep(0.62, 0.96, triA);
+            highp float waveB = smoothstep(0.62, 0.96, triB);
+            highp float waveC = smoothstep(0.62, 0.96, triC);
+
+            // Standing water stays calm and crossed; stronger flow makes
+            // the principal band follow the current.
+            highp float wave = mix((waveA + waveB) * 0.5,
+                                   waveA * 0.72 + waveB * 0.18 + waveC * 0.10,
+                                   flow);
+
+            highp float turbulence = float(turbQ) * (1.0 / 3.0);
+            if (turbulence > 0.0) {
+                highp float triT = 1.0 - abs(fract(
+                    dot(adv, dir * 0.25 - side * 1.05) * 1.55
+                    - time * 0.12) * 2.0 - 1.0);
+                highp float waveT = smoothstep(0.58, 0.96, triT);
+                wave = mix(wave, max(wave, waveT), turbulence * 0.35);
+            }
+
+            // Movement is carried mostly by the reflection, not by hue.
+            spec *= mix(0.45, 1.55, wave);
+            lit *= 0.97 + 0.06 * wave;
+            lit += sunTint * float(spec) * 1.00;
+            lit += skyLin * float(fres) * (0.22 + 0.16 * wave);
+        } else {
+            lit += sunTint * float(spec) * 0.9;
+            lit += skyLin * float(fres) * 0.35;
+        }
     }
 
     // ---- туман ----
@@ -415,6 +484,7 @@ void main() {
     highp float sunMix  = clamp(pow8(sunAmt) * 0.30 * above, 0.0, 1.0);
     vec3        fogColor = mix(skyLin, sunTint, float(sunMix));
 
+    const float outAlpha = waterTop ? WATER_ALPHA : vColor.a;
     outColor = vec4(clamp(toSrgb(mix(lit, fogColor, float(fogAmt))),
-                          0.0, 1.0), vColor.a);
+                          0.0, 1.0), outAlpha);
 }

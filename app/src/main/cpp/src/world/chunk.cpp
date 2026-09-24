@@ -3,6 +3,7 @@
  * @brief Мир: чанки, процедурная генерация, биомы, структуры, цикл суток.
  */
 #include "chunk.h"
+#include "terrain.h"
 #include "../core/memory.h"
 #include "../core/log.h"
 #include <cstring>
@@ -185,6 +186,160 @@ u8 faceAo(const MeshVolume& vol, const BlockRegistry& reg,
 
 } // namespace
 
+
+namespace {
+
+/// Reads the stored terrain surface from this chunk or one of its four
+/// already-generated neighbours.
+bool sampleSurfaceY(const Chunk& c, const ChunkNeighbors& nb,
+                    i32 x, i32 z, i32& outY)
+{
+    if ((u32)x < (u32)CHUNK_SIZE && (u32)z < (u32)CHUNK_SIZE) {
+        outY = c.surfaceY[(usize)x * CHUNK_SIZE + z];
+        return outY > 0;
+    }
+    if (x < 0) {
+        if (!nb.nx || (u32)z >= (u32)CHUNK_SIZE) return false;
+        x += CHUNK_SIZE;
+        outY = nb.nx->surfaceY[(usize)x * CHUNK_SIZE + z];
+        return outY > 0;
+    }
+    if (x >= CHUNK_SIZE) {
+        if (!nb.px || (u32)z >= (u32)CHUNK_SIZE) return false;
+        x -= CHUNK_SIZE;
+        outY = nb.px->surfaceY[(usize)x * CHUNK_SIZE + z];
+        return outY > 0;
+    }
+    if (z < 0) {
+        if (!nb.nz) return false;
+        z += CHUNK_SIZE;
+        outY = nb.nz->surfaceY[(usize)x * CHUNK_SIZE + z];
+        return outY > 0;
+    }
+    if (z >= CHUNK_SIZE) {
+        if (!nb.pz) return false;
+        z -= CHUNK_SIZE;
+        outY = nb.pz->surfaceY[(usize)x * CHUNK_SIZE + z];
+        return outY > 0;
+    }
+    return false;
+}
+
+/// Water on a stepped slope can differ by one block in height.
+bool sampleWaterNear(const Chunk& c, const ChunkNeighbors& nb,
+                     i32 x, i32 y, i32 z)
+{
+    for (i32 dy = -1; dy <= 1; ++dy) {
+        const i32 yy = y + dy;
+        if (yy < 0 || yy >= CHUNK_SIZE_Y) continue;
+        if (sampleVoxel(c, nb, x, yy, z) == WATER) return true;
+    }
+    return false;
+}
+
+/// Conservative render-only flow inference.
+///
+/// Deep sea and enclosed shallow pools remain calm. A water path gets
+/// directional motion only when its stored terrain surface slopes
+/// persistently downhill and water continues downstream.
+u8 estimateWaterFlow(const Chunk& c, const ChunkNeighbors& nb,
+                     i32 x, i32 z, i32 waterTopY)
+{
+    if ((u32)x >= (u32)CHUNK_SIZE || (u32)z >= (u32)CHUNK_SIZE) return 0;
+
+    i32 bed = 0;
+    if (!sampleSurfaceY(c, nb, x, z, bed)) return 0;
+
+    const i32 depth = waterTopY - bed;
+    if (waterTopY <= TerrainGenerator::SEA_LEVEL + 1 &&
+        bed <= TerrainGenerator::SEA_LEVEL - 2 && depth >= 4)
+        return 0;
+
+    i32 east = 0, west = 0, north = 0, south = 0;
+    if (!sampleSurfaceY(c, nb, x + 1, z, east) ||
+        !sampleSurfaceY(c, nb, x - 1, z, west) ||
+        !sampleSurfaceY(c, nb, x, z - 1, north) ||
+        !sampleSurfaceY(c, nb, x, z + 1, south))
+        return 0;
+
+    const f32 dropE = (f32)(bed - east);
+    const f32 dropW = (f32)(bed - west);
+    const f32 dropN = (f32)(bed - north);
+    const f32 dropS = (f32)(bed - south);
+
+    const f32 gx = 0.5f * (dropE - dropW);
+    const f32 gz = 0.5f * (dropS - dropN);
+    const f32 ax = gx >= 0.f ? gx : -gx;
+    const f32 az = gz >= 0.f ? gz : -gz;
+    const f32 maxAxis = ax > az ? ax : az;
+    if (maxAxis < 0.35f) return 0;
+
+    i32 sx = 0, sz = 0;
+    if (ax > az * 1.5f) sx = gx > 0.f ? 1 : -1;
+    else if (az > ax * 1.5f) sz = gz > 0.f ? 1 : -1;
+    else {
+        sx = gx >= 0.f ? 1 : -1;
+        sz = gz >= 0.f ? 1 : -1;
+    }
+
+    bool downstreamWater = sampleWaterNear(c, nb, x + sx, waterTopY - 1, z + sz);
+    if (!downstreamWater) {
+        if (sx != 0 && sz == 0)
+            downstreamWater = sampleWaterNear(c, nb, x + sx, waterTopY, z);
+        if (sz != 0 && sx == 0)
+            downstreamWater = sampleWaterNear(c, nb, x, waterTopY, z + sz);
+    }
+    if (!downstreamWater) return 0;
+
+    i32 run = 0;
+    i32 cx = x, cz = z, prevBed = bed;
+    for (i32 step = 0; step < 4; ++step) {
+        cx += sx;
+        cz += sz;
+        i32 nextBed = 0;
+        if (!sampleSurfaceY(c, nb, cx, cz, nextBed)) break;
+        if (!sampleWaterNear(c, nb, cx, waterTopY - 1, cz) &&
+            !sampleWaterNear(c, nb, cx, waterTopY, cz))
+            break;
+        if (prevBed - nextBed < 1) break;
+        prevBed = nextBed;
+        ++run;
+    }
+
+    if (run == 0 && maxAxis < 0.8f) return 0;
+
+    f32 speed = 0.04f * (f32)run + maxAxis * 0.20f;
+    if (speed > 1.f) speed = 1.f;
+    if (speed < 0.f) speed = 0.f;
+    const u8 speedQ = (u8)(speed * 7.f + 0.5f);
+    if (speedQ == 0) return 0;
+
+    i32 waterNeighbours = 0;
+    if (sampleWaterNear(c, nb, x + 1, waterTopY - 1, z)) ++waterNeighbours;
+    if (sampleWaterNear(c, nb, x - 1, waterTopY - 1, z)) ++waterNeighbours;
+    if (sampleWaterNear(c, nb, x, waterTopY - 1, z + 1)) ++waterNeighbours;
+    if (sampleWaterNear(c, nb, x, waterTopY - 1, z - 1)) ++waterNeighbours;
+
+    u8 turbulence = 0;
+    if (waterNeighbours <= 1) turbulence = 3;
+    else if (waterNeighbours == 2) turbulence = 2;
+    else if (waterNeighbours == 3) turbulence = 1;
+    if (run <= 1 && turbulence < 3) ++turbulence;
+
+    u8 dir = 0;
+    if (sx > 0 && sz == 0) dir = 0;       // E
+    else if (sx > 0 && sz > 0) dir = 1;  // SE
+    else if (sx == 0 && sz > 0) dir = 2; // S
+    else if (sx < 0 && sz > 0) dir = 3;  // SW
+    else if (sx < 0 && sz == 0) dir = 4; // W
+    else if (sx < 0 && sz < 0) dir = 5;  // NW
+    else if (sx == 0 && sz < 0) dir = 6; // N
+    else dir = 7;                         // NE
+
+    return (u8)(dir | (speedQ << 3) | (turbulence << 6));
+}
+
+} // namespace
 // ============================================================
 // Greedy Meshing по 3 осям x 6 граней x слоям.
 // ============================================================
@@ -341,6 +496,14 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                     q.sky[1] = (u8)((sky >>  3) & 7);
                     q.sky[2] = (u8)((sky >>  6) & 7);
                     q.sky[3] = (u8)((sky >>  9) & 7);
+
+                    if (b == WATER && face == 2) {
+                        const i32 sampleX = (i32)(org.x + (f32)wU * 0.5f);
+                        const i32 sampleZ = (i32)(org.z + (f32)wV * 0.5f);
+                        q.waterFlow = estimateWaterFlow(chunk, nb,
+                                                         sampleX, sampleZ,
+                                                         (i32)org.y);
+                    }
 
                     outQuads.push_back(q);
 

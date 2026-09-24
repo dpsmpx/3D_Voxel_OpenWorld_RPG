@@ -49,6 +49,12 @@ struct Quad {
     /// геометрию. Слияние граней учитывает его: квады с разным
     /// затенением не склеиваются, иначе тень «потечёт» по всей плоскости.
     u8         ao[4];
+
+    // Packed render-only metadata for the top face of WATER:
+    // bits 0..2 direction (8 compass directions),
+    // bits 3..5 speed (0..7),
+    // bits 6..7 local turbulence (0..3).
+    u8         waterFlow = 0;
 };
 
 struct ChunkMesh {

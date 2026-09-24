@@ -34,7 +34,9 @@ void main() {
     // уходит в ветку с бликом и Френелем, и без такого варианта её
     // цену не с чем сравнить.
 #ifdef WATER
-    vColor    = vec4(0.227, 0.459, 0.737, 0.627);
+    // The real top-water mesh stores flow metadata in alpha. Zero is calm
+    // standing water for this fragment-cost benchmark.
+    vColor    = vec4(0.227, 0.459, 0.737, 0.0);
 #else
     vColor    = vec4(0.486, 0.729, 0.329, 1.0);
 #endif
