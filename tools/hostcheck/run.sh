@@ -295,6 +295,28 @@ if ! "$OUT/tests"; then
     exit 1
 fi
 
+# ---- процедурные реки ----
+# Компилируем отдельный гидрологический smoke-test поверх тех же
+# объектных файлов, что идут в линковку native-lib.
+echo "==> Проверка генератора рек..."
+if ! "$CXX" -std=c++20 -O1 -g0 \
+        -D__ANDROID__ -DVK_USE_PLATFORM_ANDROID_KHR \
+        -DGLM_FORCE_DEPTH_ZERO_TO_ONE -DGLM_ENABLE_EXPERIMENTAL -DENTT_NO_ETO -DHOSTCHECK=1 \
+        -I "$SRC_DIR" -I "$PROJ/tools/hostcheck/include" \
+        -isystem "$TP/glm" -isystem "$TP/entt/include" -isystem "$TP/Vulkan-Headers/include" \
+        -o "$OUT/rivercheck" "$PROJ/tools/rivercheck/rivercheck.cpp" "$OUT"/obj/*.o \
+        -lz -lpthread -ldl \
+        2> "$OUT/rivercheck-build.err"; then
+    echo "✗ rivercheck не собрался:"
+    head -30 "$OUT/rivercheck-build.err" | sed 's/^/    /'
+    exit 1
+fi
+
+if ! "$OUT/rivercheck"; then
+    echo "✗ Генератор рек не прошёл проверку"
+    exit 1
+fi
+
 # ---- две конфигурации сборки ----
 #
 # debug_scene включается флагом времени компиляции, значит проверить
