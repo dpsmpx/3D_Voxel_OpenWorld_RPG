@@ -3067,9 +3067,14 @@ void testMeshQueueLosesNothing() {
     // Забираем всё, что успевает построиться. Меширование идёт в
     // фоне, поэтому пустая очередь означает не «всё приехало», а
     // «ещё считают»: между пустыми выборками ждём.
+    //
+    // Пока не приехало ничего, ждём дольше: первый чанк у точки
+    // появления сперва ждёт плитку гидросети — водосборы на две
+    // тысячи блоков вокруг, — и первые десятки миллисекунд очередь
+    // законно пуста.
     std::vector<world::MeshReady> first;
     int idle = 0;
-    for (int spin = 0; spin < 4000 && idle < 50; ++spin) {
+    for (int spin = 0; spin < 4000 && idle < (first.empty() ? 3000 : 50); ++spin) {
         mgr.update({ 0.f, 70.f, 0.f });
         auto batch = mgr.pollMeshesReady();
         if (batch.empty()) {
@@ -16712,7 +16717,12 @@ void testRainAndSnowParticles() {
         check(ready, "мир построен");
         if (!ready) { jobs::gJobs.stop(); return; }
 
-        const i32 ground = mgr.generator().surfaceHeight(8, 8);
+        // Земля — по вокселям, а не по высоте генератора: река
+        // врезает долину, и там генератор отвечает выше настоящей
+        // земли. Глаз, поставленный на ту высоту, висел бы над склоном.
+        i32 ground = mgr.generator().surfaceHeight(8, 8);
+        while (ground > 1 && !world::blocks().isSolid(mgr.getVoxel(8, ground - 1, 8)))
+            --ground;
         const glm::vec3 eye{ 8.5f, (f32)ground + 1.6f, 8.5f };
 
         // ---- 2. Дождь идёт: частицы появляются и падают ----
@@ -16743,13 +16753,26 @@ void testRainAndSnowParticles() {
             check(underground == 0, "и ни одна не ушла под землю");
 
             // Падают ВНИЗ.
-            f32 before = 0.f, after = 0.f;
-            i32 counted = 0;
-            for (const auto& d : p.drops()) if (d.alive) { before += d.pos.y; ++counted; }
+            //
+            // Каждая капля в отдельности, а не средняя высота: средняя
+            // зависит от рельефа. В речной долине капли чаще гибнут о
+            // склоны и рождаются заново выше, и среднее за кадр может
+            // подрасти, хотя падает каждая. Смотрим только на те, что
+            // за кадр погибнуть не могут: до земли и до нижней границы
+            // им дальше блока.
+            std::vector<std::pair<usize, f32>> falling;
+            for (usize i = 0; i < p.drops().size(); ++i) {
+                const auto& d = p.drops()[i];
+                if (!d.alive) continue;
+                if (d.pos.y - d.killY > 1.f &&
+                    d.pos.y - (eye.y - world::Precipitation::FALL_DEPTH) > 1.f)
+                    falling.push_back({ i, d.pos.y });
+            }
             p.update(mgr, eye, 1.f, 0.f, glm::vec2{ 0.f }, 1.f / 60.f);
-            i32 c2 = 0;
-            for (const auto& d : p.drops()) if (d.alive) { after += d.pos.y; ++c2; }
-            check(counted > 0 && c2 > 0 && after / c2 < before / counted,
+            i32 down = 0;
+            for (const auto& [i, y] : falling)
+                if (p.drops()[i].alive && p.drops()[i].pos.y < y) ++down;
+            check(!falling.empty() && down == (i32)falling.size(),
                   "и за кадр опускаются");
         }
 
@@ -25930,132 +25953,218 @@ void testCloudsAreNotOneColour() {
 }
 
 
+/// Гидросеть: граф стока, накопление, сшивка плиток и воксели русла.
+///
+/// Проверяются свойства, а не картинка: вода не поднимается вниз по
+/// течению, сток после слияния не меньше суммы притоков, ребро,
+/// ушедшее в соседнюю плитку, продолжается там из той же точки на
+/// той же высоте, и вода в чанке не выливается на сушу.
 void testRivers() {
-    group("реки: высокогорные русла, уклоны, притоки и выход к морю");
+    group("реки: водосборы, накопление стока, сшивка плиток, русла в чанке");
+    namespace hy = world::hydro;
 
-    bool haveNetwork = false;
-    bool haveLong = false;
-    bool haveSea = false;
-    bool haveVariedSlope = false;
-    bool haveBranch = false;
-    bool haveJoinedBranch = false;
-    bool deterministic = false;
-    i32 maxLength = 0;
-    i32 maxSourceHeight = 0;
-    i32 riverSamples = 0;
+    constexpr u64 SEED = 0xC0FFEEull;
+    world::TerrainGenerator gen(SEED);
+    const auto& hydro = gen.hydrology();
 
-    constexpr u64 SEEDS[] = {
-        0xC0FFEEull, 0x5A4A9ull, 0x12648430ull, 0x20260913ull,
-        0x71B1ull, 0xA11CEull
-    };
+    // Плитки 2x2 вокруг начала координат: у них общий угол, и через
+    // него проходят все четыре шва.
+    std::map<std::pair<i32, i32>, std::shared_ptr<const hy::Tile>> tiles;
+    for (i32 tz = -1; tz <= 0; ++tz)
+        for (i32 tx = -1; tx <= 0; ++tx)
+            tiles[{ tx, tz }] = hydro.tile(tx, tz);
 
-    for (u64 seed : SEEDS) {
-        world::TerrainGenerator gen(seed);
+    auto tileOfNode = [](i32 n) { return hy::tileOfNode(n); };
 
-        for (i32 cz = -5; cz <= 5; ++cz) {
-            for (i32 cx = -5; cx <= 5; ++cx) {
-                const auto net = gen.riverNetworkAtCell(cx, cz);
-                if (!net || net->paths.empty()) continue;
+    i32 paths = 0, mouths = 0, crossSeam = 0, seamBroken = 0;
+    i32 levelRises = 0, flowDrops = 0, confluences = 0, narrowAfter = 0;
+    i32 lakeNodes = 0, deltaArms = 0, braided = 0, waterfalls = 0;
+    u8 maxOrder = 0;
+    f32 maxFlow = 0.f;
 
-                haveNetwork = true;
-                ++riverSamples;
-                const auto same = gen.riverNetworkAtCell(cx, cz);
-                if (same.get() == net.get()) deterministic = true;
+    for (const auto& [key, T] : tiles) {
+        // Сколько речного стока приходит в каждый узел ядра.
+        std::map<std::pair<i32, i32>, std::pair<f32, i32>> inflow;
+        for (const auto& p : T->paths) {
+            if (p.kind == hy::PATH_DELTA) { ++deltaArms; continue; }
+            ++paths;
+            maxOrder = std::max(maxOrder, p.order);
+            maxFlow = std::max(maxFlow, p.flow);
+            if (p.mouth) ++mouths;
 
-                const auto& main = net->paths.front();
-                if (main.points.size() < 2) continue;
+            for (u32 s = 1; s < p.count; ++s) {
+                const auto& a = T->samples[p.first + s - 1];
+                const auto& b = T->samples[p.first + s];
+                if (b.waterY > a.waterY) ++levelRises;
+                if (b.flags & hy::SF_PLUNGE) ++waterfalls;
+                if (b.braid > 0.5f) ++braided;
+            }
+            if (!p.mouth) {
+                auto& in = inflow[{ p.toI, p.toJ }];
+                in.first += p.flow;
+                in.second += 1;
+            }
 
-                i32 length = 0;
-                std::set<i32> drops;
-                bool monotonicWater = true;
-                bool stepsBounded = true;
-                for (usize i = 1; i < main.points.size(); ++i) {
-                    const auto& a = main.points[i - 1];
-                    const auto& b = main.points[i];
-
-                    length += (i32)std::lround(std::hypot(
-                        (f32)b.x - (f32)a.x,
-                        (f32)b.z - (f32)a.z));
-
-                    const i32 drop = (i32)a.waterY - (i32)b.waterY;
-                    if (drop < 0) monotonicWater = false;
-                    if (std::abs(b.x - a.x) > 12 ||
-                        std::abs(b.z - a.z) > 12)
-                        stepsBounded = false;
-                    drops.insert(drop);
-
+            // Продолжение ребра: путь из узла-приёмника, в своей
+            // плитке или в соседней.
+            if (p.mouth) continue;
+            const auto owner = tiles.find({ tileOfNode(p.toI), tileOfNode(p.toJ) });
+            if (owner == tiles.end()) continue;
+            const hy::Tile& U = *owner->second;
+            if (&U != T.get()) ++crossSeam;
+            const hy::Path* next = nullptr;
+            for (const auto& q : U.paths)
+                if (q.kind == hy::PATH_RIVER && q.fromI == p.toI && q.fromJ == p.toJ) {
+                    next = &q;
+                    break;
                 }
+            if (!next) { ++seamBroken; continue; }
+            if (next->flow + 1e-3f < p.flow) ++flowDrops;
+            const auto& end = T->samples[p.first + p.count - 1];
+            const auto& start = U.samples[next->first];
+            if (std::fabs(end.x - start.x) > 0.01f || std::fabs(end.z - start.z) > 0.01f ||
+                end.waterY != start.waterY)
+                ++seamBroken;
+        }
 
-                maxLength = std::max(maxLength, length);
-                maxSourceHeight = std::max(
-                    maxSourceHeight, (i32)net->source.y);
-
-                if (length >= 1024) haveLong = true;
-                if (drops.size() >= 3) haveVariedSlope = true;
-                if (main.front().terrainY >= world::TerrainGenerator::SEA_LEVEL + 30 &&
-                    main.front().waterY <= main.front().terrainY - 1)
-                    check(true, "источник реки находится высоко над уровнем моря");
-
-                check(stepsBounded, "шаг русла ограничен, без скачков по карте");
-                check(monotonicWater,
-                      "уровень воды реки не поднимается вверх по течению");
-
-                if (main.back().terrainY <=
-                        world::TerrainGenerator::SEA_LEVEL + 3 ||
-                    main.back().waterY <=
-                        world::TerrainGenerator::SEA_LEVEL + 1)
-                    haveSea = true;
-
-                if (!monotonicWater) continue;
-
-                for (usize pi = 1; pi < net->paths.size(); ++pi) {
-                    const auto& branch = net->paths[pi];
-                    if (!branch.tributary || branch.points.size() < 2) continue;
-
-                    haveBranch = true;
-                    const auto& start = branch.points.front();
-                    const auto& end = branch.points.back();
-
-                    i32 bestD2 = std::numeric_limits<i32>::max();
-                    for (const auto& mp : main.points) {
-                        const i32 dx = end.x - mp.x;
-                        const i32 dz = end.z - mp.z;
-                        bestD2 = std::min(bestD2, dx * dx + dz * dz);
-                    }
-
-                    if (bestD2 <= 24 * 24) {
-                        haveJoinedBranch = true;
-                        check(start.terrainY > end.terrainY + 4,
-                              "приток начинается выше места впадения");
-                        check(end.waterY <= start.waterY,
-                              "приток течёт от истока к главной реке");
-                    }
-                }
-
-                if (haveNetwork && haveLong && haveSea && haveVariedSlope &&
-                    haveBranch && haveJoinedBranch)
-                    goto done;
+        for (const auto& [node, in] : inflow) {
+            if (in.second < 2) continue;
+            for (const auto& q : T->paths) {
+                if (q.kind != hy::PATH_RIVER || q.fromI != node.first ||
+                    q.fromJ != node.second) continue;
+                ++confluences;
+                if (q.flow + 1e-3f < in.first) ++flowDrops;
+                // После слияния русло не уже самого широкого притока.
+                const f32 hwOut = hy::halfWidthForFlow(q.flow);
+                f32 hwIn = 0.f;
+                for (const auto& p : T->paths)
+                    if (p.kind == hy::PATH_RIVER && !p.mouth &&
+                        p.toI == node.first && p.toJ == node.second)
+                        hwIn = std::max(hwIn, hy::halfWidthForFlow(p.flow));
+                if (hwOut + 1e-4f < hwIn) ++narrowAfter;
             }
         }
+        for (u8 f : T->nodeFlags) if (f & hy::NF_LAKE) ++lakeNodes;
     }
 
-done:
     {
-        char m[220];
+        char m[240];
         std::snprintf(m, sizeof(m),
-                      "проверено сетей %d, максимальная длина главного русла %d "
-                      "блоков, высота максимального истока %d",
-                      riverSamples, maxLength, maxSourceHeight);
+                      "рёбер %d, устьев %d, через швы %d, слияний %d, узлов озёр %d, "
+                      "рукавов дельт %d, порядок до %u, наибольший сток %.0f",
+                      paths, mouths, crossSeam, confluences, lakeNodes, deltaArms,
+                      (unsigned)maxOrder, maxFlow);
         check(true, m);
     }
-    check(haveNetwork, "в мире вообще появляются речные сети");
-    check(deterministic, "одна и та же речная сеть детерминирована и кэшируется");
-    check(haveLong, "есть действительно длинное главное русло");
-    check(haveSea, "главные реки доходят до моря/океана");
-    check(haveVariedSlope, "уклон русла меняется, а не является одной плоской линией");
-    check(haveBranch, "у сетей есть отдельные притоки");
-    check(haveJoinedBranch, "приток физически подключается к главному руслу");
-    check(riverSamples > 0, "тест увидел хотя бы одну сгенерированную сеть");
+    check(paths > 200, "у мира есть речная сеть, а не пара рек");
+    check(mouths > 5, "реки доходят до моря");
+    check(maxOrder >= 3, "притоки ветвятся: есть реки третьего порядка и выше");
+    check(maxFlow > 20.f * hy::RIVER_FLOW, "сток копится: большие реки на порядок полноводнее ручьёв");
+    check(levelRises == 0, "уровень воды нигде не поднимается вниз по течению");
+    check(crossSeam > 0, "проверка видела рёбра, переходящие в соседнюю плитку");
+    check(seamBroken == 0, "ребро продолжается в соседней плитке из той же точки на той же высоте");
+    check(confluences > 20, "реки сливаются");
+    check(flowDrops == 0, "после слияния сток не меньше суммы притоков");
+    check(narrowAfter == 0, "после слияния русло не уже притока");
+    check(lakeNodes > 0, "во впадинах на реках стоят озёра");
+
+    // ---- детерминированность и кэш ----
+    {
+        world::TerrainGenerator again(SEED);
+        const auto a = hydro.tile(0, 0);
+        const auto b = again.hydrology().tile(0, 0);
+        bool same = a->samples.size() == b->samples.size() &&
+                    a->paths.size() == b->paths.size();
+        for (usize i = 0; same && i < a->samples.size(); ++i)
+            same = a->samples[i].x == b->samples[i].x &&
+                   a->samples[i].z == b->samples[i].z &&
+                   a->samples[i].waterY == b->samples[i].waterY &&
+                   a->samples[i].flow == b->samples[i].flow;
+        check(same, "та же плитка в другом генераторе того же мира совпадает до бита");
+        const u32 built = hydro.tilesBuilt();
+        (void)hydro.tile(0, 0);
+        check(hydro.tilesBuilt() == built, "повторный запрос плитки берёт её из кэша");
+    }
+
+    // ---- русло в чанке ----
+    //
+    // Берём чанки, через которые идут речные рёбра, и проверяем
+    // воксели: вода есть, течение запечено, на сушу не выливается.
+    i32 riverChunks = 0, waterTops = 0, baked = 0, moving = 0, leaks = 0;
+    i32 pointMismatch = 0;
+    {
+        const auto T = tiles[{ 0, 0 }];
+        std::set<std::pair<i32, i32>> wanted;
+        for (const auto& p : T->paths) {
+            if (p.kind != hy::PATH_RIVER || p.flow < 60.f || p.mouth) continue;
+            const auto& mid = T->samples[p.first + p.count / 2];
+            wanted.insert({ (i32)std::floor(mid.x / 32.f), (i32)std::floor(mid.z / 32.f) });
+            if (wanted.size() >= 10) break;
+        }
+        auto chunk = std::make_unique<world::Chunk>();
+        std::vector<world::TerrainGenerator::Column> cols;
+        for (const auto& [cx, cz] : wanted) {
+            chunk->coord = { cx, 0, cz };
+            world::computeChunkColumns(gen, cx, cz, cols);
+            world::generateChunkVoxels(*chunk, gen, cols.data(), SEED);
+            ++riverChunks;
+            for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                for (i32 z = 0; z < world::CHUNK_SIZE; ++z) {
+                    const usize k = (usize)x * world::CHUNK_SIZE + z;
+                    // Верх воды: крона над рекой — не земля и не вода.
+                    i32 top = -1;
+                    for (i32 y = world::CHUNK_SIZE_Y - 2; y > 0; --y) {
+                        const u16 id = chunk->voxels[world::chunkIndex(x, y, z)];
+                        if (id == world::AIR || id == world::LEAVES || id == world::WOOD)
+                            continue;
+                        if (id == world::WATER) top = y;
+                        break;
+                    }
+                    const i32 wx = cx * 32 + x, wz = cz * 32 + z;
+                    const auto r = hydro.column(wx, wz, cols[k].surface);
+                    // Постройки ставятся после рек и вправе закрыть
+                    // воду своим полом — это не расхождение. Расхождение —
+                    // пустота или нетронутый грунт там, где запрос
+                    // обещал воду, или вода выше обещанного.
+                    if (r.waterTop >= 0 && !r.frozen &&
+                        cols[k].surface > world::TerrainGenerator::SEA_LEVEL &&
+                        cols[k].lavaTop <= 0) {
+                        const u16 at = chunk->voxels[world::chunkIndex(x, r.waterTop, z)];
+                        const u16 above = chunk->voxels[world::chunkIndex(x, r.waterTop + 1, z)];
+                        if (at == world::AIR || at == world::DIRT || at == world::GRASS ||
+                            at == world::SAND || above == world::WATER)
+                            ++pointMismatch;
+                    }
+                    if (top < 0 || top <= world::TerrainGenerator::SEA_LEVEL) continue;
+                    ++waterTops;
+                    if (chunk->waterFlowY[k] == top + 1) {
+                        ++baked;
+                        if ((chunk->waterFlow[k] >> 3) & 7) ++moving;
+                    }
+                    // Вода выливается на сушу: рядом на той же высоте
+                    // пусто, а под пустотой — твёрдая земля.
+                    const i32 dx[4] = { 1, -1, 0, 0 }, dz[4] = { 0, 0, 1, -1 };
+                    for (i32 d = 0; d < 4; ++d) {
+                        const i32 nx = x + dx[d], nz = z + dz[d];
+                        if ((u32)nx >= 32u || (u32)nz >= 32u) continue;
+                        if (chunk->voxels[world::chunkIndex(nx, top, nz)] != world::AIR) continue;
+                        const u16 below = chunk->voxels[world::chunkIndex(nx, top - 1, nz)];
+                        if (below != world::AIR && below != world::WATER) ++leaks;
+                    }
+                }
+        }
+    }
+    {
+        char m[200];
+        std::snprintf(m, sizeof(m), "речных чанков %d, водных колонок %d, запечено %d, "
+                      "с течением %d, утечек %d", riverChunks, waterTops, baked, moving, leaks);
+        check(true, m);
+    }
+    check(riverChunks > 0 && waterTops > 100, "в речных чанках есть вода");
+    check(baked == waterTops, "течение каждой водной колонки запечено генерацией");
+    check(moving > waterTops / 2, "речная вода течёт, а не стоит");
+    check(leaks == 0, "вода русла нигде не выливается на сушу");
+    check(pointMismatch == 0, "точечный запрос гидрологии совпадает с генерацией чанка");
 }
 
 int main() {

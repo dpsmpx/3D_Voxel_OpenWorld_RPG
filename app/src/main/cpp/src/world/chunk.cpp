@@ -447,7 +447,13 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                         if (cur == WATER && face == 2) {
                             const i32 sx = c[0];
                             const i32 sz = c[2];
-                            flowMask[k] = estimateWaterFlow(chunk, nb, sx, sz, c[1] + 1);
+                            // Запечённое генерацией течение — пока
+                            // вода стоит там, где её поставил мир.
+                            // Игрок нарушил русло — оцениваем заново.
+                            const usize col = (usize)sx * CHUNK_SIZE + sz;
+                            flowMask[k] = chunk.waterFlowY[col] == c[1] + 1
+                                ? chunk.waterFlow[col]
+                                : estimateWaterFlow(chunk, nb, sx, sz, c[1] + 1);
                         }
                         anyFace = true;
                     }

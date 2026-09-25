@@ -360,8 +360,11 @@ void growChunk(Chunk& c, const FeatureContext& ctx, i32 scx, i32 scz) {
 
     if (biome.treeType == TreeType::None || biome.treeDensity <= 0.01f) return;
 
-    auto columnAt = [&](i32 lx, i32 lz, i32 wx, i32 wz) {
-        return own ? ctx.columnAt(lx, lz, wx, wz) : terrain.column(wx, wz);
+    // Земля после рек: своя колонка — из карты applyRivers, чужая —
+    // тем же запросом к гидрологии. Дерево не растёт в русле и на
+    // косе и не повисает над вырезанной долиной.
+    auto groundAt = [&](i32 lx, i32 lz, i32 wx, i32 wz, bool& wet) {
+        return ctx.groundAt(own ? lx : -1, own ? lz : -1, wx, wz, &wet);
     };
 
     // ---- Деревья ----
@@ -378,7 +381,9 @@ void growChunk(Chunk& c, const FeatureContext& ctx, i32 scx, i32 scz) {
 
         const i32 wx = scx * CHUNK_SIZE + lx;
         const i32 wz = scz * CHUNK_SIZE + lz;
-        const i32 surface = columnAt(lx, lz, wx, wz).surface;
+        bool wet = false;
+        const i32 surface = groundAt(lx, lz, wx, wz, wet);
+        if (wet) continue;
         if (surface >= CHUNK_SIZE_Y - 24) continue;
         if (surface <= TerrainGenerator::SEA_LEVEL + 1) continue;
         if (structureBlocks(wx, wz, ctx.seed)) continue;
@@ -403,7 +408,9 @@ void growChunk(Chunk& c, const FeatureContext& ctx, i32 scx, i32 scz) {
 
         const i32 wx = scx * CHUNK_SIZE + lx;
         const i32 wz = scz * CHUNK_SIZE + lz;
-        const i32 surface = columnAt(lx, lz, wx, wz).surface;
+        bool wet = false;
+        const i32 surface = groundAt(lx, lz, wx, wz, wet);
+        if (wet) continue;
         if (surface >= CHUNK_SIZE_Y - 8) continue;
         if (surface <= TerrainGenerator::SEA_LEVEL + 1) continue;
         if (structureBlocks(wx, wz, ctx.seed)) continue;
@@ -547,127 +554,137 @@ void applyLiquids(Chunk& chunk, const FeatureContext& ctx) {
 // ============================================================
 // РЕКИ
 //
-// RiverGenerator строит мировую сеть независимо от границ чанков.
-// Здесь сеть превращается в непрерывное воксельное русло: сегменты
-// интерполируются каждые ~2 блока, waterY спускается вместе с
-// рельефом, а ширина растёт по пути к устью.
+// Гидрология уже разложила сегменты русел по чанкам, поэтому здесь
+// нет ни обхода сетей, ни трассировки: берутся только отрезки,
+// задевающие этот чанк, и каждая колонка решается один раз тем же
+// Hydrology::evaluate, что отвечает на точечные запросы. Поэтому
+// дерево соседнего чанка, спросившее про эту колонку, получит тот же
+// ответ, что и генерация здесь.
 // ============================================================
 
-void applyRivers(Chunk& chunk, const FeatureContext& ctx) {
-    if (!ctx.terrain) return;
+i32 FeatureContext::groundAt(i32 lx, i32 lz, i32 wx, i32 wz, bool* wetOut) const {
+    if (ground && (u32)lx < (u32)CHUNK_SIZE && (u32)lz < (u32)CHUNK_SIZE) {
+        const usize k = (usize)lx * CHUNK_SIZE + lz;
+        if (wetOut) *wetOut = wet && wet[k] != 0;
+        return ground[k];
+    }
+    const TerrainGenerator::Column col = columnAt(lx, lz, wx, wz);
+    const i32 raw = col.surface;
+    // Кратер вулкана applyRivers не трогает — и здесь ответ тот же.
+    if (col.lavaTop > 0) {
+        if (wetOut) *wetOut = false;
+        return raw;
+    }
+    const hydro::ColumnWater r = terrain->hydrology().column(wx, wz, raw);
+    if (wetOut) *wetOut = r.waterTop >= 0 || r.bank || r.bar;
+    return r.kind == hydro::ColumnWater::None ? raw : r.surface;
+}
 
-    std::vector<std::shared_ptr<const TerrainGenerator::RiverNetwork>> nets;
-    ctx.terrain->riverNetworksNear(chunk.coord.x, chunk.coord.z, nets);
-    if (nets.empty()) return;
-
-    std::array<i16, CHUNK_SIZE * CHUNK_SIZE> waterTop;
-    std::array<f32, CHUNK_SIZE * CHUNK_SIZE> waterWidth;
-    waterTop.fill((i16)-1);
-    waterWidth.fill(0.f);
-
+void applyRivers(Chunk& chunk, const FeatureContext& ctx,
+                 i16* groundOut, u8* wetOut)
+{
     const i32 bx0 = chunk.coord.x * CHUNK_SIZE;
     const i32 bz0 = chunk.coord.z * CHUNK_SIZE;
 
-    auto markSample = [&](f32 fx, f32 fz, f32 fy, f32 width) {
-        const i32 cx = (i32)std::lround(fx);
-        const i32 cz = (i32)std::lround(fz);
-        const i32 radius = std::max(1, (i32)std::ceil(width + 0.75f));
-
-        for (i32 dz = -radius; dz <= radius; ++dz) {
-            for (i32 dx = -radius; dx <= radius; ++dx) {
-                const f32 ddx = (f32)dx;
-                const f32 ddz = (f32)dz;
-                if (ddx * ddx + ddz * ddz > width * width) continue;
-
-                const i32 wx = cx + dx;
-                const i32 wz = cz + dz;
-                const i32 lx = wx - bx0;
-                const i32 lz = wz - bz0;
-                if ((u32)lx >= (u32)CHUNK_SIZE ||
-                    (u32)lz >= (u32)CHUNK_SIZE) continue;
-
-                const usize k = (usize)lx * CHUNK_SIZE + lz;
-                const i16 top = (i16)std::clamp(
-                    (i32)std::lround(fy), 1, CHUNK_SIZE_Y - 2);
-
-                // На слиянии рек более низкая отметка побеждает: приток
-                // не может образовать полку выше основного русла.
-                if (waterTop[k] < 0 || top < waterTop[k]) {
-                    waterTop[k] = top;
-                    waterWidth[k] = width;
-                } else if (top == waterTop[k] && width > waterWidth[k]) {
-                    waterWidth[k] = width;
-                }
-            }
+    for (i32 lx = 0; lx < CHUNK_SIZE; ++lx)
+        for (i32 lz = 0; lz < CHUNK_SIZE; ++lz) {
+            const usize k = (usize)lx * CHUNK_SIZE + lz;
+            groundOut[k] = (i16)ctx.columnAt(lx, lz, bx0 + lx, bz0 + lz).surface;
+            wetOut[k] = 0;
         }
-    };
+    if (!ctx.terrain) return;
 
-    for (const auto& net : nets) {
-        if (!net) continue;
-        for (const auto& path : net->paths) {
-            if (path.points.empty()) continue;
+    static thread_local hydro::ChunkView view;
+    ctx.terrain->hydrology().chunkView(chunk.coord.x, chunk.coord.z, view);
+    if (view.empty()) return;
 
-            if (path.points.size() == 1) {
-                const auto& p = path.points.front();
-                markSample((f32)p.x, (f32)p.z, (f32)p.waterY, p.width);
+    const BiomeField& field = ctx.terrain->field();
+
+    // Сегменты — по блокам 8x8 колонок: большая река с притоками
+    // задевает чанк сотней отрезков, а колонку — от силы десятком.
+    constexpr i32 SUB = 8;
+    static thread_local std::vector<hydro::ChunkView::Seg> subSegs[(CHUNK_SIZE / SUB) * (CHUNK_SIZE / SUB)];
+    for (i32 sx = 0; sx < CHUNK_SIZE / SUB; ++sx)
+        for (i32 sz = 0; sz < CHUNK_SIZE / SUB; ++sz) {
+            auto& list = subSegs[sx * (CHUNK_SIZE / SUB) + sz];
+            list.clear();
+            const f32 x0 = (f32)(bx0 + sx * SUB) + 0.5f, x1 = x0 + (f32)(SUB - 1);
+            const f32 z0 = (f32)(bz0 + sz * SUB) + 0.5f, z1 = z0 + (f32)(SUB - 1);
+            for (const auto& sg : view.segs)
+                if (sg.x0 <= x1 && sg.x1 >= x0 && sg.z0 <= z1 && sg.z1 >= z0)
+                    list.push_back(sg);
+        }
+
+    for (i32 lx = 0; lx < CHUNK_SIZE; ++lx)
+        for (i32 lz = 0; lz < CHUNK_SIZE; ++lz) {
+            const usize k = (usize)lx * CHUNK_SIZE + lz;
+            const i32 wx = bx0 + lx, wz = bz0 + lz;
+            const TerrainGenerator::Column col = ctx.columnAt(lx, lz, wx, wz);
+            // Кратер вулкана налит лавой: воды в нём не бывает.
+            if (col.lavaTop > 0) continue;
+
+            const i32 raw = col.surface;
+            const auto& list = subSegs[(lx / SUB) * (CHUNK_SIZE / SUB) + lz / SUB];
+            const hydro::ColumnWater r = hydro::Hydrology::evaluate(
+                view, wx, wz, raw, list.data(), list.size());
+            if (r.kind == hydro::ColumnWater::None) continue;
+
+            const BiomeDef& biome = field.def(col.climate.biome);
+            const bool snowy = col.climate.biome == Mountains &&
+                               r.surface > TerrainGenerator::SNOW_LINE;
+            const bool sandy = r.bar ||
+                               (r.bank && (r.flags & (hydro::SF_SAND_BANK |
+                                                      hydro::SF_DELTA)));
+            const bool rocky = r.bank && (r.flags & hydro::SF_STONE_BED);
+
+            auto set = [&](i32 y, u16 id) {
+                if ((u32)y < (u32)CHUNK_SIZE_Y)
+                    chunk.voxels[chunkIndex(lx, y, lz)] = id;
+            };
+
+            if (r.kind == hydro::ColumnWater::Ground) {
+                const i32 s = std::clamp(r.surface, 2, CHUNK_SIZE_Y - 2);
+                // Врезанная долина: выше новой поверхности — воздух.
+                for (i32 y = s; y < raw; ++y) set(y, AIR);
+                // Береговой вал, коса, край озера: подсыпаем землю.
+                for (i32 y = raw; y < s - 1; ++y) set(y, DIRT);
+                if (s != raw || sandy || rocky) {
+                    u16 top = biome.surfaceBlock;
+                    if (sandy) top = SAND;
+                    else if (rocky) top = STONE;
+                    else if (snowy) top = SNOW;
+                    set(s - 1, top);
+                }
+                groundOut[k] = (i16)s;
+                wetOut[k] = (r.bank || r.bar) ? 1 : 0;
                 continue;
             }
 
-            for (usize i = 0; i + 1 < path.points.size(); ++i) {
-                const auto& a = path.points[i];
-                const auto& b = path.points[i + 1];
+            // Русло или озеро: дно, вода до зеркала, воздух над ним.
+            const i32 top = std::clamp(r.waterTop, 2, CHUNK_SIZE_Y - 3);
+            const i32 bed = std::clamp(r.surface, 1, top);
+            for (i32 y = raw; y < bed - 1; ++y) set(y, DIRT);
+            for (i32 y = bed; y <= top; ++y) set(y, WATER);
+            for (i32 y = top + 1; y < raw; ++y) set(y, AIR);
 
-                const f32 dx = (f32)b.x - (f32)a.x;
-                const f32 dz = (f32)b.z - (f32)a.z;
-                const f32 len = std::hypot(dx, dz);
-                const i32 steps = std::max(1, (i32)std::ceil(len / 2.f));
-
-                for (i32 s = 0; s <= steps; ++s) {
-                    const f32 t = (f32)s / (f32)steps;
-                    const f32 x = (f32)a.x + dx * t;
-                    const f32 z = (f32)a.z + dz * t;
-                    const f32 y = (f32)a.waterY +
-                                  ((f32)b.waterY - (f32)a.waterY) * t;
-                    const f32 w = a.width + (b.width - a.width) * t;
-                    markSample(x, z, y, w);
-                }
+            u16 floor = DIRT;
+            if (r.kind == hydro::ColumnWater::Channel) {
+                if (r.flags & hydro::SF_STONE_BED) floor = STONE;
+                else if (r.flags & (hydro::SF_SAND_BANK | hydro::SF_DELTA)) floor = SAND;
+            } else if (top - bed <= 0) {
+                floor = SAND;   // мелководье у берега озера
             }
-        }
-    }
+            set(bed - 1, floor);
 
-    // Одно применение к вокселям вместо перезаписи одной и той же
-    // колонки сотни раз при прохождении длинного русла через чанк.
-    for (i32 lx = 0; lx < CHUNK_SIZE; ++lx) {
-        for (i32 lz = 0; lz < CHUNK_SIZE; ++lz) {
-            const usize k = (usize)lx * CHUNK_SIZE + lz;
-            if (waterTop[k] < 0 || waterWidth[k] <= 0.f) continue;
-
-            const i32 wx = bx0 + lx;
-            const i32 wz = bz0 + lz;
-            const i32 surface = ctx.columnAt(lx, lz, wx, wz).surface;
-
-            // Под общим уровнем моря applyLiquids уже залил воду. Устье
-            // не должно вырезать из моря собственный более низкий уровень.
-            if (surface <= TerrainGenerator::SEA_LEVEL) continue;
-
-            const i32 top = std::min((i32)waterTop[k], surface);
-            if (top < 2) continue;
-
-            const u32 h = feat_util::hashXZ(wx, wz, ctx.seed ^ 0x51F3E7ULL);
-            i32 depth = 2 + (i32)std::floor(waterWidth[k] * 0.35f)
-                        + (i32)(h & 1u);
-            depth = std::clamp(depth, 2, 6);
-
-            const i32 bed = std::max(1, top - depth);
-
-            // Вода заполняет русло от дна до поверхности. Всё выше
-            // поверхности до старой земли вырезается.
-            for (i32 y = bed; y < surface; ++y) {
-                chunk.voxels[chunkIndex(lx, y, lz)] =
-                    y <= top ? WATER : AIR;
+            if (r.frozen) {
+                set(top, ICE);
+            } else {
+                chunk.waterFlow[k] = r.flow;
+                chunk.waterFlowY[k] = (u8)(top + 1);
             }
+            groundOut[k] = (i16)bed;
+            wetOut[k] = 1;
         }
-    }
 }
 
 // ============================================================
@@ -1072,7 +1089,14 @@ void putOnGround(Chunk& c, const FeatureContext& ctx, i32 wx, i32 wz, u16 block)
     // surfaceHeight — первый ВОЗДУШНЫЙ блок над землёй: на нём стоят,
     // а сама земля лежит на блок ниже. Дорожка, положенная на
     // surfaceHeight, висела бы над травой.
-    const i32 y = ctx.terrain->surfaceHeight(wx, wz) - 1;
+    //
+    // Чужие колонки отбрасываем сразу: писать туда всё равно нельзя,
+    // а высота стоила бы запроса к рельефу. Своя берётся после рек:
+    // дорожка спускается в долину, а у воды обрывается.
+    const i32 lx = wx - c.coord.x * CHUNK_SIZE;
+    const i32 lz = wz - c.coord.z * CHUNK_SIZE;
+    if ((u32)lx >= (u32)CHUNK_SIZE || (u32)lz >= (u32)CHUNK_SIZE) return;
+    const i32 y = ctx.groundAt(lx, lz, wx, wz) - 1;
     if (y < 1) return;
     const u16 cur = getWorld(c, wx, y, wz);
     if (cur != GRASS && cur != DIRT && cur != SAND) return;
@@ -1235,18 +1259,45 @@ void stampVillage(Chunk& c, const FeatureContext& ctx, const structs::Layout& L)
         }
     }
 
+    // ---- Вода ----
+    //
+    // Деревня часто стоит у реки, и участок может прийтись на русло
+    // или озеро. Дом выравнивает землю под собой и засыпал бы реку,
+    // поэтому на воде и у самой воды дом не ставится — вместе с его
+    // двором и дорожкой. Решение берётся из гидросети, а не из
+    // вокселей: его обязан одинаково принять каждый чанк, который
+    // задевает деревня, а соседские воксели здесь не видны.
+    //
+    // Участок с отступом в блок обходится через колонку: сухая полоса
+    // у воды — самое узкое, что бывает, — шире двух блоков, и через
+    // неё шаг не перешагнёт. Последний ряд берётся всегда.
+    bool dry[16];
+    const i32 bx0 = c.coord.x * CHUNK_SIZE, bz0 = c.coord.z * CHUNK_SIZE;
+    for (i32 i = 0; i < plotCount; ++i) {
+        const Plot& p = plots[i];
+        dry[i] = true;
+        for (i32 dz = -1; dz <= p.d && dry[i]; dz += (dz + 2 >= p.d ? 1 : 2))
+            for (i32 dx = -1; dx <= p.w && dry[i]; dx += (dx + 2 >= p.w ? 1 : 2)) {
+                const i32 wx = p.x + dx, wz = p.z + dz;
+                bool wet = false;
+                (void)ctx.groundAt(wx - bx0, wz - bz0, wx, wz, &wet);
+                if (wet) dry[i] = false;
+            }
+    }
+
     // ---- Дорожки ----
     //
     // Кладутся ПЕРВЫМИ: дома и колодец ставятся поверх и всегда
     // выигрывают. Иначе дорожка прорезала бы порог.
     for (i32 i = 0; i < plotCount; ++i)
-        stampPath(c, ctx, plots[i].doorX, plots[i].doorZ, cx, cz);
+        if (dry[i]) stampPath(c, ctx, plots[i].doorX, plots[i].doorZ, cx, cz);
 
     // Кольцевая дорожка по деревне: от двери к двери соседа.
     for (i32 i = 0; i < plotCount; ++i) {
         const Plot& a = plots[i];
         const Plot& b = plots[(i + 1) % plotCount];
-        stampPath(c, ctx, a.doorX, a.doorZ, b.doorX, b.doorZ);
+        if (dry[i] && dry[(i + 1) % plotCount])
+            stampPath(c, ctx, a.doorX, a.doorZ, b.doorX, b.doorZ);
     }
 
     // ---- Утварь ----
@@ -1254,6 +1305,7 @@ void stampVillage(Chunk& c, const FeatureContext& ctx, const structs::Layout& L)
     // У каждого двора своя: иначе шесть домов обставлены одинаково, и
     // вариация сводится к размеру коробки.
     for (i32 i = 0; i < plotCount; ++i) {
+        if (!dry[i]) continue;
         const Plot& p = plots[i];
         const u32 rng = hashXZ(p.x, p.z, L.seed ^ 0x9D7u);
 
@@ -1295,6 +1347,7 @@ void stampVillage(Chunk& c, const FeatureContext& ctx, const structs::Layout& L)
     // ---- Колодец и дома ----
     stampWell(c, cx, cz, wy);
     for (i32 i = 0; i < plotCount; ++i) {
+        if (!dry[i]) continue;
         const Plot& p = plots[i];
         stampHouse(c, ctx, p.x, p.z, p.w, p.d, h + (u32)i * 31u, p.face,
                    plan.kit);
@@ -1627,8 +1680,56 @@ VillageStyle villageStyleOf(u32 villageSeed) {
     return (VillageStyle)((villageSeed >> 16) % (u32)VillageStyle::Count);
 }
 
+namespace {
+
+VillageSite villageAtUncached(i32 superX, i32 superZ, u64 worldSeed,
+                              const TerrainGenerator* terrain);
+
+} // namespace
+
 VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
                       const TerrainGenerator* terrain) {
+    // Память на поток.
+    //
+    // Деревня — чистая функция клетки и мира, а спрашивают её одни и
+    // те же десятки раз на чанк: каждое дерево и каждый куст
+    // сверяется с дорогами, а дороги — это двадцать пять клеток
+    // вокруг и по три деревни на клетку. У каждой деревни — девять
+    // выборок рельефа. Замер: семьдесят процентов цены чанка уходило
+    // сюда, на одни и те же ответы.
+    //
+    // Ключ — клетка, зерно мира и зерно генератора: рельеф полностью
+    // задаётся своим зерном, поэтому пересозданный генератор того же
+    // мира отвечает так же.
+    struct Memo {
+        u64 worldSeed = 0, terrainSeed = 0;
+        i32 sx = 0, sz = 0;
+        bool withTerrain = false, valid = false;
+        VillageSite site;
+    };
+    static thread_local Memo memo[512];
+    const u64 tSeed = terrain ? terrain->seed() : 0;
+    const u32 slot = hashXZ(superX, superZ, 0x51A6E5ULL) & 511u;
+    Memo& m = memo[slot];
+    if (m.valid && m.sx == superX && m.sz == superZ && m.worldSeed == worldSeed &&
+        m.withTerrain == (terrain != nullptr) && m.terrainSeed == tSeed)
+        return m.site;
+
+    const VillageSite site = villageAtUncached(superX, superZ, worldSeed, terrain);
+    m.worldSeed = worldSeed;
+    m.terrainSeed = tSeed;
+    m.sx = superX;
+    m.sz = superZ;
+    m.withTerrain = terrain != nullptr;
+    m.valid = true;
+    m.site = site;
+    return site;
+}
+
+namespace {
+
+VillageSite villageAtUncached(i32 superX, i32 superZ, u64 worldSeed,
+                              const TerrainGenerator* terrain) {
     VillageSite site;
     const structs::Layout L = structs::layoutFor(superX, superZ, worldSeed);
     if (L.kind != structs::Village) return site;
@@ -1672,6 +1773,8 @@ VillageSite villageAt(i32 superX, i32 superZ, u64 worldSeed,
     return site;
 }
 
+} // namespace
+
 // ============================================================
 // Болотные бочаги
 // ============================================================
@@ -1700,7 +1803,9 @@ void applySwampPools(Chunk& chunk, const FeatureContext& ctx) {
             const u32 h = hashXZ(wx >> 2, wz >> 2, ctx.seed ^ 0x5A4A6);
             if ((h & 0xFF) >= 96) continue;
 
-            const i32 top = ctx.columnAt(lx, lz, wx, wz).surface;
+            bool wet = false;
+            const i32 top = ctx.groundAt(lx, lz, wx, wz, &wet);
+            if (wet) continue;
             if (top <= TerrainGenerator::SEA_LEVEL) continue;
             if (top >= CHUNK_SIZE_Y - 4) continue;
 
@@ -2343,6 +2448,9 @@ void computeChunkColumns(const TerrainGenerator& terrain, i32 chunkX, i32 chunkZ
 void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
                          const TerrainGenerator::Column* columns, u64 seed)
 {
+    chunk.waterFlow.fill(0);
+    chunk.waterFlowY.fill(0);
+
     for (i32 x = 0; x < CHUNK_SIZE; ++x) {
         for (i32 z = 0; z < CHUNK_SIZE; ++z) {
             const auto& col = columns[(usize)x * CHUNK_SIZE + z];
@@ -2384,7 +2492,13 @@ void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
     applyCaves(chunk, fctx);
     applyOres(chunk, fctx);
     applyLiquids(chunk, fctx);
-    applyRivers(chunk, fctx);
+    // Реки — до построек и деревьев: те садятся уже на землю после
+    // рек, а не повисают над вырезанной долиной.
+    static thread_local std::array<i16, CHUNK_SIZE * CHUNK_SIZE> ground;
+    static thread_local std::array<u8,  CHUNK_SIZE * CHUNK_SIZE> wet;
+    applyRivers(chunk, fctx, ground.data(), wet.data());
+    fctx.ground = ground.data();
+    fctx.wet = wet.data();
     applyStructures(chunk, fctx);
     // Дороги ПОСЛЕ построек: они идут от деревни к деревне, и
     // деревенская мостовая должна остаться сверху, а не под ними.
@@ -2399,6 +2513,21 @@ void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
     // Провал — последним: он выгрызает всё, что над ним поставили.
     // Дерево, выросшее посреди устья, повисло бы в воздухе.
     applySinkholes(chunk, fctx);
+
+    // Стоячая вода — море, лужи, бочаги — течения не имеет. Запекаем
+    // это сразу: иначе мешер оценивал бы течение каждой грани моря по
+    // соседям при каждой пересборке. Реки запекли своё сами.
+    for (i32 x = 0; x < CHUNK_SIZE; ++x)
+        for (i32 z = 0; z < CHUNK_SIZE; ++z) {
+            const usize k = (usize)x * CHUNK_SIZE + z;
+            if (chunk.waterFlowY[k] != 0) continue;
+            for (i32 y = CHUNK_SIZE_Y - 1; y > 0; --y) {
+                const u16 id = chunk.voxels[chunkIndex(x, y, z)];
+                if (id == AIR) continue;
+                if (id == WATER) chunk.waterFlowY[k] = (u8)(y + 1);
+                break;
+            }
+        }
 }
 
 } // namespace world

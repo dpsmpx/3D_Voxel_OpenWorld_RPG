@@ -72,6 +72,15 @@ SpawnReject spawnPointCheck(const TerrainGenerator& terrain, u64 worldSeed,
     if (surf <= TerrainGenerator::SEA_LEVEL + 1) return SpawnReject::UnderWater;
     if (!habitable(col.climate.biome))           return SpawnReject::BadBiome;
 
+    // Реки и озёра колонка не знает: их кладёт гидросеть поверх
+    // рельефа. Русло, озеро и коса посреди реки — не место, где
+    // просыпаются; врезанная долина — место, но земля в ней ниже.
+    if (col.lavaTop <= 0) {
+        const hydro::ColumnWater w = terrain.hydrology().column(wx, wz, surf);
+        if (w.waterTop >= 0 || w.bar) return SpawnReject::UnderWater;
+        if (w.kind != hydro::ColumnWater::None) outY = w.surface;
+    }
+
     for (i32 i = 0; i < 4; ++i) {
         static const i32 dx[4] = { SPAWN_STEP, -SPAWN_STEP, 0, 0 };
         static const i32 dz[4] = { 0, 0, SPAWN_STEP, -SPAWN_STEP };
@@ -81,7 +90,7 @@ SpawnReject spawnPointCheck(const TerrainGenerator& terrain, u64 worldSeed,
 
     // Пещеры вырезаются ПОСЛЕ слоёв рельефа, и колонка о них не
     // знает: земля под ногами может оказаться сводом пустоты.
-    if (terrain.isCave(wx, surf - 1, wz)) return SpawnReject::Cave;
+    if (terrain.isCave(wx, outY - 1, wz)) return SpawnReject::Cave;
 
     if (structureCovers(wx, wz, worldSeed, &terrain)) return SpawnReject::Structure;
 

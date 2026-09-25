@@ -313,6 +313,26 @@ private:
     static void jobGenerate(void* data);
     static void jobMesh(void* data);
 
+    /// Плитки гидросети — заранее, в фоне.
+    ///
+    /// Плитка водосборов стоит десятки миллисекунд на хосте и сотни на
+    /// телефоне, и считается один раз на две тысячи блоков пути. Если
+    /// ждать, пока её спросит генерация первого чанка, все рабочие
+    /// потоки встанут на ней разом — ровно тогда, когда игрок видит
+    /// край мира. Поэтому плитки, к которым игрок подходит, заказываются
+    /// заранее, пока до их чанков ещё сотни блоков.
+    void prefetchHydrology(const glm::vec3& playerPos);
+    struct HydroJob {
+        std::shared_ptr<JobHost> host;
+        ChunkManager* mgr = nullptr;
+        i32 tx = 0, tz = 0;
+    };
+    static void jobHydro(void* data);
+    /// Уже заказанные плитки. Трогает только update(), то есть главный
+    /// поток.
+    std::vector<std::pair<i32, i32>> hydroRequested_;
+    i32 hydroCheckedCx_ = 0x7FFFFFFF, hydroCheckedCz_ = 0x7FFFFFFF;
+
     u64 seed_;
     i32 viewDistance_;
     /// Потолок резидентной памяти мира. См. setMemoryBudget.

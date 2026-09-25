@@ -402,6 +402,59 @@ void ChunkManager::update(const glm::vec3& playerPos) {
         getChunk(c.x, c.z);
         ++created;
     }
+
+    if (pcx != hydroCheckedCx_ || pcz != hydroCheckedCz_) prefetchHydrology(playerPos);
+}
+
+void ChunkManager::prefetchHydrology(const glm::vec3& playerPos) {
+    const i32 px = (i32)std::floor(playerPos.x);
+    const i32 pz = (i32)std::floor(playerPos.z);
+    const hydro::Hydrology& hy = gen_.hydrology();
+
+    // Своя плитка строится генерацией ближних чанков. Пока её нет,
+    // соседние не заказываем: они отняли бы потоки у тех, кого игрок
+    // ждёт прямо сейчас.
+    const i32 ptx = hydro::tileOfBlock(px), ptz = hydro::tileOfBlock(pz);
+    if (!hy.tileReady(ptx, ptz)) return;
+    hydroCheckedCx_ = (i32)std::floor(playerPos.x / (f32)CHUNK_SIZE);
+    hydroCheckedCz_ = (i32)std::floor(playerPos.z / (f32)CHUNK_SIZE);
+
+    // Запас в полкилометра сверх того, что нужно видимым чанкам: на
+    // телефоне плитка — доли секунды, игрок за это время проходит
+    // несколько блоков.
+    constexpr i32 PREFETCH_MARGIN = 512;
+    const i32 reach = viewDistance_ * CHUNK_SIZE + hydro::MAX_REACH + PREFETCH_MARGIN;
+    const i32 tx0 = hydro::tileOfBlock(px - reach), tx1 = hydro::tileOfBlock(px + reach);
+    const i32 tz0 = hydro::tileOfBlock(pz - reach), tz1 = hydro::tileOfBlock(pz + reach);
+
+    // Список короткий: он растёт на плитку в две тысячи блоков пути, и
+    // старые заказы сбрасываются — плитка могла выпасть из кэша.
+    if (hydroRequested_.size() > 64) hydroRequested_.clear();
+
+    for (i32 tz = tz0; tz <= tz1; ++tz)
+        for (i32 tx = tx0; tx <= tx1; ++tx) {
+            const std::pair<i32, i32> key{ tx, tz };
+            if (std::find(hydroRequested_.begin(), hydroRequested_.end(), key) !=
+                hydroRequested_.end()) continue;
+            hydroRequested_.push_back(key);
+            if (hy.tileReady(tx, tz)) continue;
+
+            auto* ctx = new HydroJob{ host_, this, tx, tz };
+            host_->inFlight.fetch_add(1, std::memory_order_acq_rel);
+            jobs::gJobs.submit(&ChunkManager::jobHydro, ctx);
+        }
+}
+
+void ChunkManager::jobHydro(void* data) {
+    std::unique_ptr<HydroJob> ctx(static_cast<HydroJob*>(data));
+    struct InFlight {
+        std::atomic<u32>& n;
+        ~InFlight() { n.fetch_sub(1, std::memory_order_acq_rel); }
+    } guard{ ctx->host->inFlight };
+
+    // Как и у остальных задач: менеджера могло уже не стать.
+    if (!ctx->host->alive.load(std::memory_order_acquire)) return;
+    (void)ctx->mgr->gen_.hydrology().tile(ctx->tx, ctx->tz);
 }
 
 void ChunkManager::rebuildStreamOrder() {
