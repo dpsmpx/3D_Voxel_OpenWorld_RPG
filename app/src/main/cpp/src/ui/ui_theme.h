@@ -33,16 +33,40 @@ constexpr f32 DENSITY_FALLBACK  = 2.0f;    ///< xhdpi, если система �
 constexpr f32 USER_SCALE_MIN    = 0.85f;
 constexpr f32 USER_SCALE_MAX    = 1.30f;
 
+/// Общий масштаб интерфейса относительно размеров в dp.
+///
+/// Все размеры в этом файле и в раскладке записаны по меркам Android
+/// — цель касания 48 dp, ряд 56, главная кнопка 72. На телефоне в
+/// руках они выходили громоздкими: ряд меню занимал седьмую часть
+/// высоты экрана, окна не помещали и половины того, что могли бы, и
+/// кнопки упирались в пояс. Мерки оставлены прежними — по ним
+/// считаются все соотношения, — а на экран они идут с этим
+/// множителем: цель касания — около 38 dp, это по-прежнему шесть
+/// миллиметров, палец попадает.
+constexpr f32 UI_BASE_SCALE = 0.80f;
+
+/// Сколько dp раскладки должно помещаться по короткой стороне экрана.
+///
+/// Плотность говорит, сколько пикселей в миллиметре, но не сколько
+/// миллиметров у экрана. Маленький плотный экран давал раскладке
+/// 300 dp высоты и меньше — и окна, рассчитанные на 360, уезжали за
+/// край. Такой экран ужимает интерфейс ещё, пока высоты не хватит, —
+/// но не ниже FIT_MIN от обычного: мельче палец уже не попадает.
+constexpr f32 FIT_SHORT_SIDE_DP = 360.f;
+constexpr f32 FIT_MIN           = 0.75f;
+
 /// Перевод dp в пиксели экрана.
 ///
-/// Единственный законный множитель интерфейса — userScale, настройка
-/// игрока uiScale. Других общих множителей быть не должно: каждый
-/// следующий делает размер на экране непредсказуемым.
+/// Множителей ровно три, и каждый назван: плотность экрана, настройка
+/// игрока uiScale и масштаб под экран (`fit`: UI_BASE_SCALE, ужатый
+/// для маленького экрана). Других общих множителей быть не должно:
+/// каждый следующий делает размер на экране непредсказуемым.
 struct Metrics {
     f32 pxPerDp   = DENSITY_FALLBACK;
     f32 userScale = 1.f;
+    f32 fit       = UI_BASE_SCALE;
 
-    constexpr f32 dp(f32 v) const { return v * pxPerDp * userScale; }
+    constexpr f32 dp(f32 v) const { return v * pxPerDp * userScale * fit; }
 
     /// AConfiguration_getDensity возвращает dpi, либо 0 (не сообщает),
     /// либо ACONFIGURATION_DENSITY_ANY (0xFFFE). Оба служебных
@@ -51,7 +75,24 @@ struct Metrics {
         const f32 s = userScale < USER_SCALE_MIN ? USER_SCALE_MIN
                     : (userScale > USER_SCALE_MAX ? USER_SCALE_MAX : userScale);
         const bool known = dpi > 0 && dpi < 0xFFFE;
-        return Metrics{ known ? (f32)dpi / DENSITY_BASE_DPI : DENSITY_FALLBACK, s };
+        return Metrics{ known ? (f32)dpi / DENSITY_BASE_DPI : DENSITY_FALLBACK, s,
+                        UI_BASE_SCALE };
+    }
+
+    /// Те же мерки, ужатые под экран w×h пикселей: по короткой стороне
+    /// должно помещаться FIT_SHORT_SIDE_DP.
+    constexpr Metrics fittedTo(f32 w, f32 h) const {
+        Metrics m = *this;
+        const f32 shortPx = w < h ? w : h;
+        const f32 perDp = pxPerDp * userScale * fit;
+        if (shortPx <= 0.f || perDp <= 0.f) return m;
+        const f32 units = shortPx / perDp;
+        if (units < FIT_SHORT_SIDE_DP) {
+            f32 k = units / FIT_SHORT_SIDE_DP;
+            if (k < FIT_MIN) k = FIT_MIN;
+            m.fit = fit * k;
+        }
+        return m;
     }
 };
 

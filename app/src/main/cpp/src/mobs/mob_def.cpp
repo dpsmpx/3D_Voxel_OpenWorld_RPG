@@ -18,6 +18,17 @@ MobRegistry::MobRegistry() {
     // там валит игру в printf, а не в понятном месте.
     defs_[MOB_NONE].name = "nothing";
 
+    // ---- Урон ----
+    //
+    // Числа урона подобраны против игрока первого уровня: полтораста
+    // здоровья, шесть процентов защиты. Раньше волк кусал на четыре
+    // раз в полторы секунды, а здоровье отрастало и посреди драки —
+    // стоящего столбом игрока первый зверь убивал больше минуты, и
+    // бой не стоил ничего. Теперь одиночный волк убивает за двадцать
+    // с небольшим секунд, стая из трёх — за семь-восемь, разбойник —
+    // секунд за пятнадцать. Уйти из-под замаха, закрыться, парировать
+    // и отступить — всё это снова имеет цену.
+
     // -------------------- SHEEP --------------------
     {
         MobDef d{};
@@ -78,7 +89,7 @@ MobRegistry::MobRegistry() {
         d.maxHealth = 14.f;
         d.walkSpeed = 2.5f;
         d.chaseSpeed = 5.5f;
-        d.attackDamage = 4.f;
+        d.attackDamage = 10.f;
         d.attackRange = 1.7f;
         d.aggroRange = 14.f;
         d.bodyRadius = 0.5f;
@@ -105,7 +116,7 @@ MobRegistry::MobRegistry() {
         d.maxHealth = 18.f;
         d.walkSpeed = 1.8f;
         d.chaseSpeed = 3.6f;
-        d.attackDamage = 5.f;
+        d.attackDamage = 12.f;
         d.attackRange = 2.0f;
         d.aggroRange = 16.f;
         d.bodyRadius = 0.35f;
@@ -127,7 +138,7 @@ MobRegistry::MobRegistry() {
         d.maxHealth = 12.f;
         d.walkSpeed = 2.4f;
         d.chaseSpeed = 4.8f;
-        d.attackDamage = 3.5f;
+        d.attackDamage = 8.f;
         d.attackRange = 1.6f;
         d.aggroRange = 12.f;
         d.bodyRadius = 0.4f;
@@ -151,7 +162,7 @@ MobRegistry::MobRegistry() {
         d.maxHealth = 20.f;
         d.walkSpeed = 0.9f;
         d.chaseSpeed = 2.8f;
-        d.attackDamage = 3.f;
+        d.attackDamage = 8.f;
         d.attackRange = 1.4f;
         d.aggroRange = 10.f;
         d.bodyRadius = 0.6f;
@@ -178,7 +189,7 @@ MobRegistry::MobRegistry() {
         d.maxHealth = 34.f;
         d.walkSpeed = 1.5f;
         d.chaseSpeed = 3.0f;
-        d.attackDamage = 5.f;
+        d.attackDamage = 8.f;
         d.attackRange = 2.0f;
         d.aggroRange = 14.f;
         d.bodyRadius = 0.32f;
@@ -189,7 +200,7 @@ MobRegistry::MobRegistry() {
         d.xpReward = 55;
         // Яд: вдвое больше урона, чем сам удар, но растянуто. Бежать
         // от неё бесполезно — отрава идёт следом.
-        d.poisonDps  = 2.0f;
+        d.poisonDps  = 3.2f;
         d.poisonTime = 5.f;
         // Лечится, когда ей плохо: раз в шесть секунд по восьмой
         // части запаса. Добивать надо быстро.
@@ -215,7 +226,7 @@ MobRegistry::MobRegistry() {
         d.maxHealth = 26.f;
         d.walkSpeed = 1.9f;
         d.chaseSpeed = 4.6f;
-        d.attackDamage = 7.f;
+        d.attackDamage = 16.f;
         d.attackRange = 1.8f;
         d.aggroRange = 11.f;
         d.bodyRadius = 0.55f;
@@ -243,7 +254,7 @@ MobRegistry::MobRegistry() {
         d.maxHealth = 30.f;
         d.walkSpeed = 2.2f;
         d.chaseSpeed = 4.4f;
-        d.attackDamage = 8.f;
+        d.attackDamage = 15.f;
         d.attackRange = 2.1f;
         d.aggroRange = 16.f;
         d.bodyRadius = 0.35f;
@@ -268,7 +279,7 @@ MobRegistry::MobRegistry() {
         d.maxHealth = 600.f;
         d.walkSpeed = 1.6f;
         d.chaseSpeed = 3.4f;
-        d.attackDamage = 18.f;
+        d.attackDamage = 32.f;
         d.attackRange = 3.2f;
         d.aggroRange = 26.f;
         d.bodyRadius = 1.3f;
@@ -282,7 +293,7 @@ MobRegistry::MobRegistry() {
         d.phaseCount = 3;
         d.enrageMult = 1.7f;
         d.slamRadius = 5.0f;
-        d.slamDamage = 26.f;
+        d.slamDamage = 45.f;
         // Страж бьёт каменной рукой сверху вниз. Замах вдвое длиннее
         // волчьего, и это не поблажка: под удар по площади (ещё
         // вдвое дольше) надо успеть выйти из круга в пять метров.
@@ -300,7 +311,7 @@ MobRegistry::MobRegistry() {
         d.maxHealth = 420.f;
         d.walkSpeed = 2.4f;
         d.chaseSpeed = 5.2f;
-        d.attackDamage = 14.f;
+        d.attackDamage = 26.f;
         d.attackRange = 2.4f;
         d.aggroRange = 24.f;
         d.bodyRadius = 0.8f;

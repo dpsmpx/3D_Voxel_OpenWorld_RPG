@@ -26,6 +26,7 @@
 #include "combat/hurt_marks.h"
 #include "quests/quest.h"
 #include "quests/quest_def.h"
+#include "npc/dialogue.h"
 #include "ecs/registry.h"
 #include "config/settings.h"
 #include "config/localization.h"
@@ -212,6 +213,10 @@ int main(int argc, char** argv) {
             else if (v == "crafting")   o.screen = ui::Screen::Crafting;
             else if (v == "trade")      o.screen = ui::Screen::Trade;
             else if (v == "enchant")    o.screen = ui::Screen::Enchant;
+            else if (v == "worlds")     o.screen = ui::Screen::Worlds;
+            else if (v == "newworld")   o.screen = ui::Screen::NewWorld;
+            else if (v == "iso")        o.screen = ui::Screen::IsoSnapshot;
+            else if (v == "dialogue")   o.screen = ui::Screen::Dialogue;
             else { std::printf("uishot: неизвестный экран «%s»\n", v.c_str()); return 1; }
         }
         else if (k == "--target") o.target = true;
@@ -297,6 +302,29 @@ int main(int argc, char** argv) {
                 if (!d.name) continue;
                 inv->addItem(id, d.maxStack > 1 ? (u16)std::min<u32>(d.maxStack, 12u) : (u16)1);
             }
+        }
+    }
+
+    // Разговор: реплика подлиннее и четыре ответа — столько бывает у
+    // старосты с заданием, и именно тогда панель тесна.
+    if (o.screen == ui::Screen::Dialogue) {
+        if (auto* dlg = pl.activeDialogue()) {
+            npc::DialogueNode n;
+            n.id = 1;
+            n.text = config::tr("Welcome, traveler. The wolves have been "
+                                "restless lately, and the palisade needs wood. "
+                                "Will you help our village?");
+            for (const char* t : { "I'll help.", "Show me your goods.",
+                                   "Tell me about this place.", "Goodbye." }) {
+                npc::DialogueChoice c;
+                c.text = config::tr(t);
+                c.action = npc::DialogueAction::EndDialogue;
+                n.choices.push_back(c);
+            }
+            dlg->nodes = { n };
+            dlg->currentNodeId = 1;
+            dlg->active = true;
+            dlg->playerEntity = (u32)pl.entity();
         }
     }
 

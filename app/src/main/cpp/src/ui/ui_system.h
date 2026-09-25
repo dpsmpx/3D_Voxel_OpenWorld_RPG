@@ -73,6 +73,19 @@ enum class WorldField : u8 { Name = 0, Seed };
 /// Отдельно от рисования по той же причине, что и раскладка
 /// клавиатуры: проверке нужна ровно та геометрия, по которой экран
 /// ловит касания, а не её копия.
+/// Раскладка разговора под его содержимое: панель, где имя, где
+/// реплика и где каждый ответ.
+///
+/// В `choices` — только ответы, поместившиеся целиком; проверка
+/// спрашивает ровно эту геометрию, по которой экран ловит касания.
+struct DialogueLayout {
+    Rect panel{0.f, 0.f, 0.f, 0.f};
+    f32  textX = 0.f, textW = 0.f;
+    f32  nameY = 0.f, textY = 0.f;
+    u32  cols  = 1;
+    std::vector<Rect> choices;
+};
+
 struct NewWorldLayout {
     Rect name{0.f, 0.f, 0.f, 0.f};
     Rect seed{0.f, 0.f, 0.f, 0.f};
@@ -109,8 +122,6 @@ struct SettingsLayout {
     }
 };
 
-/// Прямоугольник вкладки настроек.
-Rect settingsTabRect(u32 index);
 /// Сколько строк рисует вкладка. buttonLayout — включён ли режим
 /// перемещения кнопок: он добавляет к «Управлению» подсказку и кнопку
 /// сброса раскладки.
@@ -307,7 +318,15 @@ public:
 
     /// Геометрия экрана создания мира — та же, по которой он рисует.
     NewWorldLayout newWorldLayout() const;
+    /// Раскладка разговора: реплика `text`, `choiceCount` ответов, есть
+    /// ли строка с именем собеседника.
+    DialogueLayout dialogueLayout(const std::string& text, u32 choiceCount,
+                                  bool hasName) const;
     SettingsLayout settingsLayout() const;
+    /// Прямоугольник вкладки настроек.
+    Rect settingsTabRect(u32 index) const;
+    /// Ширина кнопки «сбросить всё».
+    static constexpr f32 RESET_W_DP = 220.f;
 
     /// Поле, которое сейчас набирают.
     TextEntry& activeField() {
@@ -502,6 +521,12 @@ public:
         screen = s;
     }
 
+    /// Закрыть экран туда, откуда пришли, — как «Назад».
+    void closeToPrevious() {
+        screen = returnTo;
+        returnTo = Screen::Hud;
+    }
+
     /// Аппаратная кнопка «Назад»: закрывает текущий экран, а не игру.
     /// Из HUD открывает паузу — так же, как это делают все Android-игры.
     void onBackPressed() {
@@ -524,8 +549,7 @@ public:
                 returnTo = Screen::Hud;
                 break;
             default:
-                screen = returnTo;
-                returnTo = Screen::Hud;
+                closeToPrevious();
                 break;
         }
     }
@@ -653,13 +677,24 @@ private:
     /// создавший лямбду, давно свёрнут. Нажатие на любой тумблер
     /// читало мёртвый стек и роняло игру. Метод класса живёт столько
     /// же, сколько сам UiSystem, и захватывать его не нужно вовсе.
-    void notifySettingsChanged() { if (onSettingsChanged) onSettingsChanged(); }
+    /// Раскладка пересобирается здесь же: масштаб интерфейса и
+    /// зеркало берутся из настроек, а пересобиралась она только при
+    /// смене размера экрана — ползунок масштаба не менял ничего до
+    /// перезапуска.
+    void notifySettingsChanged() {
+        rebuildLayout();
+        if (onSettingsChanged) onSettingsChanged();
+    }
 
     void drawStatusToast();
     /// Служебная строка HUD: частота кадров, координаты.
     void drawDebugLine(u32 line, const char* text, f32 scale, UiColor c);
     /// Кнопка закрытия одного вида на всю игру.
     void drawCloseButton(std::function<void()> onClose);
+    /// Правый край текста в строке заголовка — левее кнопки закрытия.
+    f32 titleTextRight() const {
+        return layout_.closeButton().x - layout_.dp(theme::SPACE_M_DP);
+    }
     /// Модальное подтверждение поверх всего.
     void drawConfirm();
 

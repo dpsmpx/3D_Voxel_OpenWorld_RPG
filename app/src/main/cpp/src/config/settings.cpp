@@ -130,7 +130,7 @@ void Settings::clamp() {
         buttonOffsetX[i] = std::clamp(buttonOffsetX[i], -1.6f, 1.6f);
         buttonOffsetY[i] = std::clamp(buttonOffsetY[i], -1.6f, 1.6f);
     }
-    uiScale            = std::clamp(uiScale, 0.75f, 1.5f);
+    uiScale            = std::clamp(uiScale, 0.85f, 1.30f);   // ui::theme::USER_SCALE_*
     uiOpacity          = std::clamp(uiOpacity, 0.4f, 1.0f);
     masterVolume       = std::clamp(masterVolume, 0.f, 1.f);
     musicVolume        = std::clamp(musicVolume, 0.f, 1.f);
@@ -159,7 +159,7 @@ void Settings::clamp() {
 
 bool Settings::isValid() const {
     if (cameraSensitivity < 0.1f || cameraSensitivity > 5.0f) return false;
-    if (uiScale < 0.75f || uiScale > 1.5f) return false;
+    if (uiScale < 0.85f || uiScale > 1.30f) return false;
     if (viewDistance < 4 || viewDistance > 12) return false;
     if (debugShading < 0 || debugShading > 6) return false;
     if ((u8)language >= (u8)Language::Count) return false;

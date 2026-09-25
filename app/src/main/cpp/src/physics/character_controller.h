@@ -46,6 +46,10 @@ struct CharacterState {
     /// нырять: иначе упавший в озеро оставался бы висеть в толще,
     /// как нарочно нырнувший.
     bool surfacing = false;
+    /// Во что тело упёрлось в прошлом кадре по горизонтали: знак
+    /// смещения по X и по Z, ноль — не упиралось. По нему плывущий
+    /// выбирается на берег.
+    glm::vec2 wallDir{0};
     f32  coyoteTimer = 0.f;
     f32  jumpBufferTimer = 0.f;
 
@@ -200,6 +204,10 @@ private:
     /// не проломлена ли опора.
     void settleFall(world::ChunkManager& world, bool startedOnGround,
                     f32 yBefore, f32 vyBefore);
+    /// Можно ли выбраться из воды на берег, в который тело упёрлось:
+    /// над стеной не выше двух блоков от ступней есть опора и место
+    /// для тела. Отвесная скала не берег — по ней из воды не вылезти.
+    bool ledgeAhead(world::ChunkManager& world) const;
     /// Сколько «вязкости» пересекли ступни, пройдя от fromY вниз до
     /// toY: сумма BlockImpact::drag по пройденной глубине.
     f32 liquidDepthCrossed(world::ChunkManager& world, f32 fromY, f32 toY) const;

@@ -36,6 +36,7 @@ void Player::init(ecs::Registry& reg, const glm::vec3& spawnPos) {
     ecs::Transform tf;
     tf.position = spawnPos;
     reg.add(entity_, tf);
+    lastFooting_ = spawnPos;
 
     reg.add(entity_, ecs::Velocity{});
 
@@ -436,6 +437,10 @@ void Player::updateImpl(world::ChunkManager& world,
 
     // Phase 15: step-up/snap-down работают через controller.update.
     controller.update(world, mi, dt);
+    {
+        const auto& st = controller.state();
+        if (st.onGround && !st.inWater && !st.inLava) lastFooting_ = st.position;
+    }
 
     // ---- Батут ----
     //
@@ -968,31 +973,53 @@ void Player::tickDeath(world::ChunkManager& world, f32 dt) {
         // оказывался у колодца с полными полосами. Она была даже
         // ПОЛЕЗНА — быстрый способ вернуться домой и подлечиться.
         // А значит, замах, от которого можно уйти, выносливость,
-        // парирование и рывок не имели ставки.
-        //
-        // Теперь половина носимого золота остаётся там, где игрок
-        // пал, и ждёт его. Настоящая цена — не число, а дорога
-        // обратно через то, что его убило.
-        //
-        // Именно половина: отнять всё значило бы сделать смерть
-        // катастрофой и подтолкнуть к перезагрузке вместо игры.
-        if (auto* wal = reg_->get<items::Wallet>(entity_)) {
-            const u64 lost = wal->gold / 2;
-            if (lost > 0 && wal->spend(lost)) {
-                items::ItemStack drop{};
-                drop.itemId = items::ITEM_GOLD_COIN;
-                drop.count  = (u16)(lost > 9999 ? 9999 : lost);
+        // парирование и рывок не имели ставки. Из чего она теперь
+        // состоит — см. DeathCost.
+        auto* wal  = reg_->get<items::Wallet>(entity_);
+        auto* prog = reg_->get<progression::Progression>(entity_);
+        const DeathCost cost = deathCostFor(wal ? wal->gold : 0,
+                                            prog ? prog->xpWithinLevel() : 0);
 
-                const ecs::Entity e = items::spawnPickup(
-                    *reg_, controller.state().position + glm::vec3(0.f, 0.6f, 0.f),
-                    drop, glm::vec3(0.f, 2.f, 0.f));
-                if (auto* pk = reg_->get<items::ItemPickup>(e)) {
-                    pk->waits = true;
-                    pk->currencyAmount = lost;
-                }
-
-                lostGold = lost;
+        // Прошлый узелок пропадает. Иначе смерть по дороге за ним не
+        // стоила бы ничего сверх новой половины, а узелки копились бы
+        // по миру, и вернуть их можно было бы когда-нибудь потом.
+        lostGold = lostXp = burnedGold = 0;
+        {
+            auto& pool = reg_->pool<items::ItemPickup>();
+            std::vector<ecs::Entity> old;
+            for (usize i = 0; i < pool.size(); ++i) {
+                const ecs::Entity e = pool.entityAt((u32)i);
+                const auto* pk = pool.get(e);
+                if (!pk || !pk->waits) continue;
+                burnedGold += pk->currencyAmount;
+                old.push_back(e);
             }
+            for (ecs::Entity e : old) reg_->destroy(e);
+        }
+
+        if (wal && cost.gold > 0 && wal->spend(cost.gold)) {
+            items::ItemStack drop{};
+            drop.itemId = items::ITEM_GOLD_COIN;
+            drop.count  = (u16)(cost.gold > 9999 ? 9999 : cost.gold);
+
+            // В лаве и за краем мира узелок не ляжет: он ложится туда,
+            // где игрок стоял в последний раз.
+            const auto& st = controller.state();
+            const glm::vec3 at = (st.inLava || st.position.y < 1.f)
+                               ? lastFooting_ : st.position;
+            const ecs::Entity e = items::spawnPickup(
+                *reg_, at + glm::vec3(0.f, 0.6f, 0.f),
+                drop, glm::vec3(0.f, 2.f, 0.f));
+            if (auto* pk = reg_->get<items::ItemPickup>(e)) {
+                pk->waits = true;
+                pk->currencyAmount = cost.gold;
+            }
+            lostGold = cost.gold;
+        }
+
+        if (prog && cost.xp > 0) {
+            prog->xp -= cost.xp;
+            lostXp = cost.xp;
         }
         return;
     }
@@ -1033,6 +1060,17 @@ void Player::tickDeath(world::ChunkManager& world, f32 dt) {
     dead          = false;
     deathTimer    = 0.f;
     justRespawned = true;
+}
+
+DeathCost deathCostFor(u64 carriedGold, u64 xpIntoLevel) {
+    DeathCost c;
+    // Половина, а не всё: отнять всё значило бы сделать смерть
+    // катастрофой и подтолкнуть к перезагрузке вместо игры.
+    c.gold = carriedGold / 2;
+    // Пятая часть набранного НА ЭТОМ уровне — не больше: уровень
+    // смертью не отнимается.
+    c.xp   = xpIntoLevel / 5;
+    return c;
 }
 
 void Player::resyncImpactBaseline() {

@@ -13,6 +13,32 @@
 
 namespace ui {
 
+namespace {
+/// Подпись слева и значение справа — в одну строку, пока они не
+/// налезают друг на друга; иначе подпись сверху, значение снизу
+/// справа. Узкая колонка настроек укладывала «ИНВЕРСИЯ ПО X» поверх
+/// «ВЫКЛ».
+void labelAndValue(UiContext& ui, Rect r, const std::string& label,
+                   const char* value, UiColor valueColor) {
+    const float pad = 12.f;
+    const float th = ui.textHeight(1.6f);
+    const float lw = label.empty() ? 0.f : ui.textWidth(label, 1.6f);
+    const float vw = ui.textWidth(value, 1.6f);
+    const bool stacked = lw + vw + pad * 3.f > r.w;
+    if (stacked) {
+        // Подпись шире строки — на ступень мельче.
+        const float ls = lw + pad * 2.f > r.w ? 1.3f : 1.6f;
+        const float gapY = (r.h - th * 2.f) / 3.f;
+        if (!label.empty()) ui.text(label, r.x + pad, r.y + gapY, ls, COL_WHITE);
+        ui.text(value, r.x + r.w - vw - pad, r.y + gapY * 2.f + th, 1.6f, valueColor);
+    } else {
+        const float y = r.y + (r.h - th) * 0.5f;
+        if (!label.empty()) ui.text(label, r.x + pad, y, 1.6f, COL_WHITE);
+        ui.text(value, r.x + r.w - vw - pad, y, 1.6f, valueColor);
+    }
+}
+} // namespace
+
 bool sliderWidget(UiContext& ui,
                   Rect r,
                   float* value,
@@ -31,14 +57,37 @@ bool sliderWidget(UiContext& ui,
     if (norm < 0.f) norm = 0.f;
     if (norm > 1.f) norm = 1.f;
 
-    float labelW = label.empty() ? 0.f : ui.textWidth(label, 1.6f);
-    float trackX = r.x + labelW + (label.empty() ? 0.f : 12.f);
-    float trackW = r.w - labelW - (label.empty() ? 0.f : 12.f);
-    float trackH = 12.f;
+    // Подпись слева от дорожки — пока та остаётся дорожкой. Узкая
+    // колонка настроек оставляла ей двадцать точек, и подпись,
+    // бегунок и число ложились друг на друга. Тогда подпись и число
+    // встают строкой над дорожкой, а дорожка берёт всю ширину.
+    char valBuf[32];
+    if (step >= 1.f) std::snprintf(valBuf, sizeof(valBuf), "%d", (int)(*value + 0.5f));
+    else             std::snprintf(valBuf, sizeof(valBuf), "%.2f", *value);
+    const float valW = ui.textWidth(valBuf, 1.4f);
+
+    const float labelW = label.empty() ? 0.f : ui.textWidth(label, 1.6f);
+    const float gap = 12.f;
+    const float trackH = 12.f;
+    float trackX = r.x + labelW + (label.empty() ? 0.f : gap);
+    float trackW = r.w - labelW - (label.empty() ? 0.f : gap) - valW - gap;
     float trackY = r.y + (r.h - trackH) * 0.5f;
+    const bool stacked = !label.empty() && trackW < r.w * 0.40f;
+    // Подпись шире самой строки — на ступень мельче: иначе она уходит
+    // в соседнюю колонку.
+    const float labelScale = labelW > r.w ? 1.3f : 1.6f;
+    if (stacked) {
+        trackX = r.x;
+        trackW = r.w - valW - gap;
+        trackY = r.y + r.h - trackH - 12.f;
+    }
     if (trackW < 20.f) trackW = 20.f;
 
-    Rect hit{ trackX, trackY - 12.f, trackW, trackH + 24.f };
+    // Касание ловит вся часть строки от начала дорожки до правого края
+    // (при подписи сверху — вся строка): палец, уехавший на число за
+    // концом дорожки, продолжает тянуть бегунок, а не теряет его.
+    const Rect hit = stacked ? r
+                             : Rect{ trackX, r.y, r.x + r.w - trackX, r.h };
     int idx = ui.pushInteractiveRect(hit, nullptr);
     bool pressed = ui.isInteractivePressed(idx);
 
@@ -84,23 +133,17 @@ bool sliderWidget(UiContext& ui,
             pressed ? rgba(255, 240, 160, 255) : rgba(220, 220, 220, 255));
     ui.rectOutline(thumbX, trackY - 6.f, thumbW, trackH + 12.f, 2.f, COL_BLACK);
 
-    if (!label.empty()) {
-        ui.text(label, r.x, r.y + (r.h - ui.textHeight(1.6f)) * 0.5f,
-                1.6f, COL_WHITE);
-    }
-
-    {
-        char valBuf[32];
-        if (step >= 1.f) {
-            std::snprintf(valBuf, sizeof(valBuf), "%d", (int)(*value + 0.5f));
-        } else {
-            std::snprintf(valBuf, sizeof(valBuf), "%.2f", *value);
-        }
-        float vw = ui.textWidth(valBuf, 1.4f);
-        ui.text(valBuf, r.x + r.w - vw,
-                r.y + (r.h - ui.textHeight(1.4f)) * 0.5f,
-                1.4f, rgba(220, 220, 220, 255));
-    }
+    // Значение — справа: в строку с подписью, если та встала над
+    // дорожкой, иначе в конце дорожки. Число считалось заново уже
+    // ПОСЛЕ перетаскивания — берём то же, что показывает бегунок.
+    if (step >= 1.f) std::snprintf(valBuf, sizeof(valBuf), "%d", (int)(*value + 0.5f));
+    else             std::snprintf(valBuf, sizeof(valBuf), "%.2f", *value);
+    const float lineY = stacked ? r.y + 4.f
+                                : r.y + (r.h - ui.textHeight(labelScale)) * 0.5f;
+    if (!label.empty()) ui.text(label, r.x, lineY, labelScale, COL_WHITE);
+    ui.text(valBuf, r.x + r.w - ui.textWidth(valBuf, 1.4f),
+            trackY + (trackH - ui.textHeight(1.4f)) * 0.5f,
+            1.4f, rgba(220, 220, 220, 255));
 
     return changed;
 }
@@ -121,20 +164,13 @@ void toggleWidget(UiContext& ui,
     ui.rect(r.x, r.y, r.w, r.h, bg);
     ui.rectOutline(r.x, r.y, r.w, r.h, 2.f, COL_BLACK);
 
-    if (!label.empty()) {
-        ui.text(label, r.x + 12.f, r.y + (r.h - ui.textHeight(1.6f)) * 0.5f,
-                1.6f, COL_WHITE);
-    }
-
     // Ключи On и Off в таблице строк были с самого начала и не
     // звались ни разу: тумблеры настроек писали «ON» и «OFF»
     // литералом, и русский экран настроек был наполовину
     // английским.
     const char* stateStr = config::T(*value ? config::StrKey::On
                                             : config::StrKey::Off);
-    float sw = ui.textWidth(stateStr, 1.6f);
-    ui.text(stateStr, r.x + r.w - sw - 12.f,
-            r.y + (r.h - ui.textHeight(1.6f)) * 0.5f, 1.6f, COL_WHITE);
+    labelAndValue(ui, r, label, stateStr, COL_WHITE);
 }
 
 void cycleWidget(UiContext& ui,
@@ -154,16 +190,7 @@ void cycleWidget(UiContext& ui,
     ui.rect(r.x, r.y, r.w, r.h, bg);
     ui.rectOutline(r.x, r.y, r.w, r.h, 2.f, COL_BLACK);
 
-    if (!label.empty()) {
-        ui.text(label, r.x + 12.f, r.y + (r.h - ui.textHeight(1.6f)) * 0.5f,
-                1.6f, COL_WHITE);
-    }
-
-    const char* text = options[cur];
-    float cw = ui.textWidth(text, 1.6f);
-    ui.text(text, r.x + r.w - cw - 12.f,
-            r.y + (r.h - ui.textHeight(1.6f)) * 0.5f, 1.6f,
-            rgba(255, 240, 160, 255));
+    labelAndValue(ui, r, label, options[cur], rgba(255, 240, 160, 255));
 }
 
 } // namespace ui

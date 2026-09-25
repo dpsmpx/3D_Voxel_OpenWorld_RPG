@@ -5176,24 +5176,37 @@ void testCompactHudUnderMenus() {
         pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
         world::ChunkManager wd(0x5150Bull, 1);
 
-        // Область — САМ сжатый столбец, и одна и та же для обоих
-        // кадров.
+        // Область — ПОЛНЫЙ столбец, но только выше содержимого меню,
+        // и одна и та же для обоих кадров.
         //
         // Сперва тут стоял «запас вниз на 200 точек», и он захватывал
         // верх меню: ячейки сумки попадали в счёт и ломали сравнение,
-        // стоило меню сдвинуться. Ниже сжатого столбца начинается
-        // содержимое экрана, и мерить там нечего — подписи, золото,
-        // воздух и строка задания, ради которых счёт и ведётся, все
-        // выше.
+        // стоило меню сдвинуться. Потом — сам сжатый столбец; но полный
+        // столбец в него не помещается, и сравнение зависело от того,
+        // какая доля полных полос случайно легла в сжатый: стоило
+        // ужать интерфейс, и счёт перевернулся, хотя рисовалось то же
+        // самое. Всё, ради чего счёт ведётся, — подписи, золото,
+        // воздух и строка задания — лежит в полном столбце, а меню
+        // начинается ниже сжатого: верх полного столбца над меню и
+        // есть честная область.
         ui::Rect col{};
         {
+            ui::UiSystem hudProbe;
+            hudProbe.setDensityDpi(DPI);
+            hudProbe.setScreenSize(W, H);
+            hudProbe.screen = ui::Screen::Hud;
+            hudProbe.tickUi(1.f / 60.f);
+            hudProbe.buildFrame(pl, wd, 60.f);
+            col = hudProbe.layout().hudLeftColumn();
+
             ui::UiSystem probe;
             probe.setDensityDpi(DPI);
             probe.setScreenSize(W, H);
             probe.screen = ui::Screen::Inventory;
             probe.tickUi(1.f / 60.f);
             probe.buildFrame(pl, wd, 60.f);
-            col = probe.layout().hudLeftColumn();
+            const f32 menuTop = probe.layout().menuArea().y;
+            col.h = std::min(col.h, menuTop - col.y);
         }
 
         struct Shot { bool compact; u32 verts; };
@@ -5288,8 +5301,11 @@ void testInventoryScrolls() {
 
     struct Size { i32 w, h, dpi; const char* name; bool tight; };
     const Size sizes[] = {
-        { 2400, 1080, 440, "2400x1080 @440", true  },
-        { 1920, 1080, 400, "1920x1080 @400", true  },
+        // Телефоны 1080 по высоте после того, как интерфейс ужали
+        // (theme::UI_BASE_SCALE), вмещают сумку, экипировку и пояс
+        // целиком — листать там нечего, и это и было целью.
+        { 2400, 1080, 440, "2400x1080 @440", false },
+        { 1920, 1080, 400, "1920x1080 @400", false },
         { 1280,  720, 320, "1280x720 @320",  true  },
         {  960,  540, 240, "960x540 @240",   true  },
         // Планшет: там всё помещается, и прокручивать нечего.
@@ -5740,13 +5756,35 @@ void testHurtDirection() {
                       (double)back);
         check(std::fabs(std::fabs(back) - PI) < 0.01f, m);
 
-        const f32 right = combat::hurtAngle(me, 0.f, { 5.f, 40.f, 0.f });
-        std::snprintf(m, sizeof(m), "удар справа — угол +π/2 (вышло %.2f)",
-                      (double)right);
+        // «Справа» — это сторона Camera::right(), а при взгляде на +Z
+        // она смотрит в −X: lookAt строит правый вектор как
+        // cross(вперёд, вверх). Проверка раньше считала правым +X —
+        // и вместе с формулой узаконила зеркальную отметку: били
+        // справа, дуга загоралась слева.
+        render::Camera cam;
+        cam.setYawPitch(0.f, 0.f);
+        const glm::vec3 camRight = cam.right();
+        const f32 right = combat::hurtAngle(me, 0.f, me + camRight * 5.f);
+        std::snprintf(m, sizeof(m),
+                      "удар со стороны правого вектора камеры (%.0f, %.0f) — "
+                      "угол +π/2 (вышло %.2f)",
+                      (double)camRight.x, (double)camRight.z, (double)right);
         check(std::fabs(right - PI * 0.5f) < 0.01f, m);
 
-        const f32 left = combat::hurtAngle(me, 0.f, { -5.f, 40.f, 0.f });
+        const f32 left = combat::hurtAngle(me, 0.f, me - camRight * 5.f);
         check(std::fabs(left + PI * 0.5f) < 0.01f, "удар слева — угол −π/2");
+
+        // И так при любом повороте: отметка справа — там, куда шагнёт
+        // джойстик вправо.
+        for (f32 yaw : { 0.7f, 2.1f, -1.3f, 3.0f }) {
+            cam.setYawPitch(yaw, 0.f);
+            const f32 r = combat::hurtAngle(me, yaw, me + cam.right() * 5.f);
+            const f32 f = combat::hurtAngle(me, yaw, me + cam.forward() * 5.f);
+            std::snprintf(m, sizeof(m),
+                          "yaw %.1f: справа %.2f, спереди %.2f", (double)yaw,
+                          (double)r, (double)f);
+            check(std::fabs(r - PI * 0.5f) < 0.01f && std::fabs(f) < 0.01f, m);
+        }
 
         // Повернулись — и тот же удар читается иначе. Это и есть
         // разница между «относительно взгляда» и «на север».
@@ -7260,6 +7298,224 @@ void testDeathCostsGold() {
     }
 
     jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+// Цена смерти целиком — в том порядке кадров, что и в игре.
+//
+// Проверка выше вела подбор из дальней точки и потому не видела
+// главного: труп лежит на месте гибели две с половиной секунды, а
+// узелок падает ему под ноги. Через три десятых секунды труп
+// подбирал его обратно, и «ждёт там, где вы пали» не ждало ничего.
+// ------------------------------------------------------------
+void testDeathPenalty() {
+    group("смерть: труп не подбирает своё золото, опыт убывает, прошлый узелок пропадает");
+
+    world::blocks();
+    items::items();
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager wd(0xDEA75ull, 1);
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.5f, 80.f, 0.5f));
+
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            wd.update({ 0.5f, 80.f, 0.5f });
+            ready = wd.isReadyAt(0, 0) && wd.isReadyAt(12, 12) && wd.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир вокруг игрока порождён");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        const f32 groundY = (f32)wd.generator().surfaceHeight(0, 0) + 1.f;
+        pl.controller.setPosition({ 0.5f, groundY, 0.5f });
+        // Колодец — в стороне: иначе вернувшийся сразу стоит на узелке.
+        if (auto* rp = reg.get<ecs::Respawn>(pl.entity())) {
+            rp->point = { 12.5f, (f32)wd.generator().surfaceHeight(12, 12) + 1.f, 12.5f };
+            rp->set = true;
+        }
+
+        auto* wal  = pl.wallet();
+        auto* prog = pl.progression();
+        auto* hp   = reg.get<ecs::Health>(pl.entity());
+        check(wal && prog && hp, "кошелёк, опыт и здоровье есть");
+        if (!wal || !prog || !hp) { jobs::gJobs.stop(); return; }
+
+        wal->receive(500);
+        u32 ups = 0;
+        prog->addXP(progression::xpForLevel(2) / 2, ups);
+        const u64 carried  = wal->gold;
+        const u64 xpBefore = prog->xp;
+        const u64 within   = prog->xpWithinLevel();
+        const u32 lvl      = prog->level;
+        check(within > 0, "опыт на уровне набран");
+
+        auto waiting = [&](u64* amount) {
+            u32 n = 0;
+            auto& pool = reg.pool<items::ItemPickup>();
+            for (usize i = 0; i < pool.size(); ++i) {
+                const auto* p = pool.get(pool.entityAt((u32)i));
+                if (p && p->waits) { ++n; if (amount) *amount = p->currencyAmount; }
+            }
+            return n;
+        };
+
+        // Кадр за кадром, как в игре: игрок, затем подбор — с его
+        // НАСТОЯЩИМ положением.
+        const f32 dt = 1.f / 60.f;
+        auto frame = [&]() {
+            pl.update(wd, player::PlayerInput{}, dt, 0.f, 0.f);
+            items::updatePickups(wd, reg, pl.entity(),
+                                 pl.controller.state().position, dt);
+        };
+
+        hp->current = 0.f;
+        u64 most = 0;
+        bool died = false;
+        for (int i = 0; i < (int)(60.f * (player::DEATH_DELAY + 1.f)); ++i) {
+            frame();
+            if (pl.dead) { died = true; most = std::max(most, wal->gold); }
+        }
+        char m[200];
+        std::snprintf(m, sizeof(m),
+                      "пока лежал: в кошельке не больше %llu (было %llu)",
+                      (unsigned long long)most, (unsigned long long)carried);
+        check(true, m);
+        check(died, "игрок умер");
+        check(most == carried - carried / 2, "свою половину труп обратно не подобрал");
+        check(!pl.dead, "и вернулся к колодцу");
+        u64 inBundle = 0;
+        check(waiting(&inBundle) == 1 && inBundle == carried / 2,
+              "а узелок с половиной ждёт на месте гибели");
+
+        std::snprintf(m, sizeof(m), "опыт: %llu -> %llu (на уровне было %llu)",
+                      (unsigned long long)xpBefore, (unsigned long long)prog->xp,
+                      (unsigned long long)within);
+        check(true, m);
+        check(prog->xp == xpBefore - within / 5 && pl.lostXp == within / 5,
+              "пятая часть опыта этого уровня потеряна");
+        check(prog->level == lvl, "а уровень остался прежним");
+
+        // ---- Вторая смерть, не дойдя до узелка ----
+        const u64 second = wal->gold;
+        hp->current = 0.f;
+        frame();
+        u64 fresh = 0;
+        std::snprintf(m, sizeof(m), "после второй смерти ждущих %u, пропало %llu",
+                      waiting(&fresh), (unsigned long long)pl.burnedGold);
+        check(true, m);
+        check(waiting(nullptr) == 1, "ждёт снова один узелок");
+        check(pl.burnedGold == carried / 2, "прежний пропал целиком");
+        check(fresh == second / 2, "а новый — половина того, что было при себе");
+    }
+    jobs::gJobs.stop();
+
+    // ---- Смерть ничего не отнимает у нищего новичка ----
+    {
+        const player::DeathCost c = player::deathCostFor(0, 0);
+        check(c.gold == 0 && c.xp == 0, "без золота и опыта смерть ничего не стоит");
+        const player::DeathCost d = player::deathCostFor(1, 4);
+        check(d.gold == 0 && d.xp == 0, "из одной монеты половины нет");
+    }
+}
+
+// ------------------------------------------------------------
+// Здоровье отрастает только в покое.
+// ------------------------------------------------------------
+void testHealthRegenWaitsForCalm() {
+    group("здоровье: посреди боя не отрастает");
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 80.f, 0.f));
+    auto* hp = reg.get<ecs::Health>(pl.entity());
+    check(hp != nullptr, "здоровье есть");
+    if (!hp) return;
+    progression::tickProgression(reg, 0.01f);   // пересчитать производные
+
+    hp->current = hp->max * 0.5f;
+    combat::DamageInstance hit{};
+    hit.amount = 5.f;
+    hit.targetEntity = (u32)pl.entity();
+    combat::applyDamage(reg, pl.entity(), hit);
+    const f32 hurt = hp->current;
+
+    const f32 dt = 1.f / 60.f;
+    for (int i = 0; i < (int)(60.f * (progression::HEALTH_REGEN_DELAY - 0.5f)); ++i)
+        progression::tickProgression(reg, dt);
+    char m[160];
+    std::snprintf(m, sizeof(m), "через %.1f с после удара: %.1f -> %.1f",
+                  (double)(progression::HEALTH_REGEN_DELAY - 0.5f),
+                  (double)hurt, (double)hp->current);
+    check(true, m);
+    check(hp->current <= hurt + 1e-3f, "пока бой не утих, здоровье не отрастает");
+
+    for (int i = 0; i < 60 * 3; ++i) progression::tickProgression(reg, dt);
+    check(hp->current > hurt + 1.f, "а в покое — отрастает");
+
+    // Яд — тоже урон: отравленный не лечится, пока яд действует.
+    auto* se = reg.get<combat::StatusEffects>(pl.entity());
+    check(se != nullptr, "статусы есть");
+    if (!se) return;
+    se->poisonDps  = 1.f;
+    se->poisonTime = 3.f;
+    for (int i = 0; i < 60 * 3; ++i) {
+        combat::tickStatuses(reg, dt);
+        progression::tickProgression(reg, dt);
+    }
+    check(hp->sinceHurt < 0.1f, "яд держит в бою до последней капли");
+}
+
+// ------------------------------------------------------------
+// Твари опасны с первых минут.
+//
+// Раньше волк кусал на четыре раз в полторы секунды, а здоровье
+// игрока отрастало и посреди драки: стоящего столбом новичка первый
+// же зверь убивал больше минуты, и бой не стоил ничего.
+// ------------------------------------------------------------
+void testMobsThreatenNewPlayer() {
+    group("бой: твари опасны игроку первого уровня");
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 80.f, 0.f));
+    progression::tickProgression(reg, 0.01f);
+    const auto& d = progression::derivedOf(reg, pl.entity());
+
+    auto secondsToKill = [&](u16 id) {
+        const mobs::MobDef& def = mobs::mobRegistry().get(id);
+        const f32 beat = mobs::MOB_ATTACK_COOLDOWN + def.windupTime;
+        // Яд не складывается, а продлевается: за такт он успевает
+        // отработать не дольше самого такта.
+        const f32 hit  = def.attackDamage * (1.f - d.damageResistPhysical)
+                       + def.poisonDps * std::min(def.poisonTime, beat);
+        return d.maxHealth / (hit / beat);
+    };
+
+    char m[200];
+    u32 hostile = 0;
+    for (u16 id = mobs::MOB_NONE + 1; id < mobs::MOB_COUNT; ++id) {
+        const mobs::MobDef& def = mobs::mobRegistry().get(id);
+        if (!def.hostile || def.isBoss || def.attackDamage <= 0.f) continue;
+        ++hostile;
+        const f32 t = secondsToKill(id);
+        std::snprintf(m, sizeof(m), "%s убивает стоящего новичка за %.0f с",
+                      def.name, (double)t);
+        check(t >= 8.f && t <= 40.f, m);
+    }
+    check(hostile >= 5, "враждебных тварей хватает");
+
+    const f32 wolf = secondsToKill(mobs::MOB_WOLF);
+    std::snprintf(m, sizeof(m), "стая из трёх волков — за %.0f с", (double)(wolf / 3.f));
+    check(wolf / 3.f < 12.f, m);
+    for (u16 id : { (u16)mobs::MOB_BOSS_WARDEN, (u16)mobs::MOB_BOSS_HOLLOW }) {
+        const f32 t = secondsToKill(id);
+        std::snprintf(m, sizeof(m), "босс %s — за %.0f с",
+                      mobs::mobRegistry().get(id).name, (double)t);
+        check(t < 12.f, m);
+    }
 }
 
 // ------------------------------------------------------------
@@ -9128,11 +9384,80 @@ void testDialogueReadsAsAConversation() {
           "диалог показывает имя собеседника");
     check(body.find("textWrapped(") != NONE,
           "реплика рисуется с переносом");
-    check(body.find("layout_.dialogueChoice(") != NONE,
+    check(body.find("dialogueLayout(") != NONE,
           "варианты ответа берут геометрию из раскладки");
-    // Вариант, не влезший в панель, не рисуется за её краем.
-    check(body.find("break;") != NONE,
-          "варианты, не влезшие в панель, не уезжают за неё");
+
+    // ---- 5. Все ответы достижимы ----
+    //
+    // Панель была постоянной долей экрана — 45 % высоты, — и у
+    // старосты с заданием из четырёх ответов на телефоне помещались
+    // два: «до свидания» уходило за край, и выйти из разговора было
+    // нечем. Проверяется та самая раскладка, по которой экран ловит
+    // касания: каждый ответ есть, лежит в панели и на экране.
+    {
+        const config::Settings savedCfg = config::settingsConst();
+        config::settings() = config::Settings{};
+        struct Size { i32 w, h, dpi; };
+        const Size sizes[] = { { 2306, 1080, 420 }, { 2400, 1080, 440 },
+                               { 1280, 720, 320 }, { 960, 540, 240 },
+                               { 1600, 720, 320 } };
+        const std::string longLine =
+            "Welcome, traveler. The wolves have been restless lately, and the "
+            "palisade needs wood before the winter comes. Will you help our "
+            "village? We can pay in gold, and the blacksmith owes me a favor.";
+        char m[200];
+        world::blocks();
+        items::items();
+        for (const Size& sz : sizes) {
+            for (u32 n : { 4u, 6u }) {
+                // Настоящий кадр разговора: раскладка знает, что под
+                // ним рисуется столбец ресурсов, только после него.
+                ecs::Registry reg;
+                player::Player pl;
+                pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+                world::ChunkManager wd(0xD1A1ull, 1);
+                if (auto* dlg = pl.activeDialogue()) {
+                    npc::DialogueNode node;
+                    node.id = 1;
+                    node.text = longLine;
+                    for (u32 k = 0; k < n; ++k) {
+                        npc::DialogueChoice c;
+                        c.text = "Answer";
+                        c.action = npc::DialogueAction::EndDialogue;
+                        node.choices.push_back(c);
+                    }
+                    dlg->nodes = { node };
+                    dlg->currentNodeId = 1;
+                    dlg->active = true;
+                    dlg->playerEntity = (u32)pl.entity();
+                }
+                ui::UiSystem sys;
+                sys.setDensityDpi(sz.dpi);
+                sys.setScreenSize(sz.w, sz.h);
+                sys.screen = ui::Screen::Dialogue;
+                sys.tickUi(1.f / 60.f);
+                sys.buildFrame(pl, wd, 60.f);
+                check(sys.screen == ui::Screen::Dialogue && sys.layout().hudBehind(),
+                      "разговор открыт, под ним столбец ресурсов");
+                const ui::DialogueLayout D = sys.dialogueLayout(longLine, n, false);
+                bool inside = true;
+                for (const ui::Rect& r : D.choices) {
+                    if (r.x < D.panel.x || r.x + r.w > D.panel.x + D.panel.w + 0.5f ||
+                        r.y < D.panel.y || r.y + r.h > D.panel.y + D.panel.h + 0.5f ||
+                        r.y + r.h > (f32)sz.h || r.h < sys.layout().dp(ui::theme::TOUCH_MIN_DP) - 0.5f)
+                        inside = false;
+                }
+                std::snprintf(m, sizeof(m),
+                              "%dx%d @%d: ответов %u — видно %zu в %u колонк., панель %.0f из %d",
+                              sz.w, sz.h, sz.dpi, n, D.choices.size(), D.cols,
+                              (double)D.panel.h, sz.h);
+                check(D.choices.size() == n && inside, m);
+                check(D.textY >= D.panel.y && D.nameY >= D.panel.y,
+                      "имя и реплика в панели");
+            }
+        }
+        config::settings() = savedCfg;
+    }
 }
 
 // ------------------------------------------------------------
@@ -11456,6 +11781,122 @@ void testMixerResamples() {
     }
 }
 
+// ------------------------------------------------------------
+// Интерфейс ужат и подогнан под экран, из каждого окна есть выход.
+//
+// Мерки интерфейса — по Android: цель касания 48 dp, ряд 56. На
+// телефоне в руках они выходили громоздкими: ряд меню занимал седьмую
+// часть высоты, окна не вмещали и половины, у разговора со старостой
+// «до свидания» уходило за край. Теперь мерки идут на экран с общим
+// множителем, а маленький плотный экран ужимается ещё.
+// ------------------------------------------------------------
+void testUiCompactAndClosable() {
+    group("интерфейс: ужат, подогнан под экран, из каждого окна есть выход");
+    char m[200];
+
+    // ---- 1. Общий множитель и подгонка под экран ----
+    {
+        const auto base = ui::theme::Metrics::fromDensityDpi(420);
+        std::snprintf(m, sizeof(m), "48 dp на 420 dpi — %.1f точек (без множителя было бы %.1f)",
+                      (double)base.dp(48.f), 48.0 * 420.0 / 160.0);
+        check(std::fabs(base.dp(48.f) - 48.f * 420.f / 160.f * ui::theme::UI_BASE_SCALE) < 0.01f &&
+              ui::theme::UI_BASE_SCALE < 1.f, m);
+
+        // Телефон пользователя: по короткой стороне места хватает, и
+        // подгонка ничего не добавляет.
+        const ui::HudLayout phone(2306.f, 1080.f, base, ui::SafeInsets{});
+        check(std::fabs(phone.metrics().fit - ui::theme::UI_BASE_SCALE) < 1e-4f,
+              "на телефоне 2306x1080 интерфейс только ужат, не подогнан");
+
+        // Маленький и очень плотный экран: 720 точек при 560 dpi —
+        // всего 257 dp высоты. Подгонка ужимает ещё, но не ниже предела.
+        const ui::HudLayout tiny(1600.f, 720.f, ui::theme::Metrics::fromDensityDpi(560),
+                                 ui::SafeInsets{});
+        const f32 units = 720.f / tiny.dp(1.f);
+        std::snprintf(m, sizeof(m), "720 точек при 560 dpi: множитель %.2f, по высоте %.0f dp раскладки",
+                      (double)tiny.metrics().fit, (double)units);
+        check(tiny.metrics().fit < ui::theme::UI_BASE_SCALE &&
+              tiny.metrics().fit >= ui::theme::UI_BASE_SCALE * ui::theme::FIT_MIN - 1e-4f, m);
+    }
+
+    // ---- 2. У каждого полноэкранного окна есть кнопка закрытия ----
+    //
+    // Сумка, характеристики и журнал своей кнопки не имели: выходили
+    // из них через столбец навигации HUD. Столбец под меню больше не
+    // рисуется — он ложился на ячейки сумки и ловил касания вместо
+    // них, — и без своей кнопки из этих окон было бы не выйти.
+    world::blocks();
+    items::items();
+    const config::Settings savedCfg = config::settingsConst();
+    config::settings() = config::Settings{};
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0xC105Eull, 1);
+
+        const ui::Screen screens[] = {
+            ui::Screen::Inventory, ui::Screen::Attributes, ui::Screen::QuestLog,
+            ui::Screen::SkillTree, ui::Screen::Reputation, ui::Screen::Crafting,
+            ui::Screen::Enchant,   ui::Screen::SaveLoad,   ui::Screen::Settings,
+        };
+        for (ui::Screen sc : screens) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(420);
+            sys.setScreenSize(2306, 1080);
+            sys.screen = ui::Screen::PauseMenu;
+            sys.openScreen(sc);
+            auto frame = [&]() { sys.tickUi(1.f / 60.f); sys.buildFrame(pl, wd, 60.f); };
+            frame();
+            const ui::Rect c = sys.layout().closeButton();
+            const f32 cx = c.x + c.w * 0.5f, cy = c.y + c.h * 0.5f;
+            sys.routeTouch(1, cx, cy, 0);
+            frame();
+            sys.routeTouch(1, cx, cy, 1);
+            frame();
+            std::snprintf(m, sizeof(m), "экран %d закрывается своей кнопкой (стал %d)",
+                          (int)sc, (int)sys.screen);
+            check(sys.screen != sc, m);
+        }
+
+        // ---- 3. Навигация HUD под меню не ловит касаний ----
+        {
+            ui::UiSystem sys;
+            sys.setDensityDpi(420);
+            sys.setScreenSize(2306, 1080);
+            sys.openScreen(ui::Screen::Inventory);
+            auto frame = [&]() { sys.tickUi(1.f / 60.f); sys.buildFrame(pl, wd, 60.f); };
+            frame();
+            const ui::Rect nav = sys.layout().navButton(0);
+            const f32 cx = nav.x + nav.w * 0.5f, cy = nav.y + nav.h * 0.5f;
+            sys.routeTouch(1, cx, cy, 0);
+            frame();
+            sys.routeTouch(1, cx, cy, 1);
+            frame();
+            check(sys.screen != ui::Screen::PauseMenu,
+                  "под сумкой кнопка «меню» не срабатывает — её там нет");
+        }
+
+        // ---- 4. Кнопка паузы подписана ----
+        //
+        // «|||» шрифт не рисует — вертикальной черты в нём нет, — и
+        // кнопка паузы была пустым квадратом.
+        {
+            ui::UiSystem sys;
+            sys.setDensityDpi(420);
+            sys.setScreenSize(2306, 1080);
+            std::vector<std::string> seen;
+            sys.setTextSink(&seen);
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+            bool labelled = false;
+            for (const auto& t : seen) if (t == config::tr("MENU")) labelled = true;
+            check(labelled, "кнопка паузы на HUD подписана словом");
+        }
+    }
+    config::settings() = savedCfg;
+}
+
 void testSettingsButtonsWork() {
     group("настройки: кнопки и тумблеры");
 
@@ -11560,7 +12001,7 @@ void testSettingsButtonsWork() {
     // Вкладки не должны налезать на панель: иначе первая строка
     // настроек перекрыта, и нажать её нечем.
     {
-        const ui::Rect tab = ui::settingsTabRect((u32)ui::SettingsTab::Count - 1);
+        const ui::Rect tab = sys.settingsTabRect((u32)ui::SettingsTab::Count - 1);
         const ui::SettingsLayout L = sys.settingsLayout();
         char m[160];
         std::snprintf(m, sizeof(m), "вкладки кончаются на %.0f, панель с %.0f",
@@ -11570,11 +12011,29 @@ void testSettingsButtonsWork() {
                       (double)(tab.x + tab.w), W);
         check(tab.x + tab.w <= (f32)W, m);
         check(L.row(0).w > 0.f && L.row(0).h > 0.f, "строка настройки не пустая");
+
+        // Вкладки стояли по постоянным пикселям и ложились на
+        // заголовок «НАСТРОЙКИ»; кнопка сброса — на нижнюю рамку
+        // панели. Теперь обе из раскладки, и ничего не перекрывают.
+        const ui::Rect title = sys.layout().menuTitle();
+        const ui::Rect first = sys.settingsTabRect(0);
+        std::snprintf(m, sizeof(m), "вкладки начинаются на %.0f, заголовок кончается на %.0f",
+                      (double)first.y, (double)(title.y + title.h));
+        check(first.y >= title.y + title.h - 0.5f, m);
+        const ui::Rect close = sys.layout().closeButton();
+        const ui::Rect rs = L.resetAll;
+        auto overlaps = [](const ui::Rect& a, const ui::Rect& b) {
+            return a.x < b.x + b.w && b.x < a.x + a.w &&
+                   a.y < b.y + b.h && b.y < a.y + a.h;
+        };
+        check(rs.w > 0.f && rs.h > 0.f && !overlaps(rs, close) &&
+              !overlaps(rs, L.panel) && !overlaps(rs, first),
+              "кнопка сброса ни на что не легла");
     }
 
     // ---- 3. Каждая вкладка открывается нажатием ----
     for (u32 i = 0; i < (u32)ui::SettingsTab::Count; ++i) {
-        tap(ui::settingsTabRect(i));
+        tap(sys.settingsTabRect(i));
         char m[120];
         std::snprintf(m, sizeof(m), "вкладка %u открывается нажатием", i);
         check((u32)sys.settingsTab == i, m);
@@ -11588,7 +12047,7 @@ void testSettingsButtonsWork() {
     {
         int rows = 0;
         for (u32 t = 0; t < (u32)ui::SettingsTab::Count; ++t) {
-            tap(ui::settingsTabRect(t));
+            tap(sys.settingsTabRect(t));
             const ui::SettingsLayout L = sys.settingsLayout();
             const u32 n = ui::settingsRowCount((ui::SettingsTab)t,
                                                sys.buttonLayoutMode);
@@ -11639,7 +12098,7 @@ void testSettingsButtonsWork() {
           "без ограничения кадров" },
     };
     for (const ToggleCase& c : cases) {
-        tap(ui::settingsTabRect((u32)c.tab));
+        tap(sys.settingsTabRect((u32)c.tab));
         const ui::SettingsLayout L = sys.settingsLayout();
         const bool before = config::settings().*c.field;
         const int  seen   = changes;
@@ -11656,7 +12115,7 @@ void testSettingsButtonsWork() {
 
     // ---- 6. Язык переключается по кругу ----
     {
-        tap(ui::settingsTabRect((u32)ui::SettingsTab::Game));
+        tap(sys.settingsTabRect((u32)ui::SettingsTab::Game));
         const ui::SettingsLayout L = sys.settingsLayout();
         const config::Language start = config::settings().language;
         tap(L.row(0));
@@ -11686,7 +12145,7 @@ void testSettingsButtonsWork() {
 
     // ---- 8. Слайдер двигается пальцем ----
     {
-        tap(ui::settingsTabRect((u32)ui::SettingsTab::Audio));
+        tap(sys.settingsTabRect((u32)ui::SettingsTab::Audio));
         const ui::SettingsLayout L = sys.settingsLayout();
         // Не общая громкость: она по умолчанию на максимуме, и
         // вправо её тянуть некуда — проверка прошла бы вхолостую.
@@ -20112,6 +20571,144 @@ void testSwimmingAndDiving() {
 }
 
 // ------------------------------------------------------------
+void testNoRunningOnWater() {
+    group("плавание: по воде не бегают, на берег выбираются, прыжок с удержания");
+
+    Arena arena;
+    if (!arena.build(0, 9999)) {
+        check(false, "полигон не построился — генерация чанков не дождалась");
+        return;
+    }
+    world::ChunkManager& w = *arena.mgr;
+    const f32 dt = 1.f / 60.f;
+
+    // Пруд глубиной в десять блоков, вода вровень с полом: берег
+    // по краям — в уровень с водой. С запада берег на блок выше
+    // воды, с севера — скала в три блока.
+    const i32 W = Arena::FLOOR + 1;           // верх воды
+    for (i32 z = -12; z <= 12; ++z)
+        for (i32 x = -12; x <= 12; ++x)
+            for (i32 y = W - 10; y < W; ++y)
+                w.setVoxel(x, y, z, world::WATER);
+    for (i32 z = -16; z <= 16; ++z)
+        for (i32 x = -16; x <= -13; ++x)
+            w.setVoxel(x, W, z, world::STONE);
+    for (i32 z = 13; z <= 16; ++z)
+        for (i32 x = -12; x <= 12; ++x)
+            for (i32 y = W; y < W + 3; ++y)
+                w.setVoxel(x, y, z, world::STONE);
+
+    auto settle = [&](physics::CharacterController& cc) {
+        physics::MoveInput idle{};
+        for (int i = 0; i < 60 * 3; ++i) cc.update(w, idle, dt);
+    };
+
+    // ---- 1. Прыжок и рывок не выносят из воды ----
+    //
+    // Держа прыжок, игрок раньше выгребал до тех пор, пока из воды не
+    // выйдут ступни, — а выше считался в воздухе: скорость бега,
+    // рывок. Так по воде и бегали: прыжок зажат, рывок раз в секунду.
+    {
+        physics::CharacterController cc;
+        cc.setPosition({ -8.5f, (f32)W - 4.f, 0.5f });
+        settle(cc);
+        const f32 x0 = cc.state().position.x;
+        physics::MoveInput in{};
+        in.wishDir = { 1.f, 0.f };
+        in.faceDir = { 1.f, 0.f };
+        in.jumpHeld = true;
+        in.sprint = true;
+        bool leftWater = false, dashed = false;
+        f32 top = -1e9f;
+        for (int i = 0; i < 60 * 4; ++i) {
+            in.dashPressed = (i % 30 == 0);
+            cc.update(w, in, dt);
+            if (!cc.state().inWater) leftWater = true;
+            if (cc.state().dashing()) dashed = true;
+            top = std::max(top, cc.state().position.y);
+        }
+        const f32 went = cc.state().position.x - x0;
+        char m[160];
+        std::snprintf(m, sizeof(m),
+                      "за четыре секунды с прыжком и рывками: проплыл %.1f блока, "
+                      "ступни поднимались до %.2f (вода до %d)",
+                      (double)went, (double)top, W);
+        check(true, m);
+        check(!leftWater, "из воды не выходит ни на кадр");
+        check(!dashed, "рывок в воде не срабатывает");
+        check(went < cc.swimSpeed * 4.f + 0.5f, "и быстрее, чем плывут, не движется");
+        check(!cc.state().submerged, "а голова при этом над водой");
+    }
+
+    // ---- 2. Берег вровень с водой: выбрался ----
+    auto climb = [&](glm::vec3 from, glm::vec2 dir, f32 needY, const char* what) {
+        physics::CharacterController cc;
+        cc.setPosition(from);
+        settle(cc);
+        physics::MoveInput in{};
+        in.wishDir = dir;
+        in.faceDir = dir;
+        in.jumpHeld = true;
+        bool out = false;
+        for (int i = 0; i < 60 * 4 && !out; ++i) {
+            cc.update(w, in, dt);
+            out = cc.state().onGround && !cc.state().inWater &&
+                  cc.state().position.y >= needY - 0.01f;
+        }
+        char m[160];
+        std::snprintf(m, sizeof(m), "%s: стоит на y = %.2f, x = %.2f, z = %.2f",
+                      what, (double)cc.state().position.y,
+                      (double)cc.state().position.x, (double)cc.state().position.z);
+        check(true, m);
+        return out;
+    };
+    check(climb({ 10.5f, (f32)W - 4.f, 0.5f }, { 1.f, 0.f }, (f32)W, "берег вровень с водой"),
+          "на берег вровень с водой выбирается, держа прыжок");
+    check(climb({ -10.5f, (f32)W - 4.f, 0.5f }, { -1.f, 0.f }, (f32)W + 1.f,
+                "берег на блок выше воды"),
+          "и на берег на блок выше воды тоже");
+    check(!climb({ 0.5f, (f32)W - 4.f, 10.5f }, { 0.f, 1.f }, (f32)W + 1.f,
+                 "скала в три блока"),
+          "а на скалу в три блока из воды не влезть");
+
+    // ---- 3. Прыжок с удержания ----
+    //
+    // Держишь прыжок — прыгаешь каждый раз, как коснёшься земли.
+    {
+        physics::CharacterController cc;
+        cc.setPosition({ 20.5f, (f32)W, 0.5f });
+        settle(cc);
+        check(cc.state().onGround, "стоит на земле");
+        physics::MoveInput hold{};
+        hold.jumpHeld = true;
+        int jumps = 0;
+        bool was = cc.state().onGround;
+        for (int i = 0; i < 60 * 3; ++i) {
+            cc.update(w, hold, dt);
+            const bool now = cc.state().onGround;
+            if (was && !now && cc.state().velocity.y > 1.f) ++jumps;
+            was = now;
+        }
+        char m[120];
+        std::snprintf(m, sizeof(m), "за три секунды с зажатым прыжком прыжков: %d", jumps);
+        check(true, m);
+        check(jumps >= 3, "с зажатой кнопкой игрок прыгает раз за разом");
+
+        physics::MoveInput idle{};
+        for (int i = 0; i < 60; ++i) cc.update(w, idle, dt);
+        int after = 0;
+        was = cc.state().onGround;
+        for (int i = 0; i < 60 * 2; ++i) {
+            cc.update(w, idle, dt);
+            const bool now = cc.state().onGround;
+            if (was && !now) ++after;
+            was = now;
+        }
+        check(after == 0 && cc.state().onGround, "отпустил — стоит");
+    }
+}
+
+// ------------------------------------------------------------
 void testRunningAndFightingTire() {
     group("утомление: бег и долгий бой опускают потолок выносливости");
 
@@ -27326,6 +27923,9 @@ int main() {
     testOneLanguageEverywhere();
     testSaveKeepsQuestsWithoutText();
     testDeathCostsGold();
+    testDeathPenalty();
+    testHealthRegenWaitsForCalm();
+    testMobsThreatenNewPlayer();
     testCoinsGoToTheWallet();
     testLostGoldSurvivesSave();
     testLostGoldMarkOnScreen();
@@ -27391,6 +27991,7 @@ int main() {
     testDashMovesForward();
     testRunningAndFightingTire();
     testSwimmingAndDiving();
+    testNoRunningOnWater();
     testHandcraftWorksAnywhere();
     testTrampolineThrowAndBounce();
     testElixirsGrantTimedBuff();
@@ -27408,6 +28009,7 @@ int main() {
     testBiomeAndVillageMusic();
     testMixerResamples();
     testSettingsButtonsWork();
+    testUiCompactAndClosable();
     testEveryButtonHasAnAction();
     testSprintByDoubleTap();
     testHotbarInGame();

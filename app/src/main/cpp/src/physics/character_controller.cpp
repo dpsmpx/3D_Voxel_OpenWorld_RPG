@@ -261,6 +261,9 @@ void CharacterController::update(world::ChunkManager& world,
     // целиком, и разгонять или тормозить в эти сто восемьдесят
     // миллисекунд нечего.
     state_.dashCooldown = std::max(0.f, state_.dashCooldown - dt);
+    // Вода рывок гасит: влетевший в неё рывком дальше не скользит по
+    // поверхности, а плывёт.
+    if (state_.inWater) state_.dashTimer = 0.f;
     if (input.dashPressed && state_.dashCooldown <= 0.f &&
         !state_.dashing() && !state_.inWater)
     {
@@ -306,8 +309,19 @@ void CharacterController::update(world::ChunkManager& world,
         if (input.jumpHeld || input.crouch || !state_.submerged)
             state_.surfacing = false;
 
-        if (input.jumpHeld) {
-            // Гребок вверх — всплытие.
+        // Упёрся в берег, голова над водой и жмёт прыжок — выбирается:
+        // выпрыгивает, как с земли. Отвесная стена берегом не
+        // считается, по ней из воды не вылезти.
+        const bool climbOut = input.jumpHeld && !state_.submerged &&
+                              ledgeAhead(world);
+        if (climbOut) {
+            state_.velocity.y = jumpVelocity;
+        } else if (input.jumpHeld && state_.submerged) {
+            // Гребок вверх — всплытие. Только пока голова под водой:
+            // дальше тело держится на плаву само. Раньше гребок тянул,
+            // пока из воды не выйдут ступни, — а выше тело считалось в
+            // воздухе, со скоростью бега и с рывком. Держа прыжок и
+            // жмя рывок, по воде можно было бежать.
             state_.velocity.y = swimRiseSpeed;
         } else if (input.crouch) {
             // Гребок вниз — погружение. Работает и у поверхности:
@@ -331,8 +345,9 @@ void CharacterController::update(world::ChunkManager& world,
             // выбрасывало наверх, стоило отпустить клавишу.
             state_.velocity.y -= waterSinkRate * dt;
         }
-        if (state_.velocity.y >  swimRiseSpeed) state_.velocity.y =  swimRiseSpeed;
-        if (state_.velocity.y < -swimMaxFall)   state_.velocity.y = -swimMaxFall;
+        if (!climbOut && state_.velocity.y > swimRiseSpeed)
+            state_.velocity.y = swimRiseSpeed;
+        if (state_.velocity.y < -swimMaxFall) state_.velocity.y = -swimMaxFall;
     } else if (state_.onGround && dvLen < 1e-4f && !state_.dashing()) {
         f32 f = std::exp(-groundFriction * dt);
         state_.velocity.x *= f;
@@ -340,9 +355,13 @@ void CharacterController::update(world::ChunkManager& world,
     }
 
     // --- Прыжок ---
-    const bool canJump = !state_.inWater &&
-                        (state_.onGround || state_.coyoteTimer > 0.f);
-    if (canJump && state_.jumpBufferTimer > 0.f) {
+    //
+    // С зажатой кнопкой — каждый раз, как ступни коснутся опоры:
+    // держишь прыжок — и прыгаешь раз за разом, отпускать и жать
+    // заново не нужно. Из воды, где по пояс, не прыгают: там плывут.
+    const bool canJump = (!state_.inWater || !state_.waistDeep) &&
+                         (state_.onGround || state_.coyoteTimer > 0.f);
+    if (canJump && (state_.jumpBufferTimer > 0.f || input.jumpHeld)) {
         state_.velocity.y = jumpVelocity;
         state_.coyoteTimer = 0.f;
         state_.jumpBufferTimer = 0.f;
@@ -429,6 +448,8 @@ void CharacterController::update(world::ChunkManager& world,
     if (wasOnGround && !state_.onGround) state_.coyoteTimer = coyoteTime;
     if (state_.onGround) state_.coyoteTimer = coyoteTime;
 
+    state_.wallDir = { flags.hitX ? (originalDelta.x > 0.f ? 1.f : -1.f) : 0.f,
+                       flags.hitZ ? (originalDelta.z > 0.f ? 1.f : -1.f) : 0.f };
     if (flags.hitX) state_.velocity.x = 0;
     if (flags.hitY) state_.velocity.y = 0;
     // Подъём отменяет УДАР ГОЛОВОЙ, а не любое касание по вертикали:
@@ -449,6 +470,32 @@ void CharacterController::update(world::ChunkManager& world,
     }
 
     settleFall(world, startedOnGround, yBeforeMove, vyBeforeMove);
+}
+
+bool CharacterController::ledgeAhead(world::ChunkManager& world) const {
+    if (state_.wallDir == glm::vec2(0.f)) return false;
+    auto& reg = world::blocks();
+    world::VoxelReader rd(world);
+    auto solid = [&](i32 x, i32 y, i32 z) { return reg.isSolid(rd.at(x, y, z)); };
+
+    // Столб стены — сразу за боком тела в сторону упора. Упор бывает
+    // сразу по двум осям (угол): тогда берег ищется по каждой.
+    const i32 feet = (i32)std::floor(state_.position.y);
+    const i32 reach = (i32)std::floor(state_.position.y + 2.f);
+    for (int axis = 0; axis < 2; ++axis) {
+        glm::vec2 d{0.f};
+        d[axis] = state_.wallDir[axis];
+        if (d[axis] == 0.f) continue;
+        const i32 x = (i32)std::floor(state_.position.x + d.x * (box.halfWidth + 0.5f));
+        const i32 z = (i32)std::floor(state_.position.z + d.y * (box.halfWidth + 0.5f));
+        // Верх берега — первый блок над ступнями, у которого снизу
+        // опора, а сверху два свободных: тело встанет туда целиком.
+        for (i32 y = feet + 1; y <= reach; ++y) {
+            if (solid(x, y - 1, z) && !solid(x, y, z) && !solid(x, y + 1, z))
+                return true;
+        }
+    }
+    return false;
 }
 
 f32 CharacterController::liquidDepthCrossed(world::ChunkManager& world,

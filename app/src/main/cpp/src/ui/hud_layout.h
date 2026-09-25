@@ -94,7 +94,8 @@ public:
     HudLayout() = default;
     HudLayout(f32 screenW, f32 screenH, theme::Metrics m, SafeInsets si,
               bool mirrored = false)
-        : w_(screenW), h_(screenH), m_(m), si_(si), mirror_(mirrored) {}
+        : w_(screenW), h_(screenH), m_(m.fittedTo(screenW, screenH)), si_(si),
+          mirror_(mirrored) {}
 
     /// Раскладка для левши: зеркалится ВЕСЬ экран, а не одни кнопки.
     ///
@@ -847,18 +848,24 @@ public:
     Rect paneRight() const { return paneRightIn(menuArea()); }
 
     /// Строка списка в левой панели.
-    Rect paneRow(u32 i) const {
-        const Rect l = paneLeft();
+    ///
+    /// Форма с заданной областью — для экранов, у которых список
+    /// начинается ниже обычного (алтарь пишет над ним, что в руках).
+    /// Алтарь брал строки от обычной панели, а панель справа — от
+    /// своей, пониженной: первая строка списка ложилась на строку
+    /// «в руках», и правая панель стояла на ряд ниже левой.
+    Rect paneRowIn(const Rect& l, u32 i) const {
         const f32 h = dp(theme::TOUCH_REGULAR_DP);
         const f32 g = dp(theme::SPACE_S_DP);
         return { l.x, l.y + (f32)i * (h + g), l.w, h };
     }
-    u32 paneRowsVisible() const {
-        const Rect l = paneLeft();
+    u32 paneRowsVisibleIn(const Rect& l) const {
         const f32 h = dp(theme::TOUCH_REGULAR_DP) + dp(theme::SPACE_S_DP);
         const f32 n = h > 0.f ? l.h / h : 0.f;
         return n < 1.f ? 1u : (u32)n;
     }
+    Rect paneRow(u32 i) const { return paneRowIn(paneLeft(), i); }
+    u32 paneRowsVisible() const { return paneRowsVisibleIn(paneLeft()); }
 
     /// Главное действие экрана — внизу правой панели.
     Rect primaryActionIn(const Rect& pane) const {
@@ -979,23 +986,52 @@ public:
     //
     // Разговор идёт В мире, поэтому панель не занимает экран целиком:
     // собеседника должно быть видно.
-    Rect dialoguePanel() const {
+    //
+    // Высота — по содержимому, а не постоянная доля экрана. Доля была
+    // 45 %, и у старосты с заданием из четырёх ответов на телефоне
+    // помещались два: «до свидания» уходило за край панели, и выйти
+    // из разговора было нечем. Теперь панель растёт под реплику и
+    // ответы — до места под столбцом ресурсов, — а ответы, которым и
+    // так тесно, встают в две-три колонки.
+    Rect dialoguePanelFor(f32 contentH) const {
         const f32 pad = dp(theme::SPACE_XL_DP);
-        const f32 hgt = (bottom() - top()) * DIALOGUE_H_FRAC;
-        return { left() + pad, bottom() - pad - hgt,
+        const f32 floorY = bottom() - pad;
+        f32 topY = top() + pad;
+        if (hudBehind_) {
+            const Rect c = hudLeftColumn();
+            topY = std::max(topY, c.y + c.h + pad);
+        }
+        const f32 maxH = std::max(0.f, floorY - topY);
+        const f32 minH = std::min(maxH, (bottom() - top()) * DIALOGUE_MIN_FRAC);
+        const f32 hgt = std::clamp(contentH, minH, maxH);
+        return { left() + pad, floorY - hgt,
                  (right() - left()) - pad * 2.f, hgt };
     }
+    /// Выше этого панель не бывает: вся высота под столбцом ресурсов.
+    f32 dialoguePanelMaxH() const { return dialoguePanelFor(1e9f).h; }
 
-    /// Вариант ответа. y — где кончился текст реплики.
-    Rect dialogueChoice(f32 y, u32 i) const {
-        const Rect p = dialoguePanel();
+    /// Вариант ответа i в панели p. Ряды начинаются с y, ответы идут
+    /// по строкам слева направо в cols колонок.
+    Rect dialogueChoice(const Rect& p, f32 y, u32 i, u32 cols) const {
         const f32 pad = dp(theme::PANEL_PAD_DP);
         const f32 h = dp(theme::TOUCH_REGULAR_DP);
-        return { p.x + pad, y + (f32)i * (h + dp(theme::SPACE_S_DP)),
-                 p.w - pad * 2.f, h };
+        const f32 g = dp(theme::SPACE_S_DP);
+        const u32 c = cols ? cols : 1u;
+        const f32 w = (p.w - pad * 2.f - g * (f32)(c - 1)) / (f32)c;
+        return { p.x + pad + (f32)(i % c) * (w + g),
+                 y + (f32)(i / c) * (h + g), w, h };
+    }
+    /// Сколько места займут n ответов в cols колонок.
+    f32 dialogueChoicesH(u32 n, u32 cols) const {
+        if (n == 0) return 0.f;
+        const u32 c = cols ? cols : 1u;
+        const u32 rows = (n + c - 1) / c;
+        return (f32)rows * dp(theme::TOUCH_REGULAR_DP)
+             + (f32)(rows - 1) * dp(theme::SPACE_S_DP);
     }
 
-    static constexpr f32 DIALOGUE_H_FRAC = 0.45f;
+    static constexpr f32 DIALOGUE_MIN_FRAC = 0.30f;
+    static constexpr u32 DIALOGUE_MAX_COLS = 3;
 
     /// Окно подтверждения: по центру, не шире семидесяти процентов.
     Rect confirmPanel() const {
