@@ -6,34 +6,44 @@
 #include "../items/throwable.h"
 #include "../items/item_pickup.h"
 #include "../items/item_def.h"
+#include "../items/item_models.h"
 #include "../ecs/components.h"
 #include "../core/orientation.h"
 #include "../core/log.h"
 #include <cstring>
 #include <cmath>
+#include <vector>
 
 namespace render {
 
 // Вершинный формат и геометрия куба — общие для всех рендеров
 // MobInstance, см. MOB_ATTRS в mob_renderer.h.
 
-namespace {
-
-
-// Цвет по редкости предмета
-u32 colorForItem(u16 itemId) {
-    const auto& def = items::items().get(itemId);
-    switch (def.rarity) {
-        case items::ItemRarity::Common:    return 0xCCCCCCFF;
-        case items::ItemRarity::Uncommon:  return 0x60D060FF;
-        case items::ItemRarity::Rare:      return 0x4090FFFF;
-        case items::ItemRarity::Epic:      return 0xB060FFFF;
-        case items::ItemRarity::Legendary: return 0xFFB040FF;
-        default:                           return 0xFFFFFFFF;
+ModelPose pickupPose(const items::ItemPickup& p, const glm::vec3& at, f32 modelHeight) {
+    // Поворот по месту: соседние предметы лежат вразнобой, а один и
+    // тот же — всегда одинаково, кадр за кадром.
+    const f32 yaw = at.x * 1.7f + at.z * 2.3f;
+    ModelPose pose;
+    if (p.onGround) {
+        pose.rot = orient::yawQuat(yaw);
+        // На волосок над землёй: иначе нижняя грань спорит с верхом
+        // блока за один и тот же пиксель.
+        pose.pos = at + glm::vec3(0.f, 0.004f, 0.f);
+        return pose;
     }
+    // В полёте кувыркается — вокруг своей середины, а не вокруг
+    // точки, на которой лежал бы.
+    const f32 angle = p.lifeRemaining * 7.f;
+    pose.rot = orient::qmul(orient::yawQuat(yaw),
+                            orient::axisQuat(glm::vec3(1.f, 0.35f, 0.6f), angle));
+    const glm::vec3 mid{ 0.f, modelHeight * 0.5f, 0.f };
+    pose.pos = at + mid - orient::qrot(pose.rot, mid);
+    return pose;
 }
 
-} // namespace
+u32 pickupCopies(u16 count) {
+    return count >= 16 ? 3u : (count >= 2 ? 2u : 1u);
+}
 
 bool ItemRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLayout descLayout) {
     dev_ = ctx.device();
@@ -85,12 +95,26 @@ bool ItemRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLay
     if (!pipeline_.create(dev_, shaders_, d)) return false;
 
     cpu_.reserve(256);
+
+    // Модели всех предметов — один раз, одним буфером. Номер модели —
+    // номер предмета; у пустых номеров меш пустой, и рисовать их нечем.
+    if (!models_.init(ctx, mgr, descLayout)) return false;
+    std::vector<VoxelMesh> meshes(items::ITEM_COUNT);
+    modelHeight_.assign(items::ITEM_COUNT, 0.f);
+    for (u16 id = 1; id < items::ITEM_COUNT; ++id) {
+        if (!items::items().get(id).name) continue;
+        meshes[id] = meshVoxelModel(items::itemModel(id));
+        modelHeight_[id] = meshes[id].boundsMax.y - meshes[id].boundsMin.y;
+    }
+    if (!models_.setModels(ctx, meshes)) return false;
+
     LOGI("ItemRenderer готов");
     return true;
 }
 
 void ItemRenderer::rebuild(ecs::Registry& reg) {
     cpu_.clear();
+    models_.begin();
 
     auto& pool = reg.pool<items::ItemPickup>();
     for (usize i = 0; i < pool.size(); ++i) {
@@ -99,31 +123,26 @@ void ItemRenderer::rebuild(ecs::Registry& reg) {
         auto* tf = reg.get<ecs::Transform>(e);
         if (!p || !tf) continue;
         if (p->stack.empty()) continue;
+        const u16 id = p->stack.itemId;
+        if (id >= modelHeight_.size()) continue;
 
-        // Мигание при исчезновении
-        f32 alpha = 1.f;
-        if (p->lifeRemaining < 5.f) {
-            f32 blink = std::sin(p->blinkTimer * 3.14159f);
-            if (blink < 0.f) alpha = 0.2f;
+        // Перед тем как истлеть, предмет мигает. Модели рисуются без
+        // смешивания, так что мигание — это кадры, в которые его нет.
+        if (p->lifeRemaining < 5.f && std::sin(p->blinkTimer * 3.14159f) < 0.f) continue;
+
+        const ModelPose pose = pickupPose(*p, tf->position, modelHeight_[id]);
+        models_.add(id, pose.pos, pose.rot, 1.f, 0xFFFFFFFFu);
+
+        // Стопка — горкой: ещё одна-две модели рядом, со своим
+        // поворотом, чуть выше.
+        const u32 copies = pickupCopies(p->stack.count);
+        for (u32 k = 1; k < copies; ++k) {
+            const glm::vec4 turn = orient::yawQuat(0.9f * (f32)k);
+            const glm::vec4 rot = orient::qmul(pose.rot, turn);
+            const glm::vec3 off = orient::qrot(pose.rot,
+                glm::vec3(0.07f * (f32)k, 0.012f * (f32)k, -0.05f * (f32)k));
+            models_.add(id, pose.pos + off, rot, 1.f, 0xFFFFFFFFu);
         }
-
-        u32 c = colorForItem(p->stack.itemId);
-        if (alpha < 1.f) {
-            u8 a = (u8)(((c      ) & 0xFF) * alpha);
-            c = (c & 0xFFFFFF00u) | a;
-        }
-
-        // Покачивание в воздухе
-        f32 bob = std::sin(tf->position.x * 3.0f + tf->position.z * 2.0f +
-                           p->lifeRemaining * 0.5f) * 0.08f;
-
-        MobInstance inst{};
-        inst.pos   = tf->position + glm::vec3(0, 0.25f + bob, 0);
-        inst.size  = glm::vec3(0.35f);
-        inst.colorGpu = packInstanceColor(c);
-        inst.rot = orient::yawQuat(tf->position.x * 0.3f + tf->position.z * 0.4f);
-
-        cpu_.push_back(inst);
     }
 
     // ---- Брошенные батуты ----
@@ -161,7 +180,7 @@ void ItemRenderer::rebuild(ecs::Registry& reg) {
 }
 
 void ItemRenderer::upload(vk::Context& ctx) {
-    (void)ctx;
+    models_.upload(ctx);
     instanceCount_ = (u32)cpu_.size();
     if (instanceCount_ == 0) return;
     // Пишем прямо в память, видимую процессору: ни временного буфера,
@@ -172,6 +191,7 @@ void ItemRenderer::upload(vk::Context& ctx) {
 }
 
 void ItemRenderer::render(vk::Context& ctx, VkDescriptorSet set) {
+    models_.render(ctx, set);
     if (instanceCount_ == 0 || !instances_.handle() || !pipeline_.valid()) return;
     VkCommandBuffer cmd = ctx.currentCmd();
 
@@ -188,6 +208,7 @@ void ItemRenderer::render(vk::Context& ctx, VkDescriptorSet set) {
 }
 
 void ItemRenderer::destroy() {
+    models_.destroy();
     vbo_.destroy();
     ibo_.destroy();
     instances_.destroy();

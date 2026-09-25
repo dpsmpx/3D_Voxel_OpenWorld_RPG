@@ -3,6 +3,7 @@
  * @brief Интерфейс: immediate-mode UI поверх Vulkan, HUD, меню.
  */
 #include "ui_context.h"
+#include "ui_atlas.h"
 #include "font_data.h"
 #include "../core/log.h"
 #include <cmath>
@@ -65,6 +66,16 @@ void UiContext::rect(float x, float y, float w, float h, UiColor c) {
     r_->pushQuad({ nx, ny }, { nw, nh }, -1.f, -1.f, -1.f, -1.f, c);
 }
 
+bool UiContext::itemIcon(u16 itemId, float x, float y, float size, UiColor c) {
+    float uv[4];
+    if (!itemIconUv(itemId, uv)) return false;
+    if (!r_) return true;
+    r_->pushQuad({ toNdcX(x, screenW_), toNdcY(y, screenH_) },
+                 { toNdcW(size, screenW_), toNdcH(size, screenH_) },
+                 uv[0], uv[1], uv[2], uv[3], c);
+    return true;
+}
+
 void UiContext::imageQuad(float x, float y, float w, float h, UiColor c) {
     if (!r_) return;
     r_->pushImageQuad({ toNdcX(x, screenW_), toNdcY(y, screenH_) },
@@ -106,10 +117,11 @@ void UiContext::text(const std::string& s, float x, float y, float scale, UiColo
         if (idx < 0) idx = (int)' ' - FONT_FIRST;   // нечем рисовать
 
         int col = idx % 16, row = idx / 16;
-        float u0 = (float)(col * 6)      / 128.f;
-        float v0 = (float)(row * 8)      /  64.f;
-        float u1 = (float)(col * 6 + 5)  / 128.f;
-        float v1 = (float)(row * 8 + 7)  /  64.f;
+        const float aw = (float)UI_ATLAS_W, ah = (float)UI_ATLAS_H;
+        float u0 = (float)(col * 6)      / aw;
+        float v0 = (float)(row * 8)      / ah;
+        float u1 = (float)(col * 6 + 5)  / aw;
+        float v1 = (float)(row * 8 + 7)  / ah;
 
         float nx = toNdcX(cx, screenW_);
         float ny = toNdcY(y,  screenH_);

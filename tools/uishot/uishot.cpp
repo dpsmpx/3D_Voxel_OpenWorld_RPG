@@ -169,6 +169,7 @@ struct Opts {
     ui::Screen screen = ui::Screen::Hud;
     int questCount = 1;          ///< сколько заданий положить в журнал
     int hurts = 0;               ///< сколько отметок урона показать
+    bool items = false;           ///< сумка с одним предметом каждого вида
     bool target = false;          ///< показать полосу цели
     f32  targetFill = 0.42f;
     f32  targetGhost = 0.63f;
@@ -214,6 +215,7 @@ int main(int argc, char** argv) {
             else { std::printf("uishot: неизвестный экран «%s»\n", v.c_str()); return 1; }
         }
         else if (k == "--target") o.target = true;
+        else if (k == "--items")  o.items = true;
         else if (k == "--fill")   o.targetFill = (f32)std::atof(next());
         else if (k == "--ghost")  o.targetGhost = (f32)std::atof(next());
         else if (k == "--phases") o.targetPhases = (u8)std::atoi(next());
@@ -283,6 +285,19 @@ int main(int argc, char** argv) {
         if (auto* log = pl.questLog()) log->addActive(qe);
       }
       sys.selectedQuest = 0;
+    }
+
+    // Сумка с вещами: значки видны только на заполненной. По одному
+    // каждого вида, расходное — стопкой, чтобы было видно и число.
+    if (o.items) {
+        if (auto* inv = pl.inventory()) {
+            inv->clearAll();
+            for (u16 id = 1; id < items::ITEM_COUNT; ++id) {
+                const auto& d = items::items().get(id);
+                if (!d.name) continue;
+                inv->addItem(id, d.maxStack > 1 ? (u16)std::min<u32>(d.maxStack, 12u) : (u16)1);
+            }
+        }
     }
 
     if (o.target) {

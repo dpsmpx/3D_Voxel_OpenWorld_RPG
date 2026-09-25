@@ -247,7 +247,7 @@ void RenderSystem::render(vk::Context& ctx) {
             (npcRenderer_.instanceCount()  ? 1u : 0u) +
             (mobRenderer_.instanceCount()  ? 1u : 0u) +
             (projRenderer_.instanceCount() ? 1u : 0u) +
-            (itemRenderer_.instanceCount() ? 1u : 0u);
+            itemRenderer_.drawCount();
     }
     ctx.markPass(Pass::Entities);
 

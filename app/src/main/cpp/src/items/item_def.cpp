@@ -202,7 +202,7 @@ ItemRegistry::ItemRegistry() {
     // Надевается как оружие, потому что держат заклинание в той же
     // руке и бьют той же кнопкой.
     auto runeItem = [&](u16 id, u16 weaponId, const char* name,
-                        ItemRarity rarity, u32 tint)
+                        ItemRarity rarity)
     {
         ItemDef d{};
         d.name = name;
@@ -215,13 +215,12 @@ ItemRegistry::ItemRegistry() {
         d.iconTile = 0;
         d.iconIsBlock = false;
         d.bound = true;
-        d.iconTint = tint;
         reg(id, d);
     };
     runeItem(ITEM_RUNE_ICE_NEEDLES, combat::WEAPON_ICE_NEEDLES, "Ice Needles Rune",
-             ItemRarity::Rare, 0xBFE8FFFFu);
+             ItemRarity::Rare);
     runeItem(ITEM_RUNE_FLAME, combat::WEAPON_FLAME, "Flame Rune",
-             ItemRarity::Epic, 0xFF7A20FFu);
+             ItemRarity::Epic);
 
     // ============ Зелья ============
     potionItem(ITEM_POTION_HEALTH_SMALL, "Health Potion",        25,  40.f, 0.f,   0.f, 0.f, ItemRarity::Common,   30);

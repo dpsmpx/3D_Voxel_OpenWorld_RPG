@@ -24,6 +24,11 @@
 #include "combat/spells.h"
 #include "world/fire.h"
 #include "physics/impact.h"
+#include "items/item_models.h"
+#include "render/voxel_model.h"
+#include "render/voxel_model_renderer.h"
+#include "render/item_renderer.h"
+#include "ui/ui_atlas.h"
 #include "trade/trade.h"
 #include "ecs/components.h"
 #include "npc/dialogue.h"
@@ -2230,7 +2235,7 @@ void testWorldSharesOneLightingModel() {
     const char* files[] = {
         "voxel.vert", "voxel.frag", "sky.frag",
         "mob.vert", "mob.frag", "projectile.vert", "projectile.frag",
-        "outline.vert",
+        "outline.vert", "voxmodel.vert",
     };
     std::string reference;
     const char* referenceName = nullptr;
@@ -4387,7 +4392,7 @@ std::vector<std::pair<std::string, std::string>> allShaders() {
         "voxel.vert", "voxel.frag", "sky.vert", "sky.frag",
         "mob.vert", "mob.frag",
         "outline.vert", "outline.frag", "projectile.vert", "projectile.frag",
-        "ui.vert", "ui.frag",
+        "ui.vert", "ui.frag", "voxmodel.vert",
     };
     std::vector<std::pair<std::string, std::string>> out;
     for (const char* n : names) {
@@ -9635,7 +9640,8 @@ void testEntityFacingHasNoSidewaysMotion() {
         // конкретные символы: подмена qrot матрицей другой ручности
         // численную проверку выше обошла бы стороной.
         for (const char* n : { "app/src/main/cpp/shaders/mob.vert",
-                               "app/src/main/cpp/shaders/projectile.vert" }) {
+                               "app/src/main/cpp/shaders/projectile.vert",
+                               "app/src/main/cpp/shaders/voxmodel.vert" }) {
             const std::string vs = readSource(n);
             if (vs.empty()) continue;
             const bool ok =
@@ -14712,6 +14718,240 @@ void testSecretTreasureAndItsQuest() {
     }
 
     jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+// Предметы — воксельные модели: на земле и на значке.
+//
+// Выпавший меч рисовался цветным кубиком, а значок в сумке был
+// квадратом цвета редкости: по нему нельзя было отличить меч от
+// топора и зелье здоровья от зелья маны. Теперь у каждого предмета
+// модель из мелких вокселей: на земле она рисуется своим мешем, а
+// значок — это та же модель, отрисованная на прозрачном фоне.
+// ------------------------------------------------------------
+void testItemVoxelModels() {
+    group("предметы: воксельные модели и значки");
+
+    world::blocks();
+    items::items();
+    char m[220];
+
+    std::vector<u16> ids;
+    for (u16 id = 1; id < items::ITEM_COUNT; ++id)
+        if (items::items().get(id).name) ids.push_back(id);
+
+    // ---- 1. У каждого предмета своя модель ----
+    {
+        u32 missing = 0, tooBig = 0, empty = 0;
+        const char* firstBad = nullptr;
+        for (u16 id : ids) {
+            const render::VoxelModel& md = items::itemModel(id);
+            if (!items::hasOwnModel(id)) { ++missing; if (!firstBad) firstBad = items::items().get(id).name; }
+            if (md.solidCount() == 0) ++empty;
+            const i32 longest = std::max({ md.sx, md.sy, md.sz });
+            const f32 world = (f32)longest * md.voxelSize;
+            if (longest > 16 || world > 0.6f || world < 0.1f) ++tooBig;
+        }
+        std::snprintf(m, sizeof(m), "своя модель у всех %zu предметов%s%s", ids.size(),
+                      firstBad ? ", а нет у: " : "", firstBad ? firstBad : "");
+        check(missing == 0, m);
+        check(empty == 0, "и ни одна не пуста");
+        check(tooBig == 0, "размером с ладонь: до шестнадцати вокселей, 0.1..0.6 блока");
+    }
+
+    // ---- 2. Меш: только видимые грани, слитые, наружу ----
+    {
+        render::VoxelModel cube;
+        cube.resize(2, 2, 2);
+        for (u32& c : cube.cells) c = 0x808080FFu;
+        const render::VoxelMesh mc = render::meshVoxelModel(cube);
+        check(mc.quadCount() == 6, "кубик 2×2×2 одного цвета — шесть граней, по одной на сторону");
+
+        render::VoxelModel two;
+        two.resize(2, 1, 1);
+        two.set(0, 0, 0, 0xFF0000FFu);
+        two.set(1, 0, 0, 0x00FF00FFu);
+        const render::VoxelMesh mt = render::meshVoxelModel(two);
+        check(mt.quadCount() == 10, "разные цвета не сливаются, а грань между ними не строится");
+        check(std::fabs(mc.boundsMin.y) < 1e-6f &&
+              std::fabs(mc.boundsMin.x + mc.boundsMax.x) < 1e-6f,
+              "модель стоит на нуле и отцентрована");
+
+        u32 inward = 0, open = 0, tris = 0;
+        for (u16 id : ids) {
+            const render::VoxelMesh mesh = render::meshVoxelModel(items::itemModel(id));
+            glm::vec3 signedArea{ 0.f };
+            for (usize t = 0; t + 2 < mesh.indices.size(); t += 3) {
+                const auto& a = mesh.vertices[mesh.indices[t]];
+                const auto& b = mesh.vertices[mesh.indices[t + 1]];
+                const auto& c = mesh.vertices[mesh.indices[t + 2]];
+                const glm::vec3 n = glm::cross(b.pos - a.pos, c.pos - a.pos);
+                if (glm::dot(n, a.normal) <= 0.f) ++inward;
+                signedArea += n;
+                ++tris;
+            }
+            // Замкнутая поверхность: площади граней по каждой оси в
+            // сумме со знаком дают ноль — дыр нет.
+            if (glm::length(signedArea) > 1e-4f) ++open;
+        }
+        std::snprintf(m, sizeof(m), "треугольников во всех моделях %u, вывернутых %u", tris, inward);
+        check(inward == 0, m);
+        check(open == 0, "поверхность каждой модели замкнута");
+    }
+
+    // ---- 3. Значок: модель на прозрачном фоне ----
+    {
+        constexpr u32 S = ui::ICON_SIZE;
+        std::vector<u8> px(S * S * 4);
+        std::vector<u64> hashes;
+        u32 dirtyCorners = 0, thin = 0, small = 0, noOutline = 0;
+        for (u16 id : ids) {
+            render::renderVoxelIcon(items::itemModel(id), S, px.data(), S * 4);
+            auto alpha = [&](u32 x, u32 y) { return px[(y * S + x) * 4 + 3]; };
+            if (alpha(0, 0) || alpha(S - 1, 0) || alpha(0, S - 1) || alpha(S - 1, S - 1))
+                ++dirtyCorners;
+            u32 opaque = 0, dark = 0;
+            u32 x0 = S, x1 = 0, y0 = S, y1 = 0;
+            u64 h = 1469598103934665603ull;
+            for (u32 y = 0; y < S; ++y)
+                for (u32 x = 0; x < S; ++x) {
+                    const u8* p = &px[(y * S + x) * 4];
+                    for (int k = 0; k < 4; ++k) h = (h ^ p[k]) * 1099511628211ull;
+                    if (p[3] < 128) continue;
+                    ++opaque;
+                    if (p[0] < 40 && p[1] < 40 && p[2] < 40) ++dark;
+                    x0 = std::min(x0, x); x1 = std::max(x1, x);
+                    y0 = std::min(y0, y); y1 = std::max(y1, y);
+                }
+            hashes.push_back(h);
+            if (opaque < S * S / 12) ++thin;
+            if (opaque == 0 || std::max(x1 - x0, y1 - y0) < S * 7 / 10) ++small;
+            if (dark == 0) ++noOutline;
+        }
+        check(dirtyCorners == 0, "фон значка прозрачный");
+        check(thin == 0, "модель занимает значок, а не теряется в нём");
+        check(small == 0, "и растянута почти во всю клетку");
+        check(noOutline == 0, "у каждого значка тёмный контур по силуэту");
+        std::sort(hashes.begin(), hashes.end());
+        check(std::adjacent_find(hashes.begin(), hashes.end()) == hashes.end(),
+              "двух одинаковых значков нет: зелье здоровья не спутать с зельем маны");
+    }
+
+    // ---- 4. Атлас интерфейса: шрифт на месте, значки в своих клетках ----
+    {
+        const ui::UiAtlasData a = ui::buildUiAtlas();
+        check(a.width == ui::UI_ATLAS_W && a.height == ui::UI_ATLAS_H,
+              "атлас объявленного размера");
+        check(ids.size() <= ui::ICON_CAPACITY, "значкам хватает места в атласе");
+
+        std::vector<i32> slots;
+        u32 empty = 0, outOfRegion = 0;
+        for (u16 id : ids) {
+            const i32 slot = ui::itemIconSlot(id);
+            slots.push_back(slot);
+            float uv[4];
+            if (!ui::itemIconUv(id, uv)) { ++empty; continue; }
+            if (uv[1] * (f32)a.height < (f32)ui::FONT_REGION_H - 0.01f || uv[3] > 1.f) ++outOfRegion;
+            // В клетке значка есть непрозрачное.
+            const u32 cx = (u32)(((uv[0] + uv[2]) * 0.5f) * (f32)a.width);
+            u32 opaque = 0;
+            const u32 top = (u32)(uv[1] * (f32)a.height);
+            for (u32 y = top; y < top + ui::ICON_SIZE; ++y)
+                opaque += a.pixels[((usize)y * a.width + cx) * 4 + 3] > 0 ? 1u : 0u;
+            if (opaque == 0) ++empty;
+        }
+        std::sort(slots.begin(), slots.end());
+        check(slots.front() >= 0 && std::adjacent_find(slots.begin(), slots.end()) == slots.end(),
+              "у каждого предмета своя клетка");
+        check(empty == 0, "и в ней нарисован значок");
+        check(outOfRegion == 0, "значки не залезают на шрифт");
+        check(ui::itemIconSlot(0) < 0, "у пустого номера значка нет");
+
+        // Шрифт не тронут: белый пиксель заливки и буква «A» на месте.
+        const u32 wx = (u32)(a.whiteU * (f32)a.width), wy = (u32)(a.whiteV * (f32)a.height);
+        check(a.pixels[((usize)wy * a.width + wx) * 4 + 3] == 255, "белый пиксель заливки цел");
+        float g[4];
+        a.glyphUv('A', g);
+        u32 lit = 0;
+        for (u32 y = (u32)(g[1] * (f32)a.height); y < (u32)(g[3] * (f32)a.height); ++y)
+            for (u32 x = (u32)(g[0] * (f32)a.width); x < (u32)(g[2] * (f32)a.width); ++x)
+                lit += a.pixels[((usize)y * a.width + x) * 4 + 3] ? 1u : 0u;
+        check(lit > 5, "и буквы читаются из того же атласа");
+    }
+
+    // ---- 5. Значок доходит до кадра ----
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+        const config::Settings saved = config::settingsConst();
+        config::settings() = config::Settings{};
+        if (auto* inv = pl.inventory()) {
+            inv->clearAll();
+            inv->hotbarSlot(0) = items::ItemStack{ items::ITEM_POTION_MANA_SMALL, 1, {} };
+        }
+        ui::UiSystem sys;
+        sys.setDensityDpi(320);
+        sys.setScreenSize(1280, 720);
+        sys.screen = ui::Screen::Hud;
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, wd, 60.f);
+        float uv[4];
+        ui::itemIconUv(items::ITEM_POTION_MANA_SMALL, uv);
+        u32 hits = 0;
+        for (const ui::UiVertex& v : sys.frameVertices())
+            if (std::fabs(v.uv.x - uv[0]) < 1e-6f || std::fabs(v.uv.x - uv[2]) < 1e-6f)
+                if (v.uv.y >= uv[1] - 1e-6f && v.uv.y <= uv[3] + 1e-6f) ++hits;
+        check(hits >= 6, "значок зелья в поясе рисуется из атласа");
+        config::settings() = saved;
+    }
+
+    // ---- 6. Рендер моделей: по вызову на модель ----
+    {
+        std::vector<std::pair<u32, render::VoxelModelInstance>> pend;
+        const u32 order[] = { 3, 1, 3, 2, 1 };
+        for (u32 k = 0; k < 5; ++k) {
+            render::VoxelModelInstance inst{};
+            inst.pos = glm::vec3((f32)k, 0.f, 0.f);
+            pend.push_back({ order[k], inst });
+        }
+        std::vector<render::VoxelModelInstance> sorted;
+        std::vector<render::VoxelModelRenderer::Draw> draws;
+        render::VoxelModelRenderer::batch(pend, sorted, draws);
+        check(draws.size() == 3, "пять экземпляров трёх моделей — три вызова");
+        bool ok = sorted.size() == 5;
+        u32 next = 0;
+        for (const auto& d : draws) {
+            ok &= d.firstInstance == next;
+            for (u32 i = 0; i < d.count; ++i)
+                ok &= order[(u32)sorted[d.firstInstance + i].pos.x] == d.model;
+            next += d.count;
+        }
+        check(ok, "экземпляры каждого вызова — его модели, подряд");
+    }
+
+    // ---- 7. Как лежит выпавшее ----
+    {
+        items::ItemPickup p{};
+        p.onGround = true;
+        const glm::vec3 at{ 10.3f, 40.f, -7.6f };
+        const render::ModelPose g = render::pickupPose(p, at, 0.1f);
+        check(std::fabs(g.rot.x) < 1e-6f && std::fabs(g.rot.z) < 1e-6f,
+              "на земле лежит плашмя: поворот только вокруг вертикали");
+        check(g.pos.y >= at.y && g.pos.y < at.y + 0.02f, "и на самой земле");
+        const render::ModelPose g2 = render::pickupPose(p, at, 0.1f);
+        check(g2.rot == g.rot, "и не вертится от кадра к кадру");
+
+        p.onGround = false;
+        p.lifeRemaining = 123.4f;
+        const render::ModelPose f = render::pickupPose(p, at, 0.2f);
+        const glm::vec3 mid{ 0.f, 0.1f, 0.f };
+        check(glm::length(f.pos + orient::qrot(f.rot, mid) - (at + mid)) < 1e-4f,
+              "в полёте кувыркается вокруг своей середины");
+        check(render::pickupCopies(1) == 1 && render::pickupCopies(2) == 2 &&
+              render::pickupCopies(40) == 3, "стопка лежит горкой из двух-трёх моделей");
+    }
 }
 
 // ------------------------------------------------------------
@@ -26948,6 +27188,7 @@ int main() {
     testContinueLastWorldAndFilePicker();
     testFallsTrapsAndAmbushes();
     testSoftLandings();
+    testItemVoxelModels();
     testSecretTreasureAndItsQuest();
     testStoryChainRunsInOrder();
     testQuestTemplatesHaveOneShape();
