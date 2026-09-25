@@ -3906,6 +3906,10 @@ void testFrameGpuBreakdown() {
             const std::string tw = mainSrc.substr(term, 3000);
             check(tw.find("copyFileToClipboard") != NONE,
                   "на выходе журнал копируется в буфер обмена");
+            const usize cp = tw.find("copyFileToClipboard");
+            const usize guard = tw.rfind("crash::enabled()", cp);
+            check(guard != NONE && cp - guard < 200,
+                  "но только если журнал ведётся на момент выхода");
         }
     }
     // Пока идёт развёртка, маску задаёт она, а не настройка: два
@@ -11735,6 +11739,160 @@ void testEveryButtonHasAnAction() {
     std::snprintf(m, sizeof(m), "без действия зарегистрированы:%s",
                   dead ? deadNames.c_str() : " нет");
     check(dead == 0, m);
+}
+
+// ------------------------------------------------------------
+// Пояс быстрых слотов работает прямо в игре.
+//
+// С того дня, как пояс появился на HUD, касание ячейки не делало
+// ничего: ячейки рисовались, но касаний не ловили. Палец проваливался
+// в игровой ввод, и на левой половине экрана под ним появлялся
+// джойстик — кольцом поверх тех самых ячеек.
+// ------------------------------------------------------------
+void testHotbarInGame() {
+    group("пояс: быстрые слоты работают прямо в игре");
+
+    world::blocks();
+    items::items();
+    char m[200];
+
+    constexpr i32 W = 2400, H = 1080;
+    const config::Settings saved = config::settingsConst();
+    config::settings() = config::Settings{};
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+    world::ChunkManager wd(0x5150Bull, 1);
+    auto* inv = pl.inventory();
+    check(inv != nullptr, "сумка есть");
+    if (!inv) { config::settings() = saved; return; }
+    inv->clearAll();
+    inv->hotbarSlot(0) = items::ItemStack{ items::ITEM_STONE, 10, {} };
+    inv->hotbarSlot(1) = items::ItemStack{ items::ITEM_BREAD, 3, {} };
+    inv->hotbarSlot(2) = items::ItemStack{ items::ITEM_IRON_AXE, 1, {} };
+
+    ui::UiSystem sys;
+    sys.setDensityDpi(420);
+    sys.setScreenSize(W, H);
+    sys.screen = ui::Screen::Hud;
+    std::vector<u32> taps;
+    sys.onHotbarTap = [&](u32 i) { taps.push_back(i); };
+    sys.tickUi(1.f / 60.f);
+    sys.buildFrame(pl, wd, 60.f);
+
+    input::TouchInput t;
+    t.setViewport(W, H);
+    t.setJoystickLeftHanded(true);
+    t.setUiRouter([&](i32 id, float x, float y, int ph) { return sys.routeTouch(id, x, y, ph); });
+    const ui::Rect hb = sys.hotbarArea();
+    t.setJoystickKeepOut(hb.x, hb.y, hb.w, hb.h);
+    check(hb.w > 0.f && hb.h > 0.f, "пояс на экране");
+
+    auto down = [&](i32 id, i32 idx, f32 x, f32 y, f32 at) {
+        const i32 act = idx == 0 ? AMOTION_EVENT_ACTION_DOWN
+            : (AMOTION_EVENT_ACTION_POINTER_DOWN | (idx << AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT));
+        t.onTouch(act, idx, id, x, y, at);
+    };
+    auto up = [&](i32 id, i32 idx, f32 x, f32 y, f32 at) {
+        const i32 act = idx == 0 ? AMOTION_EVENT_ACTION_UP
+            : (AMOTION_EVENT_ACTION_POINTER_UP | (idx << AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT));
+        t.onTouch(act, idx, id, x, y, at);
+    };
+    auto move = [&](i32 id, f32 x, f32 y, f32 at) {
+        t.onTouch(AMOTION_EVENT_ACTION_MOVE, 0, id, x, y, at);
+    };
+
+    // ---- 1. Касание ячейки — это ячейка, а не джойстик ----
+    const u32 shown = sys.layout().hotbarVisibleSlots();
+    u32 onJoyHalf = 0, joyAppeared = 0;
+    for (u32 i = 0; i < shown; ++i) {
+        const ui::Rect r = sys.layout().hotbarSlot(i);
+        const f32 cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
+        if (cx < (f32)W * 0.5f) ++onJoyHalf;
+        down(1, 0, cx, cy, (f32)i);
+        if (t.joystick().active) ++joyAppeared;
+        up(1, 0, cx, cy, (f32)i + 0.05f);
+    }
+    bool order = taps.size() == shown;
+    for (u32 i = 0; i < taps.size() && order; ++i) order = taps[i] == i;
+    std::snprintf(m, sizeof(m), "каждая из %u ячеек ловит своё касание", shown);
+    check(order, m);
+    check(onJoyHalf > 0, "и ячейки на половине джойстика — тоже");
+    check(joyAppeared == 0, "джойстик под пальцем на ячейке не появляется");
+
+    // ---- 2. Идти и переключать пояс одновременно ----
+    {
+        taps.clear();
+        down(1, 0, 300.f, 300.f, 10.f);
+        move(1, 300.f, 150.f, 10.1f);
+        const glm::vec2 walk = t.moveAxis();
+        const ui::Rect r = sys.layout().hotbarSlot(1);
+        down(2, 1, r.x + r.w * 0.5f, r.y + r.h * 0.5f, 10.2f);
+        up(2, 1, r.x + r.w * 0.5f, r.y + r.h * 0.5f, 10.25f);
+        check(walk.y > 0.5f, "игрок идёт");
+        check(taps.size() == 1 && taps[0] == 1, "второй палец переключил ячейку");
+        check(t.joystick().active && t.joystick().touchId == 1 &&
+              glm::length(t.moveAxis() - walk) < 1e-4f,
+              "а ходьба не прервалась ни на кадр");
+        up(1, 0, 300.f, 150.f, 10.3f);
+    }
+
+    // ---- 3. Кольцо джойстика не наплывает на пояс ----
+    {
+        const f32 R = t.joystick().radius;
+        // Над поясом, но выше полосы, которую ячейки ловят сами.
+        const glm::vec2 near{ hb.x + 10.f, hb.y - sys.layout().hotbarGap() - 10.f };
+        down(1, 0, near.x, near.y, 20.f);
+        const auto& j = t.joystick();
+        const bool overlaps = j.center.x + R > hb.x && j.center.x - R < hb.x + hb.w &&
+                              j.center.y + R > hb.y && j.center.y - R < hb.y + hb.h;
+        check(j.active, "рядом с поясом джойстик появляется");
+        check(!overlaps, "но кольцом ячеек не закрывает");
+        check(glm::length(t.moveAxis()) < 1e-4f,
+              "отодвинутое кольцо само по себе игрока не ведёт");
+        move(1, near.x, near.y - R, 20.1f);
+        check(t.moveAxis().y > 0.9f, "а ведение пальца считается от точки касания");
+        up(1, 0, near.x, near.y - R, 20.2f);
+
+        const glm::vec2 far{ 300.f, 300.f };
+        check(t.joystickCenterFor(far) == far, "вдали от пояса — ровно под пальцем");
+    }
+
+    // ---- 4. Что делает касание ячейки ----
+    {
+        inv->activeHotbar = 4;
+        check(pl.tapHotbar(wd, 0) == items::UseResult::Ok && inv->activeHotbar == 0,
+              "блок: ячейка просто выбрана");
+        check(pl.selectedBlock() == world::STONE, "и из неё ставят блоки");
+
+        check(pl.tapHotbar(wd, 2) == items::UseResult::Equipped, "оружие надевается сразу");
+        auto* eq = reg.get<combat::EquippedWeapon>(pl.entity());
+        check(eq && eq->weaponId == combat::WEAPON_IRON_AXE, "в руке топор");
+        check(inv->hotbarSlot(2).itemId == items::ITEM_IRON_SWORD,
+              "а прежний меч лёг в ту же ячейку — повторное касание вернёт его");
+
+        auto* hp = reg.get<ecs::Health>(pl.entity());
+        if (hp) hp->current = hp->max * 0.5f;
+        check(pl.tapHotbar(wd, 1) == items::UseResult::Ok && inv->hotbarSlot(1).count == 3,
+              "еда по первому касанию только выбрана");
+        check(pl.tapHotbar(wd, 1) == items::UseResult::Consumed && inv->hotbarSlot(1).count == 2,
+              "по второму — съедена");
+    }
+
+    // ---- 5. Под меню пояс не ловит касаний ----
+    {
+        sys.screen = ui::Screen::Inventory;
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, wd, 60.f);
+        taps.clear();
+        const ui::Rect r = sys.layout().hotbarSlot(0);
+        sys.routeTouch(7, r.x + r.w * 0.5f, r.y + r.h * 0.5f, 0);
+        sys.routeTouch(7, r.x + r.w * 0.5f, r.y + r.h * 0.5f, 1);
+        check(taps.empty(), "пока открыто меню, пояс за ним не нажимается");
+    }
+
+    config::settings() = saved;
 }
 
 // ------------------------------------------------------------
@@ -26659,7 +26817,30 @@ void testLogCanBeTurnedOff() {
         return readLog().size() > before.size();
     };
 
-    check(crash::enabled(), "по умолчанию журнал ведётся");
+    check(crash::enabled(), "до чтения настроек журнал ведётся — в память");
+
+    // ---- До решения в файл не пишется ничего ----
+    //
+    // Журнал по умолчанию выключен, но о том, что выключен, игра
+    // узнаёт, лишь прочитав настройки. Всё, что случилось раньше,
+    // копится в памяти: файл без спроса появляться не должен.
+    const std::string untouched = readLog();
+    crash::write('I', "проверка: строка до решения");
+    check(readLog() == untouched, "до решения файл не тронут");
+
+    // ---- Решение по умолчанию: выключен ----
+    crash::setEnabled(false);
+    check(!crash::enabled(), "настройка по умолчанию выключает журнал");
+    check(readLog() == untouched,
+          "и накопленное с запуска выброшено, а не записано");
+
+    // ---- Включённый — пишет ----
+    crash::setEnabled(true);
+    check(crash::enabled(), "включается из настроек");
+    check(readLog().find("журнал включён") != std::string::npos,
+          "и отмечает это в файле");
+    check(readLog().find("строка до решения") == std::string::npos,
+          "выброшенное при выключенном журнале назад не вернулось");
 
     // ---- Включённый пишет ----
     {
@@ -26742,13 +26923,25 @@ void testLogCanBeTurnedOff() {
     // ---- Настройка доезжает до файла и обратно ----
     {
         config::Settings s;
-        check(s.logEnabled, "по умолчанию журнал включён и в настройках");
-        s.logEnabled = false;
+        check(!s.logEnabled, "по умолчанию журнал выключен и в настройках");
+        s.logEnabled = true;
         const std::string sp = "build/hostcheck/logsetting.cfg";
         check(s.save(sp), "настройки записаны");
         config::Settings back;
         check(back.load(sp), "настройки прочитаны");
-        check(!back.logEnabled, "выключенный журнал пережил перезапуск");
+        check(back.logEnabled, "включённый журнал пережил перезапуск");
+
+        // Прежний ключ лежит единицей в каждом старом файле лишь
+        // потому, что журнал был включён по умолчанию. Выбором он не
+        // был — и журнал после обновления выключен у всех.
+        const std::string old = "build/hostcheck/logsetting_old.cfg";
+        if (FILE* f = std::fopen(old.c_str(), "w")) {
+            std::fputs("[Game]\nlog_enabled=1\n", f);
+            std::fclose(f);
+        }
+        config::Settings fromOld;
+        fromOld.load(old);
+        check(!fromOld.logEnabled, "старый файл настроек журнал не включает");
     }
 
     // ---- И доезжает до самого выключателя ----
@@ -27217,6 +27410,7 @@ int main() {
     testSettingsButtonsWork();
     testEveryButtonHasAnAction();
     testSprintByDoubleTap();
+    testHotbarInGame();
     testPlayerControls();
     testWalkingNeverTeleports();
     testIsoProjectionIsTrulyIsometric();

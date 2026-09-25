@@ -845,8 +845,23 @@ void UiSystem::drawHotbar(player::Player& player) {
         const Rect r = layout_.hotbarSlot(i);
         const bool isActive = (i == (u32)active);
 
+        // Ячейка — кнопка, но только поверх чистого HUD: под меню пояс
+        // лишь виден. Касание ловится вместе с половиной зазора с
+        // каждой стороны и полоской над ячейкой: палец шире ячейки, и
+        // промах в зазор не должен проваливаться в джойстик.
+        bool pressed = false;
+        if (screen == Screen::Hud) {
+            const f32 g = layout_.hotbarGap();
+            const Rect hit{ r.x - g * 0.5f, r.y - g, r.w + g, r.h + g };
+            const int idx = ui_.pushInteractiveRect(hit, [this, i]() {
+                if (onHotbarTap) onHotbarTap(i);
+            });
+            pressed = ui_.isInteractivePressed(idx);
+        }
+
         ui_.rect(r.x, r.y, r.w, r.h,
-                 hudTint(isActive ? theme::PanelRaised : theme::Panel));
+                 hudTint(pressed ? theme::AccentPressed
+                                 : (isActive ? theme::PanelRaised : theme::Panel)));
         // Выбранная ячейка отличается не только цветом: рамка толще.
         ui_.rectOutline(r.x, r.y, r.w, r.h,
                         layout_.dp(isActive ? theme::STROKE_SELECTED_DP

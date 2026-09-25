@@ -212,6 +212,20 @@ items::UseResult Player::useItem(world::ChunkManager& world, u32 slotIndex) {
     return res;
 }
 
+items::UseResult Player::tapHotbar(world::ChunkManager& world, u8 index) {
+    if (!reg_ || index >= items::INV_HOTBAR_SLOTS) return items::UseResult::Failed;
+    auto* inv = reg_->get<items::Inventory>(entity_);
+    if (!inv) return items::UseResult::Failed;
+    const bool again = inv->activeHotbar == index;
+    setActiveHotbar(index);
+    const u32 slot = items::INV_HOTBAR_OFFSET + index;
+    const auto& st = inv->at(slot);
+    if (st.empty()) return items::UseResult::Ok;
+    const bool weapon = items::items().get(st.itemId).category == items::ItemCategory::Weapon;
+    if (weapon || again) return useItem(world, slot);
+    return items::UseResult::Ok;
+}
+
 bool Player::dropItem(u32 slotIndex) {
     if (!reg_) return false;
     glm::vec3 pos = controller.state().position + glm::vec3(0, 1.2f, 0);

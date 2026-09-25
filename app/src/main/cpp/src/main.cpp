@@ -581,11 +581,11 @@ struct Engine {
             auto res = player->useItem(*world, slotIndex);
             if (res == items::UseResult::Equipped) {
                 audio::events().uiClick();
-                ui->setStatus("Equipped");
+                ui->setStatus(cfg::tr("Equipped"));
             } else if (res == items::UseResult::NoEffect) {
-                ui->notify("No effect", ui::theme::NotifyPriority::Low);
+                ui->notify(cfg::tr("No effect"), ui::theme::NotifyPriority::Low);
             } else if (res == items::UseResult::Consumed) {
-                ui->notify("Consumed", ui::theme::NotifyPriority::Low);
+                ui->notify(cfg::tr("Consumed"), ui::theme::NotifyPriority::Low);
             }
         };
 
@@ -594,6 +594,23 @@ struct Engine {
             u8 i = (u8)(slotIndex - items::INV_HOTBAR_OFFSET);
             player->setActiveHotbar(i);
             audio::events().uiClick();
+        };
+
+        // Пояс прямо в игре, без инвентаря: что делает касание
+        // ячейки, решает Player::tapHotbar; здесь только звук и слово.
+        ui->onHotbarTap = [this](u32 i) {
+            if (!player || !world) return;
+            const auto res = player->tapHotbar(*world, (u8)i);
+            if (res == items::UseResult::Equipped) {
+                audio::events().uiClick();
+                ui->setStatus(cfg::tr("Equipped"));
+            } else if (res == items::UseResult::Consumed) {
+                ui->notify(cfg::tr("Consumed"), ui::theme::NotifyPriority::Low);
+            } else if (res == items::UseResult::NoEffect) {
+                ui->notify(cfg::tr("No effect"), ui::theme::NotifyPriority::Low);
+            } else {
+                audio::events().uiClick();
+            }
         };
 
         // Кнопка «в пояс» звала onMoveItem, а его никто не назначал:
@@ -807,7 +824,11 @@ struct Engine {
         //
         // Сюда приходят оба пути выхода: и закрытие окна системой, и
         // выход из меню игры (wantQuit тоже зовёт onWindowTerm).
-        if (activity && crash::logPath()[0]) {
+        //
+        // Только если журнал ведётся на момент выхода: выключенный
+        // журнал — это просьба не оставлять его нигде, и буфер
+        // обмена, затёртый старым файлом, игрок бы не понял.
+        if (activity && crash::logPath()[0] && crash::enabled()) {
             if (!sys::copyFileToClipboard(activity, crash::logPath()))
                 LOGW("Журнал в буфер обмена не попал — файл на месте: %s",
                      crash::logPath());
@@ -1489,6 +1510,16 @@ struct Engine {
         // интерактивным прямоугольником, поэтому тап по пустому месту
         // проваливался сквозь меню на невидимую кнопку — включая DIG
         // и PUT, которые меняют мир.
+        // Кольцу джойстика нельзя на пояс быстрых слотов: касание
+        // ячейки забирает интерфейс, а джойстик, появившийся рядом,
+        // отодвигается так, чтобы ячеек не закрывать.
+        if (ui && !uiBlockingInput) {
+            const ui::Rect hb = ui->hotbarArea();
+            touch.setJoystickKeepOut(hb.x, hb.y, hb.w, hb.h);
+        } else {
+            touch.setJoystickKeepOut(0.f, 0.f, 0.f, 0.f);
+        }
+
         if (padButtonsVisible_ != !uiBlockingInput) {
             padButtonsVisible_ = !uiBlockingInput;
             for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i)

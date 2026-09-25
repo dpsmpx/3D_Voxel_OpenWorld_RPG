@@ -33,6 +33,11 @@ struct VirtualJoystick {
     i32        touchId = -1;
     glm::vec2  center{0};      // пиксели
     glm::vec2  current{0};
+    /// Где лёг палец относительно центра кольца. Обычно ноль: кольцо
+    /// появляется под пальцем. Если бы там оно наплыло на пояс
+    /// быстрых слотов, кольцо отодвигается, а отклонение считается от
+    /// точки касания — иначе сдвиг кольца сам по себе давал бы ход.
+    glm::vec2  grab{0};
     f32        radius = 140.f; // пиксели
     f32        deadzone = 0.15f;
     f32        opacity = 0.6f;
@@ -118,6 +123,16 @@ public:
     void setJoystickOpacity(f32 o)   { joystick_.opacity = o; }
     void setJoystickRadius(f32 r)    { joystick_.radius = r; }
     void setJoystickDeadzone(f32 d)  { joystick_.deadzone = d; }
+
+    /// Куда джойстику нельзя: пояс быстрых слотов, в пикселях.
+    /// Касание самого пояса забирает интерфейс; здесь — чтобы кольцо
+    /// джойстика, появившегося рядом, на пояс не наплывало. Нулевая
+    /// ширина — запретной области нет.
+    void setJoystickKeepOut(f32 x, f32 y, f32 w, f32 h) { keepOut_ = { x, y, w, h }; }
+    /// Где встанет центр кольца, если коснуться точки p на половине
+    /// джойстика: под пальцем — или ближе всего к нему, но так, чтобы
+    /// кольцо не закрывало запретную область.
+    glm::vec2 joystickCenterFor(glm::vec2 p) const;
 
     /// Регистрирует кнопку. centerNdc — (-1..1, Y вверх).
     u32 addButton(glm::vec2 centerNdc, f32 radiusPx,
@@ -222,6 +237,7 @@ private:
     bool  invertY_ = false;
     bool  joystickLeft_ = true;
     f32   buttonScale_ = 1.f;
+    glm::vec4 keepOut_{0.f};   ///< x, y, w, h в пикселях
 
     std::array<TouchPoint, MAX_TOUCHES> touches_{};
     VirtualJoystick                     joystick_{};
