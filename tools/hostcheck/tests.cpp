@@ -20,6 +20,9 @@
 #include "items/throwable.h"
 #include "combat/components.h"
 #include "combat/projectile.h"
+#include "combat/combat_controller.h"
+#include "combat/spells.h"
+#include "world/fire.h"
 #include "trade/trade.h"
 #include "ecs/components.h"
 #include "npc/dialogue.h"
@@ -18719,6 +18722,329 @@ void testShurikenFliesAndHits() {
 }
 
 // ------------------------------------------------------------
+// Заклинания Древа: руны, ледяные иглы, струя огня.
+//
+// Иглы не крафтятся и не носятся с собой: навык кладёт в сумку
+// руну, руна держится в руке как оружие, а каждая игла лепится из
+// маны в момент броска. Огонь — струя, пока держат кнопку; она
+// жжёт и поджигает то, во что упирается.
+// ------------------------------------------------------------
+namespace {
+
+/// Готовый к колдовству игрок высоко над рельефом и мир под ним.
+bool spellWorldReady(world::ChunkManager& w) {
+    for (int i = 0; i < 600; ++i) {
+        w.update({ 8.f, 70.f, 8.f });
+        if (w.isReadyAt(8, 8) && w.pendingJobs() == 0) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+}
+
+ecs::Entity spellTarget(ecs::Registry& reg, const glm::vec3& feet, bool villager = false) {
+    const ecs::Entity t = reg.create();
+    ecs::Transform tf;
+    tf.position = feet;
+    reg.add(t, tf);
+    reg.add(t, ecs::Health{ 400.f, 400.f, 0.f, 0.f });
+    reg.add(t, ecs::Collider{ glm::vec3(0.4f, 0.9f, 0.4f) });
+    if (villager) reg.add(t, ecs::NPCTag{});
+    else          reg.add(t, ecs::EnemyTag{});
+    reg.add(t, combat::Combatant{});
+    reg.add(t, combat::StatusEffects{});
+    return t;
+}
+
+u32 countProjectiles(ecs::Registry& reg) {
+    return (u32)reg.pool<combat::Projectile>().size();
+}
+
+} // namespace
+
+void testTreeSpells() {
+    group("заклинания Древа: иглы из маны и струя огня");
+
+    world::blocks();
+    items::items();
+    using progression::SkillNodeId;
+    char m[200];
+
+    // ---- 1. Узлы и руны ----
+    {
+        const auto& ice = progression::skillTree().get(SkillNodeId::Wis_IceNeedles);
+        const auto& fire = progression::skillTree().get(SkillNodeId::Wis_Flame);
+        check(ice.branch == progression::SkillBranch::Wisdom &&
+              fire.branch == progression::SkillBranch::Wisdom,
+              "оба заклинания — в ветке Мудрости");
+        check(ice.parent == SkillNodeId::Wis_ArcaneMind,
+              "иглы открываются сразу за запасом маны");
+        check(fire.parent == SkillNodeId::Wis_ManaFlow,
+              "огонь — за потоком маны: струя пьёт ману непрерывно");
+
+        for (u16 rune : { (u16)items::ITEM_RUNE_ICE_NEEDLES, (u16)items::ITEM_RUNE_FLAME }) {
+            const auto& d = items::items().get(rune);
+            check(d.category == items::ItemCategory::Weapon && d.bound && d.value == 0,
+                  "руна надевается как оружие, привязана к навыку и ничего не стоит");
+            check(combat::isTreeSpell(d.payload.weaponId), "и держит заклинание Древа");
+        }
+        check(combat::weapons().get(combat::WEAPON_FLAME).style == combat::AttackStyle::Stream,
+              "огонь — струя, а не снаряд");
+    }
+
+    jobs::gJobs.start(2);
+    world::ChunkManager world(0x5BE11, 2);
+    if (!spellWorldReady(world)) {
+        check(false, "мир построен");
+        jobs::gJobs.stop();
+        return;
+    }
+    const f32 air = (f32)world.generator().surfaceHeight(8, 8) + 20.f;
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(8.5f, air, 8.5f));
+    const ecs::Entity me = pl.entity();
+    auto* tree = reg.get<progression::SkillTree>(me);
+    auto* inv  = pl.inventory();
+    auto* eq   = reg.get<combat::EquippedWeapon>(me);
+    auto* mana = reg.get<ecs::Mana>(me);
+    check(tree && inv && eq && mana, "у игрока есть Древо, сумка, рука и мана");
+    if (!tree || !inv || !eq || !mana) { jobs::gJobs.stop(); return; }
+
+    // ---- 2. Руна приходит и уходит вместе с навыком ----
+    {
+        check(combat::syncSpellRunes(reg, me) == 0 &&
+              inv->countOf(items::ITEM_RUNE_ICE_NEEDLES) == 0,
+              "невыученное заклинание руны не даёт");
+        tree->ranks[(u16)SkillNodeId::Wis_IceNeedles] = 1;
+        check(combat::syncSpellRunes(reg, me) == items::ITEM_RUNE_ICE_NEEDLES,
+              "выучил иглы — руна выдана");
+        const i32 slot = inv->findItem(items::ITEM_RUNE_ICE_NEEDLES);
+        check(slot >= (i32)items::INV_HOTBAR_OFFSET &&
+              slot < (i32)(items::INV_HOTBAR_OFFSET + items::INV_HOTBAR_SLOTS),
+              "и лежит в поясе, откуда её надевают");
+        check(combat::syncSpellRunes(reg, me) == 0 &&
+              inv->countOf(items::ITEM_RUNE_ICE_NEEDLES) == 1,
+              "повторная сверка второй руны не даёт");
+        check(!pl.dropItem((u32)slot), "руну не выбросить: она знание, а не вещь");
+
+        check(pl.useItem(world, (u32)slot) == items::UseResult::Equipped &&
+              eq->weaponId == combat::WEAPON_ICE_NEEDLES,
+              "руна надевается как оружие");
+        check(combat::syncSpellRunes(reg, me) == 0 &&
+              inv->countOf(items::ITEM_RUNE_ICE_NEEDLES) == 0,
+              "руна в руке — новой в сумку не кладётся");
+
+        tree->ranks[(u16)SkillNodeId::Wis_IceNeedles] = 0;
+        combat::syncSpellRunes(reg, me);
+        check(eq->weaponId == combat::WEAPON_NONE,
+              "навык сброшен — заклинание уходит и из рук");
+    }
+
+    // ---- 3. Ледяные иглы: веер из маны ----
+    const glm::vec3 north{ 0.f, 0.f, -1.f };
+    const glm::vec3 origin = pl.controller.state().position + glm::vec3(0.f, 1.3f, 0.f);
+    auto attack = [&](bool pressed, bool held, f32 dt, int frames) {
+        combat::CombatAction act;
+        for (int i = 0; i < frames; ++i) {
+            combat::CombatInput in;
+            in.attackPressed = pressed && i == 0;
+            in.attackHeld = held;
+            combat::updateCombat(world, reg, nullptr, me, origin, north, in, dt, act);
+        }
+        return act;
+    };
+    {
+        tree->ranks[(u16)SkillNodeId::Wis_IceNeedles] = 3;
+        eq->weaponId = combat::WEAPON_ICE_NEEDLES;
+        mana->current = mana->max;
+        const f32 before = mana->current;
+
+        attack(true, false, 1.f / 60.f, 12);
+        const u32 n = countProjectiles(reg);
+        std::snprintf(m, sizeof(m), "залп третьего ранга — %u игл", n);
+        check(n == combat::iceNeedleCount(3) && n == 5, m);
+        check(before - mana->current > 1.f, "и за него заплачено маной");
+
+        f32 widest = 0.f;
+        bool allNeedles = true, allCold = true;
+        auto& pool = reg.pool<combat::Projectile>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            const auto* p = pool.get(pool.entityAt((u32)i));
+            if (!p) continue;
+            allNeedles &= p->needle && p->shardColor != 0 && p->isSpell;
+            allCold &= p->damage.type == combat::DamageType::Frost &&
+                       p->damage.slowAmount > 0.f && p->damage.slowDuration > 0.f;
+            const f32 c = glm::dot(glm::normalize(p->velocity), north);
+            widest = std::max(widest, std::acos(std::min(1.f, c)));
+        }
+        check(allNeedles, "каждая — игла, бьющаяся вдребезги");
+        check(allCold, "и холодная: морозит и замедляет");
+        check(widest > 0.05f && widest < 0.25f, "летят веером, но в сторону прицела");
+
+        // Цель по курсу: игла долетает, ранит и замедляет.
+        const ecs::Entity t = spellTarget(reg, origin + glm::vec3(0.f, -0.9f, -8.f));
+        for (int i = 0; i < 60; ++i) combat::updateProjectiles(world, reg, 1.f / 60.f);
+        const auto* th = reg.get<ecs::Health>(t);
+        const auto* ts = reg.get<combat::StatusEffects>(t);
+        check(th && th->current < th->max, "иглы долетели и ранили");
+        check(ts && ts->slowTime > 0.f, "и цель замедлена холодом");
+        reg.destroy(t);
+
+        // Без маны игла не лепится.
+        for (int i = 0; i < 60; ++i) combat::updateProjectiles(world, reg, 1.f / 60.f);
+        // Кнопку держат: иначе проверка прошла бы и при сломанной
+        // цене — первое нажатие тонет в откате прошлого залпа.
+        mana->current = 0.f;
+        attack(true, true, 1.f / 60.f, 40);
+        check(countProjectiles(reg) == 0, "без маны игл нет: ледышек про запас не бывает");
+
+        // Невыученное не колдуется, даже если руна ещё в руке.
+        mana->current = mana->max;
+        tree->ranks[(u16)SkillNodeId::Wis_IceNeedles] = 0;
+        attack(true, true, 1.f / 60.f, 40);
+        check(countProjectiles(reg) == 0, "навык сброшен — руна в руке молчит");
+    }
+
+    // ---- 4. Струя огня ----
+    {
+        tree->ranks[(u16)SkillNodeId::Wis_Flame] = 1;
+        eq->weaponId = combat::WEAPON_FLAME;
+        mana->current = mana->max;
+        mana->regen = 0.f;
+        world::fires().reset();
+
+        const ecs::Entity t = spellTarget(reg, origin + glm::vec3(0.f, -0.9f, -3.f));
+        const f32 m0 = mana->current;
+        attack(true, true, 1.f / 60.f, 60);
+        auto* ws = reg.get<combat::WeaponState>(me);
+        const auto* th = reg.get<ecs::Health>(t);
+        const auto* ts = reg.get<combat::StatusEffects>(t);
+        const f32 spent = m0 - mana->current;
+        std::snprintf(m, sizeof(m), "секунда струи стоит %.1f маны", (double)spent);
+        check(spent > 8.f && spent < 20.f, m);
+        check(ws && ws->streaming, "пока держат — струя идёт");
+        check(th && th->current < th->max, "всё в конусе горит");
+        check(ts && ts->burnTime > 0.f && ts->burnDps >= 4.f,
+              "и продолжает гореть после — жарко, а не десятой долей тика");
+        check(countProjectiles(reg) == 0, "снарядов струя не пускает");
+
+        const f32 m1 = mana->current;
+        attack(false, false, 1.f / 60.f, 30);
+        check(ws && !ws->streaming && mana->current == m1,
+              "отпустил — струя гаснет и мана больше не уходит");
+
+        mana->current = 0.5f;
+        attack(true, true, 1.f / 60.f, 30);
+        check(ws && !ws->streaming, "кончилась мана — кончился огонь");
+
+        // Горящий пылает: частицы огня на теле.
+        world::particles().reset();
+        world::fires().update(world, reg, 0.f, 0.2f);
+        check(world::particles().liveCount() > 0, "горящая цель пылает");
+        reg.destroy(t);
+    }
+
+    // ---- 5. Огонь на поверхности ----
+    {
+        world::fires().reset();
+        const i32 gx = 8, gz = 8;
+        const i32 gy = world.generator().surfaceHeight(gx, gz);
+        // Верхний твёрдый блок колонки: на нём и разведём.
+        i32 top = gy + 8;
+        while (top > 0 && !world::blocks().get(world.getVoxel(gx, top, gz)).isSolid) --top;
+        const glm::ivec3 base{ gx, top, gz }, cell{ gx, top + 1, gz };
+        const u16 cellBlock = world.getVoxel(cell.x, cell.y, cell.z);
+        const bool dry = !world::blocks().get(cellBlock).isLiquid;
+
+        // Струя, направленная под ноги, поджигает землю сама.
+        {
+            const glm::vec3 low{ (f32)gx + 0.5f, (f32)top + 1.f + 1.3f, (f32)gz + 0.5f };
+            const glm::vec3 down = glm::normalize(glm::vec3(0.f, -0.8f, -0.6f));
+            mana->current = mana->max;
+            combat::CombatAction act;
+            for (int i = 0; i < 30; ++i) {
+                combat::CombatInput in;
+                in.attackHeld = true;
+                combat::updateCombat(world, reg, nullptr, me, low, down, in,
+                                     1.f / 60.f, act);
+            }
+            check(world::fires().liveCount() > 0, "струя в землю — земля горит");
+            world::fires().reset();
+        }
+
+        check(!world::fires().ignite(world, base, base + glm::ivec3(0, 2, 0),
+                                     (u32)me, combat::Faction::Player),
+              "гореть можно только на грани блока");
+        check(!world::fires().ignite(world, base + glm::ivec3(0, -1, 0), base,
+                                     (u32)me, combat::Faction::Player),
+              "и не внутри твёрдого");
+        if (dry) {
+            check(world::fires().ignite(world, base, cell, (u32)me, combat::Faction::Player),
+                  "грань под открытым небом загорается");
+            check(world::fires().liveCount() == 1, "одно пятно");
+            world::fires().ignite(world, base, cell, (u32)me, combat::Faction::Player);
+            check(world::fires().liveCount() == 1, "повторный поджог его подпитывает, не множит");
+
+            // Кто стоит в огне — горит. Житель — нет: убийство деревни
+            // из-за перекинувшегося огня игрок бы себе не выбрал.
+            const glm::vec3 feet{ (f32)cell.x + 0.5f, (f32)cell.y, (f32)cell.z + 0.5f };
+            const ecs::Entity foe = spellTarget(reg, feet);
+            const ecs::Entity folk = spellTarget(reg, feet, true);
+            for (int i = 0; i < 20; ++i) world::fires().update(world, reg, 0.f, 1.f / 30.f);
+            const auto* fh = reg.get<ecs::Health>(foe);
+            const auto* vh = reg.get<ecs::Health>(folk);
+            check(fh && fh->current < fh->max, "враг, стоящий в пламени, обожжён");
+            check(vh && vh->current == vh->max, "житель — нет");
+            check(!world::fires().glows().empty(), "огонь светит");
+            reg.destroy(foe);
+            reg.destroy(folk);
+
+            // Дождь гасит открытое пламя вчетверо быстрее.
+            if (world::fires().spots()[0].open) {
+                for (int i = 0; i < 90; ++i) world::fires().update(world, reg, 1.f, 1.f / 30.f);
+                check(world::fires().liveCount() == 0, "ливень гасит огонь под открытым небом");
+            }
+        }
+
+        // Места под пятна ограничены: сорок первое вытесняет самое
+        // догоревшее, а не растит список.
+        world::fires().reset();
+        u32 lit = 0;
+        for (i32 dx = -8; dx <= 8 && lit < world::FireField::MAX + 8; ++dx)
+            for (i32 dz = -8; dz <= 8 && lit < world::FireField::MAX + 8; ++dz) {
+                const i32 x = gx + dx, z = gz + dz;
+                i32 y = gy + 8;
+                while (y > 0 && !world::blocks().get(world.getVoxel(x, y, z)).isSolid) --y;
+                if (world::fires().ignite(world, { x, y, z }, { x, y + 1, z },
+                                          (u32)me, combat::Faction::Player)) ++lit;
+            }
+        std::snprintf(m, sizeof(m), "поджогов %u, горит %u", lit, world::fires().liveCount());
+        check(lit > world::FireField::MAX && world::fires().liveCount() == world::FireField::MAX, m);
+    }
+
+    // ---- 6. Горящий гаснет в воде ----
+    {
+        const glm::vec3 feet = origin + glm::vec3(3.f, -0.9f, 0.f);
+        const ecs::Entity t = spellTarget(reg, feet);
+        auto* se = reg.get<combat::StatusEffects>(t);
+        se->burnTime = 5.f;
+        se->burnDps = 4.f;
+        const glm::ivec3 mid{ (i32)std::floor(feet.x), (i32)std::floor(feet.y + 0.9f),
+                              (i32)std::floor(feet.z) };
+        world.setVoxel(mid.x, mid.y, mid.z, world::WATER);
+        world::fires().update(world, reg, 0.f, 1.f / 30.f);
+        check(se->burnTime == 0.f, "нырнувший гаснет");
+        world.setVoxel(mid.x, mid.y, mid.z, world::AIR);
+        reg.destroy(t);
+    }
+
+    world::fires().reset();
+    world::particles().reset();
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testDashMovesForward() {
     group("рывок: уносит вперёд и упирается в стену");
 
@@ -26391,6 +26717,7 @@ int main() {
     testQuestTemplatesHaveOneShape();
     testTreeDungeonIsClimbable();
     testShurikenFliesAndHits();
+    testTreeSpells();
     testDashMovesForward();
     testRunningAndFightingTire();
     testSwimmingAndDiving();

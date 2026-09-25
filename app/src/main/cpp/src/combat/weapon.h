@@ -18,6 +18,10 @@ enum class AttackStyle : u8 {
     Magic,
     AoE,
     Buff,
+    /// Струя: бьёт, пока держат кнопку, и тратит ману каждый кадр.
+    /// Ни замаха, ни отката у неё нет — есть частые тики урона
+    /// в конусе. Так устроено пламя из ладони.
+    Stream,
 };
 
 /// Полное определение оружия. Создаётся один раз в реестре.
@@ -70,6 +74,11 @@ enum WeaponId : u16 {
     WEAPON_FIRE_STAFF,
     WEAPON_FROST_WAND,
     WEAPON_ARCANE_BRACELET,
+    /// Заклинания Древа. Предмета-оружия у них нет: их держат в
+    /// руке рунами, которые навык кладёт в сумку, а бьют они
+    /// маной — см. combat/spells.h.
+    WEAPON_ICE_NEEDLES,
+    WEAPON_FLAME,
     WEAPON_COUNT,
     WEAPON_MAX_DEFS = 64
 };

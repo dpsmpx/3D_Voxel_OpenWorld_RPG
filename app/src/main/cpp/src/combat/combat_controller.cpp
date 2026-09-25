@@ -5,6 +5,7 @@
 #include "combat_controller.h"
 #include "status_effects.h"
 #include "projectile.h"
+#include "spells.h"
 #include "../ecs/components.h"
 #include "../progression/progression.h"
 #include "../progression/resource_regen.h"
@@ -181,7 +182,8 @@ void updateCombat(world::ChunkManager& world,
     f32 damageMult = 1.f;
     if (def.style == AttackStyle::Melee || def.style == AttackStyle::Ranged) {
         damageMult *= derived.meleeDamageMult;
-    } else if (def.style == AttackStyle::Magic || def.style == AttackStyle::AoE) {
+    } else if (def.style == AttackStyle::Magic || def.style == AttackStyle::AoE ||
+               def.style == AttackStyle::Stream) {
         damageMult *= derived.magicDamageMult;
     }
     if (res) damageMult *= res->bonuses().damageMult;
@@ -197,6 +199,21 @@ void updateCombat(world::ChunkManager& world,
     if (auto* se = reg.get<StatusEffects>(entity)) {
         stunned = se->stunned();
     }
+
+    // Заклинание Древа бьёт, только пока выучено: руну в руке
+    // держать можно и после сброса навыка — до ближайшей сверки
+    // сумки, — а колдовать ею нельзя.
+    const bool treeSpell = isTreeSpell(weapon->weaponId);
+    const u8   spellLvl  = treeSpell ? spellRank(reg, entity, weapon->weaponId) : 1;
+
+    if (def.style == AttackStyle::Stream) {
+        if (wstate->phase != WeaponState::Idle) enterPhase(*wstate, WeaponState::Idle);
+        updateFlameStream(world, reg, hash, entity, def, spellLvl,
+                          origin, aimDir, in.attackPressed || in.attackHeld,
+                          stunned, damageMult, reachMult, dt, *wstate, out);
+        return;
+    }
+    wstate->streaming = false;
 
     switch (wstate->phase) {
 
@@ -215,7 +232,7 @@ void updateCombat(world::ChunkManager& world,
         if (stunned) break;
 
         const bool wants = in.attackPressed || in.attackHeld;
-        if (wants) {
+        if (wants && spellLvl > 0) {
             if (!tryConsumeAttackCost(reg, entity, def)) break;
             enterPhase(*wstate, WeaponState::Windup);
             wstate->swingDir = aimDir;
@@ -261,6 +278,15 @@ void updateCombat(world::ChunkManager& world,
                 } else {
                     if (res) res->onMiss();
                 }
+            }
+            else if (def.style == AttackStyle::Magic && treeSpell) {
+                // Ледяные иглы: залп веером, каждая игла — из маны,
+                // заплаченной за бросок.
+                const u32 n = castIceNeedles(reg, entity, weapon->weaponId,
+                                             weapon->enchant, spellLvl,
+                                             origin, aimDir, damageMult,
+                                             critChance, critMult);
+                out.didCastSpell = n > 0;
             }
             else if (def.style == AttackStyle::Ranged ||
                      def.style == AttackStyle::Magic)

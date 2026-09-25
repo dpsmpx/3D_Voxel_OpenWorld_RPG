@@ -312,6 +312,14 @@ void UiSystem::drawItemIcon(items::ItemStack& stack, float x, float y,
     float pad = size * 0.18f;
     ui_.rect(x + pad, y + pad, size - pad * 2.f, size - pad * 2.f,
              rgba(rr, gg, bb, 255));
+    // Сердцевина своего цвета: лёд и огонь одной редкости иначе
+    // неотличимы.
+    if (def.iconTint != 0) {
+        const float in = size * 0.32f;
+        ui_.rect(x + in, y + in, size - in * 2.f, size - in * 2.f,
+                 rgba((u8)(def.iconTint >> 24), (u8)(def.iconTint >> 16),
+                      (u8)(def.iconTint >> 8), 255));
+    }
 
     if (stack.count > 1) {
         char buf[8];

@@ -265,6 +265,64 @@ WeaponRegistry::WeaponRegistry() {
         defs_[WEAPON_ARCANE_BRACELET] = d;
     }
 
+    // -------------------- Ice Needles --------------------
+    //
+    // Иглы не носят с собой и не куют: каждую лепит мана в момент
+    // броска. Поэтому числа здесь — на ОДНУ иглу залпа, а цена — на
+    // весь залп; сколько игл в залпе, решает ранг навыка
+    // (spells.cpp). Бросок частый, игла лёгкая: это оружие темпа,
+    // а не одного тяжёлого удара, как огненный посох.
+    {
+        WeaponDef d{};
+        d.name              = "Ice Needles";
+        d.style             = AttackStyle::Magic;
+        d.damageType        = FROST;
+        d.baseDamage        = 5.f;
+        d.reach             = 40.f;
+        d.coneAngle         = 0.f;
+        d.projectileSpeed   = 38.f;
+        d.projectileGravity = 0.f;
+        d.manaCost          = 7.f;
+        d.staminaCost       = 0.f;
+        d.critChance        = 0.12f;
+        d.critMult          = 1.6f;
+        d.knockback         = 0.2f;
+        d.windupTime        = 0.10f;
+        d.recoveryTime      = 0.30f;
+        d.shape             = anim::AttackShape::Cast;
+        // Голая ладонь: закрываются ею чуть лучше, чем кулаком.
+        d.guardFraction     = 0.20f;
+        defs_[WEAPON_ICE_NEEDLES] = d;
+    }
+
+    // -------------------- Flame --------------------
+    //
+    // Струя огня из ладони. manaCost здесь — ЗА СЕКУНДУ удержания,
+    // baseDamage — урон в секунду по всем, кто в конусе; reach —
+    // длина струи, coneAngle — её раствор. Поджигает и цель, и то,
+    // во что упирается (world/fire.h).
+    {
+        WeaponDef d{};
+        d.name              = "Flame";
+        d.style             = AttackStyle::Stream;
+        d.damageType        = FIRE;
+        d.baseDamage        = 16.f;
+        d.reach             = 5.5f;
+        d.coneAngle         = 0.55f;
+        d.projectileSpeed   = 0.f;
+        d.projectileGravity = 0.f;
+        d.manaCost          = 14.f;
+        d.staminaCost       = 0.f;
+        d.critChance        = 0.f;
+        d.critMult          = 1.f;
+        d.knockback         = 0.f;
+        d.windupTime        = 0.f;
+        d.recoveryTime      = 0.f;
+        d.shape             = anim::AttackShape::Cast;
+        d.guardFraction     = 0.20f;
+        defs_[WEAPON_FLAME] = d;
+    }
+
     LOGI("WeaponRegistry: зарегистрировано %d оружий", (int)WEAPON_COUNT - 1);
 }
 

@@ -50,6 +50,14 @@ struct WeaponState {
     glm::vec3   swingDir{ 0.f, 0.f, 1.f };
 
     bool        inputConsumed = false;
+
+    /// Струя (AttackStyle::Stream): идёт ли она в этот кадр, сколько
+    /// накопилось до следующего тика урона и сколько частиц пламени
+    /// задолжал кадр — их выпускается дробное число за кадр.
+    bool        streaming   = false;
+    f32         streamTick  = 0.f;
+    f32         streamFx    = 0.f;
+    f32         streamSound = 0.f;
 };
 
 /// Статусные эффекты.

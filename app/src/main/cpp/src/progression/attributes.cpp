@@ -142,6 +142,10 @@ void applyNode(TreeAccum& t, SkillNodeId id, u8 rank) {
         case SkillNodeId::Wis_CraftMaster:    t.craftTierAdd     += 1 * (i32)r; break;
         case SkillNodeId::Wis_ArcaneShield:   t.magicResistAdd   += 0.05f * r; break;
         case SkillNodeId::Wis_ResonanceMaster:t.maxResonanceAdd  += 0.15f * r; break;
+        // Заклинания пассивных прибавок не дают: их ранг читает само
+        // заклинание в момент броска (combat/spells.cpp).
+        case SkillNodeId::Wis_IceNeedles:
+        case SkillNodeId::Wis_Flame:          break;
 
         default: break;
     }

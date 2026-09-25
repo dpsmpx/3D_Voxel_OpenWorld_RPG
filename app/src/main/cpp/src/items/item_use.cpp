@@ -239,6 +239,8 @@ bool dropItemFromSlot(ecs::Registry& reg,
 
     auto& s = inv->at(slotIndex);
     if (s.empty()) return false;
+    // Руну навыка из рук не выпускают: она не вещь, а знание.
+    if (items().get(s.itemId).bound) return false;
 
     ItemStack out = s;
     s.clear();

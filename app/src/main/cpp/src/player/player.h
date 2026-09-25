@@ -206,6 +206,11 @@ public:
     /// ровно то, за чем в этом проекте следят.
     bool pendingParryHint = false;
 
+    /// Руна, которую только что положил в сумку выученный навык
+    /// (0 — никакой). Без слова об этом заклинание выучено, а чем
+    /// его колдовать — непонятно.
+    u16 grantedRune = 0;
+
     bool pendingLevelUpNotification = false;
     f32  levelUpFlashTimer = 0.f;
     u32  lastLevelGained   = 1;

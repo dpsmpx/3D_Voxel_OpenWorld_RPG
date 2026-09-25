@@ -110,6 +110,7 @@ add_library(native-lib SHARED
     src/world/hazards.cpp
     src/world/noise.cpp
     src/world/precipitation.cpp
+    src/world/fire.cpp
     src/world/particles.cpp
     src/world/spawn.cpp
     src/world/hydrology.cpp
@@ -177,6 +178,7 @@ add_library(native-lib SHARED
     src/combat/projectile.cpp
     src/combat/resonance.cpp
     src/combat/spatial_hash.cpp
+    src/combat/spells.cpp
     src/combat/status_effects.cpp
     src/combat/weapon.cpp
 

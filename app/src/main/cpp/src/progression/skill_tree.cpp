@@ -92,27 +92,36 @@ SkillRegistry::SkillRegistry() {
     reg(SkillNodeId::Wis_ArcaneMind,     SkillBranch::Wisdom,
         "Arcane Mind",   "+20 max mana per rank.",
         3, 1, SkillNodeId::None, 0);
+    // Заклинания стоят в ветке рано, сразу за маной: ради них в
+    // Мудрость и идут, и прятать их за восемью пассивными узлами
+    // значило бы, что до них не доходят.
+    reg(SkillNodeId::Wis_IceNeedles,     SkillBranch::Wisdom,
+        "Ice Needles",   "Cast a fan of ice needles made from mana; +1 needle per rank.",
+        3, 1, SkillNodeId::Wis_ArcaneMind, 1);
     reg(SkillNodeId::Wis_ManaFlow,       SkillBranch::Wisdom,
         "Mana Flow",     "+0.6 MP/s regen per rank.",
-        3, 1, SkillNodeId::Wis_ArcaneMind, 1);
+        3, 1, SkillNodeId::Wis_ArcaneMind, 2);
+    reg(SkillNodeId::Wis_Flame,          SkillBranch::Wisdom,
+        "Flame",         "Breathe fire that sets foes and ground alight; longer and hotter per rank.",
+        3, 1, SkillNodeId::Wis_ManaFlow, 3);
     reg(SkillNodeId::Wis_SpellPower,     SkillBranch::Wisdom,
         "Spell Power",   "+12% spell damage per rank.",
-        3, 1, SkillNodeId::Wis_ManaFlow, 2);
+        3, 1, SkillNodeId::Wis_ManaFlow, 4);
     reg(SkillNodeId::Wis_Enchanter,      SkillBranch::Wisdom,
         "Enchanter",     "+20% enchant power per rank.",
-        2, 1, SkillNodeId::Wis_SpellPower, 3);
+        2, 1, SkillNodeId::Wis_SpellPower, 5);
     reg(SkillNodeId::Wis_Alchemist,      SkillBranch::Wisdom,
         "Alchemist",     "+20% potion effect per rank.",
-        2, 1, SkillNodeId::Wis_Enchanter, 4);
+        2, 1, SkillNodeId::Wis_Enchanter, 6);
     reg(SkillNodeId::Wis_CraftMaster,    SkillBranch::Wisdom,
         "Craft Master",  "Recipes count you 1 level higher.",
-        2, 1, SkillNodeId::Wis_Alchemist, 5);
+        2, 1, SkillNodeId::Wis_Alchemist, 7);
     reg(SkillNodeId::Wis_ArcaneShield,   SkillBranch::Wisdom,
         "Arcane Shield", "+5% magic resist per rank.",
-        3, 1, SkillNodeId::Wis_CraftMaster, 6);
+        3, 1, SkillNodeId::Wis_CraftMaster, 8);
     reg(SkillNodeId::Wis_ResonanceMaster,SkillBranch::Wisdom,
         "Resonance Master","+15% resonance reserve: peak holds longer.",
-        3, 1, SkillNodeId::Wis_ArcaneShield, 7);
+        3, 1, SkillNodeId::Wis_ArcaneShield, 9);
 
     LOGI("SkillRegistry: зарегистрировано %u узлов", (unsigned)((u16)SkillNodeId::Count - 1));
 }

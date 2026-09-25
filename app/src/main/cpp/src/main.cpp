@@ -52,6 +52,7 @@
 
 #include "mobs/spawner.h"
 #include "world/hazards.h"
+#include "world/fire.h"
 #include "world/spawn.h"
 #include "world/weather.h"
 #include "world/precipitation.h"
@@ -79,6 +80,7 @@
 #include "items/item_pickup.h"
 #include "items/throwable.h"
 #include "items/item_use.h"
+#include "items/item_def.h"
 #include "items/inventory.h"
 #include "items/currency.h"
 
@@ -911,6 +913,7 @@ struct Engine {
         weather.snap(world->generator(), playerSpawn, dayCycle.worldSeconds());
         precip.reset();
         world::particles().reset();
+        world::fires().reset();
 
         // Имя по умолчанию — чтобы мир было чем назвать в списке.
         // Игрок переименует его на экране создания, если захочет.
@@ -1663,6 +1666,16 @@ struct Engine {
                         ui->notify(cfg::T(cfg::StrKey::Hint_Parry),
                                    ui::theme::NotifyPriority::High);
                     }
+                    // Выученное заклинание: чем его колдовать, иначе
+                    // не догадаться — руна молча появилась в поясе.
+                    if (player->grantedRune != 0) {
+                        const auto& rdef = items::items().get(player->grantedRune);
+                        ui->notify(cfg::trf("New spell: %s. Equip its rune and attack to cast.",
+                                            cfg::tr(combat::weapons().get(
+                                                rdef.payload.weaponId).name)),
+                                   ui::theme::NotifyPriority::High);
+                        player->grantedRune = 0;
+                    }
                     if (player->enteredVillage) {
                         cfg::StrKey k = cfg::StrKey::Notif_VillageFarmstead;
                         switch (player->villageStyle) {
@@ -1939,6 +1952,10 @@ struct Engine {
         combat::updateProjectiles(*world, registry, dt);
         combat::updateHitFx(registry, dt);
         combat::tickStatuses(registry, dt);
+        // Огонь — после статусов: погасший в этот кадр не должен
+        // пылать ещё кадр. Дождь гасит открытое пламя, снег — нет.
+        world::fires().update(*world, registry,
+                              weather.precip() * (1.f - weather.snowMix()), dt);
         // Отметки «откуда ударили» гаснут сами: у них своё время
         // жизни, не привязанное ни к бою, ни к здоровью.
         if (auto* hm = registry.get<combat::HurtMarks>(player->entity()))

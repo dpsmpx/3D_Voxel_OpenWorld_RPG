@@ -9,6 +9,7 @@
 #include "../physics/raycast.h"
 #include "../world/block.h"
 #include "../audio/audio_events.h"
+#include "../world/particles.h"
 #include <cmath>
 #include <algorithm>
 #include <vector>
@@ -44,6 +45,8 @@ ecs::Entity spawnProjectile(ecs::Registry& reg,
     proj.colorRGBA         = p.colorRGBA;
     proj.scale             = p.scale;
     proj.isSpell           = p.isSpell;
+    proj.needle            = p.needle;
+    proj.shardColor        = p.shardColor;
     reg.add(e, proj);
 
     reg.add(e, ecs::Kind{ ecs::EntityKind::Projectile });
@@ -142,6 +145,24 @@ void projectileImpactSound(const Projectile& proj, const glm::vec3& pos) {
     else              audio::events().arrowHit(pos);
 }
 
+/// Снаряд, который бьётся вдребезги: горсть осколков его цвета,
+/// отлетающих назад, навстречу стрелявшему.
+void shatter(const Projectile& proj, const glm::vec3& pos) {
+    if (proj.shardColor == 0) return;
+    world::Burst b;
+    b.origin  = pos;
+    b.dir     = -proj.velocity;
+    b.count   = 6;
+    b.speed   = 3.5f;
+    b.spread  = 0.8f;
+    b.size    = 0.05f;
+    b.life    = 0.4f;
+    b.gravity = 14.f;
+    b.color   = proj.shardColor;
+    b.color2  = 0xFFFFFFFFu;
+    world::particles().emit(b);
+}
+
 } // namespace
 
 void updateProjectiles(world::ChunkManager& world,
@@ -185,6 +206,7 @@ void updateProjectiles(world::ChunkManager& world,
                 tf->position = startPos + dir * vhit.distance;
                 spawnHitFx(reg, tf->position, proj->colorRGBA,
                            0.15f, 0.55f, 0.18f);
+                shatter(*proj, tf->position);
                 projectileImpactSound(*proj, tf->position);
                 toDestroy.push_back(e);
                 continue;
@@ -220,6 +242,7 @@ void updateProjectiles(world::ChunkManager& world,
 
             spawnHitFx(reg, tf->position, proj->colorRGBA,
                        0.25f, 1.10f, 0.22f);
+            shatter(*proj, tf->position);
             projectileImpactSound(*proj, tf->position);
             toDestroy.push_back(e);
             continue;

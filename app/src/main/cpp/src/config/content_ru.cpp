@@ -64,6 +64,11 @@ const ContentPair CONTENT_RU[] = {
     { "Fire Staff",             "Огненный посох" },
     { "Frost Wand",             "Морозная палочка" },
     { "Arcane Bracelet",        "Чародейский браслет" },
+    // Заклинания Древа: одно имя у навыка и у заклинания в руке.
+    { "Ice Needles",            "Ледяные иглы" },
+    { "Flame",                  "Пламя" },
+    { "Ice Needles Rune",       "Руна ледяных игл" },
+    { "Flame Rune",             "Руна пламени" },
 
     // ---- Предметы: зелья и еда ----
     { "Health Potion",          "Зелье здоровья" },
@@ -213,6 +218,10 @@ const ContentPair CONTENT_RU[] = {
       "+20% действия зелий за ранг." },
     { "Recipes count you 1 level higher.",
       "Рецепты считают вас на уровень выше." },
+    { "Cast a fan of ice needles made from mana; +1 needle per rank.",
+      "Веер ледяных игл, слепленных из маны; +1 игла за ранг." },
+    { "Breathe fire that sets foes and ground alight; longer and hotter per rank.",
+      "Струя огня поджигает врагов и землю; с рангом длиннее и жарче." },
     { "+20% resonance gain per rank.",
       "+20% набора Резонанса за ранг." },
     { "+15% resonance reserve: peak holds longer.",
@@ -464,6 +473,8 @@ const ContentPair CONTENT_RU[] = {
     { "Select a recipe",        "Выберите рецепт" },
     { "Lost %llu gold — it waits where you fell",
       "Потеряно %llu золота — оно ждёт там, где вы пали" },
+    { "New spell: %s. Equip its rune and attack to cast.",
+      "Новое заклинание: %s. Наденьте его руну и атакуйте, чтобы колдовать." },
     { "g",                      "з" },
     { "P%u  S%u",               "П%u  С%u" },
     { "INV",                    "СУМКА" },

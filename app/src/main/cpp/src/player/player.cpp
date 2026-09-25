@@ -10,6 +10,7 @@
 #include "../combat/focus.h"
 #include "../combat/hurt_marks.h"
 #include "../combat/hit_detection.h"
+#include "../combat/spells.h"
 #include "../progression/resource_regen.h"
 #include "../items/item_pickup.h"
 #include "../items/item_use.h"
@@ -697,6 +698,11 @@ void Player::updateImpl(world::ChunkManager& world,
         lairTimer_ = 0.f;
         noticeLair(world);
         noticeVillage(world);
+        // Руны заклинаний — по Древу: выученное появляется в поясе,
+        // сброшенное уходит. Раз в полсекунды хватает с запасом:
+        // между нажатием узла и первым броском проходит больше.
+        if (const u16 rune = combat::syncSpellRunes(*reg_, entity_)) grantedRune = rune;
+        if (auto* eq = reg_->get<combat::EquippedWeapon>(entity_)) equipped = *eq;
     }
 
     // ---- Уведомление о смене тира репутации ----
