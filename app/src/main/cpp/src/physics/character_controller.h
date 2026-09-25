@@ -41,6 +41,11 @@ struct CharacterState {
     /// спрашивал никто: под водой в игре не менялось ничего, и
     /// «погружение» существовало ровно как факт, что ноги мокрые.
     bool submerged = false;
+    /// Всплывает после нырка с высоты. Ушедшего под воду падением
+    /// выносит к поверхности, пока он сам не решит грести или
+    /// нырять: иначе упавший в озеро оставался бы висеть в толще,
+    /// как нарочно нырнувший.
+    bool surfacing = false;
     f32  coyoteTimer = 0.f;
     f32  jumpBufferTimer = 0.f;
 
@@ -69,6 +74,21 @@ struct CharacterState {
     glm::vec2 dashDir{0, -1};       ///< куда рвём, XZ, единичный
 
     bool dashing() const { return dashTimer > 0.f; }
+
+    /// ---- Падение ----
+    ///
+    /// Высота, которой стоит текущее падение: верх полёта, пониженный
+    /// всем, что его гасило, — водой, мягкой опорой (physics/impact.h).
+    /// Стоящий на опоре держит здесь свою высоту.
+    f32 fallTopY = 0.f;
+    /// Посадка в этот кадр: с какой высоты тело ударилось об опору —
+    /// уже после мягкости опоры и воды. Ноль — посадки не было.
+    f32 landingDrop = 0.f;
+    /// Опора, проломленная в этот кадр (0 — ничего), и где она была.
+    /// Блок уже убран из мира: осколки и звук — дело того, кто
+    /// ведёт тело.
+    u16        brokeBlock = 0;
+    glm::ivec3 brokeCell{0};
 };
 
 class CharacterController {
@@ -80,7 +100,14 @@ public:
     CharacterState&       state()       { return state_; }
     const CharacterState& state() const { return state_; }
 
-    void setPosition(const glm::vec3& p) { state_.position = p; state_.velocity = glm::vec3(0); }
+    /// Переставить тело. Падение начинается заново отсюда: иначе
+    /// спасённый из-под мира или воскрешённый «падал» бы с места,
+    /// откуда его забрали.
+    void setPosition(const glm::vec3& p) {
+        state_.position = p;
+        state_.velocity = glm::vec3(0);
+        state_.fallTopY = p.y;
+    }
     void addImpulse(const glm::vec3& v)  { state_.velocity += v; }
 
     /// Параметры движения
@@ -108,6 +135,11 @@ public:
     /// Скорость всплытия и погружения по нажатию.
     f32 swimRiseSpeed   = 3.5f;
     f32 swimDiveSpeed   = 3.5f;
+    /// Быстрее этого в жидкости не тонут. Всё, что быстрее, — нырок
+    /// с высоты, и его гасит глубина (BlockImpact::drag), а не
+    /// первый же кадр в воде: иначе лужа по щиколотку ловила бы
+    /// падение с любой высоты.
+    f32 swimMaxFall     = 5.0f;
     f32 groundFriction  = 12.0f;
     f32 accelRate       = 45.0f;
     f32 airAccelFactor  = 0.35f;
@@ -164,6 +196,15 @@ private:
     /// Phase 15: если игрок стоит близко к земле и падает медленно —
     /// притягиваем вниз.
     void snapDown(world::ChunkManager& world, f32 dt);
+    /// Счёт падения за кадр: сколько оно стоит, чем кончилась посадка,
+    /// не проломлена ли опора.
+    void settleFall(world::ChunkManager& world, bool startedOnGround,
+                    f32 yBefore, f32 vyBefore);
+    /// Сколько «вязкости» пересекли ступни, пройдя от fromY вниз до
+    /// toY: сумма BlockImpact::drag по пройденной глубине.
+    f32 liquidDepthCrossed(world::ChunkManager& world, f32 fromY, f32 toY) const;
+    /// Блок, на котором тело стоит больше всего площадью ступней.
+    bool supportUnder(world::ChunkManager& world, glm::ivec3& cell, u16& block) const;
 };
 
 } // namespace physics

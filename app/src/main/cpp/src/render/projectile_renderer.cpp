@@ -185,7 +185,12 @@ void ProjectileRenderer::rebuild(ecs::Registry& reg) {
             // так же. Заклинание это сгусток, ему направление не
             // нужно; стрела — древко, и раньше она летела кубом,
             // потому что формат инстанса поворота не нёс вовсе.
-            if (p->isSpell) {
+            if (p->needle) {
+                // Игла: тоньше стрелы и длиннее её относительно
+                // толщины — ледяной штрих, а не древко.
+                inst.size = glm::vec3(p->scale, p->scale, p->scale * 11.f);
+                inst.rot  = orient::dirQuat(p->velocity);
+            } else if (p->isSpell) {
                 inst.size = glm::vec3(p->scale * 2.f);
                 inst.rot  = orient::yawQuat(0.f);
             } else {

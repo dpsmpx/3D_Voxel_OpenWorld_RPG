@@ -52,6 +52,7 @@
 
 #include "mobs/spawner.h"
 #include "world/hazards.h"
+#include "world/fire.h"
 #include "world/spawn.h"
 #include "world/weather.h"
 #include "world/precipitation.h"
@@ -79,6 +80,7 @@
 #include "items/item_pickup.h"
 #include "items/throwable.h"
 #include "items/item_use.h"
+#include "items/item_def.h"
 #include "items/inventory.h"
 #include "items/currency.h"
 
@@ -579,11 +581,11 @@ struct Engine {
             auto res = player->useItem(*world, slotIndex);
             if (res == items::UseResult::Equipped) {
                 audio::events().uiClick();
-                ui->setStatus("Equipped");
+                ui->setStatus(cfg::tr("Equipped"));
             } else if (res == items::UseResult::NoEffect) {
-                ui->notify("No effect", ui::theme::NotifyPriority::Low);
+                ui->notify(cfg::tr("No effect"), ui::theme::NotifyPriority::Low);
             } else if (res == items::UseResult::Consumed) {
-                ui->notify("Consumed", ui::theme::NotifyPriority::Low);
+                ui->notify(cfg::tr("Consumed"), ui::theme::NotifyPriority::Low);
             }
         };
 
@@ -592,6 +594,23 @@ struct Engine {
             u8 i = (u8)(slotIndex - items::INV_HOTBAR_OFFSET);
             player->setActiveHotbar(i);
             audio::events().uiClick();
+        };
+
+        // Пояс прямо в игре, без инвентаря: что делает касание
+        // ячейки, решает Player::tapHotbar; здесь только звук и слово.
+        ui->onHotbarTap = [this](u32 i) {
+            if (!player || !world) return;
+            const auto res = player->tapHotbar(*world, (u8)i);
+            if (res == items::UseResult::Equipped) {
+                audio::events().uiClick();
+                ui->setStatus(cfg::tr("Equipped"));
+            } else if (res == items::UseResult::Consumed) {
+                ui->notify(cfg::tr("Consumed"), ui::theme::NotifyPriority::Low);
+            } else if (res == items::UseResult::NoEffect) {
+                ui->notify(cfg::tr("No effect"), ui::theme::NotifyPriority::Low);
+            } else {
+                audio::events().uiClick();
+            }
         };
 
         // Кнопка «в пояс» звала onMoveItem, а его никто не назначал:
@@ -805,7 +824,11 @@ struct Engine {
         //
         // Сюда приходят оба пути выхода: и закрытие окна системой, и
         // выход из меню игры (wantQuit тоже зовёт onWindowTerm).
-        if (activity && crash::logPath()[0]) {
+        //
+        // Только если журнал ведётся на момент выхода: выключенный
+        // журнал — это просьба не оставлять его нигде, и буфер
+        // обмена, затёртый старым файлом, игрок бы не понял.
+        if (activity && crash::logPath()[0] && crash::enabled()) {
             if (!sys::copyFileToClipboard(activity, crash::logPath()))
                 LOGW("Журнал в буфер обмена не попал — файл на месте: %s",
                      crash::logPath());
@@ -874,9 +897,10 @@ struct Engine {
         worldSeed = seed;
         world = std::make_unique<world::ChunkManager>(
             seed, cfg::settingsConst().viewDistance);
-        world->setBlockModifyCallback([this](i32 wx, i32 wy, i32 wz, u16 newId) {
-            worldDelta.recordBlock(wx, wy, wz, newId);
-        });
+        // Правки игрока — и записываются, и накладываются на каждый
+        // строящийся чанк: ушедший из памяти и построенный заново чанк
+        // обязан вернуться с ними, а не таким, каким его сделал мир.
+        worldDelta.attach(*world);
 
         // Всё, что помнит про прошлый мир: изменённые блоки, вскрытые
         // тайники, время суток и спавнеры со своим «здесь уже было».
@@ -910,6 +934,7 @@ struct Engine {
         weather.snap(world->generator(), playerSpawn, dayCycle.worldSeconds());
         precip.reset();
         world::particles().reset();
+        world::fires().reset();
 
         // Имя по умолчанию — чтобы мир было чем назвать в списке.
         // Игрок переименует его на экране создания, если захочет.
@@ -1485,6 +1510,16 @@ struct Engine {
         // интерактивным прямоугольником, поэтому тап по пустому месту
         // проваливался сквозь меню на невидимую кнопку — включая DIG
         // и PUT, которые меняют мир.
+        // Кольцу джойстика нельзя на пояс быстрых слотов: касание
+        // ячейки забирает интерфейс, а джойстик, появившийся рядом,
+        // отодвигается так, чтобы ячеек не закрывать.
+        if (ui && !uiBlockingInput) {
+            const ui::Rect hb = ui->hotbarArea();
+            touch.setJoystickKeepOut(hb.x, hb.y, hb.w, hb.h);
+        } else {
+            touch.setJoystickKeepOut(0.f, 0.f, 0.f, 0.f);
+        }
+
         if (padButtonsVisible_ != !uiBlockingInput) {
             padButtonsVisible_ = !uiBlockingInput;
             for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i)
@@ -1661,6 +1696,16 @@ struct Engine {
                         player->pendingParryHint = false;
                         ui->notify(cfg::T(cfg::StrKey::Hint_Parry),
                                    ui::theme::NotifyPriority::High);
+                    }
+                    // Выученное заклинание: чем его колдовать, иначе
+                    // не догадаться — руна молча появилась в поясе.
+                    if (player->grantedRune != 0) {
+                        const auto& rdef = items::items().get(player->grantedRune);
+                        ui->notify(cfg::trf("New spell: %s. Equip its rune and attack to cast.",
+                                            cfg::tr(combat::weapons().get(
+                                                rdef.payload.weaponId).name)),
+                                   ui::theme::NotifyPriority::High);
+                        player->grantedRune = 0;
                     }
                     if (player->enteredVillage) {
                         cfg::StrKey k = cfg::StrKey::Notif_VillageFarmstead;
@@ -1938,6 +1983,10 @@ struct Engine {
         combat::updateProjectiles(*world, registry, dt);
         combat::updateHitFx(registry, dt);
         combat::tickStatuses(registry, dt);
+        // Огонь — после статусов: погасший в этот кадр не должен
+        // пылать ещё кадр. Дождь гасит открытое пламя, снег — нет.
+        world::fires().update(*world, registry,
+                              weather.precip() * (1.f - weather.snowMix()), dt);
         // Отметки «откуда ударили» гаснут сами: у них своё время
         // жизни, не привязанное ни к бою, ни к здоровью.
         if (auto* hm = registry.get<combat::HurtMarks>(player->entity()))

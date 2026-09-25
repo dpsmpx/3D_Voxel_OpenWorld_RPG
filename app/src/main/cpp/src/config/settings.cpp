@@ -224,7 +224,11 @@ bool Settings::save(const std::string& path) const {
     wi("last_profile",       lastProfile);
     wi("last_slot",          lastSlot);
     wf("autosave_interval",  autosaveInterval);
-    wb("log_enabled",        logEnabled);
+    // Ключ новый: прежний log_enabled лежит в каждом файле единицей
+    // лишь потому, что журнал был включён по умолчанию, и выбором
+    // игрока он не был. Его не читаем — журнал у всех выключается,
+    // а включённый с этой версии сохраняется уже под этим ключом.
+    wb("log_to_file",        logEnabled);
 
     std::fprintf(f, "\n[Render]\n");
     wi("view_distance",      viewDistance);
@@ -313,7 +317,7 @@ bool Settings::load(const std::string& path) {
             autosaveEnabled = readBool(kv.value, autosaveEnabled);
         else if (std::strcmp(kv.key, "autosave_interval") == 0)
             autosaveInterval = readF32(kv.value, autosaveInterval);
-        else if (std::strcmp(kv.key, "log_enabled") == 0)
+        else if (std::strcmp(kv.key, "log_to_file") == 0)
             logEnabled = readBool(kv.value, logEnabled);
 
         else if (std::strcmp(kv.key, "view_distance") == 0)

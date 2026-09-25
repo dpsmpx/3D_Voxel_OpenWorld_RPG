@@ -24,7 +24,8 @@ namespace combat {
 void applyStatuses(StatusEffects& se, const DamageInstance& dmg) {
     if (dmg.burnTime > 0.f) {
         se.burnTime = std::min(10.f, se.burnTime + dmg.burnTime);
-        se.burnDps = std::max(se.burnDps, dmg.amount * 0.10f);
+        se.burnDps = std::max(se.burnDps, dmg.burnDps > 0.f ? dmg.burnDps
+                                                            : dmg.amount * 0.10f);
     }
 
     if (dmg.slowDuration > 0.f) {

@@ -10,6 +10,7 @@
 #include "../combat/focus.h"
 #include "../combat/hurt_marks.h"
 #include "../combat/hit_detection.h"
+#include "../combat/spells.h"
 #include "../progression/resource_regen.h"
 #include "../items/item_pickup.h"
 #include "../items/item_use.h"
@@ -209,6 +210,20 @@ items::UseResult Player::useItem(world::ChunkManager& world, u32 slotIndex) {
 
     if (auto* eq = reg_->get<combat::EquippedWeapon>(entity_)) equipped = *eq;
     return res;
+}
+
+items::UseResult Player::tapHotbar(world::ChunkManager& world, u8 index) {
+    if (!reg_ || index >= items::INV_HOTBAR_SLOTS) return items::UseResult::Failed;
+    auto* inv = reg_->get<items::Inventory>(entity_);
+    if (!inv) return items::UseResult::Failed;
+    const bool again = inv->activeHotbar == index;
+    setActiveHotbar(index);
+    const u32 slot = items::INV_HOTBAR_OFFSET + index;
+    const auto& st = inv->at(slot);
+    if (st.empty()) return items::UseResult::Ok;
+    const bool weapon = items::items().get(st.itemId).category == items::ItemCategory::Weapon;
+    if (weapon || again) return useItem(world, slot);
+    return items::UseResult::Ok;
 }
 
 bool Player::dropItem(u32 slotIndex) {
@@ -434,6 +449,8 @@ void Player::updateImpl(world::ChunkManager& world,
         if (bounce > 0.f) {
             controller.state().velocity.y = bounce;
             controller.state().onGround   = false;
+            // Батут принял падение целиком: для того он и батут.
+            controller.state().landingDrop = 0.f;
             audio::events().jump(controller.state().position);
         }
     }
@@ -473,32 +490,32 @@ void Player::updateImpl(world::ChunkManager& world,
     // и пропасть работала лифтом вниз. Обрыв без этого — не опасность,
     // а декорация.
     //
-    // Считаем от ВЫСОТЫ полёта, а не от скорости удара: скорость
-    // упирается в maxFallSpeed, и падение с двадцати блоков не
-    // отличалось бы от падения с шестидесяти.
+    // Сколько стоит падение, считает контроллер (landingDrop): от
+    // верха полёта, за вычетом того, что погасили вода и мягкая
+    // опора. Здесь только цена в здоровье. Раньше вода сбрасывала
+    // отсчёт целиком — и лужа по колено ловила падение с любой
+    // высоты; теперь глубина гасит нырок постепенно, и не
+    // успевший остановиться бьётся о дно.
     lastFallDamage = 0.f;
     {
         const auto& st = controller.state();
-        // Вода и лава сбрасывают отсчёт наравне с землёй, и это не
-        // перестраховка: нырнувший с обрыва в озеро выплывает и
-        // ВЫХОДИТ НА БЕРЕГ — то есть приземляется. Без сброса ему
-        // засчитали бы падение, случившееся минуту назад и совсем в
-        // другом месте.
-        if (st.onGround || st.inWater || st.inLava) {
-            if (!wasOnGround && isOnGround) {
-                const f32 drop = fallPeakY_ - st.position.y;
-                if (drop > FALL_SAFE_BLOCKS) {
-                    combat::DamageInstance dmg;
-                    dmg.amount = (drop - FALL_SAFE_BLOCKS) * FALL_DAMAGE_PER_BLOCK;
-                    dmg.type   = combat::DamageType::Physical;
-                    dmg.targetEntity = (u32)entity_;
-                    dmg.sourceName   = "fall";
-                    lastFallDamage = combat::applyDamage(*reg_, entity_, dmg);
-                }
-            }
-            fallPeakY_ = st.position.y;
-        } else {
-            fallPeakY_ = std::max(fallPeakY_, st.position.y);
+        const f32 dmgAmount = fallDamageFor(st.landingDrop);
+        if (dmgAmount > 0.f) {
+            combat::DamageInstance dmg;
+            dmg.amount = dmgAmount;
+            dmg.type   = combat::DamageType::Physical;
+            dmg.targetEntity = (u32)entity_;
+            dmg.sourceName   = "fall";
+            lastFallDamage = combat::applyDamage(*reg_, entity_, dmg);
+        }
+
+        // Проломленная опора: листва, снег, солома, лёд, стекло
+        // приняли удар и ушли из-под ног. Осколки её цвета и звук
+        // слома — иначе игрок провалился бы сквозь крону молча.
+        if (st.brokeBlock != 0) {
+            world::blockBreakBurst(st.brokeCell, st.brokeBlock);
+            audio::events().blockBreak(st.brokeBlock,
+                glm::vec3(st.brokeCell) + glm::vec3(0.5f));
         }
     }
 
@@ -697,6 +714,11 @@ void Player::updateImpl(world::ChunkManager& world,
         lairTimer_ = 0.f;
         noticeLair(world);
         noticeVillage(world);
+        // Руны заклинаний — по Древу: выученное появляется в поясе,
+        // сброшенное уходит. Раз в полсекунды хватает с запасом:
+        // между нажатием узла и первым броском проходит больше.
+        if (const u16 rune = combat::syncSpellRunes(*reg_, entity_)) grantedRune = rune;
+        if (auto* eq = reg_->get<combat::EquippedWeapon>(entity_)) equipped = *eq;
     }
 
     // ---- Уведомление о смене тира репутации ----

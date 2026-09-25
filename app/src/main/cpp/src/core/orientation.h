@@ -117,6 +117,22 @@ inline glm::vec4 yawQuat(f32 yaw) {
     return { 0.f, std::sin(yaw * 0.5f), 0.f, std::cos(yaw * 0.5f) };
 }
 
+/// Кватернион поворота вокруг оси `axis` (любой длины) на угол.
+inline glm::vec4 axisQuat(const glm::vec3& axis, f32 angle) {
+    const f32 len = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+    if (len < 1e-6f) return { 0.f, 0.f, 0.f, 1.f };
+    const f32 s = std::sin(angle * 0.5f) / len;
+    return { axis.x * s, axis.y * s, axis.z * s, std::cos(angle * 0.5f) };
+}
+
+/// Произведение кватернионов: сперва поворот b, потом a.
+inline glm::vec4 qmul(const glm::vec4& a, const glm::vec4& b) {
+    return { a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+             a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+             a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+             a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z };
+}
+
 /// Поворот вектора кватернионом — дословно как qrot в шейдерах.
 inline glm::vec3 qrot(const glm::vec4& q, const glm::vec3& v) {
     const glm::vec3 u { q.x, q.y, q.z };

@@ -38,6 +38,9 @@ public:
     /// Прямоугольник с картинкой снаружи (см. UiRenderer::setImage).
     /// Без установленной картинки рисует заливку цветом c.
     void imageQuad(float x, float y, float w, float h, UiColor c);
+    /// Значок предмета из атласа — квадрат со стороной size.
+    /// false — значка у предмета нет (номер пуст), ничего не нарисовано.
+    bool itemIcon(u16 itemId, float x, float y, float size, UiColor c);
     /// Есть ли что показывать в imageQuad.
     bool hasImage() const;
     /// Картинка для imageQuad; владеет ею вызывающий.

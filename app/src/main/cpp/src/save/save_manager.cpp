@@ -270,7 +270,13 @@ SaveStatus SaveManager::load(const SaveSlot& slot,
         return SaveStatus::CorruptedData;
     }
 
-    if (!deltas.applyAll(world)) return SaveStatus::CorruptedData;
+    // Правки сохранения — в мир. Изменённые чанки НЕ строятся здесь
+    // все разом, где бы они ни лежали: каждый получит свои правки,
+    // когда до него дойдёт генерация. Заново строятся только те, что
+    // уже в памяти, — в их вокселях лежат правки прежней сессии, и
+    // тех в загруженном сейве может не быть.
+    deltas.attach(world);
+    world.regenerateLoaded();
 
     if (outSeed)        *outSeed = seed;
     if (outPlaytimeSec) *outPlaytimeSec = playtime;

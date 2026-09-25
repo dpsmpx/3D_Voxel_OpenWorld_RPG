@@ -214,6 +214,9 @@ public:
     /// и джойстик заведены там, а до сих пор не рисовались нигде —
     /// игрок видел пустой экран и искал кнопки наугад.
     void attachTouch(const input::TouchInput* t) { touch_ = t; }
+    /// Пояс быстрых слотов на экране, в пикселях: джойстику туда
+    /// нельзя (input::TouchInput::setJoystickKeepOut).
+    Rect hotbarArea() const { return layout_.hotbar(); }
 
     bool routeTouch(i32 id, float px, float py, int phase);
 
@@ -331,6 +334,8 @@ public:
     std::function<void(u32 recipeId)>          onCraft;
     std::function<void(u32 recipeId)>          onEnchant;
     std::function<void(u32 slotIndex)>         onEquipHotbar;
+    /// Касание ячейки пояса прямо в игре, номер ячейки 0..8.
+    std::function<void(u32 hotbarIndex)>       onHotbarTap;
     std::function<void()>                      onSettingsChanged;
     /// Создать мир. seedText — то, что игрок НАБРАЛ, а не число:
     /// «12345» и «Долина» разбираются одинаково и в одном месте,

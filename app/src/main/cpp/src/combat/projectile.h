@@ -30,6 +30,13 @@ struct Projectile {
     u32             colorRGBA = 0xFFFFFFFF;
     f32             scale     = 0.15f;
     bool            isSpell   = false;
+    /// Тонкая игла вдоль полёта, а не сгусток: заклинание, у
+    /// которого есть направление.
+    bool            needle    = false;
+    /// Цвет осколков, на которые снаряд разлетается при ударе;
+    /// 0 — не разлетается. Ледяная игла бьётся о камень и о
+    /// противника вдребезги, и это видно.
+    u32             shardColor = 0;
 };
 
 /// Короткоживущий визуальный эффект попадания.
@@ -59,6 +66,8 @@ struct ProjectileSpawnParams {
     u32             colorRGBA     = 0xFFFFFFFF;
     f32             scale         = 0.15f;
     bool            isSpell       = false;
+    bool            needle        = false;
+    u32             shardColor    = 0;
 };
 
 ecs::Entity spawnProjectile(ecs::Registry& reg,

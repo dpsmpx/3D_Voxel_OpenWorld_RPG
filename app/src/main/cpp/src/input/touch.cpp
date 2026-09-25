@@ -34,6 +34,33 @@ bool TouchInput::onJoystickHalf(f32 x) const {
     return joystickLeft_ ? (x < mid) : (x > mid);
 }
 
+glm::vec2 TouchInput::joystickCenterFor(glm::vec2 p) const {
+    if (keepOut_.z <= 0.f || keepOut_.w <= 0.f) return p;
+    // Запретная область, раздутая на радиус кольца: центр внутри неё
+    // — и кольцо легло бы на пояс.
+    const f32 r  = joystick_.radius;
+    const f32 x0 = keepOut_.x - r, x1 = keepOut_.x + keepOut_.z + r;
+    const f32 y0 = keepOut_.y - r, y1 = keepOut_.y + keepOut_.w + r;
+    if (p.x <= x0 || p.x >= x1 || p.y <= y0 || p.y >= y1) return p;
+
+    // Выталкиваем к ближайшей стороне, на которой кольцо целиком
+    // помещается на экране и на своей половине. Вниз некуда: пояс
+    // стоит у нижнего края.
+    glm::vec2 best{ p.x, y0 };
+    f32 bestD = p.y - y0;
+    auto consider = [&](glm::vec2 c) {
+        if (c.x - r < 0.f || c.x + r > (f32)screenW_) return;
+        if (!onJoystickHalf(c.x)) return;
+        const f32 d = std::fabs(c.x - p.x);
+        if (d < bestD) { bestD = d; best = c; }
+    };
+    consider({ x0, p.y });
+    consider({ x1, p.y });
+    // Выше кольцо тоже не должно уходить за край.
+    best.y = std::max(best.y, r);
+    return best;
+}
+
 // ============================================================
 // Пул касаний
 // ============================================================
@@ -256,8 +283,9 @@ void TouchInput::beginTouch(i32 id, f32 x, f32 y, f32 t) {
     if (onJoystickHalf(x) && !joystick_.active) {
         joystick_.active  = true;
         joystick_.touchId = id;
-        joystick_.center  = {x, y};
-        joystick_.current = {x, y};
+        joystick_.center  = joystickCenterFor({x, y});
+        joystick_.grab    = glm::vec2(x, y) - joystick_.center;
+        joystick_.current = joystick_.center;
 
         // Второе нажатие двойного включает бег — и держит его, пока
         // палец на экране. Засчитывается, только если оно пришло
@@ -309,7 +337,7 @@ void TouchInput::moveTouch(i32 id, f32 x, f32 y, f32 t) {
     }
 
     if (joystick_.active && joystick_.touchId == id) {
-        glm::vec2 d = glm::vec2(x, y) - joystick_.center;
+        glm::vec2 d = glm::vec2(x, y) - joystick_.grab - joystick_.center;
         const f32 len = glm::length(d);
         if (len > joystick_.radius) d = d / len * joystick_.radius;
         joystick_.current = joystick_.center + d;

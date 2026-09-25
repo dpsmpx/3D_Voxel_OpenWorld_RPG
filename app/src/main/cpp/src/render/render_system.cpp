@@ -4,6 +4,7 @@
  */
 #include "render_system.h"
 #include "../world/debug_scene.h"
+#include "../world/fire.h"
 #include "voxel_pipeline.h"
 #include "../core/log.h"
 #include "../config/settings.h"
@@ -138,6 +139,19 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
         lights_.addTransient(LightField::heldLight(
             player->selectedBlock(), player->controller.state().position));
 
+    // Огонь: горящие пятна, горящие существа и струя из ладони.
+    // Отбирать ближние здесь незачем — nearest() ниже выберет их
+    // вместе с факелами по одному правилу.
+    for (const world::FireGlow& g : world::fires().glows()) {
+        if (g.power <= 0.f) continue;
+        PointLight l;
+        l.pos    = g.pos;
+        l.color  = glm::vec3(1.f, 0.62f, 0.28f);
+        l.radius = g.radius;
+        l.power  = g.power;
+        lights_.addTransient(l);
+    }
+
     {
         PointLight chosen[MAX_GPU_LIGHTS];
         const u32 n = lights_.nearest(camPos, chosen, MAX_GPU_LIGHTS);
@@ -233,7 +247,7 @@ void RenderSystem::render(vk::Context& ctx) {
             (npcRenderer_.instanceCount()  ? 1u : 0u) +
             (mobRenderer_.instanceCount()  ? 1u : 0u) +
             (projRenderer_.instanceCount() ? 1u : 0u) +
-            (itemRenderer_.instanceCount() ? 1u : 0u);
+            itemRenderer_.drawCount();
     }
     ctx.markPass(Pass::Entities);
 

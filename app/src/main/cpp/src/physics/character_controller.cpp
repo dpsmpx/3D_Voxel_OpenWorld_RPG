@@ -3,6 +3,7 @@
  * @brief Физика: AABB-коллизия с вокселями, raycast, контроллер персонажа.
  */
 #include "character_controller.h"
+#include "impact.h"
 #include "../world/block.h"
 #include <cmath>
 #include <algorithm>
@@ -32,6 +33,7 @@ void CharacterController::detectEnvironment(world::ChunkManager& world) {
     state_.inLava    = (bF == world::LAVA)  || (bM == world::LAVA);
     state_.waistDeep = (bM == world::WATER);
     state_.submerged = (bE == world::WATER);
+    if (!state_.inWater) state_.surfacing = false;
 }
 
 // ============================================================
@@ -225,6 +227,7 @@ void CharacterController::update(world::ChunkManager& world,
     if (dt <= 0.f) return;
     if (dt > 0.1f) dt = 0.1f;
 
+    const bool startedOnGround = state_.onGround;
     detectEnvironment(world);
 
     // --- Таймеры ---
@@ -281,11 +284,27 @@ void CharacterController::update(world::ChunkManager& world,
     }
 
     // --- Трение ---
-    if (state_.inWater) {
+    if (state_.inWater && state_.velocity.y < -swimMaxFall) {
+        // Нырок с высоты. Гасит его глубина, а не первый кадр в воде:
+        // раньше скорость здесь резалась до пяти разом, и лужа по
+        // колено ловила падение с любой высоты. Грести против такого
+        // падения нельзя — тело несёт вниз, пока вода его не
+        // остановит или пока оно не ударится о дно. Саму вертикаль
+        // гасит settleFall — по глубине, пройденной за кадр.
+        const f32 drag = std::exp(-waterDrag * dt);
+        state_.velocity.x *= drag;
+        state_.velocity.z *= drag;
+        state_.surfacing = true;
+    } else if (state_.inWater) {
         f32 drag = std::exp(-waterDrag * dt);
         state_.velocity.x *= drag;
         state_.velocity.z *= drag;
         state_.velocity.y *= drag;
+
+        // Сам взялся грести — всплытие после нырка кончилось: дальше
+        // он решает сам.
+        if (input.jumpHeld || input.crouch || !state_.submerged)
+            state_.surfacing = false;
 
         if (input.jumpHeld) {
             // Гребок вверх — всплытие.
@@ -294,6 +313,9 @@ void CharacterController::update(world::ChunkManager& world,
             // Гребок вниз — погружение. Работает и у поверхности:
             // иначе нырнуть было бы нельзя, выталкивание пересилит.
             state_.velocity.y = -swimDiveSpeed;
+        } else if (state_.surfacing) {
+            // Ушёл под воду падением — выносит наверх.
+            state_.velocity.y += waterBuoyancy * dt;
         } else if (!state_.waistDeep) {
             // Воды по щиколотку — это брод, а не плавание: тело
             // стоит на дне, и выталкивать нечего. Раньше хватало
@@ -310,7 +332,7 @@ void CharacterController::update(world::ChunkManager& world,
             state_.velocity.y -= waterSinkRate * dt;
         }
         if (state_.velocity.y >  swimRiseSpeed) state_.velocity.y =  swimRiseSpeed;
-        if (state_.velocity.y < -5.0f)          state_.velocity.y = -5.0f;
+        if (state_.velocity.y < -swimMaxFall)   state_.velocity.y = -swimMaxFall;
     } else if (state_.onGround && dvLen < 1e-4f && !state_.dashing()) {
         f32 f = std::exp(-groundFriction * dt);
         state_.velocity.x *= f;
@@ -356,6 +378,10 @@ void CharacterController::update(world::ChunkManager& world,
     // --- Перемещение с коллизией ---
     const bool wasOnGround = state_.onGround;
     state_.onGround = false;
+    // С какой высоты и с какой скоростью тело шло в этот кадр: по
+    // ним settleFall считает, сколько жидкости оно пересекло.
+    const f32 yBeforeMove  = state_.position.y;
+    const f32 vyBeforeMove = state_.velocity.y;
 
     glm::vec3 delta = state_.velocity * dt;
     glm::vec3 originalDelta = delta;
@@ -421,6 +447,142 @@ void CharacterController::update(world::ChunkManager& world,
     if (overlapsSolid(world, box.min(state_.position), box.max(state_.position))) {
         state_.position.y += 2.5f * dt;
     }
+
+    settleFall(world, startedOnGround, yBeforeMove, vyBeforeMove);
+}
+
+f32 CharacterController::liquidDepthCrossed(world::ChunkManager& world,
+                                            f32 fromY, f32 toY) const
+{
+    // Столб под серединой ступней: в жидкость входят ногами.
+    const i32 x = (i32)std::floor(state_.position.x);
+    const i32 z = (i32)std::floor(state_.position.z);
+    world::VoxelReader rd(world);
+    auto& reg = world::blocks();
+
+    f32 k = 0.f;
+    for (i32 y = (i32)std::floor(toY); y <= (i32)std::floor(fromY); ++y) {
+        const f32 part = std::min(fromY, (f32)y + 1.f) - std::max(toY, (f32)y);
+        if (part <= 0.f) continue;
+        const u16 b = rd.at(x, y, z);
+        if (b == world::UNKNOWN) continue;
+        k += reg.get(b).impact.drag * part;
+    }
+    return k;
+}
+
+bool CharacterController::supportUnder(world::ChunkManager& world,
+                                       glm::ivec3& cell, u16& block) const
+{
+    // Ступни стоят ровно на границе блоков: опора — на пять
+    // сантиметров ниже, как и у всех проб «под ногами» в игре.
+    const glm::vec3 lo = box.min(state_.position);
+    const glm::vec3 hi = box.max(state_.position);
+    const i32 y = (i32)std::floor(state_.position.y - 0.05f);
+    auto& reg = world::blocks();
+    world::VoxelReader rd(world);
+
+    f32 best = 0.f;
+    bool found = false;
+    for (i32 x = (i32)std::floor(lo.x); x <= (i32)std::floor(hi.x - 1e-4f); ++x)
+        for (i32 z = (i32)std::floor(lo.z); z <= (i32)std::floor(hi.z - 1e-4f); ++z) {
+            const u16 b = rd.at(x, y, z);
+            if (b == world::UNKNOWN || !reg.isSolid(b)) continue;
+            // Под ступнями бывает до четырёх блоков: берём тот, на
+            // котором стоит бóльшая часть подошвы.
+            const f32 ox = std::min(hi.x, (f32)x + 1.f) - std::max(lo.x, (f32)x);
+            const f32 oz = std::min(hi.z, (f32)z + 1.f) - std::max(lo.z, (f32)z);
+            const f32 area = ox * oz;
+            if (area > best) {
+                best = area;
+                cell = { x, y, z };
+                block = b;
+                found = true;
+            }
+        }
+    return found;
+}
+
+// ============================================================
+// Счёт падения
+//
+// Высота, которой стоит падение, — fallTopY. В полёте это верх
+// полёта: скорость упирается в предел падения и обнуляется рывком,
+// а высоту не обманешь. В жидкости она опускается вслед за
+// скоростью: что погасила глубина, того при ударе о дно уже нет. На
+// посадке мягкая опора гасит своё, а проломленная уходит из-под ног,
+// и тело летит дальше с остатком.
+// ============================================================
+void CharacterController::settleFall(world::ChunkManager& world, bool startedOnGround,
+                                     f32 yBefore, f32 vyBefore)
+{
+    state_.landingDrop = 0.f;
+    state_.brokeBlock  = 0;
+
+    const f32 y = state_.position.y;
+    f32 vDown = std::max(0.f, -state_.velocity.y);
+
+    // ---- Жидкость гасит нырок по пройденной глубине ----
+    //
+    // По пути, а не по времени: на шестидесяти блоках в секунду тело
+    // пересекает лужу по колено за два кадра, и гашение «за кадр
+    // в воде» зависело бы от того, как кадры легли на лужу. По пути
+    // скорость убывает как e^(−drag·глубина) — сколько жидкости
+    // пройдено, столько и погашено, при любой частоте кадров. Ниже
+    // скорости плавания жидкость не гасит: там своя физика.
+    bool plunged = false;
+    if (vyBefore < -swimMaxFall && y < yBefore) {
+        const f32 k = liquidDepthCrossed(world, yBefore, y);
+        if (k > 0.f) {
+            const f32 vOut = plungeSpeed(-vyBefore, k, swimMaxFall);
+            if (!state_.onGround) state_.velocity.y = -vOut;
+            vDown = vOut;
+            plunged = true;
+        }
+    }
+
+    // Высота, которой стоит скорость прямо сейчас.
+    const f32 energyY = y + dropForSpeed(vDown, gravity);
+    const bool inLiquid = state_.inWater || state_.inLava || plunged;
+
+    if (!state_.onGround) {
+        if (inLiquid)
+            state_.fallTopY = std::min(std::max(state_.fallTopY, y), energyY);
+        else
+            state_.fallTopY = std::max(state_.fallTopY, energyY);
+        return;
+    }
+
+    // Ударился о дно в том же кадре, в котором пересёк воду: удар —
+    // с тем, что вода успела погасить.
+    if (plunged) state_.fallTopY = std::min(state_.fallTopY, energyY);
+
+    if (!startedOnGround) {
+        f32 drop = std::max(0.f, state_.fallTopY - y);
+        glm::ivec3 cell{0};
+        u16 block = 0;
+        if (drop > 0.f && supportUnder(world, cell, block)) {
+            const world::BlockImpact& m = world::blocks().get(block).impact;
+            if (m.absorb > 0.f || m.giveWay > 0.f) {
+                const ImpactOutcome o = resolveImpact(m, drop);
+                if (o.gaveWay) {
+                    // Опора уходит из-под ног: тело летит дальше с
+                    // тем, что осталось от падения.
+                    world.setVoxel(cell.x, cell.y, cell.z, world::AIR);
+                    state_.brokeBlock = block;
+                    state_.brokeCell  = cell;
+                    state_.onGround   = false;
+                    state_.coyoteTimer = 0.f;
+                    state_.velocity.y = -speedForDrop(o.dropAfter, gravity);
+                    state_.fallTopY   = y + o.dropAfter;
+                    return;
+                }
+                drop = o.dropAfter;
+            }
+        }
+        state_.landingDrop = drop;
+    }
+    state_.fallTopY = y;
 }
 
 } // namespace physics

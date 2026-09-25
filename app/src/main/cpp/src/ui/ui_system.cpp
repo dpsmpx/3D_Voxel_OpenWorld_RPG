@@ -309,9 +309,14 @@ void UiSystem::drawItemIcon(items::ItemStack& stack, float x, float y,
     ui_.rect(x, y, size, size, bg);
     ui_.rectOutline(x, y, size, size, 2.f, rgba(rr, gg, bb, 255));
 
-    float pad = size * 0.18f;
-    ui_.rect(x + pad, y + pad, size - pad * 2.f, size - pad * 2.f,
-             rgba(rr, gg, bb, 255));
+    // Значок — модель предмета, отрисованная на прозрачном фоне
+    // (см. ui::buildUiAtlas). Цвет редкости остался рамке и подложке.
+    const float pad = size * 0.06f;
+    if (!ui_.itemIcon(stack.itemId, x + pad, y + pad, size - pad * 2.f, COL_WHITE)) {
+        const float in = size * 0.18f;
+        ui_.rect(x + in, y + in, size - in * 2.f, size - in * 2.f,
+                 rgba(rr, gg, bb, 255));
+    }
 
     if (stack.count > 1) {
         char buf[8];
@@ -840,8 +845,23 @@ void UiSystem::drawHotbar(player::Player& player) {
         const Rect r = layout_.hotbarSlot(i);
         const bool isActive = (i == (u32)active);
 
+        // Ячейка — кнопка, но только поверх чистого HUD: под меню пояс
+        // лишь виден. Касание ловится вместе с половиной зазора с
+        // каждой стороны и полоской над ячейкой: палец шире ячейки, и
+        // промах в зазор не должен проваливаться в джойстик.
+        bool pressed = false;
+        if (screen == Screen::Hud) {
+            const f32 g = layout_.hotbarGap();
+            const Rect hit{ r.x - g * 0.5f, r.y - g, r.w + g, r.h + g };
+            const int idx = ui_.pushInteractiveRect(hit, [this, i]() {
+                if (onHotbarTap) onHotbarTap(i);
+            });
+            pressed = ui_.isInteractivePressed(idx);
+        }
+
         ui_.rect(r.x, r.y, r.w, r.h,
-                 hudTint(isActive ? theme::PanelRaised : theme::Panel));
+                 hudTint(pressed ? theme::AccentPressed
+                                 : (isActive ? theme::PanelRaised : theme::Panel)));
         // Выбранная ячейка отличается не только цветом: рамка толще.
         ui_.rectOutline(r.x, r.y, r.w, r.h,
                         layout_.dp(isActive ? theme::STROKE_SELECTED_DP
@@ -1427,6 +1447,12 @@ void UiSystem::drawItemDetails(player::Player& player) {
     const auto& def = items::items().get(st.itemId);
 
     f32 y = d.y + pad;
+
+    // Сам предмет — крупно, в углу панели.
+    {
+        const f32 big = layout_.dp(theme::SPACE_XXL_DP) * 1.5f;
+        ui_.itemIcon(st.itemId, d.x + d.w - pad - big, d.y + pad, big, COL_WHITE);
+    }
 
     // Название цветом редкости — и рядом словом, потому что одним
     // цветом ценность передавать нельзя.
@@ -3424,7 +3450,11 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
                         layout_.dp(theme::STROKE_DP),
                         canNow ? rgba(120, 220, 120, 255) : COL_BLACK);
 
-        const f32 tx = rr.x + layout_.dp(theme::SPACE_M_DP);
+        // Значок того, что получится, — слева во всю высоту строки.
+        const f32 iconS = rr.h - layout_.dp(theme::SPACE_XS_DP) * 2.f;
+        ui_.itemIcon(r.output.itemId, rr.x + layout_.dp(theme::SPACE_XS_DP),
+                     rr.y + layout_.dp(theme::SPACE_XS_DP), iconS, COL_WHITE);
+        const f32 tx = rr.x + iconS + layout_.dp(theme::SPACE_M_DP);
         f32 ty = rr.y + layout_.dp(theme::SPACE_XS_DP);
         ui_.text(items::items().name(r.output.itemId), tx, ty,
                  theme::TEXT_LABEL,
@@ -3465,10 +3495,14 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
             auto& ar = available[selectedRecipeIdx];
             const auto& r = *ar.recipe;
 
-            ui_.text(items::items().name(r.output.itemId), px, py,
+            // Значок результата — рядом с названием, в две его высоты.
+            const f32 bigS = ui_.textHeight(theme::TEXT_TITLE) * 2.f;
+            ui_.itemIcon(r.output.itemId, px, py, bigS, COL_WHITE);
+            ui_.text(items::items().name(r.output.itemId),
+                     px + bigS + layout_.dp(theme::SPACE_S_DP),
+                     py + (bigS - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
                      theme::TEXT_TITLE, COL_WHITE);
-            py += ui_.textHeight(theme::TEXT_TITLE)
-                + layout_.dp(theme::SPACE_M_DP);
+            py += bigS + layout_.dp(theme::SPACE_M_DP);
 
             char lvlBuf[64];
             std::snprintf(lvlBuf, sizeof(lvlBuf), cfg::tr("Level %u"),
@@ -3497,7 +3531,11 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
                 std::snprintf(line, sizeof(line), "%s  %u / %u",
                               items::items().name(in.itemId),
                               (unsigned)have, (unsigned)in.count);
-                ui_.text(line, px + layout_.dp(theme::SPACE_S_DP), py,
+                const f32 smallS = ui_.textHeight(theme::TEXT_LABEL) * 1.4f;
+                ui_.itemIcon(in.itemId, px + layout_.dp(theme::SPACE_S_DP),
+                             py - (smallS - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f,
+                             smallS, COL_WHITE);
+                ui_.text(line, px + layout_.dp(theme::SPACE_S_DP) * 2.f + smallS, py,
                          theme::TEXT_LABEL,
                          ok ? rgba(180, 240, 180, 255)
                             : rgba(240, 160, 160, 255));
@@ -3653,6 +3691,8 @@ void UiSystem::drawTradeScreen(player::Player& player) {
                               (unsigned)e.stock);
                 ui_.text(lbl, rr.x + 6.f, rr.y + 8.f, 1.4f,
                          affordable ? COL_WHITE : rgba(130, 130, 130, 255));
+                ui_.itemIcon(e.itemId, rr.x + rr.w - 42.f, rr.y + rr.h - 42.f, 38.f,
+                             affordable ? COL_WHITE : rgba(130, 130, 130, 255));
 
                 char priceBuf[32];
                 std::snprintf(priceBuf, sizeof(priceBuf), "%u g",
@@ -3701,6 +3741,8 @@ void UiSystem::drawTradeScreen(player::Player& player) {
                               items::items().name(s.itemId),
                               (unsigned)s.count);
                 ui_.text(lbl, rr.x + 6.f, rr.y + 8.f, 1.4f, COL_WHITE);
+                ui_.itemIcon(s.itemId, rr.x + rr.w - 42.f, rr.y + rr.h - 42.f, 38.f,
+                             COL_WHITE);
 
                 u32 sellPrice = def.value / 2;
                 if (sellPrice < 1) sellPrice = 1;

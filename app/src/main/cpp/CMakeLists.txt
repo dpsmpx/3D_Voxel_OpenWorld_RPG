@@ -110,6 +110,7 @@ add_library(native-lib SHARED
     src/world/hazards.cpp
     src/world/noise.cpp
     src/world/precipitation.cpp
+    src/world/fire.cpp
     src/world/particles.cpp
     src/world/spawn.cpp
     src/world/hydrology.cpp
@@ -125,6 +126,8 @@ add_library(native-lib SHARED
     src/render/iso_snapshot.cpp
     src/render/iso_save.cpp
     src/render/item_renderer.cpp
+    src/render/voxel_model.cpp
+    src/render/voxel_model_renderer.cpp
     src/render/lights.cpp
     src/render/mesh_builder.cpp
     src/render/pass_sweep.cpp
@@ -177,6 +180,7 @@ add_library(native-lib SHARED
     src/combat/projectile.cpp
     src/combat/resonance.cpp
     src/combat/spatial_hash.cpp
+    src/combat/spells.cpp
     src/combat/status_effects.cpp
     src/combat/weapon.cpp
 
@@ -217,6 +221,7 @@ add_library(native-lib SHARED
     src/items/currency.cpp
     src/items/inventory.cpp
     src/items/item_def.cpp
+    src/items/item_models.cpp
     src/items/item_pickup.cpp
     src/items/item_stack.cpp
     src/items/item_use.cpp

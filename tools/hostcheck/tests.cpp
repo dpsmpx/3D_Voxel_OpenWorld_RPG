@@ -20,6 +20,15 @@
 #include "items/throwable.h"
 #include "combat/components.h"
 #include "combat/projectile.h"
+#include "combat/combat_controller.h"
+#include "combat/spells.h"
+#include "world/fire.h"
+#include "physics/impact.h"
+#include "items/item_models.h"
+#include "render/voxel_model.h"
+#include "render/voxel_model_renderer.h"
+#include "render/item_renderer.h"
+#include "ui/ui_atlas.h"
 #include "trade/trade.h"
 #include "ecs/components.h"
 #include "npc/dialogue.h"
@@ -2226,7 +2235,7 @@ void testWorldSharesOneLightingModel() {
     const char* files[] = {
         "voxel.vert", "voxel.frag", "sky.frag",
         "mob.vert", "mob.frag", "projectile.vert", "projectile.frag",
-        "outline.vert",
+        "outline.vert", "voxmodel.vert",
     };
     std::string reference;
     const char* referenceName = nullptr;
@@ -3897,6 +3906,10 @@ void testFrameGpuBreakdown() {
             const std::string tw = mainSrc.substr(term, 3000);
             check(tw.find("copyFileToClipboard") != NONE,
                   "на выходе журнал копируется в буфер обмена");
+            const usize cp = tw.find("copyFileToClipboard");
+            const usize guard = tw.rfind("crash::enabled()", cp);
+            check(guard != NONE && cp - guard < 200,
+                  "но только если журнал ведётся на момент выхода");
         }
     }
     // Пока идёт развёртка, маску задаёт она, а не настройка: два
@@ -4383,7 +4396,7 @@ std::vector<std::pair<std::string, std::string>> allShaders() {
         "voxel.vert", "voxel.frag", "sky.vert", "sky.frag",
         "mob.vert", "mob.frag",
         "outline.vert", "outline.frag", "projectile.vert", "projectile.frag",
-        "ui.vert", "ui.frag",
+        "ui.vert", "ui.frag", "voxmodel.vert",
     };
     std::vector<std::pair<std::string, std::string>> out;
     for (const char* n : names) {
@@ -7126,9 +7139,7 @@ void testVillageDeedSurvivesSave() {
     // Дельта наполняется через обратный вызов мира — тем же путём,
     // каким это происходит в игре.
     save::WorldDeltaStore deltas;
-    wd.setBlockModifyCallback([&deltas](i32 wx, i32 wy, i32 wz, u16 id) {
-        deltas.recordBlock(wx, wy, wz, id);
-    });
+    deltas.attach(wd);
 
     check(world::lightVillageDeed(wd, site), "факел зажёгся");
     check(world::villageDeeds(wd, site) == 1, "и виден в мире");
@@ -7147,7 +7158,11 @@ void testVillageDeedSurvivesSave() {
     check(world::villageDeeds(wd2, site) == 0,
           "в заново порождённом мире следа нет");
 
-    loaded.applyAll(wd2);
+    // Как при загрузке: хранилище подключается к миру, и уже
+    // построенные чанки строятся заново — с правками.
+    loaded.attach(wd2);
+    wd2.regenerateLoaded();
+    if (!loadAroundWell(wd2, site)) { jobs::gJobs.stop(); return; }
     check(world::villageDeeds(wd2, site) == 1,
           "а после загрузки дельты — есть");
 
@@ -9629,7 +9644,8 @@ void testEntityFacingHasNoSidewaysMotion() {
         // конкретные символы: подмена qrot матрицей другой ручности
         // численную проверку выше обошла бы стороной.
         for (const char* n : { "app/src/main/cpp/shaders/mob.vert",
-                               "app/src/main/cpp/shaders/projectile.vert" }) {
+                               "app/src/main/cpp/shaders/projectile.vert",
+                               "app/src/main/cpp/shaders/voxmodel.vert" }) {
             const std::string vs = readSource(n);
             if (vs.empty()) continue;
             const bool ok =
@@ -11723,6 +11739,160 @@ void testEveryButtonHasAnAction() {
     std::snprintf(m, sizeof(m), "без действия зарегистрированы:%s",
                   dead ? deadNames.c_str() : " нет");
     check(dead == 0, m);
+}
+
+// ------------------------------------------------------------
+// Пояс быстрых слотов работает прямо в игре.
+//
+// С того дня, как пояс появился на HUD, касание ячейки не делало
+// ничего: ячейки рисовались, но касаний не ловили. Палец проваливался
+// в игровой ввод, и на левой половине экрана под ним появлялся
+// джойстик — кольцом поверх тех самых ячеек.
+// ------------------------------------------------------------
+void testHotbarInGame() {
+    group("пояс: быстрые слоты работают прямо в игре");
+
+    world::blocks();
+    items::items();
+    char m[200];
+
+    constexpr i32 W = 2400, H = 1080;
+    const config::Settings saved = config::settingsConst();
+    config::settings() = config::Settings{};
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+    world::ChunkManager wd(0x5150Bull, 1);
+    auto* inv = pl.inventory();
+    check(inv != nullptr, "сумка есть");
+    if (!inv) { config::settings() = saved; return; }
+    inv->clearAll();
+    inv->hotbarSlot(0) = items::ItemStack{ items::ITEM_STONE, 10, {} };
+    inv->hotbarSlot(1) = items::ItemStack{ items::ITEM_BREAD, 3, {} };
+    inv->hotbarSlot(2) = items::ItemStack{ items::ITEM_IRON_AXE, 1, {} };
+
+    ui::UiSystem sys;
+    sys.setDensityDpi(420);
+    sys.setScreenSize(W, H);
+    sys.screen = ui::Screen::Hud;
+    std::vector<u32> taps;
+    sys.onHotbarTap = [&](u32 i) { taps.push_back(i); };
+    sys.tickUi(1.f / 60.f);
+    sys.buildFrame(pl, wd, 60.f);
+
+    input::TouchInput t;
+    t.setViewport(W, H);
+    t.setJoystickLeftHanded(true);
+    t.setUiRouter([&](i32 id, float x, float y, int ph) { return sys.routeTouch(id, x, y, ph); });
+    const ui::Rect hb = sys.hotbarArea();
+    t.setJoystickKeepOut(hb.x, hb.y, hb.w, hb.h);
+    check(hb.w > 0.f && hb.h > 0.f, "пояс на экране");
+
+    auto down = [&](i32 id, i32 idx, f32 x, f32 y, f32 at) {
+        const i32 act = idx == 0 ? AMOTION_EVENT_ACTION_DOWN
+            : (AMOTION_EVENT_ACTION_POINTER_DOWN | (idx << AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT));
+        t.onTouch(act, idx, id, x, y, at);
+    };
+    auto up = [&](i32 id, i32 idx, f32 x, f32 y, f32 at) {
+        const i32 act = idx == 0 ? AMOTION_EVENT_ACTION_UP
+            : (AMOTION_EVENT_ACTION_POINTER_UP | (idx << AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT));
+        t.onTouch(act, idx, id, x, y, at);
+    };
+    auto move = [&](i32 id, f32 x, f32 y, f32 at) {
+        t.onTouch(AMOTION_EVENT_ACTION_MOVE, 0, id, x, y, at);
+    };
+
+    // ---- 1. Касание ячейки — это ячейка, а не джойстик ----
+    const u32 shown = sys.layout().hotbarVisibleSlots();
+    u32 onJoyHalf = 0, joyAppeared = 0;
+    for (u32 i = 0; i < shown; ++i) {
+        const ui::Rect r = sys.layout().hotbarSlot(i);
+        const f32 cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
+        if (cx < (f32)W * 0.5f) ++onJoyHalf;
+        down(1, 0, cx, cy, (f32)i);
+        if (t.joystick().active) ++joyAppeared;
+        up(1, 0, cx, cy, (f32)i + 0.05f);
+    }
+    bool order = taps.size() == shown;
+    for (u32 i = 0; i < taps.size() && order; ++i) order = taps[i] == i;
+    std::snprintf(m, sizeof(m), "каждая из %u ячеек ловит своё касание", shown);
+    check(order, m);
+    check(onJoyHalf > 0, "и ячейки на половине джойстика — тоже");
+    check(joyAppeared == 0, "джойстик под пальцем на ячейке не появляется");
+
+    // ---- 2. Идти и переключать пояс одновременно ----
+    {
+        taps.clear();
+        down(1, 0, 300.f, 300.f, 10.f);
+        move(1, 300.f, 150.f, 10.1f);
+        const glm::vec2 walk = t.moveAxis();
+        const ui::Rect r = sys.layout().hotbarSlot(1);
+        down(2, 1, r.x + r.w * 0.5f, r.y + r.h * 0.5f, 10.2f);
+        up(2, 1, r.x + r.w * 0.5f, r.y + r.h * 0.5f, 10.25f);
+        check(walk.y > 0.5f, "игрок идёт");
+        check(taps.size() == 1 && taps[0] == 1, "второй палец переключил ячейку");
+        check(t.joystick().active && t.joystick().touchId == 1 &&
+              glm::length(t.moveAxis() - walk) < 1e-4f,
+              "а ходьба не прервалась ни на кадр");
+        up(1, 0, 300.f, 150.f, 10.3f);
+    }
+
+    // ---- 3. Кольцо джойстика не наплывает на пояс ----
+    {
+        const f32 R = t.joystick().radius;
+        // Над поясом, но выше полосы, которую ячейки ловят сами.
+        const glm::vec2 near{ hb.x + 10.f, hb.y - sys.layout().hotbarGap() - 10.f };
+        down(1, 0, near.x, near.y, 20.f);
+        const auto& j = t.joystick();
+        const bool overlaps = j.center.x + R > hb.x && j.center.x - R < hb.x + hb.w &&
+                              j.center.y + R > hb.y && j.center.y - R < hb.y + hb.h;
+        check(j.active, "рядом с поясом джойстик появляется");
+        check(!overlaps, "но кольцом ячеек не закрывает");
+        check(glm::length(t.moveAxis()) < 1e-4f,
+              "отодвинутое кольцо само по себе игрока не ведёт");
+        move(1, near.x, near.y - R, 20.1f);
+        check(t.moveAxis().y > 0.9f, "а ведение пальца считается от точки касания");
+        up(1, 0, near.x, near.y - R, 20.2f);
+
+        const glm::vec2 far{ 300.f, 300.f };
+        check(t.joystickCenterFor(far) == far, "вдали от пояса — ровно под пальцем");
+    }
+
+    // ---- 4. Что делает касание ячейки ----
+    {
+        inv->activeHotbar = 4;
+        check(pl.tapHotbar(wd, 0) == items::UseResult::Ok && inv->activeHotbar == 0,
+              "блок: ячейка просто выбрана");
+        check(pl.selectedBlock() == world::STONE, "и из неё ставят блоки");
+
+        check(pl.tapHotbar(wd, 2) == items::UseResult::Equipped, "оружие надевается сразу");
+        auto* eq = reg.get<combat::EquippedWeapon>(pl.entity());
+        check(eq && eq->weaponId == combat::WEAPON_IRON_AXE, "в руке топор");
+        check(inv->hotbarSlot(2).itemId == items::ITEM_IRON_SWORD,
+              "а прежний меч лёг в ту же ячейку — повторное касание вернёт его");
+
+        auto* hp = reg.get<ecs::Health>(pl.entity());
+        if (hp) hp->current = hp->max * 0.5f;
+        check(pl.tapHotbar(wd, 1) == items::UseResult::Ok && inv->hotbarSlot(1).count == 3,
+              "еда по первому касанию только выбрана");
+        check(pl.tapHotbar(wd, 1) == items::UseResult::Consumed && inv->hotbarSlot(1).count == 2,
+              "по второму — съедена");
+    }
+
+    // ---- 5. Под меню пояс не ловит касаний ----
+    {
+        sys.screen = ui::Screen::Inventory;
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, wd, 60.f);
+        taps.clear();
+        const ui::Rect r = sys.layout().hotbarSlot(0);
+        sys.routeTouch(7, r.x + r.w * 0.5f, r.y + r.h * 0.5f, 0);
+        sys.routeTouch(7, r.x + r.w * 0.5f, r.y + r.h * 0.5f, 1);
+        check(taps.empty(), "пока открыто меню, пояс за ним не нажимается");
+    }
+
+    config::settings() = saved;
 }
 
 // ------------------------------------------------------------
@@ -14709,6 +14879,464 @@ void testSecretTreasureAndItsQuest() {
 }
 
 // ------------------------------------------------------------
+// Предметы — воксельные модели: на земле и на значке.
+//
+// Выпавший меч рисовался цветным кубиком, а значок в сумке был
+// квадратом цвета редкости: по нему нельзя было отличить меч от
+// топора и зелье здоровья от зелья маны. Теперь у каждого предмета
+// модель из мелких вокселей: на земле она рисуется своим мешем, а
+// значок — это та же модель, отрисованная на прозрачном фоне.
+// ------------------------------------------------------------
+void testItemVoxelModels() {
+    group("предметы: воксельные модели и значки");
+
+    world::blocks();
+    items::items();
+    char m[220];
+
+    std::vector<u16> ids;
+    for (u16 id = 1; id < items::ITEM_COUNT; ++id)
+        if (items::items().get(id).name) ids.push_back(id);
+
+    // ---- 1. У каждого предмета своя модель ----
+    {
+        u32 missing = 0, tooBig = 0, empty = 0;
+        const char* firstBad = nullptr;
+        for (u16 id : ids) {
+            const render::VoxelModel& md = items::itemModel(id);
+            if (!items::hasOwnModel(id)) { ++missing; if (!firstBad) firstBad = items::items().get(id).name; }
+            if (md.solidCount() == 0) ++empty;
+            const i32 longest = std::max({ md.sx, md.sy, md.sz });
+            const f32 world = (f32)longest * md.voxelSize;
+            if (longest > 16 || world > 0.6f || world < 0.1f) ++tooBig;
+        }
+        std::snprintf(m, sizeof(m), "своя модель у всех %zu предметов%s%s", ids.size(),
+                      firstBad ? ", а нет у: " : "", firstBad ? firstBad : "");
+        check(missing == 0, m);
+        check(empty == 0, "и ни одна не пуста");
+        check(tooBig == 0, "размером с ладонь: до шестнадцати вокселей, 0.1..0.6 блока");
+    }
+
+    // ---- 2. Меш: только видимые грани, слитые, наружу ----
+    {
+        render::VoxelModel cube;
+        cube.resize(2, 2, 2);
+        for (u32& c : cube.cells) c = 0x808080FFu;
+        const render::VoxelMesh mc = render::meshVoxelModel(cube);
+        check(mc.quadCount() == 6, "кубик 2×2×2 одного цвета — шесть граней, по одной на сторону");
+
+        render::VoxelModel two;
+        two.resize(2, 1, 1);
+        two.set(0, 0, 0, 0xFF0000FFu);
+        two.set(1, 0, 0, 0x00FF00FFu);
+        const render::VoxelMesh mt = render::meshVoxelModel(two);
+        check(mt.quadCount() == 10, "разные цвета не сливаются, а грань между ними не строится");
+        check(std::fabs(mc.boundsMin.y) < 1e-6f &&
+              std::fabs(mc.boundsMin.x + mc.boundsMax.x) < 1e-6f,
+              "модель стоит на нуле и отцентрована");
+
+        u32 inward = 0, open = 0, tris = 0;
+        for (u16 id : ids) {
+            const render::VoxelMesh mesh = render::meshVoxelModel(items::itemModel(id));
+            glm::vec3 signedArea{ 0.f };
+            for (usize t = 0; t + 2 < mesh.indices.size(); t += 3) {
+                const auto& a = mesh.vertices[mesh.indices[t]];
+                const auto& b = mesh.vertices[mesh.indices[t + 1]];
+                const auto& c = mesh.vertices[mesh.indices[t + 2]];
+                const glm::vec3 n = glm::cross(b.pos - a.pos, c.pos - a.pos);
+                if (glm::dot(n, a.normal) <= 0.f) ++inward;
+                signedArea += n;
+                ++tris;
+            }
+            // Замкнутая поверхность: площади граней по каждой оси в
+            // сумме со знаком дают ноль — дыр нет.
+            if (glm::length(signedArea) > 1e-4f) ++open;
+        }
+        std::snprintf(m, sizeof(m), "треугольников во всех моделях %u, вывернутых %u", tris, inward);
+        check(inward == 0, m);
+        check(open == 0, "поверхность каждой модели замкнута");
+    }
+
+    // ---- 3. Значок: модель на прозрачном фоне ----
+    {
+        constexpr u32 S = ui::ICON_SIZE;
+        std::vector<u8> px(S * S * 4);
+        std::vector<u64> hashes;
+        u32 dirtyCorners = 0, thin = 0, small = 0, noOutline = 0;
+        for (u16 id : ids) {
+            render::renderVoxelIcon(items::itemModel(id), S, px.data(), S * 4);
+            auto alpha = [&](u32 x, u32 y) { return px[(y * S + x) * 4 + 3]; };
+            if (alpha(0, 0) || alpha(S - 1, 0) || alpha(0, S - 1) || alpha(S - 1, S - 1))
+                ++dirtyCorners;
+            u32 opaque = 0, dark = 0;
+            u32 x0 = S, x1 = 0, y0 = S, y1 = 0;
+            u64 h = 1469598103934665603ull;
+            for (u32 y = 0; y < S; ++y)
+                for (u32 x = 0; x < S; ++x) {
+                    const u8* p = &px[(y * S + x) * 4];
+                    for (int k = 0; k < 4; ++k) h = (h ^ p[k]) * 1099511628211ull;
+                    if (p[3] < 128) continue;
+                    ++opaque;
+                    if (p[0] < 40 && p[1] < 40 && p[2] < 40) ++dark;
+                    x0 = std::min(x0, x); x1 = std::max(x1, x);
+                    y0 = std::min(y0, y); y1 = std::max(y1, y);
+                }
+            hashes.push_back(h);
+            if (opaque < S * S / 12) ++thin;
+            if (opaque == 0 || std::max(x1 - x0, y1 - y0) < S * 7 / 10) ++small;
+            if (dark == 0) ++noOutline;
+        }
+        check(dirtyCorners == 0, "фон значка прозрачный");
+        check(thin == 0, "модель занимает значок, а не теряется в нём");
+        check(small == 0, "и растянута почти во всю клетку");
+        check(noOutline == 0, "у каждого значка тёмный контур по силуэту");
+        std::sort(hashes.begin(), hashes.end());
+        check(std::adjacent_find(hashes.begin(), hashes.end()) == hashes.end(),
+              "двух одинаковых значков нет: зелье здоровья не спутать с зельем маны");
+    }
+
+    // ---- 4. Атлас интерфейса: шрифт на месте, значки в своих клетках ----
+    {
+        const ui::UiAtlasData a = ui::buildUiAtlas();
+        check(a.width == ui::UI_ATLAS_W && a.height == ui::UI_ATLAS_H,
+              "атлас объявленного размера");
+        check(ids.size() <= ui::ICON_CAPACITY, "значкам хватает места в атласе");
+
+        std::vector<i32> slots;
+        u32 empty = 0, outOfRegion = 0;
+        for (u16 id : ids) {
+            const i32 slot = ui::itemIconSlot(id);
+            slots.push_back(slot);
+            float uv[4];
+            if (!ui::itemIconUv(id, uv)) { ++empty; continue; }
+            if (uv[1] * (f32)a.height < (f32)ui::FONT_REGION_H - 0.01f || uv[3] > 1.f) ++outOfRegion;
+            // В клетке значка есть непрозрачное.
+            const u32 cx = (u32)(((uv[0] + uv[2]) * 0.5f) * (f32)a.width);
+            u32 opaque = 0;
+            const u32 top = (u32)(uv[1] * (f32)a.height);
+            for (u32 y = top; y < top + ui::ICON_SIZE; ++y)
+                opaque += a.pixels[((usize)y * a.width + cx) * 4 + 3] > 0 ? 1u : 0u;
+            if (opaque == 0) ++empty;
+        }
+        std::sort(slots.begin(), slots.end());
+        check(slots.front() >= 0 && std::adjacent_find(slots.begin(), slots.end()) == slots.end(),
+              "у каждого предмета своя клетка");
+        check(empty == 0, "и в ней нарисован значок");
+        check(outOfRegion == 0, "значки не залезают на шрифт");
+        check(ui::itemIconSlot(0) < 0, "у пустого номера значка нет");
+
+        // Шрифт не тронут: белый пиксель заливки и буква «A» на месте.
+        const u32 wx = (u32)(a.whiteU * (f32)a.width), wy = (u32)(a.whiteV * (f32)a.height);
+        check(a.pixels[((usize)wy * a.width + wx) * 4 + 3] == 255, "белый пиксель заливки цел");
+        float g[4];
+        a.glyphUv('A', g);
+        u32 lit = 0;
+        for (u32 y = (u32)(g[1] * (f32)a.height); y < (u32)(g[3] * (f32)a.height); ++y)
+            for (u32 x = (u32)(g[0] * (f32)a.width); x < (u32)(g[2] * (f32)a.width); ++x)
+                lit += a.pixels[((usize)y * a.width + x) * 4 + 3] ? 1u : 0u;
+        check(lit > 5, "и буквы читаются из того же атласа");
+    }
+
+    // ---- 5. Значок доходит до кадра ----
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x5150Bull, 1);
+        const config::Settings saved = config::settingsConst();
+        config::settings() = config::Settings{};
+        if (auto* inv = pl.inventory()) {
+            inv->clearAll();
+            inv->hotbarSlot(0) = items::ItemStack{ items::ITEM_POTION_MANA_SMALL, 1, {} };
+        }
+        ui::UiSystem sys;
+        sys.setDensityDpi(320);
+        sys.setScreenSize(1280, 720);
+        sys.screen = ui::Screen::Hud;
+        sys.tickUi(1.f / 60.f);
+        sys.buildFrame(pl, wd, 60.f);
+        float uv[4];
+        ui::itemIconUv(items::ITEM_POTION_MANA_SMALL, uv);
+        u32 hits = 0;
+        for (const ui::UiVertex& v : sys.frameVertices())
+            if (std::fabs(v.uv.x - uv[0]) < 1e-6f || std::fabs(v.uv.x - uv[2]) < 1e-6f)
+                if (v.uv.y >= uv[1] - 1e-6f && v.uv.y <= uv[3] + 1e-6f) ++hits;
+        check(hits >= 6, "значок зелья в поясе рисуется из атласа");
+        config::settings() = saved;
+    }
+
+    // ---- 6. Рендер моделей: по вызову на модель ----
+    {
+        std::vector<std::pair<u32, render::VoxelModelInstance>> pend;
+        const u32 order[] = { 3, 1, 3, 2, 1 };
+        for (u32 k = 0; k < 5; ++k) {
+            render::VoxelModelInstance inst{};
+            inst.pos = glm::vec3((f32)k, 0.f, 0.f);
+            pend.push_back({ order[k], inst });
+        }
+        std::vector<render::VoxelModelInstance> sorted;
+        std::vector<render::VoxelModelRenderer::Draw> draws;
+        render::VoxelModelRenderer::batch(pend, sorted, draws);
+        check(draws.size() == 3, "пять экземпляров трёх моделей — три вызова");
+        bool ok = sorted.size() == 5;
+        u32 next = 0;
+        for (const auto& d : draws) {
+            ok &= d.firstInstance == next;
+            for (u32 i = 0; i < d.count; ++i)
+                ok &= order[(u32)sorted[d.firstInstance + i].pos.x] == d.model;
+            next += d.count;
+        }
+        check(ok, "экземпляры каждого вызова — его модели, подряд");
+    }
+
+    // ---- 7. Как лежит выпавшее ----
+    {
+        items::ItemPickup p{};
+        p.onGround = true;
+        const glm::vec3 at{ 10.3f, 40.f, -7.6f };
+        const render::ModelPose g = render::pickupPose(p, at, 0.1f);
+        check(std::fabs(g.rot.x) < 1e-6f && std::fabs(g.rot.z) < 1e-6f,
+              "на земле лежит плашмя: поворот только вокруг вертикали");
+        check(g.pos.y >= at.y && g.pos.y < at.y + 0.02f, "и на самой земле");
+        const render::ModelPose g2 = render::pickupPose(p, at, 0.1f);
+        check(g2.rot == g.rot, "и не вертится от кадра к кадру");
+
+        p.onGround = false;
+        p.lifeRemaining = 123.4f;
+        const render::ModelPose f = render::pickupPose(p, at, 0.2f);
+        const glm::vec3 mid{ 0.f, 0.1f, 0.f };
+        check(glm::length(f.pos + orient::qrot(f.rot, mid) - (at + mid)) < 1e-4f,
+              "в полёте кувыркается вокруг своей середины");
+        check(render::pickupCopies(1) == 1 && render::pickupCopies(2) == 2 &&
+              render::pickupCopies(40) == 3, "стопка лежит горкой из двух-трёх моделей");
+    }
+}
+
+// ------------------------------------------------------------
+// Мягкое приземление: листва, снег, солома, песок, лёд, вода.
+//
+// Падение стоит столько, с какой высоты началось, за вычетом того,
+// что погасили вода и мягкая опора. Опора, принявшая слишком
+// сильный удар, проламывается и уходит из-под ног — тело летит
+// дальше сквозь неё с остатком. Так в крону и прыгают: каждый слой
+// листвы гасит часть падения.
+// ------------------------------------------------------------
+void testSoftLandings() {
+    group("падение: мягкая опора, проломы и глубина воды");
+
+    world::blocks();
+    items::items();
+    char m[200];
+
+    // ---- 1. Правило на числах ----
+    {
+        const world::BlockImpact leaves = world::blocks().get(world::LEAVES).impact;
+        const auto a = physics::resolveImpact(leaves, 3.f);
+        check(!a.gaveWay && a.dropAfter == 0.f, "листва держит спрыгнувшего с трёх блоков");
+        const auto b = physics::resolveImpact(leaves, 14.f);
+        check(b.gaveWay && std::fabs(b.dropAfter - 4.f) < 1e-4f,
+              "с четырнадцати проламывается, погасив десять блоков");
+        const auto c = physics::resolveImpact(leaves, 8.f);
+        check(c.gaveWay && c.dropAfter == 0.f,
+              "погасила падение целиком, но приняла сильный удар — сломана");
+        check(physics::resolveImpact(world::blocks().get(world::STONE).impact, 9.f).dropAfter == 9.f,
+              "камень не гасит ничего");
+        check(!physics::resolveImpact(world::blocks().get(world::SAND).impact, 60.f).gaveWay,
+              "песок не проламывается");
+        const f32 v = physics::speedForDrop(14.f, -28.f);
+        check(std::fabs(physics::dropForSpeed(v, -28.f) - 14.f) < 1e-3f,
+              "высота и скорость переводятся друг в друга без потерь");
+        {
+            const f32 kWater = world::blocks().get(world::WATER).impact.drag;
+            const f32 a1 = physics::plungeSpeed(60.f, kWater * 1.f, 5.f);
+            const f32 a2 = physics::plungeSpeed(60.f, kWater * 2.f, 5.f);
+            check(a1 < 60.f && a2 < a1 && a2 > 0.f,
+                  "вода гасит нырок тем сильнее, чем глубже, и не разворачивает его");
+            check(physics::plungeSpeed(60.f, 100.f, 5.f) == 5.f,
+                  "медленнее скорости плавания не гасит: дальше тело плывёт");
+        }
+        check(world::blocks().get(world::LAVA).impact.drag >
+              world::blocks().get(world::WATER).impact.drag,
+              "лава гуще воды");
+    }
+
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager world(0x50F7, 2);
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        // Площадка: камень под ногами, над ним — чистый воздух.
+        const i32 surf = world.generator().surfaceHeight(8, 8) + 4;
+        auto clear = [&]() {
+            for (i32 z = -2; z <= 10; ++z)
+                for (i32 x = -2; x <= 10; ++x) {
+                    world.setVoxel(x, surf - 1, z, world::STONE);
+                    for (i32 y = surf; y < surf + 70; ++y)
+                        world.setVoxel(x, y, z, world::AIR);
+                }
+        };
+        // Слой материала 3×3 вокруг точки падения.
+        auto layer = [&](i32 y, u16 block) {
+            for (i32 z = 3; z <= 5; ++z)
+                for (i32 x = 3; x <= 5; ++x) world.setVoxel(x, y, z, block);
+        };
+        auto at = [&](i32 y) { return world.getVoxel(4, y, 4); };
+
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(4.5f, (f32)surf, 4.5f));
+        auto* hp = reg.get<ecs::Health>(pl.entity());
+        auto* sp = reg.get<ecs::Stamina>(pl.entity());
+        check(hp && sp, "здоровье и выносливость есть");
+        if (!hp || !sp) { jobs::gJobs.stop(); return; }
+
+        // Падение с высоты `blocks` над точкой `fromY`; вернуть снятое.
+        auto fall = [&](f32 fromY, f32 blocks, int dashAt = -1) {
+            hp->max = 1000.f;
+            hp->current = hp->max;
+            hp->invulnTime = 0.f;
+            sp->current = sp->max;
+            pl.controller.setPosition({ 4.5f, fromY + blocks, 4.5f });
+            f32 taken = 0.f;
+            for (int i = 0; i < 60 * 10; ++i) {
+                player::PlayerInput in;
+                in.dashPressed = (i == dashAt);
+                pl.update(world, in, 1.f / 60.f, 0.f, 0.f);
+                if (pl.lastFallDamage > 0.f) taken += pl.lastFallDamage;
+                if (pl.controller.state().onGround && i > 4) break;
+            }
+            return taken;
+        };
+
+        clear();
+        const f32 onStone = fall((f32)surf, 14.f);
+        std::snprintf(m, sizeof(m), "о камень с четырнадцати — %.0f", (double)onStone);
+        check(onStone > 60.f, m);
+
+        // ---- 2. Рывок падения не отменяет ----
+        //
+        // Рывок обнуляет вертикальную скорость на пятую долю
+        // секунды. Считай урон по скорости — и рывок у самой земли
+        // стирал бы любое падение.
+        {
+            // Рывок уносит блоков на десять вперёд: полосу под ним
+            // расчищаем, чтобы садился он на тот же камень, а не на
+            // природный склон ниже.
+            for (i32 z = -2; z <= 30; ++z)
+                for (i32 x = 1; x <= 8; ++x) {
+                    world.setVoxel(x, surf - 1, z, world::STONE);
+                    for (i32 y = surf; y < surf + 20; ++y)
+                        world.setVoxel(x, y, z, world::AIR);
+                }
+            const f32 dashed = fall((f32)surf, 14.f, 50);
+            std::snprintf(m, sizeof(m), "рывок у земли: снято %.0f", (double)dashed);
+            check(dashed > onStone * 0.9f, m);
+        }
+
+        // ---- 3. Листва ----
+        {
+            clear();
+            layer(surf, world::LEAVES);
+            check(fall((f32)surf + 1.f, 3.f) == 0.f && at(surf) == world::LEAVES,
+                  "с трёх блоков на крону: цел сам и цела листва");
+            check(fall((f32)surf + 1.f, 4.5f) == 0.f && at(surf) == world::LEAVES,
+                  "с четырёх с половиной — тоже: слабый удар листва держит");
+
+            const f32 one = fall((f32)surf + 1.f, 14.f);
+            std::snprintf(m, sizeof(m), "сквозь один слой листвы с четырнадцати — %.0f", (double)one);
+            check(one < onStone * 0.25f, m);
+            check(at(surf) == world::AIR, "сильный удар проломил листву");
+            check(world.getVoxel(3, surf, 3) == world::LEAVES, "а соседние блоки кроны целы");
+
+            // Крона в три слоя: прыжок в дерево с тридцати блоков.
+            clear();
+            for (i32 y = surf; y < surf + 3; ++y) layer(y, world::LEAVES);
+            const f32 tree = fall((f32)surf + 3.f, 30.f);
+            std::snprintf(m, sizeof(m), "в крону в три слоя с тридцати — %.0f", (double)tree);
+            check(tree == 0.f, m);
+            check(at(surf) == world::AIR && at(surf + 1) == world::AIR && at(surf + 2) == world::AIR,
+                  "и прошёл её насквозь, слой за слоем");
+            check(pl.controller.state().position.y < (f32)surf + 0.1f, "до самой земли");
+        }
+
+        // ---- 4. Снег, солома, песок, стекло ----
+        {
+            clear();
+            layer(surf, world::SNOW);
+            check(fall((f32)surf + 1.f, 6.f) == 0.f && at(surf) == world::SNOW,
+                  "сугроб держит спрыгнувшего с шести блоков");
+            const f32 snow = fall((f32)surf + 1.f, 12.f);
+            std::snprintf(m, sizeof(m), "в сугроб с двенадцати — %.0f", (double)snow);
+            check(snow > 0.f && snow < player::fallDamageFor(13.f), m);
+            check(at(surf) == world::AIR, "и провалился сквозь снег");
+
+            clear();
+            layer(surf, world::THATCH);
+            const f32 hay = fall((f32)surf + 1.f, 20.f);
+            std::snprintf(m, sizeof(m), "сквозь соломенную кровлю с двадцати — %.0f", (double)hay);
+            check(hay < player::fallDamageFor(21.f) * 0.3f && at(surf) == world::AIR, m);
+
+            clear();
+            layer(surf, world::SAND);
+            check(fall((f32)surf + 1.f, 5.f) == 0.f && at(surf) == world::SAND,
+                  "песок чуть подаётся: с пяти блоков не больно");
+
+            clear();
+            layer(surf, world::GLASS);
+            fall((f32)surf + 1.f, 6.f);
+            check(at(surf) == world::AIR, "стекло под упавшим бьётся");
+        }
+
+        // ---- 5. Лёд над водой ----
+        //
+        // Замёрзшая река: удар проламывает лёд, а вода под ним ловит.
+        {
+            clear();
+            for (i32 y = surf; y < surf + 3; ++y) layer(y, world::WATER);
+            layer(surf + 3, world::ICE);
+            check(fall((f32)surf + 4.f, 4.f) == 0.f && at(surf + 3) == world::ICE,
+                  "по льду ходят: спрыгнувшего он держит");
+            const f32 ice = fall((f32)surf + 4.f, 20.f);
+            std::snprintf(m, sizeof(m), "сквозь лёд в воду с двадцати — %.0f", (double)ice);
+            check(ice < player::fallDamageFor(21.f) * 0.2f, m);
+            check(at(surf + 3) == world::AIR, "лёд проломлен");
+        }
+
+        // ---- 6. Вода: чем глубже, тем мягче ----
+        {
+            f32 hurt[4] = {};
+            for (i32 depth = 1; depth <= 4; ++depth) {
+                clear();
+                for (i32 y = surf; y < surf + depth; ++y) layer(y, world::WATER);
+                // Шире площадка: течение и снос не должны вынести на
+                // сухой камень рядом.
+                for (i32 z = -2; z <= 10; ++z)
+                    for (i32 x = -2; x <= 10; ++x)
+                        for (i32 y = surf; y < surf + depth; ++y)
+                            world.setVoxel(x, y, z, world::WATER);
+                hurt[depth - 1] = fall((f32)surf + (f32)depth, 20.f);
+            }
+            std::snprintf(m, sizeof(m), "с двадцати в воду глубиной 1..4: %.0f %.0f %.0f %.0f",
+                          (double)hurt[0], (double)hurt[1], (double)hurt[2], (double)hurt[3]);
+            check(true, m);
+            check(hurt[0] > hurt[1] && hurt[1] >= hurt[2] && hurt[2] >= hurt[3],
+                  "чем глубже вода, тем слабее удар о дно");
+            check(hurt[0] > 0.f, "в луже по колено с двадцати блоков — больно");
+            check(hurt[3] == 0.f, "в четыре блока воды — уже нет");
+        }
+        clear();
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testFallsTrapsAndAmbushes() {
     group("опасности: обрыв, ловушка и засада");
 
@@ -14778,10 +15406,11 @@ void testFallsTrapsAndAmbushes() {
         // тот же удар о землю.
         //
         // Глубокая вода и мелкая — разные случаи, и проверять надо
-        // оба. В глубокой игрок до дна не доходит вовсе, и высота
-        // полёта обнуляется сама. В мелкой он ДОСТАЁТ дна, приземление
-        // засчитывается — и без отдельной оговорки лужа в один блок
-        // ранила бы ровно как камень.
+        // оба. Вода гасит нырок по глубине: в глубокой игрок
+        // останавливается, не дойдя до дна, а в мелкой бьётся о дно
+        // с тем, что вода не успела погасить. Раньше скорость в воде
+        // резалась разом, и лужа по колено ловила падение с любой
+        // высоты.
         {
             for (i32 z = -6; z <= 10; ++z)
                 for (i32 x = -6; x <= 10; ++x)
@@ -14794,7 +15423,16 @@ void testFallsTrapsAndAmbushes() {
                     for (i32 y = surf; y < surf + 4; ++y)
                         world.setVoxel(x, y, z, y == surf ? world::WATER
                                                           : world::AIR);
-            check(drop(14.f) < 0.01f, "и в лужу по колено — тоже");
+            const f32 puddle = drop(14.f);
+            {
+                char m[140];
+                std::snprintf(m, sizeof(m),
+                              "в лужу по колено с четырнадцати — %.0f (о камень %.0f)",
+                              (double)puddle, (double)big);
+                check(true, m);
+            }
+            check(puddle > 5.f && puddle < big * 0.6f,
+                  "лужа по колено смягчает удар о дно, но не отменяет");
 
             // И главное: нырнувший ВЫХОДИТ НА БЕРЕГ, то есть
             // приземляется. Без сброса высоты в воде ему засчитали
@@ -18717,6 +19355,329 @@ void testShurikenFliesAndHits() {
 }
 
 // ------------------------------------------------------------
+// Заклинания Древа: руны, ледяные иглы, струя огня.
+//
+// Иглы не крафтятся и не носятся с собой: навык кладёт в сумку
+// руну, руна держится в руке как оружие, а каждая игла лепится из
+// маны в момент броска. Огонь — струя, пока держат кнопку; она
+// жжёт и поджигает то, во что упирается.
+// ------------------------------------------------------------
+namespace {
+
+/// Готовый к колдовству игрок высоко над рельефом и мир под ним.
+bool spellWorldReady(world::ChunkManager& w) {
+    for (int i = 0; i < 600; ++i) {
+        w.update({ 8.f, 70.f, 8.f });
+        if (w.isReadyAt(8, 8) && w.pendingJobs() == 0) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+}
+
+ecs::Entity spellTarget(ecs::Registry& reg, const glm::vec3& feet, bool villager = false) {
+    const ecs::Entity t = reg.create();
+    ecs::Transform tf;
+    tf.position = feet;
+    reg.add(t, tf);
+    reg.add(t, ecs::Health{ 400.f, 400.f, 0.f, 0.f });
+    reg.add(t, ecs::Collider{ glm::vec3(0.4f, 0.9f, 0.4f) });
+    if (villager) reg.add(t, ecs::NPCTag{});
+    else          reg.add(t, ecs::EnemyTag{});
+    reg.add(t, combat::Combatant{});
+    reg.add(t, combat::StatusEffects{});
+    return t;
+}
+
+u32 countProjectiles(ecs::Registry& reg) {
+    return (u32)reg.pool<combat::Projectile>().size();
+}
+
+} // namespace
+
+void testTreeSpells() {
+    group("заклинания Древа: иглы из маны и струя огня");
+
+    world::blocks();
+    items::items();
+    using progression::SkillNodeId;
+    char m[200];
+
+    // ---- 1. Узлы и руны ----
+    {
+        const auto& ice = progression::skillTree().get(SkillNodeId::Wis_IceNeedles);
+        const auto& fire = progression::skillTree().get(SkillNodeId::Wis_Flame);
+        check(ice.branch == progression::SkillBranch::Wisdom &&
+              fire.branch == progression::SkillBranch::Wisdom,
+              "оба заклинания — в ветке Мудрости");
+        check(ice.parent == SkillNodeId::Wis_ArcaneMind,
+              "иглы открываются сразу за запасом маны");
+        check(fire.parent == SkillNodeId::Wis_ManaFlow,
+              "огонь — за потоком маны: струя пьёт ману непрерывно");
+
+        for (u16 rune : { (u16)items::ITEM_RUNE_ICE_NEEDLES, (u16)items::ITEM_RUNE_FLAME }) {
+            const auto& d = items::items().get(rune);
+            check(d.category == items::ItemCategory::Weapon && d.bound && d.value == 0,
+                  "руна надевается как оружие, привязана к навыку и ничего не стоит");
+            check(combat::isTreeSpell(d.payload.weaponId), "и держит заклинание Древа");
+        }
+        check(combat::weapons().get(combat::WEAPON_FLAME).style == combat::AttackStyle::Stream,
+              "огонь — струя, а не снаряд");
+    }
+
+    jobs::gJobs.start(2);
+    world::ChunkManager world(0x5BE11, 2);
+    if (!spellWorldReady(world)) {
+        check(false, "мир построен");
+        jobs::gJobs.stop();
+        return;
+    }
+    const f32 air = (f32)world.generator().surfaceHeight(8, 8) + 20.f;
+
+    ecs::Registry reg;
+    player::Player pl;
+    pl.init(reg, glm::vec3(8.5f, air, 8.5f));
+    const ecs::Entity me = pl.entity();
+    auto* tree = reg.get<progression::SkillTree>(me);
+    auto* inv  = pl.inventory();
+    auto* eq   = reg.get<combat::EquippedWeapon>(me);
+    auto* mana = reg.get<ecs::Mana>(me);
+    check(tree && inv && eq && mana, "у игрока есть Древо, сумка, рука и мана");
+    if (!tree || !inv || !eq || !mana) { jobs::gJobs.stop(); return; }
+
+    // ---- 2. Руна приходит и уходит вместе с навыком ----
+    {
+        check(combat::syncSpellRunes(reg, me) == 0 &&
+              inv->countOf(items::ITEM_RUNE_ICE_NEEDLES) == 0,
+              "невыученное заклинание руны не даёт");
+        tree->ranks[(u16)SkillNodeId::Wis_IceNeedles] = 1;
+        check(combat::syncSpellRunes(reg, me) == items::ITEM_RUNE_ICE_NEEDLES,
+              "выучил иглы — руна выдана");
+        const i32 slot = inv->findItem(items::ITEM_RUNE_ICE_NEEDLES);
+        check(slot >= (i32)items::INV_HOTBAR_OFFSET &&
+              slot < (i32)(items::INV_HOTBAR_OFFSET + items::INV_HOTBAR_SLOTS),
+              "и лежит в поясе, откуда её надевают");
+        check(combat::syncSpellRunes(reg, me) == 0 &&
+              inv->countOf(items::ITEM_RUNE_ICE_NEEDLES) == 1,
+              "повторная сверка второй руны не даёт");
+        check(!pl.dropItem((u32)slot), "руну не выбросить: она знание, а не вещь");
+
+        check(pl.useItem(world, (u32)slot) == items::UseResult::Equipped &&
+              eq->weaponId == combat::WEAPON_ICE_NEEDLES,
+              "руна надевается как оружие");
+        check(combat::syncSpellRunes(reg, me) == 0 &&
+              inv->countOf(items::ITEM_RUNE_ICE_NEEDLES) == 0,
+              "руна в руке — новой в сумку не кладётся");
+
+        tree->ranks[(u16)SkillNodeId::Wis_IceNeedles] = 0;
+        combat::syncSpellRunes(reg, me);
+        check(eq->weaponId == combat::WEAPON_NONE,
+              "навык сброшен — заклинание уходит и из рук");
+    }
+
+    // ---- 3. Ледяные иглы: веер из маны ----
+    const glm::vec3 north{ 0.f, 0.f, -1.f };
+    const glm::vec3 origin = pl.controller.state().position + glm::vec3(0.f, 1.3f, 0.f);
+    auto attack = [&](bool pressed, bool held, f32 dt, int frames) {
+        combat::CombatAction act;
+        for (int i = 0; i < frames; ++i) {
+            combat::CombatInput in;
+            in.attackPressed = pressed && i == 0;
+            in.attackHeld = held;
+            combat::updateCombat(world, reg, nullptr, me, origin, north, in, dt, act);
+        }
+        return act;
+    };
+    {
+        tree->ranks[(u16)SkillNodeId::Wis_IceNeedles] = 3;
+        eq->weaponId = combat::WEAPON_ICE_NEEDLES;
+        mana->current = mana->max;
+        const f32 before = mana->current;
+
+        attack(true, false, 1.f / 60.f, 12);
+        const u32 n = countProjectiles(reg);
+        std::snprintf(m, sizeof(m), "залп третьего ранга — %u игл", n);
+        check(n == combat::iceNeedleCount(3) && n == 5, m);
+        check(before - mana->current > 1.f, "и за него заплачено маной");
+
+        f32 widest = 0.f;
+        bool allNeedles = true, allCold = true;
+        auto& pool = reg.pool<combat::Projectile>();
+        for (usize i = 0; i < pool.size(); ++i) {
+            const auto* p = pool.get(pool.entityAt((u32)i));
+            if (!p) continue;
+            allNeedles &= p->needle && p->shardColor != 0 && p->isSpell;
+            allCold &= p->damage.type == combat::DamageType::Frost &&
+                       p->damage.slowAmount > 0.f && p->damage.slowDuration > 0.f;
+            const f32 c = glm::dot(glm::normalize(p->velocity), north);
+            widest = std::max(widest, std::acos(std::min(1.f, c)));
+        }
+        check(allNeedles, "каждая — игла, бьющаяся вдребезги");
+        check(allCold, "и холодная: морозит и замедляет");
+        check(widest > 0.05f && widest < 0.25f, "летят веером, но в сторону прицела");
+
+        // Цель по курсу: игла долетает, ранит и замедляет.
+        const ecs::Entity t = spellTarget(reg, origin + glm::vec3(0.f, -0.9f, -8.f));
+        for (int i = 0; i < 60; ++i) combat::updateProjectiles(world, reg, 1.f / 60.f);
+        const auto* th = reg.get<ecs::Health>(t);
+        const auto* ts = reg.get<combat::StatusEffects>(t);
+        check(th && th->current < th->max, "иглы долетели и ранили");
+        check(ts && ts->slowTime > 0.f, "и цель замедлена холодом");
+        reg.destroy(t);
+
+        // Без маны игла не лепится.
+        for (int i = 0; i < 60; ++i) combat::updateProjectiles(world, reg, 1.f / 60.f);
+        // Кнопку держат: иначе проверка прошла бы и при сломанной
+        // цене — первое нажатие тонет в откате прошлого залпа.
+        mana->current = 0.f;
+        attack(true, true, 1.f / 60.f, 40);
+        check(countProjectiles(reg) == 0, "без маны игл нет: ледышек про запас не бывает");
+
+        // Невыученное не колдуется, даже если руна ещё в руке.
+        mana->current = mana->max;
+        tree->ranks[(u16)SkillNodeId::Wis_IceNeedles] = 0;
+        attack(true, true, 1.f / 60.f, 40);
+        check(countProjectiles(reg) == 0, "навык сброшен — руна в руке молчит");
+    }
+
+    // ---- 4. Струя огня ----
+    {
+        tree->ranks[(u16)SkillNodeId::Wis_Flame] = 1;
+        eq->weaponId = combat::WEAPON_FLAME;
+        mana->current = mana->max;
+        mana->regen = 0.f;
+        world::fires().reset();
+
+        const ecs::Entity t = spellTarget(reg, origin + glm::vec3(0.f, -0.9f, -3.f));
+        const f32 m0 = mana->current;
+        attack(true, true, 1.f / 60.f, 60);
+        auto* ws = reg.get<combat::WeaponState>(me);
+        const auto* th = reg.get<ecs::Health>(t);
+        const auto* ts = reg.get<combat::StatusEffects>(t);
+        const f32 spent = m0 - mana->current;
+        std::snprintf(m, sizeof(m), "секунда струи стоит %.1f маны", (double)spent);
+        check(spent > 8.f && spent < 20.f, m);
+        check(ws && ws->streaming, "пока держат — струя идёт");
+        check(th && th->current < th->max, "всё в конусе горит");
+        check(ts && ts->burnTime > 0.f && ts->burnDps >= 4.f,
+              "и продолжает гореть после — жарко, а не десятой долей тика");
+        check(countProjectiles(reg) == 0, "снарядов струя не пускает");
+
+        const f32 m1 = mana->current;
+        attack(false, false, 1.f / 60.f, 30);
+        check(ws && !ws->streaming && mana->current == m1,
+              "отпустил — струя гаснет и мана больше не уходит");
+
+        mana->current = 0.5f;
+        attack(true, true, 1.f / 60.f, 30);
+        check(ws && !ws->streaming, "кончилась мана — кончился огонь");
+
+        // Горящий пылает: частицы огня на теле.
+        world::particles().reset();
+        world::fires().update(world, reg, 0.f, 0.2f);
+        check(world::particles().liveCount() > 0, "горящая цель пылает");
+        reg.destroy(t);
+    }
+
+    // ---- 5. Огонь на поверхности ----
+    {
+        world::fires().reset();
+        const i32 gx = 8, gz = 8;
+        const i32 gy = world.generator().surfaceHeight(gx, gz);
+        // Верхний твёрдый блок колонки: на нём и разведём.
+        i32 top = gy + 8;
+        while (top > 0 && !world::blocks().get(world.getVoxel(gx, top, gz)).isSolid) --top;
+        const glm::ivec3 base{ gx, top, gz }, cell{ gx, top + 1, gz };
+        const u16 cellBlock = world.getVoxel(cell.x, cell.y, cell.z);
+        const bool dry = !world::blocks().get(cellBlock).isLiquid;
+
+        // Струя, направленная под ноги, поджигает землю сама.
+        {
+            const glm::vec3 low{ (f32)gx + 0.5f, (f32)top + 1.f + 1.3f, (f32)gz + 0.5f };
+            const glm::vec3 down = glm::normalize(glm::vec3(0.f, -0.8f, -0.6f));
+            mana->current = mana->max;
+            combat::CombatAction act;
+            for (int i = 0; i < 30; ++i) {
+                combat::CombatInput in;
+                in.attackHeld = true;
+                combat::updateCombat(world, reg, nullptr, me, low, down, in,
+                                     1.f / 60.f, act);
+            }
+            check(world::fires().liveCount() > 0, "струя в землю — земля горит");
+            world::fires().reset();
+        }
+
+        check(!world::fires().ignite(world, base, base + glm::ivec3(0, 2, 0),
+                                     (u32)me, combat::Faction::Player),
+              "гореть можно только на грани блока");
+        check(!world::fires().ignite(world, base + glm::ivec3(0, -1, 0), base,
+                                     (u32)me, combat::Faction::Player),
+              "и не внутри твёрдого");
+        if (dry) {
+            check(world::fires().ignite(world, base, cell, (u32)me, combat::Faction::Player),
+                  "грань под открытым небом загорается");
+            check(world::fires().liveCount() == 1, "одно пятно");
+            world::fires().ignite(world, base, cell, (u32)me, combat::Faction::Player);
+            check(world::fires().liveCount() == 1, "повторный поджог его подпитывает, не множит");
+
+            // Кто стоит в огне — горит. Житель — нет: убийство деревни
+            // из-за перекинувшегося огня игрок бы себе не выбрал.
+            const glm::vec3 feet{ (f32)cell.x + 0.5f, (f32)cell.y, (f32)cell.z + 0.5f };
+            const ecs::Entity foe = spellTarget(reg, feet);
+            const ecs::Entity folk = spellTarget(reg, feet, true);
+            for (int i = 0; i < 20; ++i) world::fires().update(world, reg, 0.f, 1.f / 30.f);
+            const auto* fh = reg.get<ecs::Health>(foe);
+            const auto* vh = reg.get<ecs::Health>(folk);
+            check(fh && fh->current < fh->max, "враг, стоящий в пламени, обожжён");
+            check(vh && vh->current == vh->max, "житель — нет");
+            check(!world::fires().glows().empty(), "огонь светит");
+            reg.destroy(foe);
+            reg.destroy(folk);
+
+            // Дождь гасит открытое пламя вчетверо быстрее.
+            if (world::fires().spots()[0].open) {
+                for (int i = 0; i < 90; ++i) world::fires().update(world, reg, 1.f, 1.f / 30.f);
+                check(world::fires().liveCount() == 0, "ливень гасит огонь под открытым небом");
+            }
+        }
+
+        // Места под пятна ограничены: сорок первое вытесняет самое
+        // догоревшее, а не растит список.
+        world::fires().reset();
+        u32 lit = 0;
+        for (i32 dx = -8; dx <= 8 && lit < world::FireField::MAX + 8; ++dx)
+            for (i32 dz = -8; dz <= 8 && lit < world::FireField::MAX + 8; ++dz) {
+                const i32 x = gx + dx, z = gz + dz;
+                i32 y = gy + 8;
+                while (y > 0 && !world::blocks().get(world.getVoxel(x, y, z)).isSolid) --y;
+                if (world::fires().ignite(world, { x, y, z }, { x, y + 1, z },
+                                          (u32)me, combat::Faction::Player)) ++lit;
+            }
+        std::snprintf(m, sizeof(m), "поджогов %u, горит %u", lit, world::fires().liveCount());
+        check(lit > world::FireField::MAX && world::fires().liveCount() == world::FireField::MAX, m);
+    }
+
+    // ---- 6. Горящий гаснет в воде ----
+    {
+        const glm::vec3 feet = origin + glm::vec3(3.f, -0.9f, 0.f);
+        const ecs::Entity t = spellTarget(reg, feet);
+        auto* se = reg.get<combat::StatusEffects>(t);
+        se->burnTime = 5.f;
+        se->burnDps = 4.f;
+        const glm::ivec3 mid{ (i32)std::floor(feet.x), (i32)std::floor(feet.y + 0.9f),
+                              (i32)std::floor(feet.z) };
+        world.setVoxel(mid.x, mid.y, mid.z, world::WATER);
+        world::fires().update(world, reg, 0.f, 1.f / 30.f);
+        check(se->burnTime == 0.f, "нырнувший гаснет");
+        world.setVoxel(mid.x, mid.y, mid.z, world::AIR);
+        reg.destroy(t);
+    }
+
+    world::fires().reset();
+    world::particles().reset();
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testDashMovesForward() {
     group("рывок: уносит вперёд и упирается в стену");
 
@@ -22592,6 +23553,111 @@ void testWorldDeltaRoundTrip() {
         const bool ok = bad.read(br);
         check(!ok || !br.ok(), "мусор вместо правок распознаётся");
     }
+
+    // Правка, вернувшая клетку к сгенерированному, — уже не правка.
+    save::WorldDeltaStore back;
+    back.recordBlock(7, 60, 7, world::AIR, world::STONE);
+    back.recordBlock(7, 60, 7, world::DIRT, world::AIR);
+    check(back.totalMods() == 1, "первая правка помнит исходный блок");
+    back.recordBlock(7, 60, 7, world::STONE, world::DIRT);
+    check(back.totalMods() == 0 && back.chunkCount() == 0,
+          "клетка вернулась к исходной — в сейве её больше нет");
+    back.recordBlock(7, 60, 7, world::STONE, world::STONE);
+    check(back.totalMods() == 0, "тот же блок поверх себя — не правка");
+}
+
+// ------------------------------------------------------------
+// В сейве только то, что изменил игрок.
+//
+// Посещённый, но не тронутый чанк целиком выводится из зерна, и
+// сохранять его незачем. Правка живёт в хранилище, а не в
+// загруженном чанке: чанк можно выгрузить и построить заново — она
+// вернётся вместе с ним. А загрузка сейва не строит ради правок
+// дальние чанки: они получат их, когда до них дойдёт игрок.
+// ------------------------------------------------------------
+void testWorldDeltaOnlyChanges() {
+    group("save: в сейве только правки игрока");
+
+    world::blocks();
+    jobs::gJobs.start(2);
+
+    auto waitReady = [](world::ChunkManager& w, const glm::vec3& at) {
+        for (int i = 0; i < 900; ++i) {
+            w.update(at);
+            if (w.isReadyAt((i32)at.x, (i32)at.z) && w.pendingJobs() == 0) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(false, "чанк так и не построился");
+        return false;
+    };
+
+    constexpr u64 SEED = 0xD17A5ull;
+    const glm::vec3 home{ 8.5f, 80.f, 8.5f };
+    world::ChunkManager wd(SEED, 2);
+    save::WorldDeltaStore deltas;
+    deltas.attach(wd);
+    if (!waitReady(wd, home)) { jobs::gJobs.stop(); return; }
+
+    check(deltas.totalMods() == 0 && deltas.chunkCount() == 0,
+          "обход мира ничего не пишет в сейв");
+
+    // Верхний непустой блок колонки.
+    const i32 x = 8, z = 8;
+    i32 y = world::CHUNK_SIZE_Y - 1;
+    while (y > 0 && wd.getVoxel(x, y, z) == world::AIR) --y;
+    const u16 orig = wd.getVoxel(x, y, z);
+    const u16 other = orig == world::STONE ? world::DIRT : world::STONE;
+
+    wd.setVoxel(x, y, z, orig);
+    check(deltas.totalMods() == 0, "поставить на место тот же блок — не правка");
+    wd.setVoxel(x, y, z, other);
+    wd.setVoxel(x, y, z, world::AIR);
+    check(deltas.totalMods() == 1, "повторные правки клетки — одна запись");
+    wd.setVoxel(x, y, z, orig);
+    check(deltas.totalMods() == 0 && deltas.chunkCount() == 0,
+          "вернул блок — и правки нет");
+
+    wd.setVoxel(x, y, z, other);
+    wd.removeChunks({ world::ChunkCoord{ 0, 0 } });
+    check(wd.findChunk(0, 0) == nullptr, "чанк с правкой выгружен");
+    if (!waitReady(wd, home)) { jobs::gJobs.stop(); return; }
+    check(wd.getVoxel(x, y, z) == other, "правка вернулась вместе с чанком");
+    check(deltas.totalMods() == 1, "и не раздвоилась");
+
+    // Сейв со «старой» правкой, совпавшей с генерацией, и с правкой
+    // в чанке за тысячи блоков.
+    const i32 y2 = y - 3;
+    deltas.recordBlock(x + 1, y2, z, wd.getVoxel(x + 1, y2, z));
+    deltas.recordBlock(5000, 10, 5000, world::STONE);
+    check(deltas.totalMods() == 3, "в сейве три правки");
+
+    save::ByteWriter w;
+    deltas.write(w);
+    save::WorldDeltaStore loaded;
+    save::ByteReader r(w.data());
+    check(loaded.read(r), "правки прочитаны");
+
+    world::ChunkManager wd2(SEED, 2);
+    loaded.attach(wd2);
+    if (!waitReady(wd2, home)) { jobs::gJobs.stop(); return; }
+    check(wd2.getVoxel(x, y, z) == other, "после загрузки правка на месте");
+    check(wd2.findChunk(5000 >> 5, 5000 >> 5) == nullptr,
+          "дальний чанк ради правки не строится");
+    check(loaded.totalMods() == 2,
+          "правка, совпавшая с генерацией, отброшена при постройке чанка");
+
+    // Хранилище умерло раньше мира: мир живёт дальше без него.
+    {
+        save::WorldDeltaStore brief;
+        brief.attach(wd2);
+    }
+    wd2.setVoxel(x, y, z, orig);
+    wd2.removeChunks({ world::ChunkCoord{ 0, 0 } });
+    if (!waitReady(wd2, home)) { jobs::gJobs.stop(); return; }
+    check(wd2.getVoxel(x, y, z) == orig,
+          "мир без хранилища строит чанки чистыми и не падает");
+
+    jobs::gJobs.stop();
 }
 
 
@@ -25751,7 +26817,30 @@ void testLogCanBeTurnedOff() {
         return readLog().size() > before.size();
     };
 
-    check(crash::enabled(), "по умолчанию журнал ведётся");
+    check(crash::enabled(), "до чтения настроек журнал ведётся — в память");
+
+    // ---- До решения в файл не пишется ничего ----
+    //
+    // Журнал по умолчанию выключен, но о том, что выключен, игра
+    // узнаёт, лишь прочитав настройки. Всё, что случилось раньше,
+    // копится в памяти: файл без спроса появляться не должен.
+    const std::string untouched = readLog();
+    crash::write('I', "проверка: строка до решения");
+    check(readLog() == untouched, "до решения файл не тронут");
+
+    // ---- Решение по умолчанию: выключен ----
+    crash::setEnabled(false);
+    check(!crash::enabled(), "настройка по умолчанию выключает журнал");
+    check(readLog() == untouched,
+          "и накопленное с запуска выброшено, а не записано");
+
+    // ---- Включённый — пишет ----
+    crash::setEnabled(true);
+    check(crash::enabled(), "включается из настроек");
+    check(readLog().find("журнал включён") != std::string::npos,
+          "и отмечает это в файле");
+    check(readLog().find("строка до решения") == std::string::npos,
+          "выброшенное при выключенном журнале назад не вернулось");
 
     // ---- Включённый пишет ----
     {
@@ -25834,13 +26923,25 @@ void testLogCanBeTurnedOff() {
     // ---- Настройка доезжает до файла и обратно ----
     {
         config::Settings s;
-        check(s.logEnabled, "по умолчанию журнал включён и в настройках");
-        s.logEnabled = false;
+        check(!s.logEnabled, "по умолчанию журнал выключен и в настройках");
+        s.logEnabled = true;
         const std::string sp = "build/hostcheck/logsetting.cfg";
         check(s.save(sp), "настройки записаны");
         config::Settings back;
         check(back.load(sp), "настройки прочитаны");
-        check(!back.logEnabled, "выключенный журнал пережил перезапуск");
+        check(back.logEnabled, "включённый журнал пережил перезапуск");
+
+        // Прежний ключ лежит единицей в каждом старом файле лишь
+        // потому, что журнал был включён по умолчанию. Выбором он не
+        // был — и журнал после обновления выключен у всех.
+        const std::string old = "build/hostcheck/logsetting_old.cfg";
+        if (FILE* f = std::fopen(old.c_str(), "w")) {
+            std::fputs("[Game]\nlog_enabled=1\n", f);
+            std::fclose(f);
+        }
+        config::Settings fromOld;
+        fromOld.load(old);
+        check(!fromOld.logEnabled, "старый файл настроек журнал не включает");
     }
 
     // ---- И доезжает до самого выключателя ----
@@ -26279,11 +27380,14 @@ int main() {
     testStepsSoundLikeStepsAndRainLikeRain();
     testContinueLastWorldAndFilePicker();
     testFallsTrapsAndAmbushes();
+    testSoftLandings();
+    testItemVoxelModels();
     testSecretTreasureAndItsQuest();
     testStoryChainRunsInOrder();
     testQuestTemplatesHaveOneShape();
     testTreeDungeonIsClimbable();
     testShurikenFliesAndHits();
+    testTreeSpells();
     testDashMovesForward();
     testRunningAndFightingTire();
     testSwimmingAndDiving();
@@ -26306,6 +27410,7 @@ int main() {
     testSettingsButtonsWork();
     testEveryButtonHasAnAction();
     testSprintByDoubleTap();
+    testHotbarInGame();
     testPlayerControls();
     testWalkingNeverTeleports();
     testIsoProjectionIsTrulyIsometric();
@@ -26331,6 +27436,7 @@ int main() {
     testSaveRoundTrip();
     testSaveFileRoundTrip();
     testWorldDeltaRoundTrip();
+    testWorldDeltaOnlyChanges();
     testPlayerSaveRoundTrip();
     testQuestProgress();
     testQuestRewardsReachThePlayer();

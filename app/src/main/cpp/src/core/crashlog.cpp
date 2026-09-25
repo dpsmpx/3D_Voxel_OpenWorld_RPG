@@ -5,6 +5,7 @@
 #include "crashlog.h"
 #include "shared_dir.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdarg>
 #include <cstdint>
@@ -22,11 +23,28 @@
 
 namespace crash {
 
-/// Ведётся ли журнал. По умолчанию да: до чтения settings.cfg
-/// успевает произойти половина запуска, и молчать в это время
-/// нельзя — именно там и ломается то, что ломается.
+/// Ведётся ли журнал. До чтения settings.cfg — да, но строки копятся
+/// в памяти (см. gDecided): игра ещё не знает, хочет ли игрок журнал.
 bool gEnabled = true;
 namespace {
+
+/// Решено ли, вести журнал или нет. Решает первая же настройка
+/// (setEnabled). До того строки не пишутся в файл, а копятся здесь:
+/// журнал по умолчанию выключен, и файл без спроса появляться не
+/// должен. Но половина запуска проходит ДО чтения настроек, и именно
+/// там ломается то, что ломается, — поэтому копим, а не выбрасываем.
+/// Включён журнал — накопленное уходит в файл первым; выключен —
+/// пропадает; упала игра раньше решения — уходит в файл вместе с
+/// отчётом о падении.
+bool gDecided = false;
+char gEarly[32 * 1024];
+unsigned gEarlyLen = 0;
+
+/// Пути и каталоги, запомненные при init. Файлы открываются только
+/// тогда, когда в них действительно есть что писать.
+char gSharedDirs[8][512];
+unsigned gSharedDirCount = 0;
+bool gOpened = false;
 
 constexpr int  MAX_FRAMES  = 32;
 constexpr long MAX_LOG_SIZE = 512 * 1024;   ///< дальше файл начинается заново
@@ -37,14 +55,43 @@ char gPath[512]       = {0};
 char gSharedPath[512] = {0};
 char gLastStep[128]   = "(ни одного этапа)";
 
+void openFiles();
+
 /// Пишет как есть в оба файла. Только write(): FILE* буферизует, и при
 /// падении последние — самые нужные — строки не доходят до диска.
-void raw(const char* data, unsigned len) {
+/// Открывает файлы при первой записи.
+void fileWrite(const char* data, unsigned len) {
+    if (!gOpened) openFiles();
     if (gFd >= 0)       { ssize_t r = ::write(gFd, data, len); (void)r; }
     if (gSharedFd >= 0) { ssize_t r = ::write(gSharedFd, data, len); (void)r; }
 }
 
+/// Накопленное до решения — в файл. Зовётся и из обработчика
+/// сигнала: здесь только write и open, оба допустимы в нём.
+void flushEarly() {
+    if (gEarlyLen == 0) return;
+    const unsigned n = gEarlyLen;
+    gEarlyLen = 0;
+    fileWrite(gEarly, n);
+}
+
+/// Обычная строка журнала: до решения — в память, после — в файл.
+void raw(const char* data, unsigned len) {
+    if (!gDecided) {
+        // Не влезло — хвост теряется, начало запуска важнее.
+        const unsigned room = (unsigned)sizeof(gEarly) - gEarlyLen;
+        const unsigned n = len < room ? len : room;
+        std::memcpy(gEarly + gEarlyLen, data, n);
+        gEarlyLen += n;
+        return;
+    }
+    fileWrite(data, len);
+}
+
 void rawStr(const char* s) { raw(s, (unsigned)std::strlen(s)); }
+
+/// Мимо накопителя, сразу в файл: отчёт о падении и посмертные строки.
+void fileStr(const char* s) { fileWrite(s, (unsigned)std::strlen(s)); }
 
 /// Создаёт каталог вместе с родителями. mkdir -p, но без вызова оболочки.
 bool makeDirs(const char* path) {
@@ -99,7 +146,7 @@ void writeBacktrace() {
         }
         std::snprintf(line, sizeof(line), "  #%02d  pc %012lx  %s  %s\n",
                       i, (unsigned long)offset, object, symbol);
-        rawStr(line);
+        fileStr(line);
     }
 }
 
@@ -119,17 +166,20 @@ struct sigaction gOld[NSIG];
 
 void handler(int sig, siginfo_t* info, void* ctx) {
     char line[512];
-    rawStr("\n================ ПАДЕНИЕ ================\n");
+    // Всё, что накопилось до чтения настроек, — перед отчётом: это
+    // ровно то, что происходило перед падением.
+    flushEarly();
+    fileStr("\n================ ПАДЕНИЕ ================\n");
     std::snprintf(line, sizeof(line), "сигнал: %d — %s\n", sig, signalName(sig));
-    rawStr(line);
+    fileStr(line);
     std::snprintf(line, sizeof(line), "адрес: %p, код: %d\n",
                   info ? info->si_addr : nullptr, info ? info->si_code : 0);
-    rawStr(line);
+    fileStr(line);
     std::snprintf(line, sizeof(line), "последний этап запуска: %s\n", gLastStep);
-    rawStr(line);
-    rawStr("стек вызовов:\n");
+    fileStr(line);
+    fileStr("стек вызовов:\n");
     writeBacktrace();
-    rawStr("=========================================\n");
+    fileStr("=========================================\n");
     if (gFd >= 0)       ::fsync(gFd);
     if (gSharedFd >= 0) ::fsync(gSharedFd);
 
@@ -182,14 +232,22 @@ bool tryShared(const char* dir) {
     return true;
 }
 
-} // namespace
-
-void init(const char* internalDataPath, const char* externalDataPath) {
-    if (internalDataPath && *internalDataPath) {
-        std::snprintf(gPath, sizeof(gPath), "%s/voxelrpg.log", internalDataPath);
+void openFiles() {
+    gOpened = true;
+    if (gPath[0]) {
         gFd = openLog(gPath);
         if (gFd < 0) gPath[0] = '\0';
     }
+    for (unsigned i = 0; i < gSharedDirCount && gSharedFd < 0; ++i) tryShared(gSharedDirs[i]);
+}
+
+} // namespace
+
+void init(const char* internalDataPath, const char* externalDataPath) {
+    // Только пути: файлы откроются при первой настоящей записи. При
+    // выключенном журнале их не будет вовсе.
+    if (internalDataPath && *internalDataPath)
+        std::snprintf(gPath, sizeof(gPath), "%s/voxelrpg.log", internalDataPath);
 
     // Журнал во внешнем хранилище — единственный способ прочитать его с
     // телефона: logcat чужого приложения недоступен. Куда именно —
@@ -202,8 +260,13 @@ void init(const char* internalDataPath, const char* externalDataPath) {
     char dirs[8][sys::SHARED_PATH_CAP];
     const u32 count = sys::sharedDirCandidates(internalDataPath,
                                                externalDataPath, dirs, 8);
-    for (u32 i = 0; i < count && gSharedFd < 0; ++i) tryShared(dirs[i]);
-    if (gSharedFd < 0) gSharedPath[0] = '\0';
+    gSharedDirCount = 0;
+    for (u32 i = 0; i < count && i < 8; ++i)
+        std::snprintf(gSharedDirs[gSharedDirCount++], sizeof(gSharedDirs[0]), "%s", dirs[i]);
+    // Будущий путь общего журнала — первый кандидат; настоящий
+    // запишет tryShared, когда файл откроется.
+    if (gSharedDirCount > 0)
+        std::snprintf(gSharedPath, sizeof(gSharedPath), "%s/voxelrpg.log", gSharedDirs[0]);
 
     installHandlers();
 
@@ -217,7 +280,7 @@ void init(const char* internalDataPath, const char* externalDataPath) {
     // Пути — в сам журнал: если до нас дойдёт только внутренняя копия,
     // будет видно, куда ещё пытались писать.
     write('I', "внутренний журнал: %s", gPath[0] ? gPath : "(нет)");
-    write('I', "общий журнал: %s", gSharedPath[0] ? gSharedPath : "(нет)");
+    write('I', "общий журнал: %s", gSharedDirCount ? gSharedDirs[0] : "(нет)");
     write('I', "internalDataPath=%s externalDataPath=%s пакет=%s",
           internalDataPath ? internalDataPath : "(null)",
           externalDataPath ? externalDataPath : "(null)",
@@ -229,15 +292,18 @@ namespace {
 /// Общее тело write/writeFatal: разница между ними ровно в одной
 /// проверке выше по стеку, и дублировать ради неё разбор va_list
 /// незачем.
-void writeLine(char level, const char* fmt, va_list ap) {
-    if (gFd < 0 && gSharedFd < 0) return;
+void writeLine(char level, const char* fmt, va_list ap, bool direct) {
+    if (!gPath[0] && gSharedDirCount == 0) return;   // init не звали
     char msg[1024];
     const int n = std::vsnprintf(msg, sizeof(msg) - 2, fmt, ap);
     if (n < 0) return;
 
     char line[1100];
     const int len = std::snprintf(line, sizeof(line), "%c: %s\n", level, msg);
-    if (len > 0) raw(line, (unsigned)len);
+    if (len <= 0) return;
+    const unsigned out = (unsigned)std::min(len, (int)sizeof(line) - 1);
+    if (direct) { flushEarly(); fileWrite(line, out); }
+    else        raw(line, out);
 }
 
 } // namespace
@@ -246,18 +312,26 @@ void write(char level, const char* fmt, ...) {
     if (!gEnabled) return;
     va_list ap;
     va_start(ap, fmt);
-    writeLine(level, fmt, ap);
+    writeLine(level, fmt, ap, false);
     va_end(ap);
 }
 
 void writeFatal(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    writeLine('F', fmt, ap);
+    writeLine('F', fmt, ap, true);
     va_end(ap);
 }
 
 void setEnabled(bool on) {
+    // Первое решение: накопленное с запуска — в файл или в никуда.
+    if (!gDecided) {
+        gDecided = true;
+        gEnabled = on;
+        if (on) flushEarly();
+        else    gEarlyLen = 0;
+        return;
+    }
     if (on == gEnabled) return;
     // Переход отмечается в файле, и отмечается ДО выключения: иначе
     // оборвавшийся журнал не отличить от упавшей игры. Сообщение
