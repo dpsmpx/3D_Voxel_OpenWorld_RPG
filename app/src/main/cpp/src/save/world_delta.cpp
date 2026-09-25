@@ -8,9 +8,6 @@
 #include <mutex>
 #include <utility>
 #include <unordered_map>
-#include <chrono>
-#include <thread>
-#include "../core/job_system.h"
 #include "../core/log.h"
 #include "../world/block.h"
 
@@ -26,16 +23,10 @@ inline u32 linearIndex(i32 lx, i32 ly, i32 lz) {
     return (u32)((ly * CHUNK_SIZE + lz) * CHUNK_SIZE + lx);
 }
 
-inline void decodeIndex(u32 idx, i32& lx, i32& ly, i32& lz) {
-    lx   = (i32)(idx % CHUNK_SIZE);
-    u32 r = idx / CHUNK_SIZE;
-    lz   = (i32)(r % CHUNK_SIZE);
-    ly   = (i32)(r / CHUNK_SIZE);
-}
 
 } // namespace
 
-void WorldDeltaStore::recordBlock(i32 wx, i32 wy, i32 wz, u16 newId) {
+void WorldDeltaStore::recordBlock(i32 wx, i32 wy, i32 wz, u16 newId, u16 oldId) {
     if (wy < 0 || wy >= CHUNK_SIZE_Y) return;
 
     i32 cx = wx >> 5;
@@ -46,16 +37,33 @@ void WorldDeltaStore::recordBlock(i32 wx, i32 wy, i32 wz, u16 newId) {
     u32 idx = linearIndex(lx, wy, lz);
 
     std::lock_guard lk(mtx_);
-    auto& d = deltas_[ChunkCoord{cx, cz}];
-    d.coord = { cx, cz };
+    const ChunkCoord key{cx, cz};
+    auto it = deltas_.find(key);
 
-    for (auto& m : d.mods) {
-        if (m.index == idx) {
+    if (it != deltas_.end()) {
+        auto& mods = it->second.mods;
+        for (usize i = 0; i < mods.size(); ++i) {
+            BlockMod& m = mods[i];
+            if (m.index != idx) continue;
             m.block = newId;
+            // Клетка вернулась к тому, что было по генерации: правки
+            // больше нет, и в сохранении ей делать нечего.
+            if (m.orig != UNKNOWN && m.orig == newId) {
+                mods[i] = mods.back();
+                mods.pop_back();
+                if (mods.empty()) deltas_.erase(it);
+            }
             return;
         }
     }
-    d.mods.push_back({ idx, newId });
+
+    // Первая правка клетки: до неё в клетке стояло сгенерированное.
+    // Поставили то же самое — это не изменение.
+    if (oldId != UNKNOWN && oldId == newId) return;
+
+    auto& d = it != deltas_.end() ? it->second : deltas_[key];
+    d.coord = key;
+    d.mods.push_back({ idx, newId, oldId });
 }
 
 void WorldDeltaStore::clearChunk(world::ChunkCoord c) {
@@ -68,34 +76,50 @@ void WorldDeltaStore::clearAll() {
     deltas_.clear();
 }
 
-bool WorldDeltaStore::applyAll(world::ChunkManager& world) const {
+void WorldDeltaStore::applyTo(world::ChunkCoord coord, world::Chunk& chunk) {
     std::lock_guard lk(mtx_);
+    auto it = deltas_.find(coord);
+    if (it == deltas_.end()) return;
 
-    for (const auto& [coord, delta] : deltas_) {
-        auto c = world.getChunk(coord.x, coord.z);
-        if (!c) return false;
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        while (!c->generated.load(std::memory_order_acquire)) {
-            if (!jobs::gJobs.running()) return false;
-            if (std::chrono::steady_clock::now() >= deadline) return false;
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    auto& mods = it->second.mods;
+    for (usize i = 0; i < mods.size();) {
+        BlockMod& m = mods[i];
+        u16& voxel = chunk.voxels[m.index];
+        // Что здесь сгенерировал мир — теперь известно. Правка из
+        // сохранения, совпавшая с ним, — не правка: например, мир
+        // сохранили до того, как игрок вернул блок на место.
+        if (m.orig == UNKNOWN) m.orig = voxel;
+        if (m.block == m.orig) {
+            mods[i] = mods.back();
+            mods.pop_back();
+            continue;
         }
-        if (c->removed.load(std::memory_order_acquire)) return false;
-
-        {
-            // Пишем весь набор изменений под одним замком: меширование
-            // не увидит чанк наполовину применённым.
-            std::unique_lock vlk(c->voxelMutex);
-            for (const auto& m : delta.mods) {
-                i32 lx, ly, lz;
-                decodeIndex(m.index, lx, ly, lz);
-                c->voxels[linearIndex(lx, ly, lz)] = m.block;
-            }
-        }
-        c->version.fetch_add(1, std::memory_order_release);
-        world.requeueMesh(c);
+        voxel = m.block;
+        ++i;
     }
-    return true;
+    if (mods.empty()) deltas_.erase(it);
+}
+
+WorldDeltaStore::~WorldDeltaStore() {
+    if (!anchor_) return;
+    std::lock_guard lk(anchor_->m);
+    anchor_->store = nullptr;
+}
+
+void WorldDeltaStore::attach(world::ChunkManager& world) {
+    if (!anchor_) {
+        anchor_ = std::make_shared<Anchor>();
+        anchor_->store = this;
+    }
+    const std::shared_ptr<Anchor> a = anchor_;
+    world.setBlockModifyCallback([a](i32 wx, i32 wy, i32 wz, u16 newId, u16 oldId) {
+        std::lock_guard lk(a->m);
+        if (a->store) a->store->recordBlock(wx, wy, wz, newId, oldId);
+    });
+    world.setChunkDeltaSource([a](world::ChunkCoord c, world::Chunk& chunk) {
+        std::lock_guard lk(a->m);
+        if (a->store) a->store->applyTo(c, chunk);
+    });
 }
 
 void WorldDeltaStore::write(ByteWriter& w) const {
@@ -103,6 +127,8 @@ void WorldDeltaStore::write(ByteWriter& w) const {
 
     w.varU32((u32)deltas_.size());
 
+    // Пустых чанков в хранилище не бывает: правка, вернувшая клетку к
+    // исходному, удаляет себя, а с последней правкой уходит и чанк.
     for (const auto& [coord, delta] : deltas_) {
         w.writeI32(coord.x);
         w.writeI32(coord.z);
@@ -143,9 +169,10 @@ bool WorldDeltaStore::read(ByteReader& r) {
             if (!r.varU32v(m.index)) return false;
             if (m.index >= (u32)(CHUNK_SIZE_Y * CHUNK_SIZE * CHUNK_SIZE)) return false;
             if (!r.u16v(m.block))    return false;
+            m.orig = UNKNOWN;
             d.mods.push_back(m);
         }
-        parsed[d.coord] = std::move(d);
+        if (!d.mods.empty()) parsed[d.coord] = std::move(d);
     }
     std::lock_guard lk(mtx_);
     deltas_.swap(parsed);

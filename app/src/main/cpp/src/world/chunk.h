@@ -156,16 +156,20 @@ struct Chunk {
             return AIR;
         return voxels[chunkIndex(x, y, z)];
     }
-    /// Записывает воксель, сам захватывая voxelMutex.
+    /// Записывает воксель, сам захватывая voxelMutex, и возвращает
+    /// прежний блок (UNKNOWN — координата вне чанка).
     /// Не вызывать, если замок уже удерживается — используйте setUnlocked().
-    inline void set(i32 x, i32 y, i32 z, u16 id) {
+    inline u16 set(i32 x, i32 y, i32 z, u16 id) {
         if ((u32)x >= (u32)CHUNK_SIZE || (u32)y >= (u32)CHUNK_SIZE_Y || (u32)z >= (u32)CHUNK_SIZE)
-            return;
+            return UNKNOWN;
+        u16 old;
         {
             std::unique_lock lk(voxelMutex);
+            old = voxels[chunkIndex(x, y, z)];
             voxels[chunkIndex(x, y, z)] = id;
         }
         version.fetch_add(1, std::memory_order_release);
+        return old;
     }
 
     /// Запись без захвата замка: вызывающий уже держит voxelMutex

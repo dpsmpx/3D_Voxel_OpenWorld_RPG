@@ -874,9 +874,10 @@ struct Engine {
         worldSeed = seed;
         world = std::make_unique<world::ChunkManager>(
             seed, cfg::settingsConst().viewDistance);
-        world->setBlockModifyCallback([this](i32 wx, i32 wy, i32 wz, u16 newId) {
-            worldDelta.recordBlock(wx, wy, wz, newId);
-        });
+        // Правки игрока — и записываются, и накладываются на каждый
+        // строящийся чанк: ушедший из памяти и построенный заново чанк
+        // обязан вернуться с ними, а не таким, каким его сделал мир.
+        worldDelta.attach(*world);
 
         // Всё, что помнит про прошлый мир: изменённые блоки, вскрытые
         // тайники, время суток и спавнеры со своим «здесь уже было».

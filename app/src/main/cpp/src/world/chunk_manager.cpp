@@ -186,6 +186,19 @@ void ChunkManager::jobGenerate(void* data) {
             for (i32 z = 0; z < CHUNK_SIZE; ++z)
                 c->surfaceY[(usize)x * CHUNK_SIZE + z] =
                     (i16)columns[(usize)x * CHUNK_SIZE + z].surface;
+
+        // Правки игрока — поверх рельефа, под тем же замком: чанк не
+        // бывает виден без них ни одного кадра.
+        //
+        // Копия источника берётся под замком обратных вызовов и
+        // зовётся уже без него: источник сам берёт свой замок, и
+        // держать два чужих замка разом незачем.
+        ChunkDeltaSource src;
+        {
+            std::lock_guard cl(mgr->callbackMtx_);
+            src = mgr->deltaSource_;
+        }
+        if (src && !config::settingsConst().debugScene) src(ctx->coord, *c);
     }
 
     c->version.fetch_add(1, std::memory_order_release);
@@ -457,6 +470,16 @@ void ChunkManager::jobHydro(void* data) {
     (void)ctx->mgr->gen_.hydrology().tile(ctx->tx, ctx->tz);
 }
 
+void ChunkManager::regenerateLoaded() {
+    std::vector<ChunkCoord> coords;
+    {
+        std::shared_lock lk(chunksMtx_);
+        coords.reserve(chunks_.size());
+        for (const auto& [key, _] : chunks_) coords.push_back(key);
+    }
+    for (const ChunkCoord& c : coords) enqueueGenerate(c);
+}
+
 void ChunkManager::rebuildStreamOrder() {
     if (streamOrderFor_ == viewDistance_) return;
     streamOrderFor_ = viewDistance_;
@@ -571,11 +594,15 @@ void ChunkManager::setVoxel(i32 wx, i32 wy, i32 wz, u16 block) {
     auto c = getChunk(cx, cz);
     if (!c) return;
 
-    c->set(wx - (cx << 5), wy, wz - (cz << 5), block);
+    // Прежний блок известен, только если чанк уже построен: в пустой
+    // заготовке лежит воздух, а не то, что сгенерирует мир.
+    const bool known = c->generated.load(std::memory_order_acquire);
+    u16 old = c->set(wx - (cx << 5), wy, wz - (cz << 5), block);
+    if (!known) old = UNKNOWN;
 
     {
         std::lock_guard lk(callbackMtx_);
-        if (blockModifyCb_) blockModifyCb_(wx, wy, wz, block);
+        if (blockModifyCb_) blockModifyCb_(wx, wy, wz, block, old);
     }
 
     // Перестраиваем свой чанк и соседей: изменение на границе меняет

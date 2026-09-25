@@ -7126,9 +7126,7 @@ void testVillageDeedSurvivesSave() {
     // Дельта наполняется через обратный вызов мира — тем же путём,
     // каким это происходит в игре.
     save::WorldDeltaStore deltas;
-    wd.setBlockModifyCallback([&deltas](i32 wx, i32 wy, i32 wz, u16 id) {
-        deltas.recordBlock(wx, wy, wz, id);
-    });
+    deltas.attach(wd);
 
     check(world::lightVillageDeed(wd, site), "факел зажёгся");
     check(world::villageDeeds(wd, site) == 1, "и виден в мире");
@@ -7147,7 +7145,11 @@ void testVillageDeedSurvivesSave() {
     check(world::villageDeeds(wd2, site) == 0,
           "в заново порождённом мире следа нет");
 
-    loaded.applyAll(wd2);
+    // Как при загрузке: хранилище подключается к миру, и уже
+    // построенные чанки строятся заново — с правками.
+    loaded.attach(wd2);
+    wd2.regenerateLoaded();
+    if (!loadAroundWell(wd2, site)) { jobs::gJobs.stop(); return; }
     check(world::villageDeeds(wd2, site) == 1,
           "а после загрузки дельты — есть");
 
@@ -22592,6 +22594,111 @@ void testWorldDeltaRoundTrip() {
         const bool ok = bad.read(br);
         check(!ok || !br.ok(), "мусор вместо правок распознаётся");
     }
+
+    // Правка, вернувшая клетку к сгенерированному, — уже не правка.
+    save::WorldDeltaStore back;
+    back.recordBlock(7, 60, 7, world::AIR, world::STONE);
+    back.recordBlock(7, 60, 7, world::DIRT, world::AIR);
+    check(back.totalMods() == 1, "первая правка помнит исходный блок");
+    back.recordBlock(7, 60, 7, world::STONE, world::DIRT);
+    check(back.totalMods() == 0 && back.chunkCount() == 0,
+          "клетка вернулась к исходной — в сейве её больше нет");
+    back.recordBlock(7, 60, 7, world::STONE, world::STONE);
+    check(back.totalMods() == 0, "тот же блок поверх себя — не правка");
+}
+
+// ------------------------------------------------------------
+// В сейве только то, что изменил игрок.
+//
+// Посещённый, но не тронутый чанк целиком выводится из зерна, и
+// сохранять его незачем. Правка живёт в хранилище, а не в
+// загруженном чанке: чанк можно выгрузить и построить заново — она
+// вернётся вместе с ним. А загрузка сейва не строит ради правок
+// дальние чанки: они получат их, когда до них дойдёт игрок.
+// ------------------------------------------------------------
+void testWorldDeltaOnlyChanges() {
+    group("save: в сейве только правки игрока");
+
+    world::blocks();
+    jobs::gJobs.start(2);
+
+    auto waitReady = [](world::ChunkManager& w, const glm::vec3& at) {
+        for (int i = 0; i < 900; ++i) {
+            w.update(at);
+            if (w.isReadyAt((i32)at.x, (i32)at.z) && w.pendingJobs() == 0) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(false, "чанк так и не построился");
+        return false;
+    };
+
+    constexpr u64 SEED = 0xD17A5ull;
+    const glm::vec3 home{ 8.5f, 80.f, 8.5f };
+    world::ChunkManager wd(SEED, 2);
+    save::WorldDeltaStore deltas;
+    deltas.attach(wd);
+    if (!waitReady(wd, home)) { jobs::gJobs.stop(); return; }
+
+    check(deltas.totalMods() == 0 && deltas.chunkCount() == 0,
+          "обход мира ничего не пишет в сейв");
+
+    // Верхний непустой блок колонки.
+    const i32 x = 8, z = 8;
+    i32 y = world::CHUNK_SIZE_Y - 1;
+    while (y > 0 && wd.getVoxel(x, y, z) == world::AIR) --y;
+    const u16 orig = wd.getVoxel(x, y, z);
+    const u16 other = orig == world::STONE ? world::DIRT : world::STONE;
+
+    wd.setVoxel(x, y, z, orig);
+    check(deltas.totalMods() == 0, "поставить на место тот же блок — не правка");
+    wd.setVoxel(x, y, z, other);
+    wd.setVoxel(x, y, z, world::AIR);
+    check(deltas.totalMods() == 1, "повторные правки клетки — одна запись");
+    wd.setVoxel(x, y, z, orig);
+    check(deltas.totalMods() == 0 && deltas.chunkCount() == 0,
+          "вернул блок — и правки нет");
+
+    wd.setVoxel(x, y, z, other);
+    wd.removeChunks({ world::ChunkCoord{ 0, 0 } });
+    check(wd.findChunk(0, 0) == nullptr, "чанк с правкой выгружен");
+    if (!waitReady(wd, home)) { jobs::gJobs.stop(); return; }
+    check(wd.getVoxel(x, y, z) == other, "правка вернулась вместе с чанком");
+    check(deltas.totalMods() == 1, "и не раздвоилась");
+
+    // Сейв со «старой» правкой, совпавшей с генерацией, и с правкой
+    // в чанке за тысячи блоков.
+    const i32 y2 = y - 3;
+    deltas.recordBlock(x + 1, y2, z, wd.getVoxel(x + 1, y2, z));
+    deltas.recordBlock(5000, 10, 5000, world::STONE);
+    check(deltas.totalMods() == 3, "в сейве три правки");
+
+    save::ByteWriter w;
+    deltas.write(w);
+    save::WorldDeltaStore loaded;
+    save::ByteReader r(w.data());
+    check(loaded.read(r), "правки прочитаны");
+
+    world::ChunkManager wd2(SEED, 2);
+    loaded.attach(wd2);
+    if (!waitReady(wd2, home)) { jobs::gJobs.stop(); return; }
+    check(wd2.getVoxel(x, y, z) == other, "после загрузки правка на месте");
+    check(wd2.findChunk(5000 >> 5, 5000 >> 5) == nullptr,
+          "дальний чанк ради правки не строится");
+    check(loaded.totalMods() == 2,
+          "правка, совпавшая с генерацией, отброшена при постройке чанка");
+
+    // Хранилище умерло раньше мира: мир живёт дальше без него.
+    {
+        save::WorldDeltaStore brief;
+        brief.attach(wd2);
+    }
+    wd2.setVoxel(x, y, z, orig);
+    wd2.removeChunks({ world::ChunkCoord{ 0, 0 } });
+    if (!waitReady(wd2, home)) { jobs::gJobs.stop(); return; }
+    check(wd2.getVoxel(x, y, z) == orig,
+          "мир без хранилища строит чанки чистыми и не падает");
+
+    jobs::gJobs.stop();
 }
 
 
@@ -26331,6 +26438,7 @@ int main() {
     testSaveRoundTrip();
     testSaveFileRoundTrip();
     testWorldDeltaRoundTrip();
+    testWorldDeltaOnlyChanges();
     testPlayerSaveRoundTrip();
     testQuestProgress();
     testQuestRewardsReachThePlayer();
