@@ -23,6 +23,7 @@
 #include "combat/combat_controller.h"
 #include "combat/spells.h"
 #include "world/fire.h"
+#include "physics/impact.h"
 #include "trade/trade.h"
 #include "ecs/components.h"
 #include "npc/dialogue.h"
@@ -14714,6 +14715,230 @@ void testSecretTreasureAndItsQuest() {
 }
 
 // ------------------------------------------------------------
+// Мягкое приземление: листва, снег, солома, песок, лёд, вода.
+//
+// Падение стоит столько, с какой высоты началось, за вычетом того,
+// что погасили вода и мягкая опора. Опора, принявшая слишком
+// сильный удар, проламывается и уходит из-под ног — тело летит
+// дальше сквозь неё с остатком. Так в крону и прыгают: каждый слой
+// листвы гасит часть падения.
+// ------------------------------------------------------------
+void testSoftLandings() {
+    group("падение: мягкая опора, проломы и глубина воды");
+
+    world::blocks();
+    items::items();
+    char m[200];
+
+    // ---- 1. Правило на числах ----
+    {
+        const world::BlockImpact leaves = world::blocks().get(world::LEAVES).impact;
+        const auto a = physics::resolveImpact(leaves, 3.f);
+        check(!a.gaveWay && a.dropAfter == 0.f, "листва держит спрыгнувшего с трёх блоков");
+        const auto b = physics::resolveImpact(leaves, 14.f);
+        check(b.gaveWay && std::fabs(b.dropAfter - 4.f) < 1e-4f,
+              "с четырнадцати проламывается, погасив десять блоков");
+        const auto c = physics::resolveImpact(leaves, 8.f);
+        check(c.gaveWay && c.dropAfter == 0.f,
+              "погасила падение целиком, но приняла сильный удар — сломана");
+        check(physics::resolveImpact(world::blocks().get(world::STONE).impact, 9.f).dropAfter == 9.f,
+              "камень не гасит ничего");
+        check(!physics::resolveImpact(world::blocks().get(world::SAND).impact, 60.f).gaveWay,
+              "песок не проламывается");
+        const f32 v = physics::speedForDrop(14.f, -28.f);
+        check(std::fabs(physics::dropForSpeed(v, -28.f) - 14.f) < 1e-3f,
+              "высота и скорость переводятся друг в друга без потерь");
+        {
+            const f32 kWater = world::blocks().get(world::WATER).impact.drag;
+            const f32 a1 = physics::plungeSpeed(60.f, kWater * 1.f, 5.f);
+            const f32 a2 = physics::plungeSpeed(60.f, kWater * 2.f, 5.f);
+            check(a1 < 60.f && a2 < a1 && a2 > 0.f,
+                  "вода гасит нырок тем сильнее, чем глубже, и не разворачивает его");
+            check(physics::plungeSpeed(60.f, 100.f, 5.f) == 5.f,
+                  "медленнее скорости плавания не гасит: дальше тело плывёт");
+        }
+        check(world::blocks().get(world::LAVA).impact.drag >
+              world::blocks().get(world::WATER).impact.drag,
+              "лава гуще воды");
+    }
+
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager world(0x50F7, 2);
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        // Площадка: камень под ногами, над ним — чистый воздух.
+        const i32 surf = world.generator().surfaceHeight(8, 8) + 4;
+        auto clear = [&]() {
+            for (i32 z = -2; z <= 10; ++z)
+                for (i32 x = -2; x <= 10; ++x) {
+                    world.setVoxel(x, surf - 1, z, world::STONE);
+                    for (i32 y = surf; y < surf + 70; ++y)
+                        world.setVoxel(x, y, z, world::AIR);
+                }
+        };
+        // Слой материала 3×3 вокруг точки падения.
+        auto layer = [&](i32 y, u16 block) {
+            for (i32 z = 3; z <= 5; ++z)
+                for (i32 x = 3; x <= 5; ++x) world.setVoxel(x, y, z, block);
+        };
+        auto at = [&](i32 y) { return world.getVoxel(4, y, 4); };
+
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(4.5f, (f32)surf, 4.5f));
+        auto* hp = reg.get<ecs::Health>(pl.entity());
+        auto* sp = reg.get<ecs::Stamina>(pl.entity());
+        check(hp && sp, "здоровье и выносливость есть");
+        if (!hp || !sp) { jobs::gJobs.stop(); return; }
+
+        // Падение с высоты `blocks` над точкой `fromY`; вернуть снятое.
+        auto fall = [&](f32 fromY, f32 blocks, int dashAt = -1) {
+            hp->max = 1000.f;
+            hp->current = hp->max;
+            hp->invulnTime = 0.f;
+            sp->current = sp->max;
+            pl.controller.setPosition({ 4.5f, fromY + blocks, 4.5f });
+            f32 taken = 0.f;
+            for (int i = 0; i < 60 * 10; ++i) {
+                player::PlayerInput in;
+                in.dashPressed = (i == dashAt);
+                pl.update(world, in, 1.f / 60.f, 0.f, 0.f);
+                if (pl.lastFallDamage > 0.f) taken += pl.lastFallDamage;
+                if (pl.controller.state().onGround && i > 4) break;
+            }
+            return taken;
+        };
+
+        clear();
+        const f32 onStone = fall((f32)surf, 14.f);
+        std::snprintf(m, sizeof(m), "о камень с четырнадцати — %.0f", (double)onStone);
+        check(onStone > 60.f, m);
+
+        // ---- 2. Рывок падения не отменяет ----
+        //
+        // Рывок обнуляет вертикальную скорость на пятую долю
+        // секунды. Считай урон по скорости — и рывок у самой земли
+        // стирал бы любое падение.
+        {
+            // Рывок уносит блоков на десять вперёд: полосу под ним
+            // расчищаем, чтобы садился он на тот же камень, а не на
+            // природный склон ниже.
+            for (i32 z = -2; z <= 30; ++z)
+                for (i32 x = 1; x <= 8; ++x) {
+                    world.setVoxel(x, surf - 1, z, world::STONE);
+                    for (i32 y = surf; y < surf + 20; ++y)
+                        world.setVoxel(x, y, z, world::AIR);
+                }
+            const f32 dashed = fall((f32)surf, 14.f, 50);
+            std::snprintf(m, sizeof(m), "рывок у земли: снято %.0f", (double)dashed);
+            check(dashed > onStone * 0.9f, m);
+        }
+
+        // ---- 3. Листва ----
+        {
+            clear();
+            layer(surf, world::LEAVES);
+            check(fall((f32)surf + 1.f, 3.f) == 0.f && at(surf) == world::LEAVES,
+                  "с трёх блоков на крону: цел сам и цела листва");
+            check(fall((f32)surf + 1.f, 4.5f) == 0.f && at(surf) == world::LEAVES,
+                  "с четырёх с половиной — тоже: слабый удар листва держит");
+
+            const f32 one = fall((f32)surf + 1.f, 14.f);
+            std::snprintf(m, sizeof(m), "сквозь один слой листвы с четырнадцати — %.0f", (double)one);
+            check(one < onStone * 0.25f, m);
+            check(at(surf) == world::AIR, "сильный удар проломил листву");
+            check(world.getVoxel(3, surf, 3) == world::LEAVES, "а соседние блоки кроны целы");
+
+            // Крона в три слоя: прыжок в дерево с тридцати блоков.
+            clear();
+            for (i32 y = surf; y < surf + 3; ++y) layer(y, world::LEAVES);
+            const f32 tree = fall((f32)surf + 3.f, 30.f);
+            std::snprintf(m, sizeof(m), "в крону в три слоя с тридцати — %.0f", (double)tree);
+            check(tree == 0.f, m);
+            check(at(surf) == world::AIR && at(surf + 1) == world::AIR && at(surf + 2) == world::AIR,
+                  "и прошёл её насквозь, слой за слоем");
+            check(pl.controller.state().position.y < (f32)surf + 0.1f, "до самой земли");
+        }
+
+        // ---- 4. Снег, солома, песок, стекло ----
+        {
+            clear();
+            layer(surf, world::SNOW);
+            check(fall((f32)surf + 1.f, 6.f) == 0.f && at(surf) == world::SNOW,
+                  "сугроб держит спрыгнувшего с шести блоков");
+            const f32 snow = fall((f32)surf + 1.f, 12.f);
+            std::snprintf(m, sizeof(m), "в сугроб с двенадцати — %.0f", (double)snow);
+            check(snow > 0.f && snow < player::fallDamageFor(13.f), m);
+            check(at(surf) == world::AIR, "и провалился сквозь снег");
+
+            clear();
+            layer(surf, world::THATCH);
+            const f32 hay = fall((f32)surf + 1.f, 20.f);
+            std::snprintf(m, sizeof(m), "сквозь соломенную кровлю с двадцати — %.0f", (double)hay);
+            check(hay < player::fallDamageFor(21.f) * 0.3f && at(surf) == world::AIR, m);
+
+            clear();
+            layer(surf, world::SAND);
+            check(fall((f32)surf + 1.f, 5.f) == 0.f && at(surf) == world::SAND,
+                  "песок чуть подаётся: с пяти блоков не больно");
+
+            clear();
+            layer(surf, world::GLASS);
+            fall((f32)surf + 1.f, 6.f);
+            check(at(surf) == world::AIR, "стекло под упавшим бьётся");
+        }
+
+        // ---- 5. Лёд над водой ----
+        //
+        // Замёрзшая река: удар проламывает лёд, а вода под ним ловит.
+        {
+            clear();
+            for (i32 y = surf; y < surf + 3; ++y) layer(y, world::WATER);
+            layer(surf + 3, world::ICE);
+            check(fall((f32)surf + 4.f, 4.f) == 0.f && at(surf + 3) == world::ICE,
+                  "по льду ходят: спрыгнувшего он держит");
+            const f32 ice = fall((f32)surf + 4.f, 20.f);
+            std::snprintf(m, sizeof(m), "сквозь лёд в воду с двадцати — %.0f", (double)ice);
+            check(ice < player::fallDamageFor(21.f) * 0.2f, m);
+            check(at(surf + 3) == world::AIR, "лёд проломлен");
+        }
+
+        // ---- 6. Вода: чем глубже, тем мягче ----
+        {
+            f32 hurt[4] = {};
+            for (i32 depth = 1; depth <= 4; ++depth) {
+                clear();
+                for (i32 y = surf; y < surf + depth; ++y) layer(y, world::WATER);
+                // Шире площадка: течение и снос не должны вынести на
+                // сухой камень рядом.
+                for (i32 z = -2; z <= 10; ++z)
+                    for (i32 x = -2; x <= 10; ++x)
+                        for (i32 y = surf; y < surf + depth; ++y)
+                            world.setVoxel(x, y, z, world::WATER);
+                hurt[depth - 1] = fall((f32)surf + (f32)depth, 20.f);
+            }
+            std::snprintf(m, sizeof(m), "с двадцати в воду глубиной 1..4: %.0f %.0f %.0f %.0f",
+                          (double)hurt[0], (double)hurt[1], (double)hurt[2], (double)hurt[3]);
+            check(true, m);
+            check(hurt[0] > hurt[1] && hurt[1] >= hurt[2] && hurt[2] >= hurt[3],
+                  "чем глубже вода, тем слабее удар о дно");
+            check(hurt[0] > 0.f, "в луже по колено с двадцати блоков — больно");
+            check(hurt[3] == 0.f, "в четыре блока воды — уже нет");
+        }
+        clear();
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testFallsTrapsAndAmbushes() {
     group("опасности: обрыв, ловушка и засада");
 
@@ -14783,10 +15008,11 @@ void testFallsTrapsAndAmbushes() {
         // тот же удар о землю.
         //
         // Глубокая вода и мелкая — разные случаи, и проверять надо
-        // оба. В глубокой игрок до дна не доходит вовсе, и высота
-        // полёта обнуляется сама. В мелкой он ДОСТАЁТ дна, приземление
-        // засчитывается — и без отдельной оговорки лужа в один блок
-        // ранила бы ровно как камень.
+        // оба. Вода гасит нырок по глубине: в глубокой игрок
+        // останавливается, не дойдя до дна, а в мелкой бьётся о дно
+        // с тем, что вода не успела погасить. Раньше скорость в воде
+        // резалась разом, и лужа по колено ловила падение с любой
+        // высоты.
         {
             for (i32 z = -6; z <= 10; ++z)
                 for (i32 x = -6; x <= 10; ++x)
@@ -14799,7 +15025,16 @@ void testFallsTrapsAndAmbushes() {
                     for (i32 y = surf; y < surf + 4; ++y)
                         world.setVoxel(x, y, z, y == surf ? world::WATER
                                                           : world::AIR);
-            check(drop(14.f) < 0.01f, "и в лужу по колено — тоже");
+            const f32 puddle = drop(14.f);
+            {
+                char m[140];
+                std::snprintf(m, sizeof(m),
+                              "в лужу по колено с четырнадцати — %.0f (о камень %.0f)",
+                              (double)puddle, (double)big);
+                check(true, m);
+            }
+            check(puddle > 5.f && puddle < big * 0.6f,
+                  "лужа по колено смягчает удар о дно, но не отменяет");
 
             // И главное: нырнувший ВЫХОДИТ НА БЕРЕГ, то есть
             // приземляется. Без сброса высоты в воде ему засчитали
@@ -26712,6 +26947,7 @@ int main() {
     testStepsSoundLikeStepsAndRainLikeRain();
     testContinueLastWorldAndFilePicker();
     testFallsTrapsAndAmbushes();
+    testSoftLandings();
     testSecretTreasureAndItsQuest();
     testStoryChainRunsInOrder();
     testQuestTemplatesHaveOneShape();

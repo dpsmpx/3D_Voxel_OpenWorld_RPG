@@ -93,6 +93,13 @@ constexpr f32 FALL_SAFE_BLOCKS = 4.f;
 /// семнадцати — убивает. Ровно то, что делает обрыв обрывом.
 constexpr f32 FALL_DAMAGE_PER_BLOCK = 8.f;
 
+/// Цена падения с `drop` блоков — уже за вычетом того, что погасили
+/// вода и мягкая опора (physics/impact.h).
+inline f32 fallDamageFor(f32 drop) {
+    return drop > FALL_SAFE_BLOCKS ? (drop - FALL_SAFE_BLOCKS) * FALL_DAMAGE_PER_BLOCK
+                                   : 0.f;
+}
+
 /// ---- Дыхание ----
 ///
 /// Двадцать секунд под водой: хватит доплыть до дна озера и обратно,
@@ -329,11 +336,6 @@ private:
     /// Задохнулся: бег не включается, пока выносливость не поднимется
     /// до SPRINT_RESUME.
     bool winded_ = false;
-
-    /// Самая высокая точка текущего полёта. Урон считается от неё, а
-    /// не от скорости: скорость упирается в maxFallSpeed, и падение
-    /// с двадцати блоков не отличалось бы от падения с шестидесяти.
-    f32 fallPeakY_ = 0.f;
 
     /// Отсчитать смерть и вернуть игрока, когда время вышло.
     void tickDeath(world::ChunkManager& world, f32 dt);
