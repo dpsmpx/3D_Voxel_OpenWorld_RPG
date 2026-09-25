@@ -508,7 +508,7 @@ void updateMobs(world::ChunkManager& world,
 
                 // ---- Босс: смена фазы по порогу здоровья ----
                 f32 dmgMult   = 1.f;
-                f32 cooldown  = 1.2f;
+                f32 cooldown  = MOB_ATTACK_COOLDOWN;
                 f32 windup    = def.windupTime;
                 if (def.isBoss) {
                     const u8 phase = bossPhaseFor(hp->current / def.maxHealth,
@@ -525,7 +525,7 @@ void updateMobs(world::ChunkManager& world,
                     // ударами игрок имел бы прежний запас времени.
                     if (ai->bossPhase + 1 >= def.phaseCount) {
                         dmgMult  = def.enrageMult;
-                        cooldown = 1.2f / def.enrageMult;
+                        cooldown = MOB_ATTACK_COOLDOWN / def.enrageMult;
                         windup  /= def.enrageMult;
                     }
                 }

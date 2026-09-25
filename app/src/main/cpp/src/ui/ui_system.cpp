@@ -2438,7 +2438,8 @@ void UiSystem::drawLostGoldMark(player::Player& player) {
     const auto* tf = reg->get<ecs::Transform>(player.entity());
     if (!tf) return;
 
-    // Ближайший из ждущих: умереть можно и дважды, не собрав первый.
+    // Ждущий узелок один: новая смерть сжигает прежний (DeathCost).
+    // Ищется всё же ближайший — так указателю не важно, сколько их.
     const glm::vec3* best = nullptr;
     f32 bestD2 = 0.f;
     auto& pool = reg->pool<items::ItemPickup>();

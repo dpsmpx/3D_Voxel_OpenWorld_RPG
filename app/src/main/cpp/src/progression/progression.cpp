@@ -169,7 +169,9 @@ void tickProgression(ecs::Registry& reg, f32 dt) {
 
         // Регенерация ресурсов
         if (auto* h = reg.get<ecs::Health>(e)) {
-            if (h->current > 0.f && h->current < h->max) {
+            h->sinceHurt += dt;
+            if (h->current > 0.f && h->current < h->max &&
+                h->sinceHurt >= HEALTH_REGEN_DELAY) {
                 h->current = std::min(h->max,
                     h->current + d.healthRegen * dt);
             }

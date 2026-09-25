@@ -1658,16 +1658,31 @@ struct Engine {
                         // Цена поражения называется вслух и сразу:
                         // молча отнятое золото читается как поломка,
                         // а не как правило игры.
-                        if (player->lostGold > 0) {
+                        const auto gold = (unsigned long long)player->lostGold;
+                        const auto xp   = (unsigned long long)player->lostXp;
+                        if (gold > 0 && xp > 0) {
+                            ui->notify(cfg::trf("Lost %llu gold and %llu XP — the gold "
+                                                "waits where you fell", gold, xp),
+                                       ui::theme::NotifyPriority::High);
+                        } else if (gold > 0) {
                             ui->notify(cfg::trf("Lost %llu gold — it waits "
-                                                "where you fell",
-                                                (unsigned long long)player->lostGold),
+                                                "where you fell", gold),
+                                       ui::theme::NotifyPriority::High);
+                        } else if (xp > 0) {
+                            ui->notify(cfg::trf("You died and lost %llu XP", xp),
                                        ui::theme::NotifyPriority::High);
                         } else {
                             ui->notify(cfg::T(cfg::StrKey::Notif_Died),
                                        ui::theme::NotifyPriority::High);
                         }
-                        player->lostGold = 0;
+                        // Прошлый узелок пропал — об этом тоже вслух:
+                        // иначе игрок пойдёт за ним и не найдёт.
+                        if (player->burnedGold > 0)
+                            ui->notify(cfg::trf("The %llu gold left at your last "
+                                                "death is gone",
+                                                (unsigned long long)player->burnedGold),
+                                       ui::theme::NotifyPriority::Normal);
+                        player->lostGold = player->lostXp = player->burnedGold = 0;
                     }
                     if (player->justRespawned)
                         ui->notify(cfg::T(cfg::StrKey::Notif_Respawned),

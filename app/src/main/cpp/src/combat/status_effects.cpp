@@ -208,6 +208,7 @@ f32 applyDamage(ecs::Registry& reg, ecs::Entity target, const DamageInstance& dm
     h->current -= final;
     if (final > 0.f) {
         h->invulnTime = std::max(h->invulnTime, 0.15f);
+        h->sinceHurt  = 0.f;
     }
 
     auto* se = reg.get<StatusEffects>(target);
@@ -310,6 +311,7 @@ void tickStatuses(ecs::Registry& reg, f32 dt) {
             se->burnTime -= dt;
             if (se->burnTime < 0.f) se->burnTime = 0.f;
             h->current -= amount;
+            if (amount > 0.f) h->sinceHurt = 0.f;
             if (h->current <= 0.f) killTarget(reg, e, se->lastAttacker);
         } else {
             se->burnDps = 0.f;
@@ -321,6 +323,7 @@ void tickStatuses(ecs::Registry& reg, f32 dt) {
             se->poisonTime -= dt;
             if (se->poisonTime < 0.f) se->poisonTime = 0.f;
             h->current -= amount;
+            if (amount > 0.f) h->sinceHurt = 0.f;
             if (h->current <= 0.f) killTarget(reg, e, se->lastAttacker);
         } else {
             se->poisonDps = 0.f;

@@ -16,13 +16,18 @@ constexpr u32 rgb(u8 r, u8 g, u8 b) {
 }
 
 NpcRegistry::NpcRegistry() {
+    // Здоровье жителей подобрано против урона тварей (mob_def.cpp).
+    // Урон тварей подняли в два с половиной раза — чтобы бой был
+    // опасен игроку, — и здоровье жителей поднято так же: иначе волк
+    // загрызал селянина раньше, чем тот успевал побежать, а стражник
+    // падал от первой же стаи.
     // ---------------- VILLAGER ----------------
     {
         NpcDef d{};
         d.name = "Villager";
         d.role = NpcRole::Villager;
         d.faction = factions::FactionId::Villagers;
-        d.maxHealth = 20.f;
+        d.maxHealth = 50.f;
         d.moveSpeed = 1.8f;
         d.attackDamage = 0.f;
         d.attackRange = 0.f;
@@ -43,7 +48,7 @@ NpcRegistry::NpcRegistry() {
         d.name = "Elder";
         d.role = NpcRole::QuestGiver;
         d.faction = factions::FactionId::Villagers;
-        d.maxHealth = 30.f;
+        d.maxHealth = 75.f;
         d.moveSpeed = 1.4f;
         d.attackDamage = 0.f;
         d.attackRange = 0.f;
@@ -64,7 +69,7 @@ NpcRegistry::NpcRegistry() {
         d.name = "Trader";
         d.role = NpcRole::Trader;
         d.faction = factions::FactionId::Traders;
-        d.maxHealth = 25.f;
+        d.maxHealth = 60.f;
         d.moveSpeed = 1.6f;
         d.attackDamage = 0.f;
         d.attackRange = 0.f;
@@ -85,7 +90,7 @@ NpcRegistry::NpcRegistry() {
         d.name = "Blacksmith";
         d.role = NpcRole::Blacksmith;
         d.faction = factions::FactionId::Villagers;
-        d.maxHealth = 35.f;
+        d.maxHealth = 85.f;
         d.moveSpeed = 1.5f;
         d.attackDamage = 6.f;
         d.attackRange = 1.8f;
@@ -110,7 +115,7 @@ NpcRegistry::NpcRegistry() {
         d.name = "Guard";
         d.role = NpcRole::Guard;
         d.faction = factions::FactionId::Villagers;
-        d.maxHealth = 45.f;
+        d.maxHealth = 110.f;
         d.moveSpeed = 2.5f;
         d.attackDamage = 7.f;
         d.attackRange = 2.0f;
@@ -135,7 +140,7 @@ NpcRegistry::NpcRegistry() {
         d.name = "Healer";
         d.role = NpcRole::Healer;
         d.faction = factions::FactionId::Mages;
-        d.maxHealth = 22.f;
+        d.maxHealth = 55.f;
         d.moveSpeed = 1.6f;
         d.attackDamage = 0.f;
         d.attackRange = 0.f;
@@ -160,7 +165,7 @@ NpcRegistry::NpcRegistry() {
         d.name = "Courier";
         d.role = NpcRole::Courier;
         d.faction = factions::FactionId::Traders;
-        d.maxHealth = 24.f;
+        d.maxHealth = 60.f;
         d.moveSpeed = 3.2f;
         d.attackDamage = 0.f;
         d.attackRange = 0.f;

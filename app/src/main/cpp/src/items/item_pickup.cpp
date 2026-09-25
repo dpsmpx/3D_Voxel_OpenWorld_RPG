@@ -56,6 +56,12 @@ void updatePickups(world::ChunkManager& world,
                    f32 dt)
 {
     auto* inv = reg.get<Inventory>(playerEntity);
+    // Мёртвый не подбирает. Труп лежит на месте гибели две с
+    // половиной секунды — а узелок с половиной золота ложится ему под
+    // ноги, и через три десятых секунды труп подбирал его обратно:
+    // «оно ждёт там, где вы пали» не ждало ни секунды.
+    if (const auto* ph = reg.get<Health>(playerEntity); ph && ph->current <= 0.f)
+        inv = nullptr;
 
     auto& pool = reg.pool<ItemPickup>();
     std::vector<ecs::Entity> toRemove;
