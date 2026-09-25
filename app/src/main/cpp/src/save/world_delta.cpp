@@ -5,6 +5,7 @@
 #include "world_delta.h"
 #include <shared_mutex>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <utility>
 #include <unordered_map>
