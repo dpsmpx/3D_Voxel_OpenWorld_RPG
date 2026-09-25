@@ -5176,24 +5176,37 @@ void testCompactHudUnderMenus() {
         pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
         world::ChunkManager wd(0x5150Bull, 1);
 
-        // Область — САМ сжатый столбец, и одна и та же для обоих
-        // кадров.
+        // Область — ПОЛНЫЙ столбец, но только выше содержимого меню,
+        // и одна и та же для обоих кадров.
         //
         // Сперва тут стоял «запас вниз на 200 точек», и он захватывал
         // верх меню: ячейки сумки попадали в счёт и ломали сравнение,
-        // стоило меню сдвинуться. Ниже сжатого столбца начинается
-        // содержимое экрана, и мерить там нечего — подписи, золото,
-        // воздух и строка задания, ради которых счёт и ведётся, все
-        // выше.
+        // стоило меню сдвинуться. Потом — сам сжатый столбец; но полный
+        // столбец в него не помещается, и сравнение зависело от того,
+        // какая доля полных полос случайно легла в сжатый: стоило
+        // ужать интерфейс, и счёт перевернулся, хотя рисовалось то же
+        // самое. Всё, ради чего счёт ведётся, — подписи, золото,
+        // воздух и строка задания — лежит в полном столбце, а меню
+        // начинается ниже сжатого: верх полного столбца над меню и
+        // есть честная область.
         ui::Rect col{};
         {
+            ui::UiSystem hudProbe;
+            hudProbe.setDensityDpi(DPI);
+            hudProbe.setScreenSize(W, H);
+            hudProbe.screen = ui::Screen::Hud;
+            hudProbe.tickUi(1.f / 60.f);
+            hudProbe.buildFrame(pl, wd, 60.f);
+            col = hudProbe.layout().hudLeftColumn();
+
             ui::UiSystem probe;
             probe.setDensityDpi(DPI);
             probe.setScreenSize(W, H);
             probe.screen = ui::Screen::Inventory;
             probe.tickUi(1.f / 60.f);
             probe.buildFrame(pl, wd, 60.f);
-            col = probe.layout().hudLeftColumn();
+            const f32 menuTop = probe.layout().menuArea().y;
+            col.h = std::min(col.h, menuTop - col.y);
         }
 
         struct Shot { bool compact; u32 verts; };
@@ -5288,8 +5301,11 @@ void testInventoryScrolls() {
 
     struct Size { i32 w, h, dpi; const char* name; bool tight; };
     const Size sizes[] = {
-        { 2400, 1080, 440, "2400x1080 @440", true  },
-        { 1920, 1080, 400, "1920x1080 @400", true  },
+        // Телефоны 1080 по высоте после того, как интерфейс ужали
+        // (theme::UI_BASE_SCALE), вмещают сумку, экипировку и пояс
+        // целиком — листать там нечего, и это и было целью.
+        { 2400, 1080, 440, "2400x1080 @440", false },
+        { 1920, 1080, 400, "1920x1080 @400", false },
         { 1280,  720, 320, "1280x720 @320",  true  },
         {  960,  540, 240, "960x540 @240",   true  },
         // Планшет: там всё помещается, и прокручивать нечего.
@@ -9368,11 +9384,80 @@ void testDialogueReadsAsAConversation() {
           "диалог показывает имя собеседника");
     check(body.find("textWrapped(") != NONE,
           "реплика рисуется с переносом");
-    check(body.find("layout_.dialogueChoice(") != NONE,
+    check(body.find("dialogueLayout(") != NONE,
           "варианты ответа берут геометрию из раскладки");
-    // Вариант, не влезший в панель, не рисуется за её краем.
-    check(body.find("break;") != NONE,
-          "варианты, не влезшие в панель, не уезжают за неё");
+
+    // ---- 5. Все ответы достижимы ----
+    //
+    // Панель была постоянной долей экрана — 45 % высоты, — и у
+    // старосты с заданием из четырёх ответов на телефоне помещались
+    // два: «до свидания» уходило за край, и выйти из разговора было
+    // нечем. Проверяется та самая раскладка, по которой экран ловит
+    // касания: каждый ответ есть, лежит в панели и на экране.
+    {
+        const config::Settings savedCfg = config::settingsConst();
+        config::settings() = config::Settings{};
+        struct Size { i32 w, h, dpi; };
+        const Size sizes[] = { { 2306, 1080, 420 }, { 2400, 1080, 440 },
+                               { 1280, 720, 320 }, { 960, 540, 240 },
+                               { 1600, 720, 320 } };
+        const std::string longLine =
+            "Welcome, traveler. The wolves have been restless lately, and the "
+            "palisade needs wood before the winter comes. Will you help our "
+            "village? We can pay in gold, and the blacksmith owes me a favor.";
+        char m[200];
+        world::blocks();
+        items::items();
+        for (const Size& sz : sizes) {
+            for (u32 n : { 4u, 6u }) {
+                // Настоящий кадр разговора: раскладка знает, что под
+                // ним рисуется столбец ресурсов, только после него.
+                ecs::Registry reg;
+                player::Player pl;
+                pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+                world::ChunkManager wd(0xD1A1ull, 1);
+                if (auto* dlg = pl.activeDialogue()) {
+                    npc::DialogueNode node;
+                    node.id = 1;
+                    node.text = longLine;
+                    for (u32 k = 0; k < n; ++k) {
+                        npc::DialogueChoice c;
+                        c.text = "Answer";
+                        c.action = npc::DialogueAction::EndDialogue;
+                        node.choices.push_back(c);
+                    }
+                    dlg->nodes = { node };
+                    dlg->currentNodeId = 1;
+                    dlg->active = true;
+                    dlg->playerEntity = (u32)pl.entity();
+                }
+                ui::UiSystem sys;
+                sys.setDensityDpi(sz.dpi);
+                sys.setScreenSize(sz.w, sz.h);
+                sys.screen = ui::Screen::Dialogue;
+                sys.tickUi(1.f / 60.f);
+                sys.buildFrame(pl, wd, 60.f);
+                check(sys.screen == ui::Screen::Dialogue && sys.layout().hudBehind(),
+                      "разговор открыт, под ним столбец ресурсов");
+                const ui::DialogueLayout D = sys.dialogueLayout(longLine, n, false);
+                bool inside = true;
+                for (const ui::Rect& r : D.choices) {
+                    if (r.x < D.panel.x || r.x + r.w > D.panel.x + D.panel.w + 0.5f ||
+                        r.y < D.panel.y || r.y + r.h > D.panel.y + D.panel.h + 0.5f ||
+                        r.y + r.h > (f32)sz.h || r.h < sys.layout().dp(ui::theme::TOUCH_MIN_DP) - 0.5f)
+                        inside = false;
+                }
+                std::snprintf(m, sizeof(m),
+                              "%dx%d @%d: ответов %u — видно %zu в %u колонк., панель %.0f из %d",
+                              sz.w, sz.h, sz.dpi, n, D.choices.size(), D.cols,
+                              (double)D.panel.h, sz.h);
+                check(D.choices.size() == n && inside, m);
+                check(D.textY >= D.panel.y && D.nameY >= D.panel.y,
+                      "имя и реплика в панели");
+            }
+        }
+        config::settings() = savedCfg;
+    }
 }
 
 // ------------------------------------------------------------
@@ -11696,6 +11781,122 @@ void testMixerResamples() {
     }
 }
 
+// ------------------------------------------------------------
+// Интерфейс ужат и подогнан под экран, из каждого окна есть выход.
+//
+// Мерки интерфейса — по Android: цель касания 48 dp, ряд 56. На
+// телефоне в руках они выходили громоздкими: ряд меню занимал седьмую
+// часть высоты, окна не вмещали и половины, у разговора со старостой
+// «до свидания» уходило за край. Теперь мерки идут на экран с общим
+// множителем, а маленький плотный экран ужимается ещё.
+// ------------------------------------------------------------
+void testUiCompactAndClosable() {
+    group("интерфейс: ужат, подогнан под экран, из каждого окна есть выход");
+    char m[200];
+
+    // ---- 1. Общий множитель и подгонка под экран ----
+    {
+        const auto base = ui::theme::Metrics::fromDensityDpi(420);
+        std::snprintf(m, sizeof(m), "48 dp на 420 dpi — %.1f точек (без множителя было бы %.1f)",
+                      (double)base.dp(48.f), 48.0 * 420.0 / 160.0);
+        check(std::fabs(base.dp(48.f) - 48.f * 420.f / 160.f * ui::theme::UI_BASE_SCALE) < 0.01f &&
+              ui::theme::UI_BASE_SCALE < 1.f, m);
+
+        // Телефон пользователя: по короткой стороне места хватает, и
+        // подгонка ничего не добавляет.
+        const ui::HudLayout phone(2306.f, 1080.f, base, ui::SafeInsets{});
+        check(std::fabs(phone.metrics().fit - ui::theme::UI_BASE_SCALE) < 1e-4f,
+              "на телефоне 2306x1080 интерфейс только ужат, не подогнан");
+
+        // Маленький и очень плотный экран: 720 точек при 560 dpi —
+        // всего 257 dp высоты. Подгонка ужимает ещё, но не ниже предела.
+        const ui::HudLayout tiny(1600.f, 720.f, ui::theme::Metrics::fromDensityDpi(560),
+                                 ui::SafeInsets{});
+        const f32 units = 720.f / tiny.dp(1.f);
+        std::snprintf(m, sizeof(m), "720 точек при 560 dpi: множитель %.2f, по высоте %.0f dp раскладки",
+                      (double)tiny.metrics().fit, (double)units);
+        check(tiny.metrics().fit < ui::theme::UI_BASE_SCALE &&
+              tiny.metrics().fit >= ui::theme::UI_BASE_SCALE * ui::theme::FIT_MIN - 1e-4f, m);
+    }
+
+    // ---- 2. У каждого полноэкранного окна есть кнопка закрытия ----
+    //
+    // Сумка, характеристики и журнал своей кнопки не имели: выходили
+    // из них через столбец навигации HUD. Столбец под меню больше не
+    // рисуется — он ложился на ячейки сумки и ловил касания вместо
+    // них, — и без своей кнопки из этих окон было бы не выйти.
+    world::blocks();
+    items::items();
+    const config::Settings savedCfg = config::settingsConst();
+    config::settings() = config::Settings{};
+    {
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0xC105Eull, 1);
+
+        const ui::Screen screens[] = {
+            ui::Screen::Inventory, ui::Screen::Attributes, ui::Screen::QuestLog,
+            ui::Screen::SkillTree, ui::Screen::Reputation, ui::Screen::Crafting,
+            ui::Screen::Enchant,   ui::Screen::SaveLoad,   ui::Screen::Settings,
+        };
+        for (ui::Screen sc : screens) {
+            ui::UiSystem sys;
+            sys.setDensityDpi(420);
+            sys.setScreenSize(2306, 1080);
+            sys.screen = ui::Screen::PauseMenu;
+            sys.openScreen(sc);
+            auto frame = [&]() { sys.tickUi(1.f / 60.f); sys.buildFrame(pl, wd, 60.f); };
+            frame();
+            const ui::Rect c = sys.layout().closeButton();
+            const f32 cx = c.x + c.w * 0.5f, cy = c.y + c.h * 0.5f;
+            sys.routeTouch(1, cx, cy, 0);
+            frame();
+            sys.routeTouch(1, cx, cy, 1);
+            frame();
+            std::snprintf(m, sizeof(m), "экран %d закрывается своей кнопкой (стал %d)",
+                          (int)sc, (int)sys.screen);
+            check(sys.screen != sc, m);
+        }
+
+        // ---- 3. Навигация HUD под меню не ловит касаний ----
+        {
+            ui::UiSystem sys;
+            sys.setDensityDpi(420);
+            sys.setScreenSize(2306, 1080);
+            sys.openScreen(ui::Screen::Inventory);
+            auto frame = [&]() { sys.tickUi(1.f / 60.f); sys.buildFrame(pl, wd, 60.f); };
+            frame();
+            const ui::Rect nav = sys.layout().navButton(0);
+            const f32 cx = nav.x + nav.w * 0.5f, cy = nav.y + nav.h * 0.5f;
+            sys.routeTouch(1, cx, cy, 0);
+            frame();
+            sys.routeTouch(1, cx, cy, 1);
+            frame();
+            check(sys.screen != ui::Screen::PauseMenu,
+                  "под сумкой кнопка «меню» не срабатывает — её там нет");
+        }
+
+        // ---- 4. Кнопка паузы подписана ----
+        //
+        // «|||» шрифт не рисует — вертикальной черты в нём нет, — и
+        // кнопка паузы была пустым квадратом.
+        {
+            ui::UiSystem sys;
+            sys.setDensityDpi(420);
+            sys.setScreenSize(2306, 1080);
+            std::vector<std::string> seen;
+            sys.setTextSink(&seen);
+            sys.tickUi(1.f / 60.f);
+            sys.buildFrame(pl, wd, 60.f);
+            bool labelled = false;
+            for (const auto& t : seen) if (t == config::tr("MENU")) labelled = true;
+            check(labelled, "кнопка паузы на HUD подписана словом");
+        }
+    }
+    config::settings() = savedCfg;
+}
+
 void testSettingsButtonsWork() {
     group("настройки: кнопки и тумблеры");
 
@@ -11800,7 +12001,7 @@ void testSettingsButtonsWork() {
     // Вкладки не должны налезать на панель: иначе первая строка
     // настроек перекрыта, и нажать её нечем.
     {
-        const ui::Rect tab = ui::settingsTabRect((u32)ui::SettingsTab::Count - 1);
+        const ui::Rect tab = sys.settingsTabRect((u32)ui::SettingsTab::Count - 1);
         const ui::SettingsLayout L = sys.settingsLayout();
         char m[160];
         std::snprintf(m, sizeof(m), "вкладки кончаются на %.0f, панель с %.0f",
@@ -11810,11 +12011,29 @@ void testSettingsButtonsWork() {
                       (double)(tab.x + tab.w), W);
         check(tab.x + tab.w <= (f32)W, m);
         check(L.row(0).w > 0.f && L.row(0).h > 0.f, "строка настройки не пустая");
+
+        // Вкладки стояли по постоянным пикселям и ложились на
+        // заголовок «НАСТРОЙКИ»; кнопка сброса — на нижнюю рамку
+        // панели. Теперь обе из раскладки, и ничего не перекрывают.
+        const ui::Rect title = sys.layout().menuTitle();
+        const ui::Rect first = sys.settingsTabRect(0);
+        std::snprintf(m, sizeof(m), "вкладки начинаются на %.0f, заголовок кончается на %.0f",
+                      (double)first.y, (double)(title.y + title.h));
+        check(first.y >= title.y + title.h - 0.5f, m);
+        const ui::Rect close = sys.layout().closeButton();
+        const ui::Rect rs = L.resetAll;
+        auto overlaps = [](const ui::Rect& a, const ui::Rect& b) {
+            return a.x < b.x + b.w && b.x < a.x + a.w &&
+                   a.y < b.y + b.h && b.y < a.y + a.h;
+        };
+        check(rs.w > 0.f && rs.h > 0.f && !overlaps(rs, close) &&
+              !overlaps(rs, L.panel) && !overlaps(rs, first),
+              "кнопка сброса ни на что не легла");
     }
 
     // ---- 3. Каждая вкладка открывается нажатием ----
     for (u32 i = 0; i < (u32)ui::SettingsTab::Count; ++i) {
-        tap(ui::settingsTabRect(i));
+        tap(sys.settingsTabRect(i));
         char m[120];
         std::snprintf(m, sizeof(m), "вкладка %u открывается нажатием", i);
         check((u32)sys.settingsTab == i, m);
@@ -11828,7 +12047,7 @@ void testSettingsButtonsWork() {
     {
         int rows = 0;
         for (u32 t = 0; t < (u32)ui::SettingsTab::Count; ++t) {
-            tap(ui::settingsTabRect(t));
+            tap(sys.settingsTabRect(t));
             const ui::SettingsLayout L = sys.settingsLayout();
             const u32 n = ui::settingsRowCount((ui::SettingsTab)t,
                                                sys.buttonLayoutMode);
@@ -11879,7 +12098,7 @@ void testSettingsButtonsWork() {
           "без ограничения кадров" },
     };
     for (const ToggleCase& c : cases) {
-        tap(ui::settingsTabRect((u32)c.tab));
+        tap(sys.settingsTabRect((u32)c.tab));
         const ui::SettingsLayout L = sys.settingsLayout();
         const bool before = config::settings().*c.field;
         const int  seen   = changes;
@@ -11896,7 +12115,7 @@ void testSettingsButtonsWork() {
 
     // ---- 6. Язык переключается по кругу ----
     {
-        tap(ui::settingsTabRect((u32)ui::SettingsTab::Game));
+        tap(sys.settingsTabRect((u32)ui::SettingsTab::Game));
         const ui::SettingsLayout L = sys.settingsLayout();
         const config::Language start = config::settings().language;
         tap(L.row(0));
@@ -11926,7 +12145,7 @@ void testSettingsButtonsWork() {
 
     // ---- 8. Слайдер двигается пальцем ----
     {
-        tap(ui::settingsTabRect((u32)ui::SettingsTab::Audio));
+        tap(sys.settingsTabRect((u32)ui::SettingsTab::Audio));
         const ui::SettingsLayout L = sys.settingsLayout();
         // Не общая громкость: она по умолчанию на максимуме, и
         // вправо её тянуть некуда — проверка прошла бы вхолостую.
@@ -27790,6 +28009,7 @@ int main() {
     testBiomeAndVillageMusic();
     testMixerResamples();
     testSettingsButtonsWork();
+    testUiCompactAndClosable();
     testEveryButtonHasAnAction();
     testSprintByDoubleTap();
     testHotbarInGame();

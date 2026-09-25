@@ -213,8 +213,11 @@ void UiSystem::buildFrame(player::Player& player,
     // Под меню столбец сжимается: там нужен факт «сколько
     // осталось», а не половина экрана под полосами с подписями.
     layout_.setHudCompact(screen != Screen::Hud);
-    // Пояс уступает место только паузе: там игра стоит.
-    layout_.setMenuOverHotbar(screen == Screen::PauseMenu);
+    // Пояс уступает место паузе (там игра стоит) и разговору: панель
+    // реплик растёт под ответы до самого низа, и тусклые ячейки под
+    // ней читались как часть разговора.
+    layout_.setMenuOverHotbar(screen == Screen::PauseMenu ||
+                              screen == Screen::Dialogue);
 
     switch (screen) {
         case Screen::Hud:
@@ -413,17 +416,30 @@ void UiSystem::drawHud(player::Player& player,
     // семи занял бы 78 % высоты экрана: раскладка была несовместима
     // с размером пальца. Осталось две — пауза и инвентарь, самый
     // частый экран. Всё прочее живёт в паузе, куда ведёт первая.
-    drawMenuButton(layout_.navButton(0), "|||",
-                   [this]() { screen = Screen::PauseMenu; });
-    drawMenuButton(layout_.navButton(1), cfg::tr("INV"),
-                   [this]() { screen = Screen::Inventory; drag.clear(); });
+    //
+    // Только на чистом HUD. Под меню они рисовались и ловили касания
+    // — а содержимое меню уходит под столбец навигации и ложится на
+    // них: правая ячейка сумки накрывала кнопку «сумка», и касание
+    // решало, чья она, по порядку в списке. У меню своя кнопка
+    // закрытия, навигация под ним не нужна.
+    //
+    // Подпись паузы — словом: «|||» шрифт не рисует (в нём нет
+    // вертикальной черты), и кнопка паузы была пустым квадратом.
+    if (!layout_.hudCompact()) {
+        drawMenuButton(layout_.navButton(0), cfg::tr("MENU"),
+                       [this]() { openScreen(Screen::PauseMenu); });
+        drawMenuButton(layout_.navButton(1), cfg::tr("INV"),
+                       [this]() { openInventory(); });
+    }
 
     drawXpBar(player);
     drawTargetBar();
     drawHudResources(player);
     drawResonanceBar(player);
     drawStatusIcons(player);
-    drawHotbar(player);
+    // Где меню заняло место пояса (пауза), пояса нет: тусклые ячейки
+    // под кнопками меню читались как часть меню.
+    if (!layout_.menuOverHotbar()) drawHotbar(player);
 
     // Счётчик кадров и координаты — по месту из раскладки, а не по
     // постоянным 180 и 204 точкам от верха: полосы ресурсов считаются
@@ -566,10 +582,22 @@ void UiSystem::drawXpBar(player::Player& player) {
     ui_.rect(r.x, r.y, r.w, r.h, hudTint(theme::XpBed));
     ui_.rect(r.x, r.y, r.w * prog->levelProgress(), r.h, hudTint(theme::Xp));
 
+    // Подписи под полосой — в её концах, но не под столбцом
+    // навигации: число опыта печаталось у самого правого края и
+    // ложилось на кнопку «меню». У левши столбец слева, и уступать
+    // ему приходится уровню.
+    f32 textL = r.x + layout_.dp(theme::SPACE_S_DP);
+    f32 textR = r.x + r.w - layout_.dp(theme::SPACE_S_DP);
+    if (!layout_.hudCompact()) {
+        const Rect nav = layout_.navButton(0);
+        const f32 gap = layout_.dp(theme::SPACE_S_DP);
+        if (nav.x > (f32)screenW_ * 0.5f) textR = std::min(textR, nav.x - gap);
+        else                              textL = std::max(textL, nav.x + nav.w + gap);
+    }
+
     char buf[64];
     std::snprintf(buf, sizeof(buf), cfg::tr("LV %u"), prog->level);
-    ui_.text(buf, r.x + layout_.dp(theme::SPACE_S_DP),
-             r.y + r.h + layout_.dp(theme::SPACE_XS_DP),
+    ui_.text(buf, textL, r.y + r.h + layout_.dp(theme::SPACE_XS_DP),
              theme::TEXT_LABEL, theme::TextPrimary);
 
     char xpText[64];
@@ -577,8 +605,7 @@ void UiSystem::drawXpBar(player::Player& player) {
                   (unsigned long long)prog->xpWithinLevel(),
                   (unsigned long long)prog->xpForNextLevel());
     const f32 tw = ui_.textWidth(xpText, theme::TEXT_CAPTION);
-    ui_.text(xpText, r.x + r.w - tw - layout_.dp(theme::SPACE_S_DP),
-             r.y + r.h + layout_.dp(theme::SPACE_XS_DP),
+    ui_.text(xpText, textR - tw, r.y + r.h + layout_.dp(theme::SPACE_XS_DP),
              theme::TEXT_CAPTION, theme::TextSecondary);
 }
 
@@ -1102,11 +1129,17 @@ void UiSystem::drawInventory(player::Player& player) {
 
     const Rect title = layout_.menuTitle();
 
+    // Своей кнопки закрытия у сумки не было: выходили из неё через
+    // столбец навигации HUD, который рисовался и под меню. Столбец
+    // под меню больше не рисуется — он ложился на ячейки, — и выход
+    // стал кнопкой, как у всех экранов.
+    drawCloseButton([this]() { closeToPrevious(); });
+
     if (auto* wal = player.wallet()) {
         char gold[32];
         wal->format(gold, sizeof(gold));
         const f32 tw = ui_.textWidth(gold, theme::TEXT_BODY);
-        ui_.text(gold, title.x + title.w - tw,
+        ui_.text(gold, titleTextRight() - tw,
                  title.y + (title.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
                  theme::TEXT_BODY, theme::Accent);
     }
@@ -1536,9 +1569,12 @@ void UiSystem::drawItemDetails(player::Player& player) {
     }
 }
 
-Rect settingsTabRect(u32 index) {
-    const f32 tabW = 180.f;
-    return { 40.f + (f32)index * (tabW + 6.f), 84.f, tabW, 48.f };
+// Вкладки стояли по постоянным пикселям — (40 + 186·i, 84), 180 на 48
+// — и не знали ни о плотности, ни о заголовке: на телефоне ряд
+// вкладок ложился прямо на слово «НАСТРОЙКИ». Теперь их отмеряет
+// раскладка, как вкладки торговли.
+Rect UiSystem::settingsTabRect(u32 index) const {
+    return layout_.menuTab(index, (u32)SettingsTab::Count);
 }
 
 u32 settingsRowCount(SettingsTab tab, bool buttonLayout) {
@@ -1558,7 +1594,14 @@ u32 settingsRowCount(SettingsTab tab, bool buttonLayout) {
 
 SettingsLayout UiSystem::settingsLayout() const {
     SettingsLayout L;
-    L.panel  = layout_.menuArea();
+    // Под вкладками — панель строк; кнопка сброса — в строке
+    // заголовка, слева от закрытия. Она стояла в пикселях от низа
+    // экрана (высота − 90) и садилась на нижнюю рамку панели, а
+    // внизу под ней отнимала у строк целый ряд высоты — на 1280x720
+    // в колонку помещалось две строки, и колонок выходило шесть,
+    // по сто восемьдесят точек: подписи ложились на ползунки.
+    L.resetAll = layout_.titleAction(RESET_W_DP);
+    L.panel  = layout_.menuBelowTabs();
     L.rowH   = layout_.dp(theme::TOUCH_REGULAR_DP);
     L.rowGap = layout_.dp(theme::SPACE_S_DP);
     L.pad    = layout_.dp(theme::PANEL_PAD_DP);
@@ -1578,7 +1621,6 @@ SettingsLayout UiSystem::settingsLayout() const {
     L.colW = (L.panel.w - L.pad * 2.f - L.colGap * (f32)(colCount - 1))
            / (f32)(colCount ? colCount : 1);
 
-    L.resetAll = { L.panel.x + L.pad, (f32)screenH_ - 90.f, 260.f, 50.f };
     return L;
 }
 
@@ -1598,17 +1640,22 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
 
     for (u32 i = 0; i < (u32)SettingsTab::Count; ++i) {
         const Rect r = settingsTabRect(i);
-        bool active = ((u32)settingsTab == i);
-        int idx = ui_.pushInteractiveRect(r, [this, i]() {
+        const bool active = ((u32)settingsTab == i);
+        const int idx = ui_.pushInteractiveRect(r, [this, i]() {
             settingsTab = (SettingsTab)i;
         });
-        bool pressed = ui_.isInteractivePressed(idx);
-        UiColor bg = active ? rgba(80, 120, 80, 255)
-                            : (pressed ? rgba(120,120,120,255) : rgba(40,40,40,220));
-        ui_.rect(r.x, r.y, r.w, r.h, bg);
-        ui_.rectOutline(r.x, r.y, r.w, r.h, 2.f, COL_BLACK);
-        float tw = ui_.textWidth(tabNames[i], 1.6f);
-        ui_.text(tabNames[i], r.x + (r.w - tw) * 0.5f, r.y + 14.f, 1.6f, COL_WHITE);
+        const bool pressed = ui_.isInteractivePressed(idx);
+        ui_.rect(r.x, r.y, r.w, r.h,
+                 pressed ? theme::Accent
+                         : (active ? theme::PanelRaised : theme::Panel));
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(active ? theme::STROKE_SELECTED_DP
+                                          : theme::STROKE_DP),
+                        active ? theme::Accent : theme::Stroke);
+        const f32 tw = ui_.textWidth(tabNames[i], theme::TEXT_LABEL);
+        ui_.text(tabNames[i], r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f,
+                 theme::TEXT_LABEL, pressed ? theme::Ink : theme::TextPrimary);
     }
 
     auto& s = cfg::settings();
@@ -1636,7 +1683,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
             {
                 Rect r = nextRow();
                 const int idx = ui_.pushInteractiveRect(r, [this]() {
-                    cfg::settings().invertX = !cfg::settings().invertX; if (onSettingsChanged) onSettingsChanged();
+                    cfg::settings().invertX = !cfg::settings().invertX; notifySettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.invertX, T(StrKey::Settings_InvertX));
             }
@@ -1644,7 +1691,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
             {
                 Rect r = nextRow();
                 const int idx = ui_.pushInteractiveRect(r, [this]() {
-                    cfg::settings().invertY = !cfg::settings().invertY; if (onSettingsChanged) onSettingsChanged();
+                    cfg::settings().invertY = !cfg::settings().invertY; notifySettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.invertY, T(StrKey::Settings_InvertY));
             }
@@ -1652,7 +1699,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
             {
                 Rect r = nextRow();
                 int idx = ui_.pushInteractiveRect(r, [this]() {
-                    cfg::settings().joystickLeftHanded = !cfg::settings().joystickLeftHanded; if (onSettingsChanged) onSettingsChanged();
+                    cfg::settings().joystickLeftHanded = !cfg::settings().joystickLeftHanded; notifySettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.joystickLeftHanded,
                              T(StrKey::Settings_JoystickLeft));
@@ -1714,7 +1761,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                         cfg::settings().buttonOffsetX[i] = 0.f;
                         cfg::settings().buttonOffsetY[i] = 0.f;
                     }
-                    if (onSettingsChanged) onSettingsChanged();
+                    notifySettingsChanged();
                 });
                 ui_.button(T(StrKey::Settings_ResetLayout), r, idx,
                            rgba(90, 90, 110, 255), COL_WHITE);
@@ -1725,7 +1772,11 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
         case SettingsTab::Ui: {
             {
                 Rect r = nextRow();
-                sliderWidget(ui_, r, &s.uiScale, 0.75f, 1.5f,
+                // Пределы — те же, что у Metrics: ползунок шёл от 0.75
+                // до 1.5, а масштаб молча упирался в 0.85 и 1.30, и
+                // крайние четверти ползунка не делали ничего.
+                sliderWidget(ui_, r, &s.uiScale, theme::USER_SCALE_MIN,
+                             theme::USER_SCALE_MAX,
                              T(StrKey::Settings_UiScale), 0.05f,
                              [this](float){ notifySettingsChanged(); });
             }
@@ -1738,14 +1789,14 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
             {
                 Rect r = nextRow();
                 int idx = ui_.pushInteractiveRect(r, [this]() {
-                    cfg::settings().showFps = !cfg::settings().showFps; if (onSettingsChanged) onSettingsChanged();
+                    cfg::settings().showFps = !cfg::settings().showFps; notifySettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.showFps, T(StrKey::Settings_ShowFps));
             }
             {
                 Rect r = nextRow();
                 int idx = ui_.pushInteractiveRect(r, [this]() {
-                    cfg::settings().showDebugPos = !cfg::settings().showDebugPos; if (onSettingsChanged) onSettingsChanged();
+                    cfg::settings().showDebugPos = !cfg::settings().showDebugPos; notifySettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.showDebugPos, T(StrKey::Settings_ShowDebug));
             }
@@ -1788,7 +1839,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                     if (n >= (u32)cfg::Language::Count) n = 0;
                     cfg::settings().language = (cfg::Language)n;
                     cfg::L().setLanguage(cfg::settings().language);
-                    if (onSettingsChanged) onSettingsChanged();
+                    notifySettingsChanged();
                 });
                 cycleWidget(ui_, r, idx, T(StrKey::Settings_Language), opts,
                             (u32)cfg::Language::Count, &cur);
@@ -1796,7 +1847,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
             {
                 Rect r = nextRow();
                 int idx = ui_.pushInteractiveRect(r, [this]() {
-                    cfg::settings().autosaveEnabled = !cfg::settings().autosaveEnabled; if (onSettingsChanged) onSettingsChanged();
+                    cfg::settings().autosaveEnabled = !cfg::settings().autosaveEnabled; notifySettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.autosaveEnabled,
                              T(StrKey::Settings_Autosave));
@@ -1813,7 +1864,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
                 Rect r = nextRow();
                 int idx = ui_.pushInteractiveRect(r, [this]() {
                     cfg::settings().logEnabled = !cfg::settings().logEnabled;
-                    if (onSettingsChanged) onSettingsChanged();
+                    notifySettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.logEnabled,
                              T(StrKey::Settings_Logging));
@@ -1846,7 +1897,7 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
             {
                 Rect r = nextRow();
                 int idx = ui_.pushInteractiveRect(r, [this]() {
-                    cfg::settings().unlimitedFps = !cfg::settings().unlimitedFps; if (onSettingsChanged) onSettingsChanged();
+                    cfg::settings().unlimitedFps = !cfg::settings().unlimitedFps; notifySettingsChanged();
                 });
                 toggleWidget(ui_, r, idx, &s.unlimitedFps,
                              T(StrKey::Settings_UnlimitedFps));
@@ -1864,10 +1915,14 @@ void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
             cfg::Settings def{};
             cfg::settings() = def;
             cfg::L().setLanguage(cfg::settings().language);
-            if (onSettingsChanged) onSettingsChanged();
+            // Через общий путь: он пересобирает раскладку. Сброс звал
+            // игру напрямую, и сброшенный масштаб интерфейса вступал
+            // в силу только со следующим ползунком — посреди его
+            // перетаскивания.
+            notifySettingsChanged();
         });
         ui_.button(T(StrKey::Settings_ResetAll), r, idx,
-                   rgba(140, 60, 60, 255), COL_WHITE);
+                   theme::Danger, theme::TextPrimary);
     }
 }
 
@@ -2010,6 +2065,7 @@ void UiSystem::drawAttributesScreen(player::Player& player) {
         ? reg->get<progression::AttributeBuffs>(player.entity()) : nullptr;
 
     const Rect title = layout_.menuTitle();
+    drawCloseButton([this]() { closeToPrevious(); });
 
     // Свободные очки — то, ради чего сюда заходят, поэтому крупно и
     // акцентом, пока они есть.
@@ -2017,7 +2073,7 @@ void UiSystem::drawAttributesScreen(player::Player& player) {
     std::snprintf(pts, sizeof(pts), "%s %d", T(StrKey::Hud_Level),
                   prog->availableAttrPoints);
     const f32 pw = ui_.textWidth(pts, theme::TEXT_BODY);
-    ui_.text(pts, title.x + title.w - pw,
+    ui_.text(pts, titleTextRight() - pw,
              title.y + (title.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
              theme::TEXT_BODY,
              prog->availableAttrPoints > 0 ? theme::Accent : theme::TextSecondary);
@@ -2128,6 +2184,42 @@ void UiSystem::drawStepper(const Rect& r, const char* label,
 // ============================================================
 // Dialogue
 // ============================================================
+DialogueLayout UiSystem::dialogueLayout(const std::string& text, u32 choiceCount,
+                                        bool hasName) const {
+    DialogueLayout D;
+    const f32 pad = layout_.dp(theme::PANEL_PAD_DP);
+    const f32 full = layout_.dialoguePanelFor(0.f).w;
+    D.textW = full - pad * 2.f;
+
+    const f32 nameH = hasName ? ui_.textHeight(theme::TEXT_LABEL)
+                              + layout_.dp(theme::SPACE_M_DP)
+                              : 0.f;
+    const f32 textH = ui_.wrappedHeight(text, D.textW, theme::TEXT_BODY);
+    const f32 above = pad + nameH + textH + layout_.dp(theme::SPACE_L_DP);
+
+    // Колонок столько, чтобы ответы поместились: в одну — пока влезает,
+    // иначе в две, в три. Ширины у ответов в избытке, высоты — нет.
+    const f32 maxH = layout_.dialoguePanelMaxH();
+    D.cols = 1;
+    while (D.cols < HudLayout::DIALOGUE_MAX_COLS &&
+           above + layout_.dialogueChoicesH(choiceCount, D.cols) + pad > maxH)
+        ++D.cols;
+
+    D.panel = layout_.dialoguePanelFor(
+        above + layout_.dialogueChoicesH(choiceCount, D.cols) + pad);
+    D.textX = D.panel.x + pad;
+    D.nameY = D.panel.y + pad;
+    D.textY = D.nameY + nameH;
+
+    const f32 choicesY = D.panel.y + above;
+    for (u32 i = 0; i < choiceCount; ++i) {
+        const Rect r = layout_.dialogueChoice(D.panel, choicesY, i, D.cols);
+        if (r.y + r.h > D.panel.y + D.panel.h - pad + 0.5f) break;   // не влезло
+        D.choices.push_back(r);
+    }
+    return D;
+}
+
 void UiSystem::drawDialogueScreen(player::Player& player,
                                   world::ChunkManager& world) {
     auto* dlg = player.activeDialogue();
@@ -2141,43 +2233,42 @@ void UiSystem::drawDialogueScreen(player::Player& player,
     ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
              withAlpha(theme::Ink, (u8)(theme::ALPHA_SCRIM / 2)));
 
-    const Rect panel = layout_.dialoguePanel();
+    // Кто говорит: имя собеседника. Его не было — реплика висела в
+    // пустоте, и понять, с кем идёт разговор, можно было только по
+    // тому, на кого смотришь.
+    const char* speaker = nullptr;
+    if (auto* reg = player.registryHandle()) {
+        if (auto* tag = reg->get<npc::NpcTag>(dlg->npcEntity)) {
+            if (npc::npcRegistry().get(tag->id).name)
+                speaker = npc::npcRegistry().name(tag->id);
+        }
+    }
+
+    const DialogueLayout D = dialogueLayout(node->text,
+                                            (u32)node->choices.size(),
+                                            speaker != nullptr);
+    const Rect panel = D.panel;
     ui_.rect(panel.x, panel.y, panel.w, panel.h,
              withAlpha(theme::Panel, theme::ALPHA_PANEL));
     ui_.rectOutline(panel.x, panel.y, panel.w, panel.h,
                     layout_.dp(theme::STROKE_SELECTED_DP), theme::Accent);
 
-    const f32 pad = layout_.dp(theme::PANEL_PAD_DP);
-    f32 y = panel.y + pad;
-
-    // ---- Кто говорит ----
-    //
-    // Имени не было: реплика висела в пустоте, и понять, с кем идёт
-    // разговор, можно было только по тому, на кого смотришь.
-    if (auto* reg = player.registryHandle()) {
-        if (auto* tag = reg->get<npc::NpcTag>(dlg->npcEntity)) {
-            const auto& def = npc::npcRegistry().get(tag->id);
-            if (def.name) {
-                ui_.text(npc::npcRegistry().name(tag->id), panel.x + pad, y,
-                         theme::TEXT_LABEL, theme::Accent);
-                y += ui_.textHeight(theme::TEXT_LABEL)
-                   + layout_.dp(theme::SPACE_M_DP);
-            }
-        }
-    }
+    if (speaker)
+        ui_.text(speaker, D.textX, D.nameY, theme::TEXT_LABEL, theme::Accent);
 
     // ---- Реплика ----
     //
     // С переносом по словам: раньше длинная строка уходила за панель.
-    const f32 textW = panel.w - pad * 2.f;
-    y += ui_.textWrapped(node->text, panel.x + pad, y, textW,
-                         theme::TEXT_BODY, theme::TextPrimary);
-    y += layout_.dp(theme::SPACE_L_DP);
+    ui_.textWrapped(node->text, D.textX, D.textY, D.textW,
+                    theme::TEXT_BODY, theme::TextPrimary);
 
     // ---- Варианты ----
+    //
+    // Раскладка отдаёт только те, что помещаются целиком: вариант за
+    // краем панели не рисуется и не ловит касаний.
     for (usize i = 0; i < node->choices.size(); ++i) {
-        const Rect cr = layout_.dialogueChoice(y, (u32)i);
-        if (cr.y + cr.h > panel.y + panel.h - pad) break;   // не влезло
+        if (i >= D.choices.size()) break;
+        const Rect cr = D.choices[i];
 
         // Игрока берём указателем, а не ссылкой на ссылку: обработчик
         // переживает кадр, а ссылочная переменная — нет.
@@ -2220,6 +2311,7 @@ void UiSystem::drawDialogueScreen(player::Player& player,
 // ============================================================
 void UiSystem::drawQuestLogScreen(player::Player& player) {
     drawMenuBackdrop(T(StrKey::Quest_Title));
+    drawCloseButton([this]() { closeToPrevious(); });
 
     auto* log = player.questLog();
     auto* reg = player.registryHandle();
@@ -3808,7 +3900,7 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
 
     const auto& recipes = world::enchantRecipes().all();
     const i32 total = (i32)recipes.size();
-    const i32 visible = (i32)layout_.paneRowsVisible();
+    const i32 visible = (i32)layout_.paneRowsVisibleIn(listArea);
 
     enchantScroll.setContentHeight((f32)total * (rowH + rowGap),
                                    (f32)visible * (rowH + rowGap));
@@ -3820,7 +3912,7 @@ void UiSystem::drawEnchantScreen(player::Player& player) {
         const i32 idxR = start + i;
         const auto& r = recipes[(usize)idxR];
 
-        Rect rr = layout_.paneRow((u32)i);
+        Rect rr = layout_.paneRowIn(listArea, (u32)i);
         rr.y -= (enchantScroll.offset - (f32)start * (rowH + rowGap));
         if (rr.y + rr.h > listArea.y + listArea.h + 0.5f) break;
 

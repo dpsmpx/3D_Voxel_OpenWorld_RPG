@@ -487,6 +487,7 @@ const ContentPair CONTENT_RU[] = {
     { "g",                      "з" },
     { "P%u  S%u",               "П%u  С%u" },
     { "INV",                    "СУМКА" },
+    { "MENU",                   "МЕНЮ" },
     { "FIRE",                   "ОГОНЬ" },
     { "FROST",                  "МОРОЗ" },
     { "STUN",                   "ОГЛУШ" },

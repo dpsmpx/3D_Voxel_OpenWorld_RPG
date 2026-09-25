@@ -84,7 +84,7 @@ struct Settings {
     f32  buttonOffsetY[BUTTON_SLOTS] = {};
 
     /// --- UI ---
-    f32 uiScale             = 1.0f;    // 0.75 .. 1.5
+    f32 uiScale             = 1.0f;    // 0.85 .. 1.30
     f32 uiOpacity           = 1.0f;    // 0.4 .. 1.0
     bool showFps            = true;
     bool showDebugPos       = false;
