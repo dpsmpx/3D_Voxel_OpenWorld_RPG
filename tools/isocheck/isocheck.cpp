@@ -98,6 +98,13 @@ int main(int argc, char** argv) {
     // --size 64) нужна сверке «до/после»: в ней нечего обрезать.
     f32 posX = 8.5f, posZ = 8.5f;
     bool nature = true;
+    // Превью мира: то, что игра снимает при выгрузке мира, — область
+    // 64x64 вокруг игрока, четыре пикселя на блок, доведённое до
+    // конца одним вызовом IsoSnapshot::runNow (main.cpp,
+    // renderWorldPreview). Здесь меряется его цена: холодная — мир ещё
+    // не построен, и тёплая — как при выходе из игры, когда чанки
+    // вокруг игрока давно в памяти.
+    bool worldPreview = false;
 
     for (int i = 1; i < argc; ++i) {
         auto next = [&](const char* d) { return i + 1 < argc ? argv[++i] : d; };
@@ -112,6 +119,7 @@ int main(int argc, char** argv) {
             posZ = (f32)std::atof(next("8.5"));
         }
         else if (!std::strcmp(argv[i], "--no-nature")) nature = false;
+        else if (!std::strcmp(argv[i], "--world-preview")) worldPreview = true;
     }
 
     int layerMsgs = 0;
@@ -191,6 +199,54 @@ int main(int argc, char** argv) {
     }
 
     const glm::vec3 player{ posX, 70.f, posZ };
+
+    if (worldPreview) {
+        // Те же числа, что в main.cpp: WORLD_PREVIEW_*.
+        render::IsoRequest req;
+        req.area = render::iso::areaAround(player, 64);
+        req.pixelsPerBlock = 4.f;
+        req.maxSide = 512;
+        constexpr f32 LIMIT_SEC = 2.0f;
+        int rc = 0;
+        for (int pass = 0; pass < 2; ++pass) {
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool ok = snap.runNow(req, *world, LIMIT_SEC);
+            const double ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t0).count();
+            std::printf("isocheck: превью мира (%s): %s, %ux%u, %.0f мс\n",
+                        pass == 0 ? "холодное" : "тёплое",
+                        ok ? "готово" : "НЕ ВЫШЛО", snap.width(), snap.height(), ms);
+            if (!ok) { rc = 1; continue; }
+            if (pass == 1) {
+                if (!render::writePngFile(out, snap.pixels().data(),
+                                          snap.width(), snap.height())) rc = 1;
+                std::vector<u8> back; u32 bw = 0, bh = 0;
+                if (!render::readPngFile(out, back, bw, bh) ||
+                    back != snap.pixels()) {
+                    std::printf("isocheck: превью не читается обратно\n");
+                    rc = 1;
+                }
+                usize drawn = 0;
+                const auto& p8 = snap.pixels();
+                for (usize i = 0; i + 2 < p8.size(); i += 3)
+                    if (p8[i] > 16 || p8[i + 1] > 20 || p8[i + 2] > 26) ++drawn;
+                const usize total = (usize)snap.width() * snap.height();
+                std::printf("isocheck:   -> %s, территории %.1f%%, растений %u\n",
+                            out, 100.0 * (double)drawn / (double)(total ? total : 1),
+                            snap.floraCount());
+                if (drawn * 4 < total) rc = 1;
+                if (snap.width() > 512 || snap.height() > 512) rc = 1;
+            }
+        }
+        std::printf("isocheck: сообщений слоя проверки: %d\n", layerMsgs);
+        if (layerMsgs) rc = 1;
+        snap.destroy();
+        world.reset();
+        jobs::gJobs.stop();
+        vkDestroyDevice(dev, nullptr);
+        return rc;
+    }
+
     const u32 first = allViews ? 0 : viewIdx;
     const u32 last  = allViews ? 3 : viewIdx;
     int rc = 0;

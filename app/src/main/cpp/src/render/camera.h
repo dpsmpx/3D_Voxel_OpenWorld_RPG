@@ -149,6 +149,7 @@ public:
     // Все, кто двигает камеру, обязаны молчать при прибитой камере:
     // владелец у неё в отладочном режиме ровно один, см. setDebugCamera.
     void setFirstPerson(bool fp)       { if (!debugCamera_) firstPerson_ = fp; }
+    bool firstPerson() const           { return firstPerson_; }
     void setFirstPersonEye(f32 e)      { if (!debugCamera_) firstEyeH_ = e; }
     void setThirdPersonDistance(f32 d) { if (!debugCamera_) thirdDist_ = d; }
     void setThirdPersonHeight(f32 h)   { if (!debugCamera_) thirdOff_ = h; }

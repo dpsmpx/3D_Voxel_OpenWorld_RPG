@@ -44,6 +44,8 @@
 
 #include "render/render_system.h"
 #include "render/iso_snapshot.h"
+#include "render/iso_png.h"
+#include "ui/preview_atlas.h"
 #include "render/iso_save.h"
 
 #include "player/player.h"
@@ -144,6 +146,34 @@ constexpr f32 ISO_FINAL_PX_PER_BLOCK   = 12.f;
 /// уже неудобен; при превышении уменьшается масштаб, а не область.
 constexpr u32 ISO_FINAL_MAX_SIDE       = 8192;
 
+// ---- Превью мира ----
+//
+// Снимается тем же IsoSnapshot при выгрузке мира: выход в главное
+// меню и выход из игры. Область — 64x64 блока вокруг игрока; четыре
+// пикселя на блок дают картинку около 360 точек в ширину: на
+// карточке мира больше не нужно, а файл выходит в сотню килобайт.
+constexpr i32 WORLD_PREVIEW_BLOCKS       = 64;
+constexpr f32 WORLD_PREVIEW_PX_PER_BLOCK = 4.f;
+constexpr u32 WORLD_PREVIEW_MAX_SIDE     = 512;
+/// Сколько можно ждать снимок при выгрузке. Система даёт закрытию
+/// окна считанные секунды, и часть из них уже съело сохранение:
+/// превью, не успевшее за это время, не стоит зависшего закрытия.
+constexpr f32 WORLD_PREVIEW_MAX_SEC      = 2.0f;
+
+// ---- Облёт камеры в главном меню ----
+//
+// Камера третьего лица, только ведёт её не палец, а время: медленный
+// круг около игрока, чуть сверху. Та же камера и то же столкновение с
+// миром, что в игре, — в скалу она не заходит, а в тесноте
+// подходит ближе.
+constexpr f32 MENU_ORBIT_RAD_PER_SEC = 0.045f;  ///< круг за ~2,3 минуты
+constexpr f32 MENU_ORBIT_DIST        = 12.f;
+constexpr f32 MENU_ORBIT_HEIGHT      = 2.5f;
+constexpr f32 MENU_ORBIT_PITCH       = -0.30f;
+/// Ночью меню показывает утро того же мира: тёмный фон под меню —
+/// это пустой экран, а не атмосфера.
+constexpr f32 MENU_NIGHT_SHOW_TIME   = 0.30f;
+
 struct Engine {
     vk::Context                            vk;
     input::TouchInput                      touch;
@@ -188,6 +218,22 @@ struct Engine {
     vk::Texture2D                          isoPreviewTex;
     /// Что заказано сейчас: предпросмотр или итоговый снимок.
     bool                                   isoCapturing_ = false;
+
+    // ---- Главное меню ----
+    /// Сутки, которые видит меню: копия игровых, идущая сама по себе.
+    /// Игровые в меню стоят — сидение в меню не должно сдвигать время
+    /// мира, которое потом уйдёт в сохранение.
+    world::DayCycle                        menuDay_;
+    /// Угол облёта камеры меню.
+    f32                                    menuYaw_ = 0.f;
+    /// Окно пересоздано посреди игры (приложение сворачивали): после
+    /// него возвращаемся в игру, а не в меню.
+    bool                                   resumeInGame_ = false;
+    /// Атлас превью миров (ui/preview_atlas.h) и надо ли его
+    /// пересобрать. Собирается, только когда открыт экран миров: это
+    /// чтение PNG и ожидание GPU, в игре им делать нечего.
+    vk::Texture2D                          worldPreviewTex;
+    bool                                   previewsDirty_ = true;
 
     /// Зерно текущего мира. Настоящее значение берётся при входе в
     /// мир: до него мира нет, а ноль — честное «никакого».
@@ -435,6 +481,8 @@ struct Engine {
         ui->showFps = cfg::settingsConst().showFps;
 
         ui->onQuit = [this]() { wantQuit = true; };
+        ui->onContinue   = [this]() { enterGameFromMenu(); };
+        ui->onExitToMenu = [this]() { exitToMenu(); };
         ui->onSave = [this]() { doSave(lastSaveProfile, lastSaveSlot); };
         ui->onSaveRequested = [this](u32 p, u32 s) { doSave(p, s); };
         ui->onLoadRequested = [this](u32 p, u32 s) { doLoad(p, s); };
@@ -453,7 +501,7 @@ struct Engine {
                 st.save(settingsPath);
             }
 
-            ui->refreshSlotMeta(saveMgr.slots());
+            refreshSlots();
             ui->notify(cfg::T(cfg::StrKey::Notif_Deleted),
                        ui::theme::NotifyPriority::High);
         };
@@ -473,8 +521,8 @@ struct Engine {
 
             if (ui) {
                 ui->currentWorldSeed = seed;
-                ui->screen = ui::Screen::Hud;
-                ui->returnTo = ui::Screen::Hud;
+                ui->currentWorldName = worldName;
+                ui->enterGame();
                 ui->notify(cfg::T(cfg::StrKey::Notif_WorldCreated),
                            ui::theme::NotifyPriority::High);
             }
@@ -754,7 +802,7 @@ struct Engine {
         }
 
         setupButtons();
-        ui->refreshSlotMeta(saveMgr.slots());
+        refreshSlots();
 
         // Прошлый мир дочитывается ПОСЛЕ того, как готово всё
         // остальное: doLoad трогает игрока, спавнеры и интерфейс, и
@@ -762,6 +810,19 @@ struct Engine {
         if (continueSlot >= 0) {
             const auto& st = cfg::settingsConst();
             doLoad((u32)st.lastProfile, (u32)st.lastSlot);
+        }
+
+        // Игра начинается с главного меню. Кроме двух случаев: окно
+        // пересоздано посреди игры — тогда в неё и возвращаемся; и
+        // замерочные режимы (отладочная сцена, развёртка проходов) —
+        // они меряют кадр игры, и меню поверх него испортило бы замер.
+        {
+            const auto& st = cfg::settingsConst();
+            if (resumeInGame_ || st.debugScene || st.renderPassSweep)
+                ui->enterGame();
+            else
+                enterMainMenu();
+            resumeInGame_ = false;
         }
 
         fpsTime = std::chrono::steady_clock::now();
@@ -808,11 +869,21 @@ struct Engine {
     void onWindowTerm() {
         // Отладочная сцена — не мир игрока: записать её в автосейв
         // значит затереть настоящее сохранение ровной землёй.
-        if (initialized && player && world && !cfg::settingsConst().debugScene) {
+        const bool inGame = initialized && player && world &&
+                            !(ui && ui->atMainMenu);
+        if (inGame && !cfg::settingsConst().debugScene) {
+            // Только из игры. В главном меню мир уже сохранён —
+            // выходом в меню, — или в нём вовсе не играли: свежий мир
+            // первого запуска записывать незачем.
             LOGI("Автосейв при выходе...");
             doSave(save::SaveManager::AUTOSAVE_PROFILE,
                    save::SaveManager::AUTOSAVE_SLOT);
+            // Мир выгружается — самое время снять его превью: после
+            // этого места мира в памяти уже не будет.
+            renderWorldPreview();
         }
+        // Окно вернётся — вернуться туда же, где были.
+        resumeInGame_ = inGame;
 
         musicDirector.shutdown();
         audio::engine().shutdown();
@@ -854,6 +925,9 @@ struct Engine {
         // предпросмотра — их тоже освобождаем сами, до vk.shutdown().
         if (ui) ui->setPreviewImage(VK_NULL_HANDLE, VK_NULL_HANDLE);
         isoPreviewTex.destroy();
+        if (ui) ui->setWorldPreviewImage(VK_NULL_HANDLE, VK_NULL_HANDLE);
+        worldPreviewTex.destroy();
+        previewsDirty_ = true;
         if (isoReady_) { isoSnap.destroy(); isoReady_ = false; }
 
         if (render) {
@@ -954,7 +1028,10 @@ struct Engine {
         // Имя по умолчанию — чтобы мир было чем назвать в списке.
         // Игрок переименует его на экране создания, если захочет.
         world::defaultWorldName(worldName, sizeof(worldName), seed);
-        if (ui) ui->currentWorldSeed = seed;
+        if (ui) {
+            ui->currentWorldSeed = seed;
+            ui->currentWorldName = worldName;
+        }
 
         LOGI("мир: зерно %llu, появление (%.1f, %.1f, %.1f), "
              "построено чанков для проверки места: %u",
@@ -994,7 +1071,7 @@ struct Engine {
         const auto st = save::importSlot(file, saveMgr.slots().slot(p, s));
         if (!ui) return;
         if (st == save::TransferStatus::Ok) {
-            ui->refreshSlotMeta(saveMgr.slots());
+            refreshSlots();
             ui->notify(cfg::T(cfg::StrKey::Notif_Imported),
                        ui::theme::NotifyPriority::High);
         } else {
@@ -1023,8 +1100,8 @@ struct Engine {
                               cfg::T(cfg::StrKey::Notif_Saved),
                               profile + 1, slot + 1);
                 ui->setStatus(buf);
-                ui->refreshSlotMeta(saveMgr.slots());
             }
+            refreshSlots();
         } else {
             if (ui) ui->notify(save::statusString(st),
                                ui::theme::NotifyPriority::High);
@@ -1060,7 +1137,10 @@ struct Engine {
             // списка, обязан и называться так же, как в списке.
             if (meta.worldName[0] != '\0')
                 std::snprintf(worldName, sizeof(worldName), "%s", meta.worldName);
-            if (ui) ui->currentWorldSeed = worldSeed;
+            if (ui) {
+                ui->currentWorldSeed = worldSeed;
+                ui->currentWorldName = worldName;
+            }
             lastSaveProfile = profile;
             lastSaveSlot    = slot;
             rememberWorld(profile, slot);
@@ -1088,7 +1168,10 @@ struct Engine {
                               profile + 1, slot + 1);
                 ui->setStatus(buf);
                 ui->setDialogueActive(false);
-                ui->screen = ui::Screen::Hud;
+                // Открытый мир — это вход в игру, откуда бы его ни
+                // открыли: из списка миров в главном меню или из
+                // сохранений в паузе.
+                ui->enterGame();
             }
         } else {
             if (ui) ui->setStatus(save::statusString(st));
@@ -1219,6 +1302,243 @@ struct Engine {
             return;
         }
         ui->setPreviewImage(isoPreviewTex.view(), isoPreviewTex.sampler());
+    }
+
+    // ============================================================
+    // Главное меню, превью миров
+    // ============================================================
+
+    /// Перечитать слоты: и для списков, и для превью.
+    ///
+    /// Превью, чьих миров не осталось ни в одном слоте, удаляются;
+    /// мир в памяти своё сохраняет — он ещё будет сохранён.
+    void refreshSlots() {
+        if (!ui) return;
+        ui->refreshSlotMeta(saveMgr.slots());
+        std::vector<u64> keep{ worldSeed };
+        for (const auto& row : ui->slotMeta)
+            for (const auto& m : row)
+                if (m.exists) keep.push_back(m.seed);
+        save::prunePreviews(saveMgr.slots().savesDir(), keep);
+        previewsDirty_ = true;
+    }
+
+    /// Снять превью текущего мира: изометрический снимок 64x64 блока
+    /// вокруг игрока, тем же IsoSnapshot, что и снимок из настроек.
+    ///
+    /// Зовётся при выгрузке мира и доводит снимок до конца сразу:
+    /// кадров после этого не будет (см. IsoSnapshot::runNow).
+    bool renderWorldPreview() {
+        if (!isoReady_ || !world || !player || worldSeed == 0) return false;
+        const auto t0 = std::chrono::steady_clock::now();
+
+        render::IsoRequest req;
+        req.area = render::iso::areaAround(player->controller.state().position,
+                                           WORLD_PREVIEW_BLOCKS);
+        req.pixelsPerBlock = WORLD_PREVIEW_PX_PER_BLOCK;
+        req.maxSide        = WORLD_PREVIEW_MAX_SIDE;
+
+        // Снимок из настроек, если он шёл, этим заказом снят: у снимка
+        // один движок. Экран снимка при следующем открытии закажет
+        // свой заново.
+        isoCapturing_ = false;
+        if (ui) { ui->iso.capturing = false; ui->iso.stage = 0; }
+
+        if (!isoSnap.runNow(req, *world, WORLD_PREVIEW_MAX_SEC)) {
+            LOGW("превью мира не снято (ошибка %d)", (int)isoSnap.error());
+            return false;
+        }
+        const std::string path =
+            save::worldPreviewPath(saveMgr.slots().savesDir(), worldSeed);
+        const bool ok = render::writePngFile(path.c_str(),
+                                             isoSnap.pixels().data(),
+                                             isoSnap.width(), isoSnap.height());
+        const f32 ms = std::chrono::duration<f32, std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
+        LOGI("превью мира: %ux%u за %.0f мс -> %s%s", isoSnap.width(),
+             isoSnap.height(), (double)ms, path.c_str(), ok ? "" : " (не записано)");
+        previewsDirty_ = true;
+        return ok;
+    }
+
+    /// Собрать атлас превью заново, если экран миров открыт и превью
+    /// менялись. Дёшево, когда делать нечего: два сравнения в кадр.
+    void tickWorldPreviews() {
+        if (!previewsDirty_ || !ui || ui->screen != ui::Screen::Worlds) return;
+        previewsDirty_ = false;
+
+        const u32 P = save::SaveSlotManager::NUM_PROFILES;
+        const u32 S = save::SaveSlotManager::NUM_SLOTS;
+        std::vector<std::vector<u8>> pix(P * S);
+        std::vector<ui::PreviewImage> imgs(P * S);
+        for (u32 p = 0; p < P; ++p) {
+            for (u32 sl = 0; sl < S; ++sl) {
+                const auto& m = ui->slotMeta[p][sl];
+                if (!m.exists) continue;
+                const u32 i = p * S + sl;
+                u32 w = 0, h = 0;
+                const std::string path =
+                    save::worldPreviewPath(saveMgr.slots().savesDir(), m.seed);
+                if (render::readPngFile(path.c_str(), pix[i], w, h))
+                    imgs[i] = { pix[i].data(), w, h };
+            }
+        }
+        const ui::PreviewAtlas atlas = ui::buildPreviewAtlas(imgs, S);
+
+        // Прежний атлас ещё читают кадры, ушедшие в GPU.
+        vk.waitIdle();
+        ui->setWorldPreviewImage(VK_NULL_HANDLE, VK_NULL_HANDLE);
+        worldPreviewTex.destroy();
+        for (u32 i = 0; i < P * S; ++i)
+            ui->worldPreview[i / S][i % S] =
+                i < atlas.cells.size() ? atlas.cells[i] : ui::PreviewCell{};
+        if (atlas.width == 0) return;
+
+        if (!worldPreviewTex.create(vk.device(), vk.physicalDevice(),
+                                    vk.gfxQueue(), vk.gfxFamily(),
+                                    atlas.width, atlas.height,
+                                    VK_FORMAT_R8G8B8A8_UNORM,
+                                    atlas.rgba.data(), atlas.rgba.size(),
+                                    VK_FILTER_LINEAR)) {
+            LOGW("превью миров: текстура не создана");
+            for (auto& row : ui->worldPreview) row.fill(ui::PreviewCell{});
+            return;
+        }
+        ui->setWorldPreviewImage(worldPreviewTex.view(), worldPreviewTex.sampler());
+    }
+
+    /// Встать в главное меню над текущим миром.
+    void enterMainMenu() {
+        if (!ui) return;
+        ui->enterMainMenu();
+        // Меню смотрит на мир в то же время суток, что и игрок, — но
+        // своими часами: игровые в меню стоят.
+        menuDay_ = dayCycle;
+        if (menuDay_.isNight())
+            menuDay_.reset(MENU_NIGHT_SHOW_TIME,
+                           menuDay_.day() + (menuDay_.timeOfDay() >= 0.5f ? 1u : 0u));
+        // Облёт начинается из-за спины игрока: первый кадр меню — тот
+        // же вид, что был в игре, только камера отходит и поднимается.
+        menuYaw_ = cameraYawPitch.x;
+        touch.cancelAll();
+    }
+
+    /// «Продолжить» в главном меню: мир уже открыт, в него просто
+    /// входим.
+    void enterGameFromMenu() {
+        if (!ui) return;
+        ui->enterGame();
+        // Погода в меню шла по часам меню; в игре — по игровым.
+        if (world && player)
+            weather.snap(world->generator(), player->controller.state().position,
+                         dayCycle.worldSeconds());
+        touch.cancelAll();
+    }
+
+    /// Пауза → главное меню: сохранить, снять превью, выйти.
+    void exitToMenu() {
+        if (!ui || !player || !world) return;
+        if (!cfg::settingsConst().debugScene) {
+            doSave(save::SaveManager::AUTOSAVE_PROFILE,
+                   save::SaveManager::AUTOSAVE_SLOT);
+            renderWorldPreview();
+        }
+        enterMainMenu();
+    }
+
+    /// Круглые кнопки видны и нажимаются только там, где есть
+    /// управление.
+    ///
+    /// Рисуются они только поверх чистого HUD, а ловили касание
+    /// всегда: setButtonVisible не вызывал никто, и все они оставались
+    /// visible навсегда. Фон инвентаря не является интерактивным
+    /// прямоугольником, поэтому тап по пустому месту проваливался
+    /// сквозь меню на невидимую кнопку — включая DIG и PUT, которые
+    /// меняют мир.
+    void syncPadButtons(bool blocked) {
+        if (padButtonsVisible_ == !blocked) return;
+        padButtonsVisible_ = !blocked;
+        for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i)
+            if (buttonIds_[i])
+                touch.setButtonVisible(buttonIds_[i], padButtonsVisible_);
+        // Зажатую кнопку и джойстик тоже снимаем: иначе палец,
+        // опущенный до открытия меню, остаётся «нажатым» внутри
+        // него и отпускается уже неизвестно где.
+        if (!padButtonsVisible_) touch.cancelAll();
+    }
+
+    /// Кадр главного меню: мир живёт как фон, игры нет.
+    ///
+    /// Ни ввода, ни физики игрока, ни появления мобов, ни их ИИ, ни
+    /// боя, ни автосейва: в меню игрока нельзя ни убить, ни сдвинуть.
+    /// Идут только часы меню, погода, подгрузка чанков вокруг игрока
+    /// и облёт камеры — тем же рендером, что в игре.
+    void updateMainMenu(f32 dt) {
+        // Мир из системного диалога выбирают теперь именно отсюда —
+        // из списка миров в главном меню.
+        {
+            const std::string picked = sys::takePickedFile();
+            if (!picked.empty())
+                applyImport(picked, importInto.profile, importInto.slot);
+        }
+
+        syncPadButtons(true);
+        touch.setJoystickKeepOut(0.f, 0.f, 0.f, 0.f);
+
+        menuDay_.tick(dt);
+        const glm::vec3 focus = player->controller.state().position;
+
+        weather.update(world->generator(), focus, menuDay_.worldSeconds(),
+                       menuDay_.sunElevation(), dt);
+        const glm::vec3 eye = render->camera().position();
+        precip.update(*world, eye, weather.precip(), weather.snowMix(),
+                      weather.wind(), dt);
+        world::particles().update(*world, eye, dt);
+        audio::events().setRain(weather.precip() * (1.f - weather.snowMix()));
+
+        world->update(focus);
+
+        // ---- Облёт ----
+        menuYaw_ = std::remainder(menuYaw_ + dt * MENU_ORBIT_RAD_PER_SEC,
+                                  6.28318531f);
+        auto& cam = render->camera();
+        cam.setTargetPosition(focus);
+        cam.setFirstPerson(false);
+        cam.setThirdPersonDistance(MENU_ORBIT_DIST);
+        cam.setThirdPersonHeight(MENU_ORBIT_HEIGHT);
+        cam.setHeadBob(0.f, 0.f);
+        cam.tickShake(dt);
+        cam.setYawPitch(menuYaw_, MENU_ORBIT_PITCH);
+        cam.setSunDir(menuDay_.sunDirection());
+        cam.setSky(menuDay_.skyColor(), menuDay_.skyLight(), menuDay_.timeOfDay());
+        cam.setWeather(weather.cloud(), weather.precip(), weather.rainbow(),
+                       weather.snowMix(), weather.wind());
+        cam.setWorldSeed(worldSeed);
+        cam.followTarget(*world, cam.forward());
+
+        {
+            audio::AudioListener listener;
+            listener.position = cam.position();
+            listener.forward  = cam.forward();
+            listener.up       = glm::vec3(0.f, 1.f, 0.f);
+            audio::engine().update(dt, listener);
+            musicCtx.paused = true;
+            musicCtx.inCombat = false;
+            musicCtx.nearbyHostiles = 0;
+            musicDirector.update(dt, musicCtx);
+        }
+
+        touch.setLayoutMode(ui->buttonLayoutMode &&
+                            ui->screen == ui::Screen::Settings);
+        tickIso();
+        tickWorldPreviews();
+
+        ui->tickUi(dt);
+        ui->setViewYaw(menuYaw_);
+
+        evJump_ = evBreak_ = evPlace_ = evAttack_ = evFinish_ =
+            evInteract_ = evUseItem_ = evDash_ = evBlock_ = false;
+        touch.endFrame();
     }
 
     void setupButtons() {
@@ -1469,6 +1789,12 @@ struct Engine {
             return;
         }
 
+        // Главное меню: мир — фон, игры нет (см. updateMainMenu).
+        if (ui && ui->atMainMenu) {
+            updateMainMenu(dt);
+            return;
+        }
+
         playtime.tick(dt);
         dayCycle.tick(dt);
 
@@ -1525,14 +1851,6 @@ struct Engine {
 
         const bool uiBlockingInput = ui && ui->paused();
 
-        // Кнопку, которую не видно, нельзя нажать.
-        //
-        // Рисуются круглые кнопки только поверх чистого HUD, а ловили
-        // касание всегда: setButtonVisible не вызывал никто, и все
-        // они оставались visible навсегда. Фон инвентаря не является
-        // интерактивным прямоугольником, поэтому тап по пустому месту
-        // проваливался сквозь меню на невидимую кнопку — включая DIG
-        // и PUT, которые меняют мир.
         // Кольцу джойстика нельзя на пояс быстрых слотов: касание
         // ячейки забирает интерфейс, а джойстик, появившийся рядом,
         // отодвигается так, чтобы ячеек не закрывать.
@@ -1542,17 +1860,7 @@ struct Engine {
         } else {
             touch.setJoystickKeepOut(0.f, 0.f, 0.f, 0.f);
         }
-
-        if (padButtonsVisible_ != !uiBlockingInput) {
-            padButtonsVisible_ = !uiBlockingInput;
-            for (u32 i = 0; i < cfg::Settings::BUTTON_SLOTS; ++i)
-                if (buttonIds_[i])
-                    touch.setButtonVisible(buttonIds_[i], padButtonsVisible_);
-            // Зажатую кнопку и джойстик тоже снимаем: иначе палец,
-            // опущенный до открытия меню, остаётся «нажатым» внутри
-            // него и отпускается уже неизвестно где.
-            if (!padButtonsVisible_) touch.cancelAll();
-        }
+        syncPadButtons(uiBlockingInput);
 
         auto* dlg = player->activeDialogue();
         bool dialogueActive = dlg && dlg->active;
@@ -2157,6 +2465,7 @@ struct Engine {
         // Снимок мира двигается по шагу в кадр: подготовка
         // территории и рендер тайлов не должны съедать кадр целиком.
         tickIso();
+        tickWorldPreviews();
 
         if (ui) {
             ui->tickUi(dt);
@@ -2203,7 +2512,10 @@ struct Engine {
         }
 
         if (render && world && player) {
-            const physics::RayHit hit = player->targetBlock(*world);
+            // В главном меню целиться не во что: рамки блока под
+            // прицелом на фоне меню быть не должно.
+            const physics::RayHit hit = (ui && ui->atMainMenu)
+                ? physics::RayHit{} : player->targetBlock(*world);
             render::precipInstances(precip, weather.snowMix(), precipInstances);
             render->setPrecip(precipInstances.data(), (u32)precipInstances.size());
 

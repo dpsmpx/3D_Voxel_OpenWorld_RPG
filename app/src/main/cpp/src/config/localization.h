@@ -24,6 +24,9 @@ enum class StrKey : u16 {
     Menu_Pause, Menu_Resume, Menu_Inventory, Menu_Skills,
     Menu_Attributes, Menu_Quests, Menu_Reputation, Menu_SaveLoad,
     Menu_Crafting, Menu_Trade, Menu_Worlds,
+    // Главное меню и выход в него; группы паузы.
+    Menu_MainMenu, Menu_Play, Menu_GameTitle,
+    Menu_GroupCharacter, Menu_GroupWorld, Menu_GroupSystem,
 
     // --- Миры ---
     // Мир перестал быть один: его создают, выбирают из списка,

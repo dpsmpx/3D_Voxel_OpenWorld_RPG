@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <unistd.h>
+#include <dirent.h>
 
 namespace save {
 
@@ -174,6 +175,38 @@ bool continueWorld(const SaveSlotManager& slots,
 
     outSeed = meta.seed;
     return true;
+}
+
+// ============================================================
+// Превью миров
+// ============================================================
+std::string worldPreviewPath(const std::string& savesDir, u64 seed) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "/world_%016llx.png",
+                  (unsigned long long)seed);
+    return savesDir + buf;
+}
+
+u32 prunePreviews(const std::string& savesDir, const std::vector<u64>& keepSeeds) {
+    DIR* d = ::opendir(savesDir.c_str());
+    if (!d) return 0;
+    std::vector<std::string> drop;
+    while (const dirent* e = ::readdir(d)) {
+        const char* n = e->d_name;
+        unsigned long long seed = 0;
+        char tail[8] = {};
+        // Ровно наш образец: world_ + 16 hex + .png. Чужие файлы в
+        // каталоге сейвов не трогаем, даже похожие.
+        if (std::strlen(n) != 6 + 16 + 4) continue;
+        if (std::sscanf(n, "world_%16llx%7s", &seed, tail) != 2) continue;
+        if (std::strcmp(tail, ".png") != 0) continue;
+        bool keep = false;
+        for (u64 k : keepSeeds) if (k == (u64)seed) { keep = true; break; }
+        if (!keep) drop.emplace_back(savesDir + "/" + n);
+    }
+    ::closedir(d);
+    for (const auto& path : drop) std::remove(path.c_str());
+    return (u32)drop.size();
 }
 
 } // namespace save

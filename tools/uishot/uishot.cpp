@@ -117,7 +117,32 @@ struct Screen {
 /// отдаёт треугольники, и складывать их обратно в прямоугольники
 /// значило бы проверять свою догадку о том, что он рисует, вместо
 /// того, что он рисует на самом деле.
-void triangle(Canvas& c, const Atlas& at, const Screen& sc,
+/// Картинка снаружи (атлас превью миров, фон под меню): RGB8.
+struct Image {
+    u32 w = 0, h = 0;
+    std::vector<u8> rgb;
+    bool empty() const { return w == 0 || h == 0; }
+
+    void sample(f32 u, f32 v, f32 out[4]) const {
+        const i32 x = std::clamp((i32)(u * (f32)w), 0, (i32)w - 1);
+        const i32 y = std::clamp((i32)(v * (f32)h), 0, (i32)h - 1);
+        const u8* p = &rgb[((usize)y * w + x) * 3];
+        out[0] = (f32)p[0]; out[1] = (f32)p[1]; out[2] = (f32)p[2];
+        out[3] = 1.f;
+    }
+};
+
+/// Чем красить треугольник: атласом интерфейса или картинкой гнезда.
+struct Sampler {
+    const Atlas* atlas = nullptr;
+    const Image* image = nullptr;
+    void operator()(f32 u, f32 v, f32 out[4]) const {
+        if (image && !image->empty()) image->sample(u, v, out);
+        else atlas->sample(u, v, out);
+    }
+};
+
+void triangle(Canvas& c, const Sampler& at, const Screen& sc,
               const ui::UiVertex& av, const ui::UiVertex& bv,
               const ui::UiVertex& cv)
 {
@@ -147,7 +172,7 @@ void triangle(Canvas& c, const Atlas& at, const Screen& sc,
             const f32 u = av.uv.x * w1 + bv.uv.x * w2 + cv.uv.x * w0;
             const f32 v = av.uv.y * w1 + bv.uv.y * w2 + cv.uv.y * w0;
             f32 tex[4];
-            at.sample(u, v, tex);
+            at(u, v, tex);
 
             const f32 vr = (f32)av.r * w1 + (f32)bv.r * w2 + (f32)cv.r * w0;
             const f32 vg = (f32)av.g * w1 + (f32)bv.g * w2 + (f32)cv.g * w0;
@@ -178,6 +203,11 @@ struct Opts {
     const char* targetName = "Stone Warden";
     u32  background = 0x5A6A78u;  ///< «серый день»: не белое и не чёрное
     std::string out = "build/uishot/hud.png";
+    /// Картинка во весь экран под интерфейсом: кадр мира из
+    /// tools/vkcheck — главное меню без него не на что смотреть.
+    std::string under;
+    /// Превью мира для карточек на экране миров (PNG из isocheck).
+    std::string preview;
 };
 
 } // namespace
@@ -217,6 +247,7 @@ int main(int argc, char** argv) {
             else if (v == "newworld")   o.screen = ui::Screen::NewWorld;
             else if (v == "iso")        o.screen = ui::Screen::IsoSnapshot;
             else if (v == "dialogue")   o.screen = ui::Screen::Dialogue;
+            else if (v == "mainmenu")   o.screen = ui::Screen::MainMenu;
             else { std::printf("uishot: неизвестный экран «%s»\n", v.c_str()); return 1; }
         }
         else if (k == "--target") o.target = true;
@@ -227,6 +258,8 @@ int main(int argc, char** argv) {
         else if (k == "--name")   o.targetName = next();
         else if (k == "--bg")     o.background = (u32)std::strtoul(next(), nullptr, 16);
         else if (k == "--out")    o.out = next();
+        else if (k == "--under")  o.under = next();
+        else if (k == "--preview") o.preview = next();
     }
 
     world::blocks();
@@ -248,6 +281,64 @@ int main(int argc, char** argv) {
     sys.setDensityDpi(o.dpi);
     sys.setScreenSize(o.w, o.h);
     sys.screen = o.screen;
+
+    // Главное меню и экраны, открытые из него: игры ещё нет.
+    if (o.screen == ui::Screen::MainMenu) sys.atMainMenu = true;
+    if (o.screen == ui::Screen::Worlds || o.screen == ui::Screen::NewWorld) {
+        sys.atMainMenu = true;
+        sys.navStack[0] = ui::Screen::MainMenu;
+        sys.navDepth = 1;
+    }
+
+    // Миры: несколько настоящих на вид карточек — с названием,
+    // зерном и уровнем, одна пустая, одна текущая. Пустой экран миров
+    // не показал бы ни превью, ни того, влезает ли текст рядом с ним.
+    Image previewAtlas;
+    if (o.screen == ui::Screen::Worlds || o.screen == ui::Screen::MainMenu) {
+        const char* NAMES[] = { "Северный край", "Остров", "Долина рек",
+                                "Пустоши", "Мир 7F3A21C0" };
+        u32 n = 0;
+        for (u32 p = 0; p < 3; ++p) {
+            for (u32 s = 0; s < 3; ++s) {
+                if ((p * 3 + s) % 4 == 3) continue;       // пустые — тоже
+                auto& m = sys.slotMeta[p][s];
+                m.exists = true;
+                m.seed = 0x5150Bull + n * 7919ull;
+                m.playerLevel = 1 + n * 3;
+                m.playtimeSec = 1800u + n * 4000u;
+                std::snprintf(m.worldName, sizeof(m.worldName), "%s",
+                              NAMES[n % 5]);
+                ++n;
+            }
+        }
+        sys.currentWorldSeed = sys.slotMeta[0][0].seed;
+        sys.currentWorldName = sys.slotMeta[0][0].worldName;
+
+        std::vector<u8> rgb;
+        u32 pw = 0, ph = 0;
+        if (!o.preview.empty() &&
+            render::readPngFile(o.preview.c_str(), rgb, pw, ph)) {
+            // Один снимок на все карточки, кроме одной: у мира без
+            // превью должно быть видно, как выглядит пустое окно.
+            std::vector<ui::PreviewImage> imgs(9);
+            for (u32 i = 0; i < 9; ++i)
+                if (i != 4) imgs[i] = { rgb.data(), pw, ph };
+            const ui::PreviewAtlas a = ui::buildPreviewAtlas(imgs, 3);
+            previewAtlas.w = a.width; previewAtlas.h = a.height;
+            previewAtlas.rgb.resize((usize)a.width * a.height * 3);
+            for (usize i = 0, k = (usize)a.width * a.height; i < k; ++i)
+                for (u32 ch = 0; ch < 3; ++ch)
+                    previewAtlas.rgb[i * 3 + ch] = a.rgba[i * 4 + ch];
+            for (u32 i = 0; i < 9; ++i)
+                sys.worldPreview[i / 3][i % 3] = a.cells[i];
+            // Настоящей текстуры нет — гнездо помечается занятым, а
+            // красит его сам снимок (см. Sampler).
+            sys.setWorldPreviewImage((VkImageView)(uintptr_t)1,
+                                     (VkSampler)(uintptr_t)1);
+        } else if (!o.preview.empty()) {
+            std::printf("uishot: превью не прочитано: %s\n", o.preview.c_str());
+        }
+    }
 
     // Журнал без заданий показывать нечего, а цель снимка —
     // прочитать строку награды. Задание собирается тем же
@@ -365,10 +456,35 @@ int main(int argc, char** argv) {
 
     Canvas c;
     c.reset((u32)o.w, (u32)o.h, o.background);
+    if (!o.under.empty()) {
+        Image under;
+        if (render::readPngFile(o.under.c_str(), under.rgb, under.w, under.h)) {
+            for (u32 y = 0; y < c.h; ++y)
+                for (u32 x = 0; x < c.w; ++x) {
+                    f32 t[4];
+                    under.sample(((f32)x + 0.5f) / (f32)c.w,
+                                 ((f32)y + 0.5f) / (f32)c.h, t);
+                    c.blend(x, y, t[0], t[1], t[2], 1.f);
+                }
+        } else {
+            std::printf("uishot: фон не прочитан: %s\n", o.under.c_str());
+        }
+    }
     Atlas at;
     const Screen sc{ (f32)o.w, (f32)o.h };
-    for (usize i = 0; i + 2 < v.size(); i += 3)
-        triangle(c, at, sc, v[i], v[i + 1], v[i + 2]);
+
+    // Отрезки кадра: какие треугольники красятся картинкой гнезда.
+    const auto& runs = sys.frameRuns();
+    auto imageFor = [&](usize vi) -> const Image* {
+        const ui::UiRenderer::Run* hit = nullptr;
+        for (const auto& r : runs) if (r.first <= vi) hit = &r;
+        if (!hit || hit->image != (i32)ui::ImageSlot::WorldPreviews) return nullptr;
+        return &previewAtlas;
+    };
+    for (usize i = 0; i + 2 < v.size(); i += 3) {
+        const Sampler smp{ &at, imageFor(i) };
+        triangle(c, smp, sc, v[i], v[i + 1], v[i + 2]);
+    }
 
     const std::vector<u8> rgb = c.rgb();
     if (!render::writePngFile(o.out.c_str(), rgb.data(), (u32)o.w, (u32)o.h)) {

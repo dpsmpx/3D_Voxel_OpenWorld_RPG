@@ -47,15 +47,15 @@ bool UiRenderer::init(vk::Context& ctx, AAssetManager* mgr) {
     lci.pBindings = &b;
     if (vkCreateDescriptorSetLayout(dev_, &lci, nullptr, &descLayout_) != VK_SUCCESS) return false;
 
-    // Наборов два: атлас шрифта и картинка снаружи (предпросмотр
-    // изометрического снимка). Конвейер у них общий — меняется только
-    // текстура.
+    // Наборы: атлас шрифта и по одному на гнездо картинки снаружи
+    // (предпросмотр снимка, превью миров). Конвейер у них общий —
+    // меняется только текстура.
     VkDescriptorPoolSize ps{};
     ps.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    ps.descriptorCount = 2;
+    ps.descriptorCount = 1 + IMAGE_SLOTS;
 
     VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pci.maxSets = 2;
+    pci.maxSets = 1 + IMAGE_SLOTS;
     pci.poolSizeCount = 1;
     pci.pPoolSizes = &ps;
     if (vkCreateDescriptorPool(dev_, &pci, nullptr, &descPool_) != VK_SUCCESS) return false;
@@ -117,24 +117,25 @@ void UiRenderer::beginFrame() {
 }
 void UiRenderer::endFrame() {}
 
-void UiRenderer::beginRun(bool image) {
+void UiRenderer::beginRun(i32 image) {
     if (!runs_.empty() && runs_.back().image == image) return;
     runs_.push_back(Run{ (u32)verts_.size(), 0, image });
 }
 
-void UiRenderer::setImage(VkImageView view, VkSampler sampler) {
+void UiRenderer::setImage(ImageSlot slot, VkImageView view, VkSampler sampler) {
+    ImageSet& im = images_[(u32)slot];
     if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
-        imageReady_ = false;
+        im.ready = false;
         return;
     }
-    if (imageSet_ == VK_NULL_HANDLE) {
+    if (im.set == VK_NULL_HANDLE) {
         VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         ai.descriptorPool = descPool_;
         ai.descriptorSetCount = 1;
         ai.pSetLayouts = &descLayout_;
-        if (vkAllocateDescriptorSets(dev_, &ai, &imageSet_) != VK_SUCCESS) {
-            imageSet_ = VK_NULL_HANDLE;
-            imageReady_ = false;
+        if (vkAllocateDescriptorSets(dev_, &ai, &im.set) != VK_SUCCESS) {
+            im.set = VK_NULL_HANDLE;
+            im.ready = false;
             return;
         }
     }
@@ -143,30 +144,31 @@ void UiRenderer::setImage(VkImageView view, VkSampler sampler) {
     ii.sampler     = sampler;
     ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w.dstSet = imageSet_;
+    w.dstSet = im.set;
     w.dstBinding = 0;
     w.descriptorCount = 1;
     w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     w.pImageInfo = &ii;
     vkUpdateDescriptorSets(dev_, 1, &w, 0, nullptr);
-    imageReady_ = true;
+    im.ready = true;
 }
 
-void UiRenderer::pushImageQuad(glm::vec2 pos, glm::vec2 size, u32 rgba) {
-    if (!imageReady_) {
+void UiRenderer::pushImageQuad(ImageSlot slot, glm::vec2 pos, glm::vec2 size,
+                               float u0, float v0, float u1, float v1, u32 rgba) {
+    if (!images_[(u32)slot].ready) {
         // Картинки нет — рисуем подложку, а не дыру.
         pushQuad(pos, size, whiteU_, whiteV_, whiteU_, whiteV_, rgba);
         return;
     }
-    beginRun(true);
-    pushQuad(pos, size, 0.f, 0.f, 1.f, 1.f, rgba);
-    beginRun(false);
+    beginRun((i32)slot);
+    pushQuad(pos, size, u0, v0, u1, v1, rgba);
+    beginRun(-1);
 }
 
 void UiRenderer::pushQuad(glm::vec2 pos, glm::vec2 size,
                           float u0, float v0, float u1, float v1, u32 rgba)
 {
-    if (runs_.empty()) beginRun(false);
+    if (runs_.empty()) beginRun(-1);
     u8 r = (rgba >> 24) & 0xFF, g = (rgba >> 16) & 0xFF;
     u8 b = (rgba >>  8) & 0xFF, a = (rgba      ) & 0xFF;
     auto& V = verts_;
@@ -186,7 +188,7 @@ void UiRenderer::pushQuad(glm::vec2 pos, glm::vec2 size,
 }
 
 void UiRenderer::pushTri(glm::vec2 a, glm::vec2 b, glm::vec2 c, u32 rgba) {
-    if (runs_.empty()) beginRun(false);
+    if (runs_.empty()) beginRun(-1);
     u8 r = (rgba >> 24) & 0xFF, g = (rgba >> 16) & 0xFF;
     u8 bl = (rgba >>  8) & 0xFF, al = (rgba      ) & 0xFF;
     auto& V = verts_;
@@ -266,8 +268,11 @@ void UiRenderer::flush(vk::Context& ctx) {
 
     for (const Run& r : runs_) {
         if (r.count == 0) continue;
-        VkDescriptorSet set = (r.image && imageReady_ &&
-                               imageSet_ != VK_NULL_HANDLE) ? imageSet_ : fontSet_;
+        VkDescriptorSet set = fontSet_;
+        if (r.image >= 0 && r.image < (i32)IMAGE_SLOTS) {
+            const ImageSet& im = images_[(u32)r.image];
+            if (im.ready && im.set != VK_NULL_HANDLE) set = im.set;
+        }
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 pipeline_.layout(), 0, 1, &set, 0, nullptr);
         vkCmdDraw(cmd, r.count, 1, r.first, 0);
@@ -286,8 +291,7 @@ void UiRenderer::destroy() {
     descPool_ = VK_NULL_HANDLE;
     descLayout_ = VK_NULL_HANDLE;
     fontSet_ = VK_NULL_HANDLE;
-    imageSet_ = VK_NULL_HANDLE;
-    imageReady_ = false;
+    images_ = {};
 }
 
 } // namespace ui

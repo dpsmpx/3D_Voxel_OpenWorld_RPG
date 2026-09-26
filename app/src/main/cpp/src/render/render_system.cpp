@@ -88,9 +88,12 @@ void RenderSystem::prepareFrame(vk::Context& ctx,
 
     // Модель игрока идёт в тот же поток инстансов, что и NPC: один
     // конвейер, один буфер, один вызов отрисовки на всех двуногих.
+    //
+    // Видна она, когда камера не в глазах, — по камере, а не по
+    // режиму игрока: в главном меню камера облетает игрока снаружи,
+    // в каком бы виде он ни играл.
     npcRenderer_.rebuild(registry, timeSec_,
-                         player && player->cameraMode ==
-                             player::CameraMode::ThirdPerson);
+                         player && !camera_.firstPerson());
     npcRenderer_.upload(ctx);
 
     projRenderer_.rebuild(registry);

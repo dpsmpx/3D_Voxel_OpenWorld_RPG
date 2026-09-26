@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <cmath>
 #include <shared_mutex>
 #include <cstring>
@@ -746,6 +748,30 @@ bool IsoSnapshot::step(world::ChunkManager& world) {
         }
     }
     return false;
+}
+
+bool IsoSnapshot::runNow(const IsoRequest& req, world::ChunkManager& world,
+                         f32 maxSeconds) {
+    begin(req);
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto limit = std::chrono::duration<f32>(maxSeconds);
+    while (stage_ != IsoStage::Ready && stage_ != IsoStage::Failed) {
+        const IsoStage before = stage_;
+        const usize cursor = meshCursor_;
+        step(world);
+        if (std::chrono::steady_clock::now() - t0 > limit) {
+            LOGW("снимок: не уложился в %.1f с (этап %d)",
+                 (double)maxSeconds, (int)stage_);
+            cancel();
+            return false;
+        }
+        // Ждём мир — не шаг: спим, пока фоновые задачи строят чанки.
+        const bool waiting = stage_ == before &&
+            (stage_ == IsoStage::Preparing ||
+             (stage_ == IsoStage::Meshing && meshCursor_ == cursor));
+        if (waiting) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return stage_ == IsoStage::Ready;
 }
 
 bool IsoSnapshot::rerender(const IsoRequest& req) {

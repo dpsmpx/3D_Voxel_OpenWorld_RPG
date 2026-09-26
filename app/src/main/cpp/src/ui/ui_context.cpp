@@ -76,16 +76,20 @@ bool UiContext::itemIcon(u16 itemId, float x, float y, float size, UiColor c) {
     return true;
 }
 
-void UiContext::imageQuad(float x, float y, float w, float h, UiColor c) {
+void UiContext::imageQuad(ImageSlot slot, float x, float y, float w, float h,
+                          UiColor c, float u0, float v0, float u1, float v1) {
     if (!r_) return;
-    r_->pushImageQuad({ toNdcX(x, screenW_), toNdcY(y, screenH_) },
-                      { toNdcW(w, screenW_), toNdcH(h, screenH_) }, c);
+    r_->pushImageQuad(slot, { toNdcX(x, screenW_), toNdcY(y, screenH_) },
+                      { toNdcW(w, screenW_), toNdcH(h, screenH_) },
+                      u0, v0, u1, v1, c);
 }
 
-bool UiContext::hasImage() const { return r_ && r_->hasImage(); }
+bool UiContext::hasImage(ImageSlot slot) const {
+    return r_ && r_->hasImage(slot);
+}
 
-void UiContext::setImage(VkImageView view, VkSampler sampler) {
-    if (r_) r_->setImage(view, sampler);
+void UiContext::setImage(ImageSlot slot, VkImageView view, VkSampler sampler) {
+    if (r_) r_->setImage(slot, view, sampler);
 }
 
 void UiContext::rectOutline(float x, float y, float w, float h, float th, UiColor c) {

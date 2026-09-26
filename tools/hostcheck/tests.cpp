@@ -137,6 +137,7 @@
 #include "ui/ui_atlas.h"
 #include "ui/font_data.h"
 #include "ui/ui_system.h"
+#include "ui/preview_atlas.h"
 #include "input/touch_layout.h"
 #include "render/iso_projection.h"
 #include "render/iso_png.h"
@@ -9096,8 +9097,7 @@ void testNavigationReturnsWhereItCameFrom() {
     ui::UiSystem sys;   // без init: проверяется только состояние
 
     // ---- 1. Инвентарь из HUD возвращает в HUD ----
-    sys.screen = ui::Screen::Hud;
-    sys.returnTo = ui::Screen::Hud;
+    sys.resetTo(ui::Screen::Hud);
     sys.openScreen(ui::Screen::Inventory);
     check(sys.screen == ui::Screen::Inventory, "инвентарь открылся");
     sys.onBackPressed();
@@ -9119,8 +9119,7 @@ void testNavigationReturnsWhereItCameFrom() {
     check(sys.screen == ui::Screen::Hud, "пауза закрывается в игру");
 
     // ---- 4. Ремесло, открытое подсказкой из HUD, вернёт в HUD ----
-    sys.screen = ui::Screen::Hud;
-    sys.returnTo = ui::Screen::Hud;
+    sys.resetTo(ui::Screen::Hud);
     sys.openCrafting(crafting::StationType::Anvil);
     check(sys.screen == ui::Screen::Crafting, "ремесло открылось");
     sys.onBackPressed();
@@ -9150,88 +9149,398 @@ void testNavigationReturnsWhereItCameFrom() {
 }
 
 // ------------------------------------------------------------
-// Пауза сообщает, что игра остановлена, и ведёт во все разделы.
+// Пауза — только то, что нужно, пока игра стоит; всё остальное
+// достижимо с главного экрана и из главного меню.
+//
+// Было девять одинаковых плиток: сумка, ремесло, атрибуты, навыки,
+// журнал, репутация, сохранение, миры, настройки. Сумка, журнал и
+// ремесло ушли на главный экран, миры — в главное меню. Проверяется
+// не только что их нет в паузе, но и что каждый экран по-прежнему
+// открывается НАСТОЯЩИМ касанием по своей новой двери: убрать пункт
+// из списка легко, потерять экран — ещё легче.
 // ------------------------------------------------------------
+namespace {
+
+struct UiRig {
+    ecs::Registry reg;
+    player::Player pl;
+    world::ChunkManager wd{ 0x9A05Eull, 1 };
+    ui::UiSystem sys;
+
+    UiRig(i32 w, i32 h, i32 dpi) {
+        world::blocks();
+        items::items();
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        sys.setDensityDpi(dpi);
+        sys.setScreenSize(w, h);
+    }
+    void frame() { sys.tickUi(1.f / 60.f); sys.buildFrame(pl, wd, 60.f); }
+    /// Касание в середину прямоугольника — настоящий путь пальца:
+    /// кадр, палец вниз, кадр, палец вверх, кадр.
+    ///
+    /// Прямоугольник спрашивается ПОСЛЕ первого кадра: раскладка
+    /// меню зависит от того, какой экран строился последним (столбец
+    /// HUD под меню сжимается), и прямоугольник, взятый до кадра,
+    /// указывал бы туда, где кнопки уже нет.
+    template <class RectOf>
+    void tap(RectOf rectOf) {
+        frame();
+        const ui::Rect r = rectOf();
+        const f32 cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
+        sys.routeTouch(1, cx, cy, 0);
+        frame();
+        sys.routeTouch(1, cx, cy, 1);
+        frame();
+    }
+};
+
+bool rectsOverlap(const ui::Rect& a, const ui::Rect& b) {
+    return a.x < b.x + b.w - 0.5f && b.x < a.x + a.w - 0.5f &&
+           a.y < b.y + b.h - 0.5f && b.y < a.y + a.h - 0.5f;
+}
+
+} // namespace
+
 void testPauseMenuIsGroupedAndComplete() {
-    group("пауза: сгруппирована и полна");
+    group("пауза: только нужное, по группам; остальное — с главного экрана");
 
-    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
-    if (src.empty()) { check(true, "исходник не найден, проверка пропущена"); return; }
-    const usize NONE = std::string::npos;
+    const config::Settings savedCfg = config::settingsConst();
+    config::settings() = config::Settings{};
 
-    const usize pm = src.find("void UiSystem::drawPauseMenu(");
-    check(pm != NONE, "экран паузы на месте");
-    if (pm == NONE) return;
-    const usize end = src.find("\n}\n", pm);
-    const std::string body = src.substr(pm, end - pm);
-
-    // Разделы спрашиваем у самого списка, а не ищем в тексте
-    // функции: список вынесен в menuEntries(), и поиск по исходнику
-    // рисования теперь проверял бы не то, где он есть, а то, где его
-    // печатают.
-    //
-    // Инвентаря в списке не было, хотя выход из него вёл сюда.
-    // Ремесла — тоже: экран открывался одной подсказкой у станка, и
-    // в поле был недостижим вовсе.
+    // ---- 1. Состав ----
     {
         auto has = [](ui::Screen sc) {
             for (const auto& e : ui::menuEntries())
                 if (e.target == sc) return true;
             return false;
         };
-        check(has(ui::Screen::Inventory), "в паузе есть инвентарь");
-        check(has(ui::Screen::Crafting),  "и ремесло: без станка иначе никак");
+        check(has(ui::Screen::Attributes) && has(ui::Screen::SkillTree),
+              "атрибуты и навыки остались в паузе");
+        check(has(ui::Screen::Reputation), "репутация осталась");
+        check(has(ui::Screen::SaveLoad) && has(ui::Screen::Settings),
+              "сохранение и настройки остались");
+        check(!has(ui::Screen::Inventory), "сумки в паузе нет — она на HUD");
+        check(!has(ui::Screen::Crafting),  "ремесла в паузе нет");
+        check(!has(ui::Screen::QuestLog),  "журнала в паузе нет — он в блоке задания");
+        check(!has(ui::Screen::Worlds),    "миров в паузе нет — они в главном меню");
 
-        const ui::Screen need[] = {
-            ui::Screen::Attributes, ui::Screen::SkillTree,
-            ui::Screen::QuestLog,   ui::Screen::Reputation,
-            ui::Screen::SaveLoad,   ui::Screen::Settings,
-        };
-        int missing = 0;
-        for (ui::Screen sc : need) {
-            if (has(sc)) continue;
-            ++missing;
-            char msg[128];
-            std::snprintf(msg, sizeof(msg), "из паузы пропал раздел %d", (int)sc);
-            check(false, msg);
-        }
-        check(missing == 0, "ни один прежний раздел не потерян");
-
-        // И ни один раздел не назван дважды: дубль в списке — это
-        // две одинаковые кнопки на экране.
         int dupes = 0;
         const auto& all = ui::menuEntries();
         for (usize i = 0; i < all.size(); ++i)
             for (usize j = i + 1; j < all.size(); ++j)
                 if (all[i].target == all[j].target) ++dupes;
-        check(dupes == 0, "и ни один не назван дважды");
+        check(dupes == 0, "ни один раздел не назван дважды");
+
+        // Группы: развитие персонажа вместе, системное вместе,
+        // репутация — в мировой и тише остальных.
+        auto groupOf = [&](ui::Screen sc) {
+            for (const auto& e : all) if (e.target == sc) return e.group;
+            return ui::MenuGroup::System;
+        };
+        check(groupOf(ui::Screen::Attributes) == ui::MenuGroup::Character &&
+              groupOf(ui::Screen::SkillTree)  == ui::MenuGroup::Character,
+              "атрибуты и навыки — одна группа «персонаж»");
+        check(groupOf(ui::Screen::SaveLoad) == ui::MenuGroup::System &&
+              groupOf(ui::Screen::Settings) == ui::MenuGroup::System,
+              "сохранение и настройки — одна группа «игра»");
+        check(groupOf(ui::Screen::Reputation) == ui::MenuGroup::World,
+              "репутация — в группе «мир»");
+        bool repQuiet = false, othersLoud = true;
+        for (const auto& e : all) {
+            if (e.target == ui::Screen::Reputation) repQuiet = e.secondary;
+            else if (e.secondary) othersLoud = false;
+        }
+        check(repQuiet && othersLoud, "тише остальных только репутация");
     }
 
-    // Сетка, а не столбец: в альбомной ориентации столбец — худшая
-    // из форм, по вертикали места меньше всего.
-    check(body.find("cardGrid(") != NONE,
-          "разделы разложены сеткой из раскладки");
-    // И сетка эта на настоящем экране и правда в несколько
-    // столбцов. Поиск по исходнику этого не знает: `cardGrid` с
-    // одним столбцом — тот же столбец, от которого уходили.
+    // ---- 2. Раскладка на разных экранах ----
+    struct Size { i32 w, h, dpi; const char* name; };
+    const Size sizes[] = {
+        { 2400, 1080, 420, "2400x1080" }, { 2306, 1080, 400, "2306x1080" },
+        { 1280,  720, 320, "1280x720"  }, {  960,  540, 240, "960x540"   },
+        {  640,  360, 160, "640x360"   }, { 2560, 1600, 280, "2560x1600" },
+    };
+    for (const auto& sz : sizes) {
+        UiRig rig(sz.w, sz.h, sz.dpi);
+        rig.sys.screen = ui::Screen::PauseMenu;
+        rig.frame();
+        const ui::PauseLayout L = rig.sys.pauseLayout();
+        const f32 minH = rig.sys.layout().minCellH();
+
+        std::vector<ui::Rect> all{ L.resume, L.toMenu };
+        all.insert(all.end(), L.entries.begin(), L.entries.end());
+        bool sizeOk = true, overlap = false, inside = true;
+        for (usize i = 0; i < all.size(); ++i) {
+            const ui::Rect& r = all[i];
+            if (r.h + 0.5f < minH || r.w < minH) sizeOk = false;
+            if (r.x < L.area.x - 0.5f || r.x + r.w > L.area.x + L.area.w + 0.5f)
+                inside = false;
+            for (usize j = i + 1; j < all.size(); ++j)
+                if (rectsOverlap(r, all[j])) overlap = true;
+        }
+        char m[160];
+        std::snprintf(m, sizeof(m), "%s: кнопки паузы не мельче пальца", sz.name);
+        check(sizeOk, m);
+        std::snprintf(m, sizeof(m), "%s: кнопки паузы не накрывают друг друга", sz.name);
+        check(!overlap, m);
+        std::snprintf(m, sizeof(m), "%s: кнопки паузы в пределах экрана по ширине", sz.name);
+        check(inside, m);
+        // «Продолжить» и «в меню» видны без прокрутки.
+        std::snprintf(m, sizeof(m), "%s: «продолжить» и «в меню» видны сразу", sz.name);
+        check(L.resume.y + L.resume.h <= L.area.y + L.area.h + 0.5f &&
+              L.toMenu.y + L.toMenu.h <= L.area.y + L.area.h + 0.5f, m);
+        // Репутация ниже прочих кнопок.
+        f32 repH = 0.f, fullH = 0.f;
+        for (usize k = 0; k < ui::menuEntries().size(); ++k) {
+            if (ui::menuEntries()[k].secondary) repH = L.entries[k].h;
+            else fullH = L.entries[k].h;
+        }
+        std::snprintf(m, sizeof(m), "%s: репутация ниже остальных кнопок", sz.name);
+        check(repH > 0.f && repH < fullH, m);
+    }
+
+    // ---- 3. Каждый раздел паузы открывается касанием и закрывается назад ----
     {
-        ui::HudLayout L(1920.f, 1080.f,
-                        ui::theme::Metrics::fromDensityDpi(400),
-                        ui::SafeInsets{}, false);
-        L.setHudBehind(true);
-        L.setHudCompact(true);
-        char m[120];
-        const u32 cols = L.menuColsFor((u32)ui::menuEntries().size(), 2);
-        std::snprintf(m, sizeof(m), "столбцов в сетке паузы: %u", cols);
-        check(cols >= 2, m);
+        UiRig rig(1280, 720, 320);
+        const auto& items = ui::menuEntries();
+        for (usize k = 0; k < items.size(); ++k) {
+            rig.sys.enterGame();
+            rig.sys.openScreen(ui::Screen::PauseMenu);
+            rig.sys.pauseScrolling().offset = 0.f;
+            rig.frame();
+            ui::PauseLayout L = rig.sys.pauseLayout();
+            ui::Rect r = L.entries[k];
+            // Не влезший ряд докручиваем — так же, как палец.
+            if (r.y + r.h > L.area.y + L.area.h) {
+                rig.sys.pauseScrolling().offset = (r.y + r.h) - (L.area.y + L.area.h);
+            }
+            r.y -= rig.sys.pauseScrolling().offset;
+            rig.tap([&] { return r; });
+            char m[128];
+            std::snprintf(m, sizeof(m), "раздел %d открывается из паузы касанием",
+                          (int)items[k].target);
+            check(rig.sys.screen == items[k].target, m);
+            rig.sys.onBackPressed();
+            std::snprintf(m, sizeof(m), "и «назад» из раздела %d — в паузу",
+                          (int)items[k].target);
+            check(rig.sys.screen == ui::Screen::PauseMenu, m);
+        }
+        // «Продолжить» — в игру, «в меню» — зовёт выход в меню.
+        rig.sys.enterGame();
+        rig.sys.openScreen(ui::Screen::PauseMenu);
+        rig.sys.pauseScrolling().offset = 0.f;
+        rig.tap([&] { return rig.sys.pauseLayout().resume; });
+        check(rig.sys.screen == ui::Screen::Hud, "«продолжить» возвращает в игру");
+
+        int exits = 0;
+        rig.sys.onExitToMenu = [&]() { ++exits; rig.sys.enterMainMenu(); };
+        rig.sys.openScreen(ui::Screen::PauseMenu);
+        rig.tap([&] { return rig.sys.pauseLayout().toMenu; });
+        check(exits == 1, "«в меню» зовёт выход в главное меню");
+        check(rig.sys.screen == ui::Screen::MainMenu && rig.sys.atMainMenu,
+              "и после него на экране главное меню");
     }
 
-    // Выход спрашивает.
-    check(body.find("askConfirm(") != NONE,
-          "выход из игры требует подтверждения");
-    check(body.find("if (onQuit) onQuit();") == NONE ||
-          body.find("askConfirm(") < body.find("if (onQuit) onQuit();"),
-          "и не выходит помимо вопроса");
+    // ---- 4. Сумка и журнал — с HUD, ремесло и алтарь — у места ----
+    {
+        UiRig rig(2400, 1080, 420);
+        rig.sys.enterGame();
+        rig.tap([&] { return rig.sys.layout().navButton(1); });
+        check(rig.sys.screen == ui::Screen::Inventory, "сумка открывается кнопкой HUD");
+        rig.sys.onBackPressed();
+        check(rig.sys.screen == ui::Screen::Hud, "и закрывается обратно в HUD");
+
+        // Журнал — касанием блока задания. Заданий нет — блок всё
+        // равно есть: журнал хранит и сданные.
+        rig.tap([&] { return rig.sys.questTrackerRect(); });
+        check(rig.sys.screen == ui::Screen::QuestLog,
+              "журнал открывается блоком задания даже без заданий");
+        rig.sys.onBackPressed();
+        check(rig.sys.screen == ui::Screen::Hud, "и закрывается в HUD");
+
+        // Станок: подсказка «использовать» открывает его ремесло.
+        rig.sys.nearbyStation = crafting::StationType::Anvil;
+        rig.tap([&] { return rig.sys.layout().interactPrompt(); });
+        check(rig.sys.screen == ui::Screen::Crafting &&
+              rig.sys.nearbyStation == crafting::StationType::Anvil,
+              "у станка подсказка открывает его ремесло");
+        rig.sys.onBackPressed();
+        rig.sys.nearbyStation = crafting::StationType::None;
+
+        // Алтарь — тем же путём, своим экраном.
+        rig.sys.nearbyAltar = 7;
+        rig.tap([&] { return rig.sys.layout().interactPrompt(); });
+        check(rig.sys.screen == ui::Screen::Enchant,
+              "у алтаря подсказка открывает зачарование");
+        rig.sys.onBackPressed();
+        rig.sys.nearbyAltar = 0;
+        check(rig.sys.screen == ui::Screen::Hud, "и закрывается в HUD");
+
+        // Блок задания не ложится на кнопки HUD и пояс.
+        rig.frame();
+        const ui::Rect q = rig.sys.questTrackerRect();
+        check(!rectsOverlap(q, rig.sys.layout().navButton(0)) &&
+              !rectsOverlap(q, rig.sys.layout().navButton(1)) &&
+              !rectsOverlap(q, rig.sys.layout().hotbar()),
+              "блок задания не накрывает кнопки HUD и пояс");
+        check(q.h + 0.5f >= rig.sys.layout().dp(ui::theme::TOUCH_MIN_DP),
+              "и сам не мельче пальца");
+
+        // Круглая кнопка поверх блока — её касание, не журнала. На
+        // мелком экране «PUT» и «USE» ложатся ровно на блок задания.
+        input::TouchInput touch;
+        touch.setViewport(2400, 1080);
+        rig.sys.attachTouch(&touch);
+        const f32 cx = q.x + q.w * 0.5f, cy = q.y + q.h * 0.5f;
+        // Раскладка кнопок хранится в зеркальном виде, пока джойстик
+        // не у левого края, — сверяемся по тому, что кнопка отдаёт.
+        glm::vec2 ndc{ cx / 2400.f * 2.f - 1.f, 1.f - cy / 1080.f * 2.f };
+        u32 bid = touch.addButton(ndc, 40.f);
+        if (std::fabs(touch.buttonCenterPx(bid).x - cx) > 1.f) {
+            touch.clearButtons();
+            ndc.x = -ndc.x;
+            bid = touch.addButton(ndc, 40.f);
+        }
+        check(std::fabs(touch.buttonCenterPx(bid).x - cx) < 1.f &&
+              std::fabs(touch.buttonCenterPx(bid).y - cy) < 1.f,
+              "кнопка поставлена на блок задания");
+        rig.frame();
+        const bool took = rig.sys.routeTouch(1, cx, cy, 0);
+        rig.frame();
+        rig.sys.routeTouch(1, cx, cy, 1);
+        rig.frame();
+        check(!took && rig.sys.screen == ui::Screen::Hud,
+              "круглая кнопка поверх блока задания оставляет касание себе");
+        rig.sys.attachTouch(nullptr);
+    }
+
+    config::settings() = savedCfg;
+}
+
+// ------------------------------------------------------------
+// Главное меню: вход в игру, миры, настройки, выход; стопка «назад».
+// ------------------------------------------------------------
+void testMainMenuNavigation() {
+    group("главное меню: двери и возвраты");
+
+    const config::Settings savedCfg = config::settingsConst();
+    config::settings() = config::Settings{};
+
+    // ---- 1. Раскладка: кнопки на экране, не мельче пальца ----
+    struct Size { i32 w, h, dpi; const char* name; };
+    const Size sizes[] = {
+        { 2400, 1080, 420, "2400x1080" }, { 1280, 720, 320, "1280x720" },
+        {  640,  360, 160, "640x360"   }, { 2560, 1600, 280, "2560x1600" },
+    };
+    for (const auto& sz : sizes) {
+        UiRig rig(sz.w, sz.h, sz.dpi);
+        rig.sys.enterMainMenu();
+        rig.frame();
+        const ui::MainMenuLayout L = rig.sys.mainMenuLayout();
+        bool ok = true, overlap = false;
+        for (u32 i = 0; i < ui::MainMenuLayout::BUTTONS; ++i) {
+            const ui::Rect& r = L.buttons[i];
+            if (r.h + 0.5f < rig.sys.layout().minCellH()) ok = false;
+            if (r.y < 0.f || r.y + r.h > (f32)sz.h + 0.5f) ok = false;
+            if (r.x < 0.f || r.x + r.w > (f32)sz.w + 0.5f) ok = false;
+            if (rectsOverlap(r, L.title)) overlap = true;
+            for (u32 j = i + 1; j < ui::MainMenuLayout::BUTTONS; ++j)
+                if (rectsOverlap(r, L.buttons[j])) overlap = true;
+        }
+        char m[128];
+        std::snprintf(m, sizeof(m), "%s: кнопки меню на экране и не мельче пальца", sz.name);
+        check(ok, m);
+        std::snprintf(m, sizeof(m), "%s: кнопки меню не накрывают друг друга и название", sz.name);
+        check(!overlap, m);
+        // Полоса меню оставляет мир видимым.
+        std::snprintf(m, sizeof(m), "%s: полоса меню не шире двух третей экрана", sz.name);
+        check(L.panel.w <= (f32)sz.w * 0.67f || sz.w <= 700, m);
+    }
+
+    UiRig rig(2400, 1080, 420);
+
+    // ---- 2. «Продолжить» зовёт вход, «миры», «настройки», «выход» ----
+    rig.sys.enterMainMenu();
+    check(rig.sys.paused(), "в главном меню управления нет");
+    int continues = 0, quits = 0;
+    rig.sys.onContinue = [&]() { ++continues; rig.sys.enterGame(); };
+    rig.sys.onQuit = [&]() { ++quits; };
+    rig.tap([&] { return rig.sys.mainMenuLayout().buttons[0]; });
+    check(continues == 1 && rig.sys.screen == ui::Screen::Hud && !rig.sys.atMainMenu,
+          "«продолжить» входит в игру");
+
+    rig.sys.enterMainMenu();
+    rig.tap([&] { return rig.sys.mainMenuLayout().buttons[2]; });
+    check(rig.sys.screen == ui::Screen::Settings, "настройки открываются из меню");
+    rig.tap([&] { return rig.sys.layout().closeButton(); });
+    check(rig.sys.screen == ui::Screen::MainMenu,
+          "и закрываются в меню, а не в игру");
+
+    rig.tap([&] { return rig.sys.mainMenuLayout().buttons[3]; });
+    check(rig.sys.confirm.active && quits == 0, "выход спрашивает");
+    rig.sys.onBackPressed();
+    check(!rig.sys.confirm.active && quits == 0 &&
+          rig.sys.screen == ui::Screen::MainMenu, "«назад» снимает вопрос");
+    rig.sys.onBackPressed();
+    check(rig.sys.confirm.active, "«назад» в корне меню тоже спрашивает о выходе");
+    rig.sys.confirm = ui::UiSystem::Confirm{};
+
+    // ---- 3. Цепочка миры → новый мир → назад → назад ----
+    rig.sys.enterMainMenu();
+    rig.tap([&] { return rig.sys.mainMenuLayout().buttons[1]; });
+    check(rig.sys.screen == ui::Screen::Worlds, "миры из меню");
+    rig.tap([&] { return rig.sys.worldsNewButton(); });
+    check(rig.sys.screen == ui::Screen::NewWorld, "«новый мир» в строке заголовка");
+    rig.tap([&] { return rig.sys.layout().closeButton(); });
+    check(rig.sys.screen == ui::Screen::Worlds, "закрытие создания — в список");
+    rig.tap([&] { return rig.sys.layout().closeButton(); });
+    check(rig.sys.screen == ui::Screen::MainMenu,
+          "закрытие списка — в меню, а не обратно в создание");
+
+    // ---- 4. Стопка: три экрана вглубь и обратно ----
+    rig.sys.enterMainMenu();
+    rig.sys.openScreen(ui::Screen::Settings);
+    rig.sys.openScreen(ui::Screen::IsoSnapshot);
+    rig.sys.onBackPressed();
+    check(rig.sys.screen == ui::Screen::Settings, "снимок закрывается в настройки");
+    rig.sys.onBackPressed();
+    check(rig.sys.screen == ui::Screen::MainMenu, "настройки — в меню");
+
+    // ---- 5. В меню паузы нет, пауза из игры — есть ----
+    rig.sys.togglePause();
+    check(rig.sys.screen == ui::Screen::MainMenu, "Start в меню ничего не ставит на паузу");
+    rig.sys.enterGame();
+    rig.sys.togglePause();
+    check(rig.sys.screen == ui::Screen::PauseMenu, "а в игре ставит");
+    rig.sys.togglePause();
+    check(rig.sys.screen == ui::Screen::Hud, "и снимает");
+
+    // ---- 6. Кнопка в игре: «продолжить» или «играть» ----
+    //
+    // Мир, которого нет ни в одном слоте, продолжать нечего.
+    {
+        rig.sys.enterMainMenu();
+        rig.sys.currentWorldSeed = 0xABCDull;
+        std::vector<std::string> seen;
+        rig.sys.setTextSink(&seen);
+        rig.frame();
+        const std::string play = config::T(config::StrKey::Menu_Play);
+        const std::string cont = config::T(config::StrKey::Menu_Continue);
+        bool hasPlay = false, hasCont = false;
+        for (const auto& t : seen) { hasPlay |= t == play; hasCont |= t == cont; }
+        check(hasPlay && !hasCont, "у несохранённого мира кнопка «играть»");
+
+        rig.sys.slotMeta[2][2].exists = true;
+        rig.sys.slotMeta[2][2].seed = 0xABCDull;
+        seen.clear();
+        rig.frame();
+        hasPlay = hasCont = false;
+        for (const auto& t : seen) { hasPlay |= t == play; hasCont |= t == cont; }
+        check(hasCont && !hasPlay, "у сохранённого — «продолжить»");
+        rig.sys.setTextSink(nullptr);
+    }
+
+    config::settings() = savedCfg;
 }
 
 // ------------------------------------------------------------
@@ -13207,6 +13516,203 @@ void testPngIsReadableByOthers() {
     }
     check(render::encodePng(nullptr, 4, 4).empty(), "без данных PNG не собирается");
     check(render::encodePng(src.data(), 0, 4).empty(), "нулевая ширина отвергается");
+}
+
+
+// ------------------------------------------------------------
+// Превью миров: PNG читается обратно, атлас собирается, лишние
+// файлы убираются.
+//
+// Превью лежат на диске PNG — их открывает и галерея, — а показать их
+// игра может, только прочитав обратно. Читает она своим разборщиком,
+// и проверять его надо на всём, что допускает стандарт для нашего
+// формата: пять фильтров строки, а не три, которые пишет encodePng.
+// ------------------------------------------------------------
+namespace {
+
+/// Собрать PNG руками: заданные фильтры по строкам. encodePng
+/// Average и Paeth не пишет, а читать их разборщик обязан.
+std::vector<u8> handPng(const std::vector<u8>& rgb, u32 w, u32 h,
+                        const std::vector<u8>& filters) {
+    const usize stride = (usize)w * 3;
+    std::vector<u8> raw;
+    for (u32 y = 0; y < h; ++y) {
+        const u8 f = filters[y % filters.size()];
+        raw.push_back(f);
+        const u8* cur = &rgb[stride * y];
+        const u8* up = y ? &rgb[stride * (y - 1)] : nullptr;
+        for (usize i = 0; i < stride; ++i) {
+            const int a = i >= 3 ? cur[i - 3] : 0;
+            const int b = up ? up[i] : 0;
+            const int c = (up && i >= 3) ? up[i - 3] : 0;
+            int pred = 0;
+            switch (f) {
+                case 1: pred = a; break;
+                case 2: pred = b; break;
+                case 3: pred = (a + b) / 2; break;
+                case 4: {
+                    const int pp = a + b - c;
+                    const int pa = std::abs(pp - a), pb = std::abs(pp - b),
+                              pc = std::abs(pp - c);
+                    pred = (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
+                    break;
+                }
+                default: break;
+            }
+            raw.push_back((u8)(cur[i] - pred));
+        }
+    }
+    const std::vector<u8> z = save::zcompress(raw, 6);
+    std::vector<u8> out = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    auto be = [&](u32 v) {
+        out.push_back((u8)(v >> 24)); out.push_back((u8)(v >> 16));
+        out.push_back((u8)(v >> 8));  out.push_back((u8)v);
+    };
+    auto chunk = [&](const char* type, const std::vector<u8>& d) {
+        be((u32)d.size());
+        const usize from = out.size();
+        out.insert(out.end(), type, type + 4);
+        out.insert(out.end(), d.begin(), d.end());
+        be(save::crc32_compute(&out[from], 4 + d.size()));
+    };
+    std::vector<u8> ihdr = { (u8)(w >> 24), (u8)(w >> 16), (u8)(w >> 8), (u8)w,
+                             (u8)(h >> 24), (u8)(h >> 16), (u8)(h >> 8), (u8)h,
+                             8, 2, 0, 0, 0 };
+    chunk("IHDR", ihdr);
+    chunk("IDAT", z);
+    chunk("IEND", {});
+    return out;
+}
+
+} // namespace
+
+void testWorldPreviewFiles() {
+    group("превью миров: PNG обратно, атлас, уборка");
+
+    // ---- 1. Разбор PNG: все пять фильтров ----
+    const u32 W = 53, H = 31;
+    std::vector<u8> src((usize)W * H * 3);
+    for (u32 y = 0; y < H; ++y)
+        for (u32 x = 0; x < W; ++x) {
+            u8* px = &src[((usize)y * W + x) * 3];
+            px[0] = (u8)(x * 5 + y);
+            px[1] = (u8)((x ^ y) * 9);
+            px[2] = (u8)(((x / 4) + (y / 4)) % 2 ? 30 : 210);
+        }
+    {
+        std::vector<u8> rgb; u32 w = 0, h = 0;
+        const std::vector<u8> png = render::encodePng(src.data(), W, H);
+        check(render::decodePng(png, rgb, w, h) && w == W && h == H && rgb == src,
+              "что пишет encodePng, то и читается — до байта");
+
+        const std::vector<u8> all5 = handPng(src, W, H, { 0, 1, 2, 3, 4 });
+        rgb.clear();
+        check(render::decodePng(all5, rgb, w, h) && rgb == src,
+              "все пять фильтров строки снимаются верно");
+
+        // Порча: перевёрнутый байт данных — контрольная сумма не
+        // сходится, и файл не принимается за целый.
+        std::vector<u8> bad = png;
+        bad[bad.size() / 2] ^= 0x5A;
+        check(!render::decodePng(bad, rgb, w, h), "испорченный файл отвергается");
+        std::vector<u8> cut(png.begin(), png.begin() + (long)(png.size() / 2));
+        check(!render::decodePng(cut, rgb, w, h), "оборванный файл отвергается");
+        check(!render::decodePng({ 1, 2, 3 }, rgb, w, h), "не PNG отвергается");
+    }
+
+    // ---- 2. Запись на диск через временный файл ----
+    {
+        const std::string path = "build/hostcheck/preview_rt.png";
+        std::remove(path.c_str());
+        check(render::writePngFile(path.c_str(), src.data(), W, H),
+              "превью записалось");
+        std::vector<u8> rgb; u32 w = 0, h = 0;
+        check(render::readPngFile(path.c_str(), rgb, w, h) && rgb == src,
+              "и читается с диска тем же");
+        FILE* tmp = std::fopen((path + ".tmp").c_str(), "rb");
+        check(tmp == nullptr, "временного файла после записи не осталось");
+        if (tmp) std::fclose(tmp);
+        std::remove(path.c_str());
+        check(!render::readPngFile(path.c_str(), rgb, w, h),
+              "нет файла — нет картинки, без падения");
+    }
+
+    // ---- 3. Атлас ----
+    {
+        check(ui::buildPreviewAtlas({}, 3).width == 0, "пустой список — пустой атлас");
+        std::vector<ui::PreviewImage> none(9);
+        const ui::PreviewAtlas empty = ui::buildPreviewAtlas(none, 3);
+        check(empty.width == 0 && empty.cells.size() == 9 && !empty.cells[0].has,
+              "девять миров без превью — атласа нет, ячейки пусты");
+
+        // Большой снимок уменьшается, маленький не растягивается.
+        const u32 BW = 800, BH = 400, SW = 100, SH = 60;
+        std::vector<u8> big((usize)BW * BH * 3, 0), small((usize)SW * SH * 3, 0);
+        for (usize i = 0; i < big.size(); i += 3) { big[i] = 200; big[i + 1] = 40; big[i + 2] = 10; }
+        for (usize i = 0; i < small.size(); i += 3) { small[i] = 10; small[i + 1] = 180; small[i + 2] = 90; }
+        std::vector<ui::PreviewImage> imgs(5);
+        imgs[0] = { big.data(), BW, BH };
+        imgs[3] = { small.data(), SW, SH };
+        const ui::PreviewAtlas a = ui::buildPreviewAtlas(imgs, 3);
+        check(a.width > 0 && a.rgba.size() == (usize)a.width * a.height * 4,
+              "атлас собран");
+        const ui::PreviewCell& cb = a.cells[0];
+        const ui::PreviewCell& cs = a.cells[3];
+        check(cb.has && cs.has && !a.cells[1].has, "ячейки помечены по наличию снимка");
+        check(cb.w <= ui::PreviewAtlas::CELL_W && cb.h <= ui::PreviewAtlas::CELL_H,
+              "большой снимок вписан в ячейку");
+        check(std::fabs(cb.aspect - (f32)BW / (f32)BH) < 0.03f,
+              "и пропорции его сохранены");
+        check(cs.w == SW && cs.h == SH, "маленький не растянут");
+
+        bool uvOk = true;
+        for (const auto& c : a.cells) {
+            if (!c.has) continue;
+            if (!(c.u0 >= 0.f && c.u1 <= 1.f && c.v0 >= 0.f && c.v1 <= 1.f &&
+                  c.u0 < c.u1 && c.v0 < c.v1)) uvOk = false;
+        }
+        check(uvOk, "текстурные координаты внутри атласа");
+
+        // Цвет в середине ячейки — цвет снимка; поле — фон.
+        auto at = [&](f32 u, f32 v) {
+            const u32 x = std::min(a.width - 1, (u32)(u * (f32)a.width));
+            const u32 y = std::min(a.height - 1, (u32)(v * (f32)a.height));
+            return &a.rgba[((usize)y * a.width + x) * 4];
+        };
+        const u8* mid = at((cb.u0 + cb.u1) * 0.5f, (cb.v0 + cb.v1) * 0.5f);
+        check(mid[0] == 200 && mid[1] == 40 && mid[2] == 10,
+              "середина ячейки — цвет снимка");
+        const u8* corner = &a.rgba[0];
+        check(corner[0] == ui::PreviewAtlas::BG_R && corner[1] == ui::PreviewAtlas::BG_G &&
+              corner[2] == ui::PreviewAtlas::BG_B, "поле между ячейками — цвет фона снимка");
+    }
+
+    // ---- 4. Файл превью — по зерну, лишние убираются ----
+    {
+        const std::string dir = "build/hostcheck/previews";
+        ::mkdir("build/hostcheck", 0755);
+        ::mkdir(dir.c_str(), 0755);
+        const u64 KEEP = 0x1234ABCDull, GONE = 0xFEEDull;
+        const std::string pk = save::worldPreviewPath(dir, KEEP);
+        const std::string pg = save::worldPreviewPath(dir, GONE);
+        check(pk == dir + "/world_000000001234abcd.png", "имя файла — зерно в 16 hex");
+        const std::string other = dir + "/world_notmine.png";
+        for (const auto& f : { pk, pg, other }) {
+            FILE* fp = std::fopen(f.c_str(), "wb");
+            if (fp) { std::fputc('x', fp); std::fclose(fp); }
+        }
+        const u32 removed = save::prunePreviews(dir, { KEEP });
+        auto exists = [](const std::string& f) {
+            FILE* fp = std::fopen(f.c_str(), "rb");
+            if (fp) std::fclose(fp);
+            return fp != nullptr;
+        };
+        check(removed == 1 && exists(pk) && !exists(pg),
+              "превью мира, которого нет в слотах, удаляется, нужное — нет");
+        check(exists(other), "чужие файлы не трогаются, даже похожие");
+        std::remove(pk.c_str());
+        std::remove(other.c_str());
+    }
 }
 
 
@@ -17648,20 +18154,37 @@ void testWorldsMenuCreateAndTransfer() {
         }
     }
 
-    // ---- 5. Мир достижим из меню и помечен как текущий ----
+    // ---- 5. Миры — в главном меню, а не в паузе ----
     {
-        bool found = false;
+        bool inPause = false;
         for (const auto& e : ui::menuEntries())
-            if (e.target == ui::Screen::Worlds) found = true;
-        check(found, "в меню паузы есть раздел миров");
+            if (e.target == ui::Screen::Worlds) inPause = true;
+        check(!inPause, "в паузе раздела миров нет");
+
+        world::blocks();
+        items::items();
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0x3A11Dull, 1);
 
         ui::UiSystem sys;
         sys.setDensityDpi(420);
         sys.setScreenSize(1920, 1080);
-        sys.screen = ui::Screen::Worlds;
+        sys.enterMainMenu();
+        auto frame = [&]() { sys.tickUi(1.f / 60.f); sys.buildFrame(pl, wd, 60.f); };
+        frame();
+        const ui::Rect b = sys.mainMenuLayout().buttons[1];
+        const f32 cx = b.x + b.w * 0.5f, cy = b.y + b.h * 0.5f;
+        sys.routeTouch(1, cx, cy, 0);
+        frame();
+        sys.routeTouch(1, cx, cy, 1);
+        frame();
+        check(sys.screen == ui::Screen::Worlds, "главное меню ведёт в миры");
         check(sys.paused(), "пока список открыт, игра стоит");
         sys.onBackPressed();
-        check(sys.screen != ui::Screen::Worlds, "«назад» закрывает список");
+        check(sys.screen == ui::Screen::MainMenu,
+              "«назад» из миров — в главное меню, а не в игру");
     }
 
     // ---- 6. Выгрузка и загрузка: мир уезжает файлом и возвращается ----
@@ -21310,23 +21833,47 @@ void testHandcraftWorksAnywhere() {
     //
     // Рецептов мало — открыть экран было нечем: он открывался одной
     // подсказкой «использовать», которая появляется только рядом со
-    // станком.
+    // станком. Потом ремесло жило плиткой в паузе; теперь оно в сумке
+    // — кнопкой в строке заголовка, — и открывается именно как
+    // ремесло на ходу, а не «что рядом»: у станка вход свой.
     {
+        const config::Settings savedCfg = config::settingsConst();
+        config::settings() = config::Settings{};
+        ecs::Registry reg;
+        player::Player pl;
+        pl.init(reg, glm::vec3(0.f, 64.f, 0.f));
+        world::ChunkManager wd(0xC4AF7ull, 1);
+
         ui::UiSystem sys;
-        sys.screen = ui::Screen::Hud;
-        sys.returnTo = ui::Screen::Hud;
-        sys.nearbyStation = crafting::StationType::None;
+        sys.setDensityDpi(420);
+        sys.setScreenSize(2306, 1080);
+        sys.resetTo(ui::Screen::Hud);
+        sys.openInventory();
+        // Стоим у наковальни — кнопка сумки всё равно ведёт в ремесло
+        // на ходу.
+        sys.nearbyStation = crafting::StationType::Anvil;
 
-        bool found = false;
-        for (const auto& e : ui::menuEntries())
-            if (e.target == ui::Screen::Crafting) found = true;
-        check(found, "в меню есть пункт ремесла");
-
-        sys.openCrafting(sys.nearbyStation);
+        auto frame = [&]() { sys.tickUi(1.f / 60.f); sys.buildFrame(pl, wd, 60.f); };
+        frame();
+        const ui::Rect b = sys.inventoryCraftButton();
+        const f32 cx = b.x + b.w * 0.5f, cy = b.y + b.h * 0.5f;
+        sys.routeTouch(1, cx, cy, 0);
+        frame();
+        sys.routeTouch(1, cx, cy, 1);
+        frame();
         check(sys.screen == ui::Screen::Crafting,
-              "экран открылся без станка рядом");
+              "из сумки кнопкой открывается ремесло");
         check(sys.nearbyStation == crafting::StationType::None,
-              "и открылся именно как крафт на ходу");
+              "и открылось именно как ремесло на ходу");
+        sys.onBackPressed();
+        check(sys.screen == ui::Screen::Inventory,
+              "«назад» из ремесла возвращает в сумку");
+
+        bool inPause = false;
+        for (const auto& e : ui::menuEntries())
+            if (e.target == ui::Screen::Crafting) inPause = true;
+        check(!inPause, "в паузе ремесла больше нет — вход не дублируется");
+        config::settings() = savedCfg;
     }
 }
 
@@ -29036,6 +29583,7 @@ int main() {
     testDialogueChoiceReachesTheGame();
     testNavigationReturnsWhereItCameFrom();
     testPauseMenuIsGroupedAndComplete();
+    testMainMenuNavigation();
     testConfirmSwallowsTouchesOutsideIt();
     testInventoryShowsEverySlot();
     testInventoryTapDoesOneThing();
@@ -29116,6 +29664,7 @@ int main() {
     testWalkingNeverTeleports();
     testIsoProjectionIsTrulyIsometric();
     testPngIsReadableByOthers();
+    testWorldPreviewFiles();
     testIsoAreaAndOrientation();
     testIsoChunksAndFileName();
     testIsoSnapshotIsTerrainOnlyAndTimeless();

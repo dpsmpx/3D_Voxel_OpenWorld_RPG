@@ -156,6 +156,7 @@ add_library(native-lib SHARED
 
     # Интерфейс
     src/ui/drag_drop.cpp
+    src/ui/preview_atlas.cpp
     src/ui/scroll.cpp
     src/ui/slider.cpp
     src/ui/text_entry.cpp

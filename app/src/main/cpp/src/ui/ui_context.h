@@ -37,14 +37,17 @@ public:
     void rectOutline(float x, float y, float w, float h, float thickness, UiColor c);
     /// Прямоугольник с картинкой снаружи (см. UiRenderer::setImage).
     /// Без установленной картинки рисует заливку цветом c.
-    void imageQuad(float x, float y, float w, float h, UiColor c);
+    /// u0..v1 — какая часть картинки: по умолчанию вся.
+    void imageQuad(ImageSlot slot, float x, float y, float w, float h,
+                   UiColor c, float u0 = 0.f, float v0 = 0.f,
+                   float u1 = 1.f, float v1 = 1.f);
     /// Значок предмета из атласа — квадрат со стороной size.
     /// false — значка у предмета нет (номер пуст), ничего не нарисовано.
     bool itemIcon(u16 itemId, float x, float y, float size, UiColor c);
     /// Есть ли что показывать в imageQuad.
-    bool hasImage() const;
+    bool hasImage(ImageSlot slot) const;
     /// Картинка для imageQuad; владеет ею вызывающий.
-    void setImage(VkImageView view, VkSampler sampler);
+    void setImage(ImageSlot slot, VkImageView view, VkSampler sampler);
     void text(const std::string& s, float x, float y, float scale, UiColor c);
 
     /// Куда складывать всё, что вышло на экран буквами.

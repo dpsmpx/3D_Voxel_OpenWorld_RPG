@@ -110,8 +110,26 @@ void UiSystem::rebuildLayout() {
 }
 
 bool UiSystem::routeTouch(i32 id, float px, float py, int phase) {
+    // Круглые кнопки рисуются поверх HUD — им и касание, даже если под
+    // кнопкой лежит нажимаемый блок HUD. На мелком экране «PUT» и
+    // «USE» ложатся на блок задания (TODO.md, «HUD на мелком
+    // экране»), и с тех пор, как блок стал входом в журнал, удар по
+    // кнопке открывал бы журнал посреди боя.
+    if (phase == 0 && screen == Screen::Hud && padButtonAt(px, py)) return false;
     // Передаём в ui-context (для активного указателя и hit-тестов).
     return ui_.handleTouch(id, px, py, phase);
+}
+
+bool UiSystem::padButtonAt(float px, float py) const {
+    if (!touch_) return false;
+    for (const auto& b : touch_->buttons()) {
+        if (!b.visible) continue;
+        const glm::vec2 c = touch_->buttonCenterPx(b.id);
+        const f32 r = touch_->buttonRadiusPx(b.id);
+        const f32 dx = px - c.x, dy = py - c.y;
+        if (r > 0.f && dx * dx + dy * dy <= r * r) return true;
+    }
+    return false;
 }
 
 void UiSystem::refreshSlotMeta(save::SaveSlotManager& mgr) {
@@ -280,6 +298,9 @@ void UiSystem::buildFrame(player::Player& player,
             break;
         case Screen::IsoSnapshot:
             drawIsoSnapshotScreen();
+            break;
+        case Screen::MainMenu:
+            drawMainMenu();
             break;
     }
 
@@ -942,24 +963,100 @@ const char* hotbarCaption(const items::Inventory* inv,
 // ============================================================
 // Разделы меню паузы.
 //
-// Крафт здесь появился не для симметрии: экран ремесла открывался
-// ровно одной кнопкой — подсказкой «использовать», которая выходит
-// рядом со станком. В поле станка нет, кнопки нет, и весь раздел
-// StationType::None был недостижим — рецепты «на ходу» существовали
-// только в перечислении.
+// Было девять разделов одинаковыми плитками: сумка, ремесло,
+// атрибуты, навыки, журнал, репутация, сохранение, миры, настройки.
+// Пауза стала складом всего подряд, и частое (сумка, журнал) лежало
+// в ней рядом с тем, что открывают раз в час.
+//
+// Осталось то, что нужно, пока игра стоит, и по группам: развитие
+// персонажа, мир вокруг, сама игра. Остальное — на главном экране:
+// сумка — кнопкой HUD, журнал — блоком текущего задания, ремесло —
+// подсказкой у станка и кнопкой в сумке (ремесло на ходу), миры — в
+// главном меню. Порядок в списке — порядок групп на экране.
 const std::vector<MenuEntry>& menuEntries() {
     static const std::vector<MenuEntry> items = {
-        { config::StrKey::Menu_Inventory,  Screen::Inventory  },
-        { config::StrKey::Menu_Crafting,   Screen::Crafting   },
-        { config::StrKey::Menu_Attributes, Screen::Attributes },
-        { config::StrKey::Menu_Skills,     Screen::SkillTree  },
-        { config::StrKey::Menu_Quests,     Screen::QuestLog   },
-        { config::StrKey::Menu_Reputation, Screen::Reputation },
-        { config::StrKey::Menu_SaveLoad,   Screen::SaveLoad   },
-        { config::StrKey::Menu_Worlds,     Screen::Worlds     },
-        { config::StrKey::Menu_Settings,   Screen::Settings   },
+        { config::StrKey::Menu_Attributes, Screen::Attributes, MenuGroup::Character },
+        { config::StrKey::Menu_Skills,     Screen::SkillTree,  MenuGroup::Character },
+        { config::StrKey::Menu_Reputation, Screen::Reputation, MenuGroup::World, true },
+        { config::StrKey::Menu_SaveLoad,   Screen::SaveLoad,   MenuGroup::System },
+        { config::StrKey::Menu_Settings,   Screen::Settings,   MenuGroup::System },
     };
     return items;
+}
+
+namespace {
+
+/// Подпись группы паузы.
+config::StrKey groupTitleKey(MenuGroup g) {
+    switch (g) {
+        case MenuGroup::Character: return config::StrKey::Menu_GroupCharacter;
+        case MenuGroup::World:     return config::StrKey::Menu_GroupWorld;
+        case MenuGroup::System:    return config::StrKey::Menu_GroupSystem;
+    }
+    return config::StrKey::None;
+}
+
+} // namespace
+
+PauseLayout UiSystem::pauseLayout() const {
+    PauseLayout L;
+    const Rect area = layout_.menuArea();
+    L.area = area;
+
+    const f32 gap    = layout_.dp(theme::SPACE_M_DP);
+    const f32 rowH   = layout_.dp(theme::TOUCH_REGULAR_DP);
+    const f32 smallH = layout_.dp(theme::TOUCH_MIN_DP);
+    const f32 labelH = ui_.textHeight(theme::TEXT_LABEL)
+                     + layout_.dp(theme::SPACE_S_DP);
+
+    // Три группы — три столбца: в альбомной ориентации по высоте
+    // места меньше всего, и группы встают рядом, а не друг под
+    // другом. Узкий экран — стопкой, и тогда выручает прокрутка.
+    const f32 colW = (area.w - gap * (f32)(MENU_GROUPS - 1)) / (f32)MENU_GROUPS;
+    L.columns = colW >= layout_.dp(PAUSE_MIN_COL_DP);
+
+    // «Продолжить» и «в меню» делят первый ряд. «В меню» — шириной
+    // одного столбца и над последним: выход ищут первым делом, и
+    // прятать его за прокрутку — тот же дефект, что уехавший за край.
+    const f32 menuW = L.columns ? colW : area.w * 0.36f;
+    L.resume = { area.x, area.y, area.w - menuW - gap, rowH };
+    L.toMenu = { area.x + area.w - menuW, area.y, menuW, rowH };
+
+    const auto& items = menuEntries();
+    L.entries.assign(items.size(), Rect{ 0.f, 0.f, 0.f, 0.f });
+
+    const f32 top = area.y + rowH + gap * 1.5f;
+    f32 bottom = top;
+    if (L.columns) {
+        for (u32 g = 0; g < MENU_GROUPS; ++g) {
+            const f32 x = area.x + (f32)g * (colW + gap);
+            L.groupTitle[g] = { x, top, colW, labelH };
+            f32 y = top + labelH;
+            for (usize k = 0; k < items.size(); ++k) {
+                if ((u32)items[k].group != g) continue;
+                const f32 h = items[k].secondary ? smallH : rowH;
+                L.entries[k] = { x, y, colW, h };
+                y += h + gap;
+            }
+            bottom = std::max(bottom, y - gap);
+        }
+    } else {
+        f32 y = top;
+        for (u32 g = 0; g < MENU_GROUPS; ++g) {
+            L.groupTitle[g] = { area.x, y, area.w, labelH };
+            y += labelH;
+            for (usize k = 0; k < items.size(); ++k) {
+                if ((u32)items[k].group != g) continue;
+                const f32 h = items[k].secondary ? smallH : rowH;
+                L.entries[k] = { area.x, y, area.w, h };
+                y += h + gap;
+            }
+            y += gap * 0.5f;
+        }
+        bottom = y - gap * 1.5f;
+    }
+    L.contentH = bottom - area.y;
+    return L;
 }
 
 // ============================================================
@@ -985,13 +1082,6 @@ void UiSystem::drawPauseMenu(player::Player& player) {
     // Первое, что должен сообщать экран, — что игра остановлена.
     drawMenuBackdrop(T(StrKey::Menu_Pause));
 
-    // Пунктов было восемь в столбик, каждый своего цвета: зелёный,
-    // синий, фиолетовый, оранжевый, жёлтый, голубой, оливковый,
-    // красный. Ни группировки, ни иерархии — и инвентаря в списке не
-    // было вовсе, хотя выход ИЗ инвентаря вёл сюда.
-    //
-    // Теперь: продолжить отдельно и крупно, остальное — сеткой по
-    // смыслу, выход отдельно и в опасном виде.
     auto* tree = player.skillTree();
     auto* prog = player.progression();
 
@@ -1004,102 +1094,96 @@ void UiSystem::drawPauseMenu(player::Player& player) {
         return -1;
     };
 
-    const auto& items = menuEntries();
-    const u32 ITEM_COUNT = (u32)items.size();
-    // Первый ряд занят «Продолжить», последний — выходом.
-    //
-    // Столбцов не три постоянных, а столько, чтобы всё поместилось:
-    // на 1280x720 пять рядов не влезали, и нижние кнопки вместе с
-    // «выходом» уезжали за край экрана.
-    const u32 COLS = layout_.menuColsFor(ITEM_COUNT, 2);
+    const PauseLayout L = pauseLayout();
+    const Rect& area = L.area;
 
-    // Одна сетка на всё: «продолжить» первым рядом во всю ширину,
-    // разделы следом, «выход» последним рядом. Прокручивается
-    // целиком.
-    //
-    // Раньше рядов было столько, сколько выходило, и когда они не
-    // помещались по высоте, ряд поднимали до цели касания — а сетка
-    // уезжала за нижний край экрана. На 1280x720 за краем
-    // оказывались нижние разделы вместе с «выходом»: из паузы
-    // нельзя было выйти.
-    //
-    // Закрепить «продолжить» и «выход» по краям не вышло: на
-    // 1280x720 они вдвоём съедают 256 точек из 328, и разделам не
-    // остаётся ни одного ряда. Поэтому едут все вместе.
-    const Rect area = layout_.menuArea();
-    const auto grid = layout_.cardGrid(area, COLS, theme::TOUCH_REGULAR_DP);
-    const u32 sectionRows = (ITEM_COUNT + COLS - 1) / COLS;
-    // «Продолжить» и «выход» делят первый ряд, разделы идут следом.
-    //
-    // «Выход» стоял последним рядом — и на 1280x720 оказывался за
-    // прокруткой: из трёх видимых рядов два занимали разделы. В
-    // паузе выход ищут первым делом, и заставлять его листать — это
-    // ровно тот же дефект, что и уехавший за край.
-    const u32 totalRows = 1 + sectionRows;
-
-    pauseScroll.setContentHeight((f32)totalRows * grid.rowStride(),
-                                 (f32)grid.rowsVisible() * grid.rowStride());
+    // Прокручивается всё вместе: на узком экране группы встают
+    // стопкой и в высоту не помещаются.
+    pauseScroll.setContentHeight(L.contentH, area.h);
     feedScrollDrag(pauseScroll, area);
 
-    // Ряд виден, только если помещается целиком: половина кнопки
-    // поверх пояса хуже, чем её отсутствие.
-    auto rowRect = [&](u32 row, u32 col, bool full) -> Rect {
-        Rect r = grid.at(col, row);
-        if (full) r.w = area.w;
-        r.y -= pauseScroll.offset;
-        return r;
-    };
+    auto shift = [&](Rect r) { r.y -= pauseScroll.offset; return r; };
+    // Кнопка видна, только если помещается целиком: половина кнопки
+    // поверх края хуже, чем её отсутствие.
     auto visible = [&](const Rect& r) {
         return r.y >= area.y - 0.5f && r.y + r.h <= area.y + area.h + 0.5f;
     };
+    auto label = [&](const Rect& r, const char* text, UiColor c) {
+        const f32 tw = ui_.textWidth(text, theme::TEXT_BODY);
+        ui_.text(text, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, c);
+    };
 
-    // ---- Продолжить: почти во всю ширину, главное действие ----
-    const Rect topRow = rowRect(0, 0, true);
-    const f32 exitW = (topRow.w - layout_.dp(theme::SPACE_M_DP)
-                       * (f32)(COLS - 1)) / (f32)COLS;
-    if (Rect r = topRow; visible(r)) {
-        r.w -= exitW + layout_.dp(theme::SPACE_M_DP);
+    // ---- Продолжить: главное действие ----
+    if (const Rect r = shift(L.resume); visible(r)) {
         const int idx = ui_.pushInteractiveRect(r, [this]() {
-            screen = Screen::Hud;
-            returnTo = Screen::Hud;
+            resetTo(Screen::Hud);
         });
         const bool pressed = ui_.isInteractivePressed(idx);
         ui_.rect(r.x, r.y, r.w, r.h, pressed ? theme::Accent : theme::PanelRaised);
         ui_.rectOutline(r.x, r.y, r.w, r.h,
                         layout_.dp(theme::STROKE_SELECTED_DP),
                         pressed ? theme::AccentPressed : theme::Accent);
-        const char* lbl = T(StrKey::Menu_Resume);
-        const f32 tw = ui_.textWidth(lbl, theme::TEXT_BODY);
-        ui_.text(lbl, r.x + (r.w - tw) * 0.5f,
-                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
-                 theme::TEXT_BODY, pressed ? theme::Ink : theme::TextPrimary);
+        label(r, T(StrKey::Menu_Resume), pressed ? theme::Ink : theme::TextPrimary);
     }
 
-    // ---- Разделы: одинаковые кнопки, один вид на всю игру ----
-    for (u32 i = 0; i < ITEM_COUNT; ++i) {
-        const Rect r = rowRect(1 + i / COLS, i % COLS, false);
+    // ---- В главное меню ----
+    //
+    // Вопроса нет: выход в меню сохраняет мир, и «продолжить» там
+    // возвращает ровно сюда. Выход из приложения живёт в главном
+    // меню — отсюда его убрали, чтобы не было двух дверей наружу.
+    if (const Rect r = shift(L.toMenu); visible(r)) {
+        const int idx = ui_.pushInteractiveRect(r, [this]() {
+            if (onExitToMenu) onExitToMenu();
+        });
+        const bool pressed = ui_.isInteractivePressed(idx);
+        ui_.rect(r.x, r.y, r.w, r.h, pressed ? theme::Accent : theme::Panel);
+        ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
+                        pressed ? theme::AccentPressed : theme::Stroke);
+        label(r, T(StrKey::Menu_MainMenu),
+              pressed ? theme::Ink : theme::TextPrimary);
+    }
+
+    // ---- Подписи групп ----
+    for (u32 g = 0; g < MENU_GROUPS; ++g) {
+        const Rect r = shift(L.groupTitle[g]);
+        if (!visible(r)) continue;
+        ui_.text(T(groupTitleKey((MenuGroup)g)), r.x, r.y,
+                 theme::TEXT_LABEL, theme::TextSecondary);
+    }
+
+    // ---- Разделы ----
+    const auto& items = menuEntries();
+    for (usize i = 0; i < items.size(); ++i) {
+        const Rect r = shift(L.entries[i]);
         if (!visible(r)) continue;
 
         const Screen target = items[i].target;
+        const bool quiet = items[i].secondary;
         const int idx = ui_.pushInteractiveRect(r, [this, target]() {
-            // Крафт открывается с тем станком, который рядом СЕЙЧАС:
-            // nearbyStation обновляется каждый кадр, и None в нём
-            // значит «станка рядом нет», то есть крафт на ходу.
-            if (target == Screen::Crafting) { openCrafting(nearbyStation); return; }
             openScreen(target);
-            if (target == Screen::Inventory) drag.clear();
         });
         const bool pressed = ui_.isInteractivePressed(idx);
 
-        ui_.rect(r.x, r.y, r.w, r.h, pressed ? theme::Accent : theme::PanelRaised);
+        // Второстепенный раздел тише: без подъёма плашки, тонкой
+        // рамкой и приглушённой подписью — нажимается так же, но
+        // взгляд на нём не останавливается.
+        ui_.rect(r.x, r.y, r.w, r.h,
+                 pressed ? theme::Accent : (quiet ? theme::Panel : theme::PanelRaised));
         ui_.rectOutline(r.x, r.y, r.w, r.h, layout_.dp(theme::STROKE_DP),
                         pressed ? theme::AccentPressed : theme::Stroke);
 
-        const char* label = T(items[i].label);
-        const f32 tw = ui_.textWidth(label, theme::TEXT_BODY);
-        ui_.text(label, r.x + (r.w - tw) * 0.5f,
-                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
-                 theme::TEXT_BODY, pressed ? theme::Ink : theme::TextPrimary);
+        const char* text = T(items[i].label);
+        if (quiet) {
+            const f32 tw = ui_.textWidth(text, theme::TEXT_LABEL);
+            ui_.text(text, r.x + (r.w - tw) * 0.5f,
+                     r.y + (r.h - ui_.textHeight(theme::TEXT_LABEL)) * 0.5f,
+                     theme::TEXT_LABEL,
+                     pressed ? theme::Ink : theme::TextSecondary);
+        } else {
+            label(r, text, pressed ? theme::Ink : theme::TextPrimary);
+        }
 
         const i32 badge = badgeFor(target);
         if (badge > 0) {
@@ -1110,27 +1194,6 @@ void UiSystem::drawPauseMenu(player::Player& player) {
                      r.y + layout_.dp(theme::SPACE_S_DP),
                      theme::TEXT_CAPTION, pressed ? theme::Ink : theme::Accent);
         }
-    }
-
-    // ---- Выход: необратимо, поэтому в опасном виде и с вопросом ----
-    if (const Rect r{ topRow.x + topRow.w - exitW, topRow.y,
-                      exitW, topRow.h }; visible(r)) {
-        const int idx = ui_.pushInteractiveRect(r, [this]() {
-            askConfirm(T(StrKey::Menu_Quit), T(StrKey::Menu_Quit),
-                       [this]() { if (onQuit) onQuit(); });
-        });
-        const bool pressed = ui_.isInteractivePressed(idx);
-        // Опасное показано рамкой, а не заливкой: цвет тут не
-        // единственный признак.
-        ui_.rect(r.x, r.y, r.w, r.h,
-                 pressed ? theme::Danger : theme::Panel);
-        ui_.rectOutline(r.x, r.y, r.w, r.h,
-                        layout_.dp(theme::STROKE_SELECTED_DP), theme::Danger);
-        const char* lbl = T(StrKey::Menu_Quit);
-        const f32 tw = ui_.textWidth(lbl, theme::TEXT_BODY);
-        ui_.text(lbl, r.x + (r.w - tw) * 0.5f,
-                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
-                 theme::TEXT_BODY, pressed ? theme::TextPrimary : theme::Danger);
     }
 }
 
@@ -1151,11 +1214,35 @@ void UiSystem::drawInventory(player::Player& player) {
     // стал кнопкой, как у всех экранов.
     drawCloseButton([this]() { closeToPrevious(); });
 
+    // Ремесло на ходу — отсюда, из сумки: рецепты без станка делаются
+    // из того, что в ней лежит. Жило плиткой в паузе, а у станка и
+    // алтаря вход свой — подсказка «использовать», — поэтому здесь
+    // открывается именно ремесло без станка, а не «что рядом».
+    const Rect craft = inventoryCraftButton();
+    {
+        const int idx = ui_.pushInteractiveRect(craft, [this]() {
+            drag.clear();
+            openCrafting(crafting::StationType::None);
+        });
+        const bool pressed = ui_.isInteractivePressed(idx);
+        ui_.rect(craft.x, craft.y, craft.w, craft.h,
+                 pressed ? theme::Accent : theme::PanelRaised);
+        ui_.rectOutline(craft.x, craft.y, craft.w, craft.h,
+                        layout_.dp(theme::STROKE_DP),
+                        pressed ? theme::AccentPressed : theme::Stroke);
+        const char* lbl = T(StrKey::Menu_Crafting);
+        const f32 lw = ui_.textWidth(lbl, theme::TEXT_BODY);
+        ui_.text(lbl, craft.x + (craft.w - lw) * 0.5f,
+                 craft.y + (craft.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, pressed ? theme::Ink : theme::TextPrimary);
+    }
+
     if (auto* wal = player.wallet()) {
         char gold[32];
         wal->format(gold, sizeof(gold));
         const f32 tw = ui_.textWidth(gold, theme::TEXT_BODY);
-        ui_.text(gold, titleTextRight() - tw,
+        // Золото — левее кнопки ремесла, в той же строке.
+        ui_.text(gold, craft.x - layout_.dp(theme::SPACE_M_DP) - tw,
                  title.y + (title.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
                  theme::TEXT_BODY, theme::Accent);
     }
@@ -1643,7 +1730,7 @@ SettingsLayout UiSystem::settingsLayout() const {
 void UiSystem::drawSettingsScreen(player::Player& /*player*/) {
     drawMenuBackdrop(T(StrKey::Settings_Title));
 
-    drawCloseButton([this]() { screen = Screen::PauseMenu; });
+    drawCloseButton([this]() { closeToPrevious(); });
 
     // Табы
     const char* tabNames[(u32)SettingsTab::Count] = {
@@ -1951,7 +2038,7 @@ void UiSystem::drawSkillTreeScreen(player::Player& player) {
     auto* tree = player.skillTree();
     if (!tree) return;
 
-    drawCloseButton([this]() { screen = Screen::Hud; });
+    drawCloseButton([this]() { closeToPrevious(); });
 
     // Сколько очков осталось — в строке заголовка, слева от кнопки
     // закрытия.
@@ -2239,10 +2326,10 @@ DialogueLayout UiSystem::dialogueLayout(const std::string& text, u32 choiceCount
 void UiSystem::drawDialogueScreen(player::Player& player,
                                   world::ChunkManager& world) {
     auto* dlg = player.activeDialogue();
-    if (!dlg || !dlg->active) { screen = Screen::Hud; return; }
+    if (!dlg || !dlg->active) { resetTo(Screen::Hud); return; }
 
     npc::DialogueNode* node = dlg->findNode(dlg->currentNodeId);
-    if (!node) { screen = Screen::Hud; return; }
+    if (!node) { resetTo(Screen::Hud); return; }
 
     // Затемняем мир слабее, чем под меню: разговор идёт В мире, а не
     // поверх него, и собеседника должно быть видно.
@@ -2301,7 +2388,7 @@ void UiSystem::drawDialogueScreen(player::Player& player,
             const npc::DialogueChoice chosen = n->choices[i];
             if (!npc::applyChoice(*reg, *wd, *d, chosen)) {
                 if (onCloseDialogue) onCloseDialogue();
-                screen = Screen::Hud;
+                resetTo(Screen::Hud);
             }
         });
         const bool pressed = ui_.isInteractivePressed(idx);
@@ -2628,28 +2715,67 @@ void UiSystem::drawHurtMarks(player::Player& player) {
 }
 
 void UiSystem::drawQuestTracker(player::Player& player) {
-    auto* log = player.questLog();
-    auto* reg = player.registryHandle();
-    if (!log || !reg || log->activeQuests.empty()) return;
+    // Блок текущего задания — он же вход в журнал: касание открывает
+    // журнал. Отдельной большой кнопки у журнала нет: цель задания и
+    // так на экране, и ткнуть в неё — самый короткий путь к деталям.
+    const Rect r = questTrackerRect();
+    const f32 pad = layout_.dp(theme::SPACE_S_DP);
 
     const quests::Quest* q = nullptr;
-    for (auto e : log->activeQuests) {
-        if (auto* c = reg->get<quests::Quest>(e)) { q = c; break; }
+    auto* log = player.questLog();
+    auto* reg = player.registryHandle();
+    if (log && reg) {
+        for (auto e : log->activeQuests) {
+            if (auto* c = reg->get<quests::Quest>(e)) { q = c; break; }
+        }
     }
-    if (!q) return;
-    const std::string title = quests::questTitle(*q);
-    if (title.empty()) return;
+    const std::string title = q ? quests::questTitle(*q) : std::string();
 
-    const Rect r = layout_.questTracker();
-    ui_.text(title, r.x, r.y, theme::TEXT_CAPTION,
-             hudTint(q->isComplete() ? theme::Success : theme::TextPrimary));
+    // Заданий нет — остаётся короткая подпись «журнал»: журнал хранит
+    // и сданные задания, и без неё он был бы недостижим до первого
+    // нового. Ширина — по подписи, а не по столбцу: пустое место не
+    // должно ловить касания, предназначенные джойстику.
+    Rect hit = r;
+    if (title.empty()) {
+        const char* lbl = T(StrKey::Menu_Quests);
+        hit.w = std::min(r.w, std::max(ui_.textWidth(lbl, theme::TEXT_CAPTION) + pad * 2.f,
+                                       layout_.dp(theme::TOUCH_REGULAR_DP) * 1.5f));
+    }
+
+    const int idx = ui_.pushInteractiveRect(hit, [this]() {
+        openScreen(Screen::QuestLog);
+    });
+    const bool pressed = ui_.isInteractivePressed(idx);
+
+    // Подложка — чтобы блок читался нажимаемым, но тише полос: это
+    // подсказка, а не кнопка меню.
+    ui_.rect(hit.x, hit.y, hit.w, hit.h,
+             hudTint(withAlpha(pressed ? theme::Accent : theme::Panel,
+                               pressed ? theme::ALPHA_HUD : QUEST_BLOCK_ALPHA)));
+    ui_.rect(hit.x, hit.y, layout_.dp(theme::STROKE_SELECTED_DP), hit.h,
+             hudTint(theme::Accent));
+
+    const f32 tx = hit.x + pad;
+    if (title.empty()) {
+        ui_.text(T(StrKey::Menu_Quests), tx,
+                 hit.y + (hit.h - ui_.textHeight(theme::TEXT_CAPTION)) * 0.5f,
+                 theme::TEXT_CAPTION,
+                 hudTint(pressed ? theme::Ink : theme::TextSecondary));
+        return;
+    }
+
+    const f32 lineH = ui_.textHeight(theme::TEXT_CAPTION);
+    const f32 ty = hit.y + (hit.h - lineH * 2.f - layout_.dp(theme::SPACE_XS_DP)) * 0.5f;
+    ui_.text(title, tx, ty, theme::TEXT_CAPTION,
+             hudTint(pressed ? theme::Ink
+                             : (q->isComplete() ? theme::Success : theme::TextPrimary)));
 
     char prog[48];
     std::snprintf(prog, sizeof(prog), "%d / %d",
                   (int)q->progress, (int)q->tmpl.requiredCount);
-    ui_.text(prog, r.x, r.y + ui_.textHeight(theme::TEXT_CAPTION)
-                      + layout_.dp(theme::SPACE_XS_DP),
-             theme::TEXT_CAPTION, hudTint(theme::TextSecondary));
+    ui_.text(prog, tx, ty + lineH + layout_.dp(theme::SPACE_XS_DP),
+             theme::TEXT_CAPTION,
+             hudTint(pressed ? theme::Ink : theme::TextSecondary));
 }
 
 // ============================================================
@@ -2661,7 +2787,7 @@ void UiSystem::drawReputationScreen(player::Player& player) {
     auto* rep = player.reputation();
     if (!rep) return;
 
-    drawCloseButton([this]() { screen = Screen::Hud; });
+    drawCloseButton([this]() { closeToPrevious(); });
 
     // Ряды фракций — в области меню, а не от постоянных 80 и 150
     // точек: пять рядов по 56 dp плюс отступы не помещались в
@@ -2743,7 +2869,7 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
         ? cfg::tr("SAVE GAME") : cfg::tr("LOAD GAME");
     drawMenuBackdrop(title);
 
-    drawCloseButton([this]() { screen = Screen::Hud; });
+    drawCloseButton([this]() { closeToPrevious(); });
 
     // Переключатель режима — в строке заголовка, слева от кнопки
     // закрытия.
@@ -2877,6 +3003,159 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
     }
 }
 
+namespace {
+
+/// Кнопка с подписью. Одна на весь раздел: три разных вида кнопок на
+/// одном экране читаются как три разных по важности действия.
+struct BtnStyle {
+    UiColor fill, fillPressed, stroke;
+};
+
+const BtnStyle BTN_NORMAL { theme::PanelRaised, theme::Accent, theme::Stroke };
+const BtnStyle BTN_PRIMARY{ theme::Accent, theme::AccentPressed, theme::Accent };
+const BtnStyle BTN_DANGER { theme::Danger, theme::AccentPressed, theme::Danger };
+/// Тихая: выход из главного меню. Нужен, но не главный.
+const BtnStyle BTN_QUIET  { theme::Panel, theme::Accent, theme::Stroke };
+
+} // namespace
+
+// ============================================================
+// Главное меню
+// ============================================================
+//
+// Игра начиналась сразу в мире, а миры выбирались из паузы — то есть
+// изнутри другого мира. Теперь с меню игра начинается и в него же
+// выходят из паузы. Своей сцены у меню нет: фоном идёт тот же мир
+// тем же рендером (main.cpp, updateMainMenu), и интерфейс занимает
+// только левую полосу — справа виден сам мир.
+
+MainMenuLayout UiSystem::mainMenuLayout() const {
+    MainMenuLayout L;
+    const f32 W = (f32)screenW_, H = (f32)screenH_;
+    const f32 pad = layout_.dp(theme::SPACE_XL_DP);
+    const f32 gap = layout_.dp(theme::SPACE_M_DP);
+    const f32 x = layout_.left() + pad;
+    const f32 btnW = std::max(0.f, std::min(layout_.dp(MAIN_MENU_BUTTON_W_DP),
+                                            W - x - pad));
+    L.panel = { 0.f, 0.f, std::min(W, x + btnW + pad), H };
+
+    const f32 titleH = ui_.textHeight(MAIN_MENU_TITLE_SCALE);
+    L.title = { x, layout_.top() + pad, btnW, titleH };
+
+    const f32 capH = ui_.textHeight(theme::TEXT_CAPTION)
+                   + layout_.dp(theme::SPACE_S_DP);
+    const f32 top = L.title.y + titleH + pad;
+    const f32 avail = layout_.bottom() - pad - top;
+    const u32 N = MainMenuLayout::BUTTONS;
+
+    // Ряд обычной высоты, пока влезает; на низком экране — ниже, но
+    // не мельче цели касания.
+    f32 rowH = layout_.dp(theme::TOUCH_REGULAR_DP);
+    const f32 need = rowH * (f32)N + gap * (f32)(N - 1) + capH;
+    if (need > avail) {
+        rowH = std::max(layout_.minCellH(),
+                        (avail - capH - gap * (f32)(N - 1)) / (f32)N);
+    }
+    const f32 blockH = rowH * (f32)N + gap * (f32)(N - 1) + capH;
+
+    // Кнопки — посередине оставшейся высоты: сверху название, снизу
+    // пусто, и столбец, прижатый к названию, оставлял бы низ голым.
+    f32 y = top + std::max(0.f, (avail - blockH) * 0.5f);
+    for (u32 i = 0; i < N; ++i) {
+        L.buttons[i] = { x, y, btnW, rowH };
+        y += rowH + gap;
+        if (i == 0) {
+            L.caption = { x, y - gap + layout_.dp(theme::SPACE_XS_DP), btnW, capH };
+            y += capH;
+        }
+    }
+    return L;
+}
+
+void UiSystem::drawMainMenu() {
+    const MainMenuLayout L = mainMenuLayout();
+    const f32 H = (f32)screenH_;
+
+    // ---- Полоса слева: темнее к краю, прозрачнее к миру ----
+    //
+    // Затемнение во весь экран, как у остальных меню, спрятало бы
+    // единственное, ради чего у меню живой фон. Поэтому тёмная только
+    // полоса под кнопками, а к миру она гаснет ступенями — ровно
+    // ступенями, как и всё в этом мире.
+    ui_.rect(L.panel.x, L.panel.y, L.panel.w, L.panel.h,
+             withAlpha(theme::Ink, MAIN_MENU_PANEL_ALPHA));
+    {
+        const f32 fadeW = layout_.dp(MAIN_MENU_FADE_DP);
+        constexpr u32 STEPS = 6;
+        const f32 stepW = fadeW / (f32)STEPS;
+        for (u32 i = 0; i < STEPS; ++i) {
+            const f32 k = 1.f - (f32)(i + 1) / (f32)(STEPS + 1);
+            ui_.rect(L.panel.x + L.panel.w + stepW * (f32)i, 0.f, stepW, H,
+                     withAlpha(theme::Ink,
+                               (u8)((f32)MAIN_MENU_PANEL_ALPHA * k)));
+        }
+    }
+
+    // ---- Название: тем же пиксельным шрифтом, со ступенькой тени ----
+    {
+        const char* title = T(StrKey::Menu_GameTitle);
+        const f32 off = std::max(2.f, layout_.dp(2.f));
+        ui_.text(title, L.title.x + off, L.title.y + off,
+                 MAIN_MENU_TITLE_SCALE, withAlpha(theme::Accent, 160));
+        ui_.text(title, L.title.x, L.title.y,
+                 MAIN_MENU_TITLE_SCALE, theme::TextPrimary);
+        const f32 barH = std::max(2.f, layout_.dp(3.f));
+        const f32 barW = std::min(L.title.w,
+                                  ui_.textWidth(title, MAIN_MENU_TITLE_SCALE));
+        ui_.rect(L.title.x, L.title.y + L.title.h + layout_.dp(theme::SPACE_S_DP),
+                 barW * 0.35f, barH, theme::Accent);
+    }
+
+    // Продолжить есть что, если мир в памяти лежит в каком-то слоте.
+    // Иначе это свежий мир, в котором ещё не играли: «играть».
+    bool saved = false;
+    for (const auto& row : slotMeta)
+        for (const auto& m : row)
+            if (m.exists && m.seed == currentWorldSeed) saved = true;
+
+    struct Item { StrKey label; const BtnStyle* style; std::function<void()> act; };
+    const Item items[MainMenuLayout::BUTTONS] = {
+        { saved ? StrKey::Menu_Continue : StrKey::Menu_Play, &BTN_PRIMARY,
+          [this]() { if (onContinue) onContinue(); } },
+        { StrKey::Menu_Worlds,   &BTN_NORMAL, [this]() { openScreen(Screen::Worlds); } },
+        { StrKey::Menu_Settings, &BTN_NORMAL, [this]() { openScreen(Screen::Settings); } },
+        { StrKey::Menu_Quit,     &BTN_QUIET,  [this]() { askQuit(); } },
+    };
+
+    for (u32 i = 0; i < MainMenuLayout::BUTTONS; ++i) {
+        const Rect r = L.buttons[i];
+        const BtnStyle& st = *items[i].style;
+        const int idx = ui_.pushInteractiveRect(r, items[i].act);
+        const bool pressed = ui_.isInteractivePressed(idx);
+        ui_.rect(r.x, r.y, r.w, r.h, pressed ? st.fillPressed : st.fill);
+        ui_.rectOutline(r.x, r.y, r.w, r.h,
+                        layout_.dp(i == 0 ? theme::STROKE_SELECTED_DP
+                                          : theme::STROKE_DP),
+                        st.stroke);
+        const char* lbl = T(items[i].label);
+        const f32 tw = ui_.textWidth(lbl, theme::TEXT_BODY);
+        const UiColor fg = pressed || &st == &BTN_PRIMARY ? theme::Ink
+                         : (&st == &BTN_QUIET ? theme::TextSecondary
+                                              : theme::TextPrimary);
+        ui_.text(lbl, r.x + (r.w - tw) * 0.5f,
+                 r.y + (r.h - ui_.textHeight(theme::TEXT_BODY)) * 0.5f,
+                 theme::TEXT_BODY, fg);
+    }
+
+    // Что продолжится — названием мира.
+    if (!currentWorldName.empty()) {
+        const Rect c = L.caption;
+        const f32 tw = ui_.textWidth(currentWorldName, theme::TEXT_CAPTION);
+        ui_.text(currentWorldName, c.x + (c.w - tw) * 0.5f, c.y,
+                 theme::TEXT_CAPTION, theme::TextSecondary);
+    }
+}
+
 // ============================================================
 // Миры: список, создание, удаление
 // ============================================================
@@ -2890,30 +3169,23 @@ void UiSystem::drawSaveLoadScreen(player::Player& player) {
 // его открывают из списка, его удаляют с вопросом и его можно унести
 // файлом.
 
-namespace {
 
-/// Кнопка с подписью. Одна на весь раздел: три разных вида кнопок на
-/// одном экране читаются как три разных по важности действия.
-struct BtnStyle {
-    UiColor fill, fillPressed, stroke;
-};
-
-const BtnStyle BTN_NORMAL { theme::PanelRaised, theme::Accent, theme::Stroke };
-const BtnStyle BTN_PRIMARY{ theme::Accent, theme::AccentPressed, theme::Accent };
-const BtnStyle BTN_DANGER { theme::Danger, theme::AccentPressed, theme::Danger };
-
-} // namespace
+std::string UiSystem::fitText(const std::string& text, f32 maxW, f32 scale) const {
+    if (ui_.textWidth(text, scale) <= maxW) return text;
+    std::string t = text;
+    while (!t.empty()) {
+        // Отрезаем по букве, а не по байту: названия бывают кириллицей,
+        // и половина буквы — это мусор на экране.
+        while (!t.empty() && ((u8)t.back() & 0xC0u) == 0x80u) t.pop_back();
+        if (!t.empty()) t.pop_back();
+        if (ui_.textWidth(t + "..", scale) <= maxW) return t + "..";
+    }
+    return std::string();
+}
 
 void UiSystem::drawWorldsScreen() {
-    ui_.rect(0, 0, (f32)screenW_, (f32)screenH_,
-             withAlpha(theme::Ink, theme::ALPHA_SCRIM));
-
-    const Rect title = layout_.menuTitle();
-    ui_.text(T(StrKey::World_Title), title.x,
-             title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
-             theme::TEXT_TITLE, theme::TextPrimary);
-
-    drawCloseButton([this]() { screen = returnTo; returnTo = Screen::Hud; });
+    drawMenuBackdrop(T(StrKey::World_Title));
+    drawCloseButton([this]() { closeToPrevious(); });
 
     auto textButton = [&](Rect r, const char* label, const BtnStyle& st,
                           f32 size, std::function<void()> onClick)
@@ -2926,38 +3198,29 @@ void UiSystem::drawWorldsScreen() {
         const f32 tw = ui_.textWidth(label, size);
         ui_.text(label, r.x + (r.w - tw) * 0.5f,
                  r.y + (r.h - ui_.textHeight(size)) * 0.5f, size,
-                 pressed ? theme::Ink : theme::TextPrimary);
+                 pressed || &st == &BTN_PRIMARY ? theme::Ink : theme::TextPrimary);
     };
+
+    // ---- Новый мир — в строке заголовка ----
+    //
+    // Он занимал целый ряд во всю ширину, то есть четверть экрана, а
+    // карточкам с превью нужна именно высота.
+    textButton(worldsNewButton(), T(StrKey::World_New),
+               BTN_PRIMARY, theme::TEXT_BODY, [this]() { openNewWorld(); });
 
     constexpr u32 COLS = 3;
     const u32 P = save::SaveSlotManager::NUM_PROFILES;
     const u32 S = save::SaveSlotManager::NUM_SLOTS;
-    // Верхний ряд — «новый мир», под ним сетка миров.
-    const u32 ROWS = 1 + P;
-
-    // ---- Новый мир: во всю ширину, главное действие экрана ----
-    {
-        const Rect a = layout_.menuCell(0, 0, COLS, ROWS);
-        const Rect c2 = layout_.menuCell(COLS - 1, 0, COLS, ROWS);
-        const Rect r{ a.x, a.y, (c2.x + c2.w) - a.x, a.h };
-        textButton(r, T(StrKey::World_New), BTN_PRIMARY, theme::TEXT_BODY,
-                   [this]() { openNewWorld(); });
-    }
 
     const f32 pad = layout_.dp(theme::SPACE_S_DP);
     const f32 small = theme::TEXT_CAPTION;
+    const f32 lineGap = layout_.dp(theme::SPACE_XS_DP);
 
     for (u32 p = 0; p < P; ++p) {
         for (u32 s = 0; s < S; ++s) {
-            const Rect cell = layout_.menuCell(s, p + 1, COLS, ROWS);
+            const Rect cell = layout_.menuCell(s, p, COLS, P);
             const auto& meta = slotMeta[p][s];
-
-            // Кнопки в углу ячейки, а сама ячейка — «открыть».
-            const f32 btnH = layout_.dp(theme::TOUCH_MIN_DP) * 0.7f;
-            const f32 btnW = (cell.w - pad * 3.f) * 0.5f;
-            const Rect bLeft { cell.x + pad, cell.y + cell.h - pad - btnH,
-                               btnW, btnH };
-            const Rect bRight{ bLeft.x + btnW + pad, bLeft.y, btnW, btnH };
+            const PreviewCell& pv = worldPreview[p][s];
 
             const bool current = meta.exists && meta.seed == currentWorldSeed;
 
@@ -2977,9 +3240,39 @@ void UiSystem::drawWorldsScreen() {
                                                : theme::STROKE_DP),
                             current ? theme::Accent : theme::Stroke);
 
+            // ---- Превью: слева, во всю высоту карточки ----
+            //
+            // Окно одной формы у всех карточек — ряд читается ровным,
+            // а снимок вписывается в окно с сохранением пропорций.
+            Rect box{ cell.x + pad, cell.y + pad, 0.f, cell.h - pad * 2.f };
+            if (meta.exists) {
+                box.w = std::min(box.h * WORLD_PREVIEW_ASPECT, cell.w * 0.48f);
+                ui_.rect(box.x, box.y, box.w, box.h,
+                         rgba(PreviewAtlas::BG_R, PreviewAtlas::BG_G,
+                              PreviewAtlas::BG_B, 255));
+                if (pv.has && ui_.hasImage(ImageSlot::WorldPreviews)) {
+                    const f32 sc = std::min(box.w / pv.aspect, box.h);
+                    const f32 iw = sc * pv.aspect, ih = sc;
+                    ui_.imageQuad(ImageSlot::WorldPreviews,
+                                  box.x + (box.w - iw) * 0.5f,
+                                  box.y + (box.h - ih) * 0.5f, iw, ih,
+                                  COL_WHITE, pv.u0, pv.v0, pv.u1, pv.v1);
+                }
+                ui_.rectOutline(box.x, box.y, box.w, box.h,
+                                layout_.dp(theme::STROKE_DP), theme::Stroke);
+            }
+
+            // ---- Текст и кнопки: справа от превью ----
+            const f32 tx = meta.exists ? box.x + box.w + pad : cell.x + pad;
+            const f32 tw = cell.x + cell.w - pad - tx;
+            const f32 btnH = layout_.dp(theme::TOUCH_MIN_DP) * 0.7f;
+            const f32 btnW = (tw - pad) * 0.5f;
+            const Rect bLeft { tx, cell.y + cell.h - pad - btnH, btnW, btnH };
+            const Rect bRight{ tx + btnW + pad, bLeft.y, btnW, btnH };
+
             f32 ty = cell.y + pad;
             if (!meta.exists) {
-                ui_.text(T(StrKey::World_Empty), cell.x + pad, ty, small,
+                ui_.text(T(StrKey::World_Empty), tx, ty, small,
                          theme::TextDisabled);
                 // В пустой мир можно ПРИНЕСТИ файл — это единственное,
                 // что с пустой ячейкой вообще можно сделать.
@@ -2990,26 +3283,25 @@ void UiSystem::drawWorldsScreen() {
                 continue;
             }
 
-            ui_.text(meta.worldName, cell.x + pad, ty, theme::TEXT_LABEL,
-                     pressed ? theme::Ink : theme::TextPrimary);
-            ty += ui_.textHeight(theme::TEXT_LABEL) + layout_.dp(theme::SPACE_XS_DP);
+            ui_.text(fitText(meta.worldName, tw, theme::TEXT_LABEL), tx, ty,
+                     theme::TEXT_LABEL, pressed ? theme::Ink : theme::TextPrimary);
+            ty += ui_.textHeight(theme::TEXT_LABEL) + lineGap;
 
             char buf[96];
             std::snprintf(buf, sizeof(buf), "%s %llu", T(StrKey::World_Seed),
                           (unsigned long long)meta.seed);
-            ui_.text(buf, cell.x + pad, ty, small, theme::TextSecondary);
-            ty += ui_.textHeight(small) + layout_.dp(theme::SPACE_XS_DP);
+            ui_.text(fitText(buf, tw, small), tx, ty, small, theme::TextSecondary);
+            ty += ui_.textHeight(small) + lineGap;
 
             std::snprintf(buf, sizeof(buf), "%s %u   %u:%02u",
                           T(StrKey::Hud_Level), meta.playerLevel,
                           meta.playtimeSec / 3600u,
                           (meta.playtimeSec / 60u) % 60u);
-            ui_.text(buf, cell.x + pad, ty, small, theme::TextSecondary);
-            ty += ui_.textHeight(small) + layout_.dp(theme::SPACE_XS_DP);
+            ui_.text(fitText(buf, tw, small), tx, ty, small, theme::TextSecondary);
+            ty += ui_.textHeight(small) + lineGap;
 
-            if (current)
-                ui_.text(T(StrKey::World_Current), cell.x + pad, ty, small,
-                         theme::Accent);
+            if (current && ty + ui_.textHeight(small) <= bLeft.y)
+                ui_.text(T(StrKey::World_Current), tx, ty, small, theme::Accent);
 
             textButton(bLeft, T(StrKey::World_Export), BTN_NORMAL, small,
                        [this, p, s]() {
@@ -3068,7 +3360,11 @@ NewWorldLayout UiSystem::newWorldLayout() const {
 // отрисовки здесь нет и быть не должно, иначе игрок выбирал бы по
 // одному изображению, а получал другое.
 void UiSystem::setPreviewImage(VkImageView view, VkSampler sampler) {
-    ui_.setImage(view, sampler);
+    ui_.setImage(ImageSlot::IsoPreview, view, sampler);
+}
+
+void UiSystem::setWorldPreviewImage(VkImageView view, VkSampler sampler) {
+    ui_.setImage(ImageSlot::WorldPreviews, view, sampler);
 }
 
 void UiSystem::drawIsoSnapshotScreen() {
@@ -3085,7 +3381,7 @@ void UiSystem::drawIsoSnapshotScreen() {
 
     drawCloseButton([this]() {
         if (onIsoCancel) onIsoCancel();
-        openScreen(Screen::Settings);
+        closeToPrevious();
     });
 
     const Rect panel = layout_.menuArea();
@@ -3276,7 +3572,7 @@ void UiSystem::drawIsoSnapshotScreen() {
         ui_.rectOutline(pv.x, pv.y, pv.w, pv.h,
                         layout_.dp(theme::STROKE_DP), theme::Stroke);
 
-        if (ui_.hasImage() && iso.outW > 0 && iso.outH > 0) {
+        if (ui_.hasImage(ImageSlot::IsoPreview) && iso.outW > 0 && iso.outH > 0) {
             // Вписываем картинку целиком, сохраняя пропорции: снимок
             // почти никогда не той же формы, что окно предпросмотра,
             // а растянутая изометрия — уже не изометрия.
@@ -3285,7 +3581,7 @@ void UiSystem::drawIsoSnapshotScreen() {
             const f32 sc = sx < sy ? sx : sy;
             const f32 iw = (f32)iso.outW * sc;
             const f32 ih = (f32)iso.outH * sc;
-            ui_.imageQuad(pv.x + (pv.w - iw) * 0.5f,
+            ui_.imageQuad(ImageSlot::IsoPreview, pv.x + (pv.w - iw) * 0.5f,
                           pv.y + (pv.h - ih) * 0.5f, iw, ih, COL_WHITE);
         } else {
             const char* wait = T(StrKey::Iso_PreviewWait);
@@ -3319,7 +3615,7 @@ void UiSystem::drawNewWorldScreen() {
              title.y + (title.h - ui_.textHeight(theme::TEXT_TITLE)) * 0.5f,
              theme::TEXT_TITLE, theme::TextPrimary);
 
-    drawCloseButton([this]() { openScreen(Screen::Worlds); });
+    drawCloseButton([this]() { closeToPrevious(); });
 
     const NewWorldLayout NW = newWorldLayout();
     const f32 pad = layout_.dp(theme::SPACE_M_DP);
@@ -3486,7 +3782,7 @@ void UiSystem::drawCraftingScreen(player::Player& player) {
                   T(StrKey::Craft_Title), stName);
     drawMenuBackdrop(title);
 
-    drawCloseButton([this]() { screen = Screen::Hud; });
+    drawCloseButton([this]() { closeToPrevious(); });
 
     auto* inv = player.inventory();
     auto* tree = player.skillTree();
@@ -3695,7 +3991,7 @@ void UiSystem::drawTradeScreen(player::Player& player) {
     auto* wal = player.wallet();
     if (!inv || !wal) return;
 
-    drawCloseButton([this]() { screen = Screen::Hud; });
+    drawCloseButton([this]() { closeToPrevious(); });
 
     // Вкладки «купить» и «продать».
     //
@@ -3871,7 +4167,7 @@ void UiSystem::drawTradeScreen(player::Player& player) {
 void UiSystem::drawEnchantScreen(player::Player& player) {
     drawMenuBackdrop(cfg::tr("ENCHANT ALTAR"));
 
-    drawCloseButton([this]() { screen = Screen::Hud; });
+    drawCloseButton([this]() { closeToPrevious(); });
 
     auto* inv = player.inventory();
     auto* wal = player.wallet();
@@ -4056,6 +4352,11 @@ void UiSystem::drawCloseButton(std::function<void()> onClose) {
 // прямоугольников с конца, то есть выигрывает нарисованный позже; но
 // касание МИМО окна нашло бы кнопку под ним. Поэтому первым кладём
 // прямоугольник во весь экран — он глушит всё, что снаружи.
+void UiSystem::askQuit() {
+    askConfirm(T(StrKey::Menu_Quit), T(StrKey::Menu_Quit),
+               [this]() { if (onQuit) onQuit(); });
+}
+
 void UiSystem::drawConfirm() {
     if (!confirm.active) return;
 

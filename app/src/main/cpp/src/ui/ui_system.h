@@ -11,6 +11,7 @@
 #include "scroll.h"
 #include "text_entry.h"
 #include "hud_layout.h"
+#include "preview_atlas.h"
 #include "../player/player.h"
 #include "../world/chunk_manager.h"
 #include "../save/save_slot.h"
@@ -48,6 +49,10 @@ enum class Screen {
     NewWorld,
     /// Изометрический снимок мира: область, сторона, предпросмотр.
     IsoSnapshot,
+    /// Главное меню: с него игра начинается и в него выходят из
+    /// паузы. Фоном — тот же мир тем же рендером, камера облетает
+    /// место, где стоит игрок.
+    MainMenu,
 };
 
 /// Разделы меню паузы.
@@ -57,9 +62,24 @@ enum class Screen {
 /// способ туда попасть, и проверить его иначе не к чему обратиться.
 /// Значок с очками считается на месте, при отрисовке: он зависит от
 /// игрока, а список — нет.
+///
+/// В паузе только то, что нужно, пока игра стоит. Частое и
+/// привязанное к месту живёт на главном экране: сумка — кнопкой
+/// HUD, журнал — блоком текущего задания, ремесло — подсказкой у
+/// станка и кнопкой в сумке, миры — в главном меню.
+enum class MenuGroup : u8 {
+    Character,   ///< развитие персонажа: атрибуты, навыки
+    World,       ///< мир вокруг: репутация у фракций
+    System,      ///< сохранение и настройки
+};
+constexpr u32 MENU_GROUPS = 3;
+
 struct MenuEntry {
     config::StrKey label;
     Screen      target;
+    MenuGroup   group;
+    /// Второстепенный раздел: кнопка ниже и тише остальных.
+    bool        secondary = false;
 };
 const std::vector<MenuEntry>& menuEntries();
 
@@ -94,6 +114,36 @@ struct NewWorldLayout {
     Rect keyboard{0.f, 0.f, 0.f, 0.f};
 };
 enum class SettingsTab : u8 { Input = 0, Ui, Audio, Game, Render, Count };
+
+/// Раскладка паузы: где «продолжить», где «в меню», где подпись
+/// каждой группы и кнопка каждого раздела.
+///
+/// Отдельно от рисования, как и остальные раскладки: проверка
+/// спрашивает ровно ту геометрию, по которой пауза ловит касания.
+/// Прямоугольники — без прокрутки: рисующий сдвигает их на неё сам.
+struct PauseLayout {
+    Rect area{0.f, 0.f, 0.f, 0.f};     ///< видимая область меню
+    Rect resume{0.f, 0.f, 0.f, 0.f};
+    Rect toMenu{0.f, 0.f, 0.f, 0.f};
+    std::array<Rect, MENU_GROUPS> groupTitle{};
+    std::vector<Rect> entries;           ///< по menuEntries()
+    /// Группы стоят столбцами рядом; на узком экране — стопкой.
+    bool columns = true;
+    /// Высота всего содержимого — для прокрутки.
+    f32 contentH = 0.f;
+};
+
+/// Раскладка главного меню: левая панель с названием и кнопками,
+/// справа — открытый мир.
+struct MainMenuLayout {
+    Rect panel{0.f, 0.f, 0.f, 0.f};      ///< затемнённая полоса слева
+    Rect title{0.f, 0.f, 0.f, 0.f};
+    /// Продолжить, миры, настройки, выход — сверху вниз.
+    static constexpr u32 BUTTONS = 4;
+    std::array<Rect, BUTTONS> buttons{};
+    /// Строка под «продолжить»: какой мир продолжится.
+    Rect caption{0.f, 0.f, 0.f, 0.f};
+};
 
 /// Раскладка экрана настроек.
 ///
@@ -224,6 +274,10 @@ public:
     const std::vector<UiVertex>& frameVertices() const {
         return renderer_.pendingVertices();
     }
+    /// Отрезки кадра: какие вершины рисуются какой картинкой.
+    const std::vector<UiRenderer::Run>& frameRuns() const {
+        return renderer_.pendingRuns();
+    }
     u32 lastDrawn()    const { return renderer_.lastDrawn(); }
     u32 lastDrawCalls() const { return renderer_.lastDrawCalls(); }
 
@@ -321,6 +375,37 @@ public:
 
     /// Зерно мира, в котором игрок сейчас: в списке он помечен.
     u64 currentWorldSeed = 0;
+    /// Его название — главное меню говорит, что именно продолжится.
+    std::string currentWorldName;
+
+    /// Превью миров по слотам: где в атласе картинка слота. Атлас
+    /// строит и загружает движок (ui/preview_atlas.h), сюда приходит
+    /// только разметка.
+    std::array<std::array<PreviewCell, 3>, 3> worldPreview{};
+    /// Атлас превью миров. Владеет им вызывающий.
+    void setWorldPreviewImage(VkImageView view, VkSampler sampler);
+
+    /// Раскладки — ровно те, по которым экраны рисуют и ловят касания.
+    PauseLayout pauseLayout() const;
+    MainMenuLayout mainMenuLayout() const;
+    /// Кнопка ремесла в строке заголовка сумки.
+    Rect inventoryCraftButton() const {
+        return layout_.titleAction(MODE_BUTTON_W_DP);
+    }
+    /// «Новый мир» в строке заголовка экрана миров.
+    Rect worldsNewButton() const {
+        return layout_.titleAction(MODE_BUTTON_W_DP);
+    }
+    /// Прокрутка паузы — проверке, чтобы докрутить до ряда, как палец.
+    Scroll& pauseScrolling() { return pauseScroll; }
+    /// Блок текущего задания на HUD — он же вход в журнал. Не ниже
+    /// цели касания: блок стал кнопкой.
+    Rect questTrackerRect() const {
+        Rect r = layout_.questTracker();
+        const f32 minH = layout_.dp(theme::TOUCH_MIN_DP);
+        if (r.h < minH) r.h = minH;
+        return r;
+    }
 
     /// Геометрия экрана создания мира — та же, по которой он рисует.
     NewWorldLayout newWorldLayout() const;
@@ -417,25 +502,26 @@ public:
         notify(msg, theme::NotifyPriority::Normal);
     }
     void drawLoadingOverlay();
+    /// Лежит ли под точкой видимая круглая кнопка.
+    bool padButtonAt(float px, float py) const;
     /// Джойстик и экранные кнопки. Только поверх чистого HUD: под
     /// открытым меню управление не работает, рисовать его незачем.
     void drawTouchControls();
     void tickUi(f32 dt);
 
+    /// Отнято ли управление: ввод и круглые кнопки гаснут, музыка
+    /// стихает. Мир под меню живёт дальше — кроме главного меню, где
+    /// игры нет вовсе (см. main.cpp, updateMainMenu).
+    ///
+    /// Списком «где управление есть», а не «где его нет»: оно есть
+    /// только под чистым HUD и под разговором. Список экранов без
+    /// управления однажды забыл снимок мира — под ним работали
+    /// джойстик и кнопки, которых не видно, — а новый экран, не
+    /// вписанный никуда, заберёт управление, а не оставит его под
+    /// меню.
     bool paused() const {
-        return screen == Screen::PauseMenu ||
-               screen == Screen::Inventory ||
-               screen == Screen::Settings ||
-               screen == Screen::SkillTree ||
-               screen == Screen::Attributes ||
-               screen == Screen::QuestLog ||
-               screen == Screen::Reputation ||
-               screen == Screen::SaveLoad ||
-               screen == Screen::Crafting ||
-               screen == Screen::Trade ||
-               screen == Screen::Enchant ||
-               screen == Screen::Worlds ||
-               screen == Screen::NewWorld;
+        if (atMainMenu) return true;
+        return screen != Screen::Hud && screen != Screen::Dialogue;
     }
 
     bool dialogueOpen() const { return screen == Screen::Dialogue; }
@@ -456,6 +542,7 @@ public:
             case Screen::Worlds:
             case Screen::NewWorld:
             case Screen::IsoSnapshot:
+            case Screen::MainMenu:
                 return false;
             default:
                 return true;
@@ -515,22 +602,79 @@ public:
     /// Пока включён, обычные действия кнопок не срабатывают.
     bool buttonLayoutMode = false;
 
-    /// Куда вернуться из текущего экрана.
+    /// Откуда пришли: экраны под текущим, ближний — последним.
     ///
-    /// Раньше любой вложенный экран возвращал в паузу, даже если
-    /// открыт был из HUD: игрок оказывался не там, откуда пришёл.
-    Screen returnTo = Screen::Hud;
+    /// Раньше «откуда» было одно поле, и цепочка из трёх экранов его
+    /// теряла: пауза → миры → новый мир → «закрыть» → «закрыть»
+    /// приводило обратно в «новый мир», а настройки, открытые из
+    /// главного меню, закрывались бы в игру, которой ещё нет.
+    ///
+    /// Глубина ограничена: глубже четырёх экранов в игре не бывает,
+    /// а при переполнении забывается самый дальний — «назад» всё
+    /// равно приведёт на основу (см. baseScreen).
+    static constexpr u32 NAV_DEPTH = 6;
+    std::array<Screen, NAV_DEPTH> navStack{};
+    u32 navDepth = 0;
+
+    /// Игра не идёт: основа навигации — главное меню, а не HUD.
+    ///
+    /// Отдельно от `screen`, потому что из главного меню открываются
+    /// настройки, миры и снимок — те же экраны, что и из паузы, и
+    /// куда они закрываются, решает именно это.
+    bool atMainMenu = false;
+
+    /// Куда ведёт «назад», когда идти больше некуда.
+    Screen baseScreen() const {
+        return atMainMenu ? Screen::MainMenu : Screen::Hud;
+    }
+
+    /// Откуда открыт текущий экран; основа — если ниоткуда.
+    Screen previousScreen() const {
+        return navDepth ? navStack[navDepth - 1] : baseScreen();
+    }
 
     /// Открыть экран, запомнив, откуда.
+    ///
+    /// Экран, уже лежащий в стопке, не кладётся второй раз: стопка
+    /// срезается до него. Иначе «новый мир → миры» копил бы
+    /// бесконечную цепочку одних и тех же двух экранов.
     void openScreen(Screen s) {
-        if (s != screen) returnTo = screen;
+        if (s == screen) return;
+        for (u32 i = 0; i < navDepth; ++i) {
+            if (navStack[i] == s) { navDepth = i; screen = s; return; }
+        }
+        if (navDepth == NAV_DEPTH) {
+            for (u32 i = 1; i < NAV_DEPTH; ++i) navStack[i - 1] = navStack[i];
+            --navDepth;
+        }
+        navStack[navDepth++] = screen;
         screen = s;
     }
 
     /// Закрыть экран туда, откуда пришли, — как «Назад».
     void closeToPrevious() {
-        screen = returnTo;
-        returnTo = Screen::Hud;
+        screen = previousScreen();
+        if (navDepth) --navDepth;
+    }
+
+    /// Встать на экран, забыв, откуда пришли: «продолжить», вход в
+    /// мир, выход в главное меню, конец разговора.
+    void resetTo(Screen s) {
+        navDepth = 0;
+        screen = s;
+    }
+
+    /// Войти в игру: основа — HUD, стопка пуста.
+    void enterGame() {
+        atMainMenu = false;
+        resetTo(Screen::Hud);
+    }
+
+    /// Выйти в главное меню.
+    void enterMainMenu() {
+        atMainMenu = true;
+        drag.clear();
+        resetTo(Screen::MainMenu);
     }
 
     /// Аппаратная кнопка «Назад»: закрывает текущий экран, а не игру.
@@ -544,15 +688,18 @@ public:
                 openScreen(Screen::PauseMenu);
                 break;
             case Screen::PauseMenu:
-                screen = Screen::Hud;
-                returnTo = Screen::Hud;
+                resetTo(Screen::Hud);
+                break;
+            case Screen::MainMenu:
+                // С корня «назад» уходит из игры — как у любого
+                // приложения, но с вопросом: палец промахивается.
+                askQuit();
                 break;
             case Screen::Dialogue:
                 // Диалог закрывается своим обработчиком, чтобы NPC
                 // вышел из состояния Talk.
                 if (onCloseDialogue) onCloseDialogue();
-                screen = Screen::Hud;
-                returnTo = Screen::Hud;
+                resetTo(Screen::Hud);
                 break;
             default:
                 closeToPrevious();
@@ -560,9 +707,15 @@ public:
         }
     }
 
+    /// Выход из приложения — с вопросом.
+    void askQuit();
+
     /// Кнопка Start на геймпаде.
     void togglePause() {
-        screen = (screen == Screen::Hud) ? Screen::PauseMenu : Screen::Hud;
+        // В главном меню игры нет — и ставить на паузу нечего.
+        if (atMainMenu) return;
+        if (screen == Screen::Hud) openScreen(Screen::PauseMenu);
+        else if (screen == Screen::PauseMenu) resetTo(Screen::Hud);
     }
 
     /// Вызывается, когда «Назад» закрывает диалог.
@@ -570,10 +723,14 @@ public:
 
     std::function<void()> onSave;
     std::function<void()> onQuit;
+    /// Главное меню: войти в открытый мир.
+    std::function<void()> onContinue;
+    /// Пауза: сохранить мир, снять превью и выйти в главное меню.
+    std::function<void()> onExitToMenu;
 
     void setDialogueActive(bool active) {
         if (active) screen = Screen::Dialogue;
-        else if (screen == Screen::Dialogue) screen = Screen::Hud;
+        else if (screen == Screen::Dialogue) resetTo(Screen::Hud);
     }
 
     void openInventory() { openScreen(Screen::Inventory); drag.clear(); }
@@ -666,6 +823,8 @@ private:
 
     void drawSaveLoadScreen(player::Player& player);
     void drawWorldsScreen();
+    /// Главное меню поверх открытого мира.
+    void drawMainMenu();
     void drawNewWorldScreen();
     void drawIsoSnapshotScreen();
     /// Экранная клавиатура. Область — то, что от экрана осталось.
@@ -739,9 +898,24 @@ private:
     /// Ширина кнопки режима в строке заголовка экрана сохранений.
     static constexpr f32 MODE_BUTTON_W_DP = 160.f;
 
-    /// Разделы меню паузы. Их больше, чем помещается в высоту
-    /// бюджетного экрана между «продолжить» и «выходом».
+    /// Пауза прокручивается целиком: на узком экране группы встают
+    /// стопкой и в высоту не помещаются.
     Scroll pauseScroll;
+    /// Уже столбца пауза в столбцы не раскладывается.
+    static constexpr f32 PAUSE_MIN_COL_DP = 150.f;
+    /// Окно превью в карточке мира: ширина к высоте. Снимок области
+    /// 64x64 в изометрии чуть шире, чем выше.
+    static constexpr f32 WORLD_PREVIEW_ASPECT = 1.35f;
+    /// Строка, укороченная до ширины: с «..» на конце, по буквам.
+    std::string fitText(const std::string& text, f32 maxW, f32 scale) const;
+    /// Главное меню: ширина столбца кнопок, крупность названия,
+    /// плотность левой полосы и ширина её спада к миру.
+    static constexpr f32 MAIN_MENU_BUTTON_W_DP = 280.f;
+    static constexpr f32 MAIN_MENU_TITLE_SCALE = 6.f;
+    static constexpr u8  MAIN_MENU_PANEL_ALPHA = 196;
+    static constexpr f32 MAIN_MENU_FADE_DP     = 72.f;
+    /// Подложка блока задания: заметна как кнопка, но тише полос.
+    static constexpr u8 QUEST_BLOCK_ALPHA = 128;
 
     /// Ряд фракции на экране репутации: название, отношение и
     /// полоса.

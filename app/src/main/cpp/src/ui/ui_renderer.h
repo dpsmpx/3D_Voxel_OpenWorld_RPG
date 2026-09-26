@@ -12,9 +12,22 @@
 #include "../vk/vk_descriptors.h"
 #include <android/asset_manager.h>
 #include <glm/glm.hpp>
+#include <array>
 #include <vector>
 
 namespace ui {
+
+/// Гнёзда картинок снаружи. Каждое — свой набор дескрипторов.
+///
+/// Гнездо было одно, под предпросмотр снимка. Превью миров туда не
+/// положишь: экран снимка открывается из настроек, настройки — из
+/// главного меню, где на соседнем экране висят превью, и два
+/// владельца одной картинки переписывали бы её друг у друга.
+enum class ImageSlot : u8 {
+    IsoPreview = 0,   ///< предпросмотр изометрического снимка
+    WorldPreviews,    ///< атлас превью миров (см. ui/preview_atlas.h)
+};
+constexpr u32 IMAGE_SLOTS = 2;
 
 /// Формат UI-вершины: pos(NDC) + uv + цвет
 struct UiVertex {
@@ -49,24 +62,34 @@ public:
     void pushTri(glm::vec2 a, glm::vec2 b, glm::vec2 c, u32 rgba);
 
     /// Прямоугольник, закрашенный ПРОИЗВОЛЬНОЙ картинкой.
-    ///
     /// Интерфейс рисуется одним конвейером и одним вызовом на весь
     /// кадр, потому что у него одна текстура — атлас шрифта. Картинка
-    /// снаружи (предпросмотр изометрического снимка) ломает это
-    /// «одна», но не ломает «один конвейер»: шейдер тот же, меняется
-    /// только набор дескрипторов. Поэтому поток вершин делится на
-    /// отрезки, и каждый рисуется своим набором.
-    ///
+    /// снаружи (предпросмотр изометрического снимка, превью миров)
+    /// ломает это «одна», но не ломает «один конвейер»: шейдер тот
+    /// же, меняется только набор дескрипторов. Поэтому поток вершин
+    /// делится на отрезки, и каждый рисуется своим набором.
     /// Без установленной картинки (см. setImage) вызов рисует
     /// обычный прямоугольник цветом rgba — чтобы на месте
     /// предпросмотра была подложка, а не дыра.
-    void pushImageQuad(glm::vec2 pos, glm::vec2 size, u32 rgba);
+    ///
+    /// u0..v1 — часть картинки: превью миров лежат одним атласом.
+    void pushImageQuad(ImageSlot slot, glm::vec2 pos, glm::vec2 size,
+                       float u0, float v0, float u1, float v1, u32 rgba);
 
-    /// Какую картинку показывать в pushImageQuad. Владеет ею
+    /// Какую картинку показывать в этом гнезде. Владеет ею
     /// вызывающий; интерфейс только ссылается.
     /// Пустой вид снимает картинку.
-    void setImage(VkImageView view, VkSampler sampler);
-    bool hasImage() const { return imageReady_; }
+    void setImage(ImageSlot slot, VkImageView view, VkSampler sampler);
+    bool hasImage(ImageSlot slot) const {
+        return images_[(u32)slot].ready;
+    }
+
+    /// Отрезок потока вершин: чем его рисовать. -1 — атласом шрифта,
+    /// иначе номер гнезда картинки.
+    struct Run { u32 first = 0, count = 0; i32 image = -1; };
+    /// Отрезки текущего кадра. Снимок интерфейса (tools/uishot) по
+    /// ним узнаёт, какие треугольники красить картинкой.
+    const std::vector<Run>& pendingRuns() const { return runs_; }
 
     void endFrame();
 
@@ -110,16 +133,18 @@ private:
     VkDescriptorSetLayout descLayout_ = VK_NULL_HANDLE;
     VkDescriptorPool      descPool_   = VK_NULL_HANDLE;
     VkDescriptorSet fontSet_ = VK_NULL_HANDLE;
-    /// Набор под картинку снаружи. Переписывается при каждой смене
-    /// картинки, поэтому пул заведён с правом освобождать наборы.
-    VkDescriptorSet imageSet_ = VK_NULL_HANDLE;
-    bool            imageReady_ = false;
+    /// Наборы под картинки снаружи, по гнезду. Переписываются при
+    /// каждой смене картинки, поэтому пул заведён с правом
+    /// освобождать наборы.
+    struct ImageSet {
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        bool ready = false;
+    };
+    std::array<ImageSet, IMAGE_SLOTS> images_{};
 
-    /// Отрезок потока вершин: чем его рисовать.
-    struct Run { u32 first = 0, count = 0; bool image = false; };
     std::vector<Run> runs_;
     /// Открыть отрезок нужного вида, если текущий не такой.
-    void beginRun(bool image);
+    void beginRun(i32 image);
 
     /// Буфер вершин на каждый кадр в работе
     struct FrameBuf {
