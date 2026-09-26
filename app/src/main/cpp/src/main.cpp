@@ -1011,7 +1011,7 @@ struct Engine {
         auto st = saveMgr.save(sl, *world, registry,
                                player->entity(), worldDelta,
                                worldSeed, playtime.seconds(), dayCycle,
-                               *npcSpawner, treasures, worldName);
+                               *npcSpawner, treasures, worldName, spawner.get());
 
         if (st == save::SaveStatus::Ok) {
             lastSaveProfile = profile;
@@ -1051,7 +1051,7 @@ struct Engine {
 
         auto st = saveMgr.load(sl, *world, registry, player->entity(),
                                worldDelta, &loadedSeed, &loadedPlaytime,
-                               &dayCycle, *npcSpawner, treasures);
+                               &dayCycle, *npcSpawner, treasures, spawner.get());
 
         if (st == save::SaveStatus::Ok) {
             worldSeed = loadedSeed;

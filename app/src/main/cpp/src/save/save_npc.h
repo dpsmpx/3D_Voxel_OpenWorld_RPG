@@ -4,6 +4,7 @@
  */
 #pragma once
 #include "../core/types.h"
+#include "../mobs/spawner.h"
 #include "../npc/npc_spawner.h"
 #include "../world/hazards.h"
 #include "save_format.h"
@@ -32,5 +33,11 @@ bool deserializeNpcState(ByteReader& r, npc::NpcSpawner& spawner);
 /// того, что в мире УЖЕ случилось и не должно случиться снова.
 void serializeTreasures(ByteWriter& w, const hazards::TreasureKeeper& keeper);
 bool deserializeTreasures(ByteReader& r, hazards::TreasureKeeper& keeper);
+
+/// Побеждённые боссы — там же и по той же причине. Спавнер вправе
+/// не передаваться (проверки, инструменты): тогда пишется пустой
+/// список, а прочитанный выбрасывается.
+void serializeBosses(ByteWriter& w, const mobs::Spawner* spawner);
+bool deserializeBosses(ByteReader& r, mobs::Spawner* spawner);
 
 } // namespace save

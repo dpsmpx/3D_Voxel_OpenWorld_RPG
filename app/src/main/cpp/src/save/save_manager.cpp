@@ -49,7 +49,8 @@ SaveStatus SaveManager::save(const SaveSlot& slot,
                              const world::DayCycle& day,
                              const npc::NpcSpawner& npcSpawner,
                              const hazards::TreasureKeeper& treasures,
-                             const char* worldName)
+                             const char* worldName,
+                             const mobs::Spawner* mobSpawner)
 {
     if (!initialized_) return SaveStatus::WriteError;
     // Воксели не сохраняются: мир восстанавливается из зерна, а
@@ -68,6 +69,7 @@ SaveStatus SaveManager::save(const SaveSlot& slot,
     deltas.write(body);
     serializeNpcState(body, npcSpawner);
     serializeTreasures(body, treasures);
+    serializeBosses(body, mobSpawner);
     serializePickups(body, registry);
 
     std::vector<u8> compressed = zcompress(body.data(), 6);
@@ -156,7 +158,8 @@ SaveStatus SaveManager::load(const SaveSlot& slot,
                              u32* outPlaytimeSec,
                              world::DayCycle* outDay,
                              npc::NpcSpawner& npcSpawner,
-                             hazards::TreasureKeeper& treasures)
+                             hazards::TreasureKeeper& treasures,
+                             mobs::Spawner* mobSpawner)
 {
     if (!initialized_) return SaveStatus::ReadError;
 
@@ -262,6 +265,11 @@ SaveStatus SaveManager::load(const SaveSlot& slot,
 
     if (!deserializeTreasures(br, treasures)) {
         LOGE("Save: treasure deserialize failed");
+        return SaveStatus::CorruptedData;
+    }
+
+    if (!deserializeBosses(br, mobSpawner)) {
+        LOGE("Save: boss deserialize failed");
         return SaveStatus::CorruptedData;
     }
 

@@ -7,6 +7,7 @@
 #include "../ecs/registry.h"
 #include "../world/chunk_manager.h"
 #include "../world/day_cycle.h"
+#include "../mobs/spawner.h"
 #include "../npc/npc_spawner.h"
 #include "../world/hazards.h"
 #include "save_format.h"
@@ -56,7 +57,8 @@ public:
                     const world::DayCycle& day,
                     const npc::NpcSpawner& npcSpawner,
                     const hazards::TreasureKeeper& treasures,
-                    const char* worldName = nullptr);
+                    const char* worldName = nullptr,
+                    const mobs::Spawner* mobSpawner = nullptr);
 
     /// Загрузить состояние. world должен быть уже создан с тем же seed.
     SaveStatus load(const SaveSlot& slot,
@@ -68,7 +70,8 @@ public:
                     u32* outPlaytimeSec,
                     world::DayCycle* outDay,
                     npc::NpcSpawner& npcSpawner,
-                    hazards::TreasureKeeper& treasures);
+                    hazards::TreasureKeeper& treasures,
+                    mobs::Spawner* mobSpawner = nullptr);
 
     /// ---- Автосейв — в служебный слот (profile=2, slot=2). ----
     static constexpr u32 AUTOSAVE_PROFILE = 2;

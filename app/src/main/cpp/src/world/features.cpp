@@ -106,25 +106,54 @@ void applyCaves(Chunk& chunk, const FeatureContext& ctx) {
 // ORES
 // ============================================================
 void applyOres(Chunk& chunk, const FeatureContext& ctx) {
+    // Обходятся жилы, а не воксели. Прежде каждый воксель камня
+    // спрашивал 27 соседних клеток (TerrainGenerator::oreAt): в горном
+    // чанке это миллионы хэшей — ради жил, которых выше 84-го блока нет
+    // вовсе, и такой чанк генерировался втрое дольше обычного.
+    //
+    // Ответ тот же, что у oreAt, до вокселя: там из перекрывшихся жил
+    // побеждает клетка, меньшая по (y, z, x), — здесь жилы кладутся от
+    // большей к меньшей, и меньшая ложится последней.
+    using Vein = TerrainGenerator::OreVein;
+    constexpr i32 C = TerrainGenerator::ORE_CELL;
     const auto& terrain = *ctx.terrain;
     const i32 baseX = chunk.coord.x * CHUNK_SIZE;
     const i32 baseZ = chunk.coord.z * CHUNK_SIZE;
 
-    for (i32 x = 0; x < CHUNK_SIZE; ++x) {
-        for (i32 z = 0; z < CHUNK_SIZE; ++z) {
-            const i32 wx = baseX + x, wz = baseZ + z;
-            const i32 surface = ctx.columnAt(x, z, wx, wz).surface;
+    i32 top = 0;   // выше surface - 4 руда не кладётся
+    for (i32 x = 0; x < CHUNK_SIZE; ++x)
+        for (i32 z = 0; z < CHUNK_SIZE; ++z)
+            top = std::max(top, ctx.columnAt(x, z, baseX + x, baseZ + z).surface - 4);
+    const i32 cx0 = (baseX >> 2) - 1, cx1 = ((baseX + CHUNK_SIZE - 1) >> 2) + 1;
+    const i32 cz0 = (baseZ >> 2) - 1, cz1 = ((baseZ + CHUNK_SIZE - 1) >> 2) + 1;
+    const i32 cy1 = std::min(top, CHUNK_SIZE_Y - 1) / C + 1;
 
-            for (i32 y = 2; y < surface - 3 && y < CHUNK_SIZE_Y; ++y) {
-                u16 cur = chunk.voxels[chunkIndex(x, y, z)];
-                if (cur != STONE) continue;
-
-                u16 ore = terrain.oreAt(wx, y, wz);
-                if (ore != STONE)
-                    chunk.voxels[chunkIndex(x, y, z)] = ore;
+    for (i32 vcy = cy1; vcy >= -1; --vcy)
+        for (i32 vcz = cz1; vcz >= cz0; --vcz)
+            for (i32 vcx = cx1; vcx >= cx0; --vcx) {
+                Vein v;
+                if (!terrain.oreVeinAt(vcx, vcy, vcz, v)) continue;
+                const f32 r2 = v.radius * v.radius;
+                const i32 x0 = std::max(0, (i32)std::floor(v.center.x - v.radius) - baseX);
+                const i32 x1 = std::min(CHUNK_SIZE - 1, (i32)std::ceil(v.center.x + v.radius) - baseX);
+                const i32 z0 = std::max(0, (i32)std::floor(v.center.z - v.radius) - baseZ);
+                const i32 z1 = std::min(CHUNK_SIZE - 1, (i32)std::ceil(v.center.z + v.radius) - baseZ);
+                const i32 y0 = std::max(2, (i32)std::floor(v.center.y - v.radius));
+                const i32 y1 = std::min(CHUNK_SIZE_Y - 1, (i32)std::ceil(v.center.y + v.radius));
+                for (i32 x = x0; x <= x1; ++x)
+                    for (i32 z = z0; z <= z1; ++z) {
+                        const i32 limit = ctx.columnAt(x, z, baseX + x, baseZ + z).surface - 3;
+                        for (i32 y = y0; y <= y1 && y < limit; ++y) {
+                            const glm::vec3 d = glm::vec3((f32)(baseX + x) + 0.5f, (f32)y + 0.5f,
+                                                          (f32)(baseZ + z) + 0.5f) - v.center;
+                            if (glm::dot(d, d) >= r2) continue;
+                            // Камень до руд — или руда соседней жилы,
+                            // легшая раньше: до этого шага руды нет.
+                            u16& cur = chunk.voxels[chunkIndex(x, y, z)];
+                            if (cur == STONE || cur == IRON_ORE || cur == GOLD_ORE) cur = v.kind;
+                        }
+                    }
             }
-        }
-    }
 }
 
 // ============================================================

@@ -75,12 +75,16 @@ POD-структуры в `ecs/components.h`: `Transform`, `Velocity`, `Health`,
 
 ### 3.1 Чанки
 
-`world::Chunk` — 32×32×128 вокселей (uint16_t на блок + uint8_t light).
+`world::Chunk` — 32×32×128 вокселей (`u16` на блок; света в чанке
+нет — освещение считает мешер по открытости неба), плюс высоты
+поверхности, запечённое течение воды и записи растений.
 
 Хранение:
 ```cpp
-std::unordered_map<ChunkCoord, std::unique_ptr<Chunk>, ChunkCoordHash>
+std::unordered_map<ChunkCoord, std::shared_ptr<Chunk>, ChunkCoordHash>
 ```
+Владеющий указатель общий: задача генерации или меширования держит
+чанк и после его выгрузки.
 
 Соседние чанки нужны для корректного face-culling на границах.
 

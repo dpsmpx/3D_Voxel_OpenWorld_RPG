@@ -340,8 +340,8 @@ void Spawner::updateBosses(world::ChunkManager& world, ecs::Registry& reg,
     for (i32 dz = -1; dz <= 1; ++dz) {
         for (i32 dx = -1; dx <= 1; ++dx) {
             const i32 cx = sx + dx, cz = sz + dz;
-            const u64 key = ((u64)(u32)cx << 32) | (u32)cz;
-            if (bossPlaced_.count(key)) continue;
+            const u64 key = siteKey(cx, cz);
+            if (bossAlive_.count(key) || bossDefeated(key)) continue;
 
             // Подземелья трёх видов, и обходятся они одним кодом:
             // различаются только тем, где стоит зал.
@@ -379,8 +379,8 @@ void Spawner::updateBosses(world::ChunkManager& world, ecs::Registry& reg,
                 == world::AIR) continue;
 
             const u16 bossId = (site.seed & 1) ? MOB_BOSS_WARDEN : MOB_BOSS_HOLLOW;
-            if (spawnMob(world, reg, bossId, pos).valid()) {
-                bossPlaced_.insert(key);
+            if (const ecs::Entity boss = spawnMob(world, reg, bossId, pos); boss.valid()) {
+                bossAlive_[key] = boss;
                 ++mobCount_;
                 LOGI("Босс %s размещён в подземелье (%d, %d)",
                      mobRegistry().get(bossId).name, site.center.x, site.center.z);
@@ -457,6 +457,35 @@ void Spawner::updateAmbushes(world::ChunkManager& world, ecs::Registry& reg,
         }
 }
 
+bool Spawner::bossDefeated(u64 key) const {
+    return std::binary_search(bossDefeated_.begin(), bossDefeated_.end(), key);
+}
+
+void Spawner::setDefeatedBosses(std::vector<u64> keys) {
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    bossDefeated_ = std::move(keys);
+}
+
+void Spawner::watchBosses(ecs::Registry& reg) {
+    // Каждый кадр: смерть длится полторы секунды до удаления тела, и
+    // таймер расстановки (раз в три секунды) её бы пропускал.
+    for (auto it = bossAlive_.begin(); it != bossAlive_.end();) {
+        const ecs::Entity e = it->second;
+        const auto* agent = reg.alive(e) ? reg.get<ecs::AIAgent>(e) : nullptr;
+        if (agent && agent->state == ecs::AIAgent::Dead) {
+            const auto pos = std::lower_bound(bossDefeated_.begin(), bossDefeated_.end(), it->first);
+            if (pos == bossDefeated_.end() || *pos != it->first)
+                bossDefeated_.insert(pos, it->first);
+            it = bossAlive_.erase(it);
+        } else if (!agent) {
+            it = bossAlive_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void Spawner::update(world::ChunkManager& world,
                      ecs::Registry& reg,
                      const glm::vec3& playerPos,
@@ -464,6 +493,7 @@ void Spawner::update(world::ChunkManager& world,
                      u64 worldSeed,
                      f32 dt)
 {
+    watchBosses(reg);
     updateBosses(world, reg, playerPos, worldSeed, dt);
     updateGarrison(world, reg, playerPos, worldSeed, dt);
 
@@ -565,6 +595,7 @@ void Spawner::update(world::ChunkManager& world,
         // уходить и возвращаться, чтобы сбросить бой, нельзя.
         for (usize i = 0; i < pool.size(); ++i) {
             const ecs::Entity e = pool.entityAt((u32)i);
+            if (const auto* t = reg.get<MobTag>(e); t && mobRegistry().get(t->id).isBoss) continue;
             auto* tf = reg.get<ecs::Transform>(e);
             if (!tf) continue;
 

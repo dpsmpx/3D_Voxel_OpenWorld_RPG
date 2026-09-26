@@ -19036,6 +19036,105 @@ void testFloraBatch() {
 }
 
 // ------------------------------------------------------------
+// Босс не уходит вслед за игроком и не воскресает.
+//
+// Деспавн дальше 64 блоков снимал и босса, хотя комментарий рядом
+// обещал обратное; а отметка «здесь босс уже стоит» не давала
+// поставить его снова до перезапуска. Отметка при этом не
+// сохранялась и обнулялась при каждом возвращении в игру: убитый босс
+// появлялся заново.
+// ------------------------------------------------------------
+void testBossStaysAndStaysDead() {
+    group("боссы: не пропадают при уходе и не воскресают");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+    if (!jobs::gJobs.running()) jobs::gJobs.start(2);
+    {
+        constexpr u64 SEED = 0x30551u;
+        world::ChunkManager mgr(SEED, 2);
+        world::CastleSite castle;
+        i32 sx = 0, sz = 0;
+        for (i32 r = 0; r < 24 && !castle.exists; ++r)
+            for (i32 a = -r; a <= r && !castle.exists; ++a)
+                for (i32 b = -r; b <= r && !castle.exists; ++b) {
+                    if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                    castle = world::castleAt(a, b, SEED, &mgr.generator());
+                    sx = a; sz = b;
+                }
+        check(castle.exists, "замок для проверки нашёлся");
+        if (!castle.exists) { jobs::gJobs.stop(); return; }
+        const u64 key = mobs::Spawner::siteKey(sx, sz);
+
+        const glm::vec3 near{ (f32)castle.center.x + 0.5f, (f32)castle.center.y + 2.f,
+                              (f32)castle.center.z + 0.5f };
+        bool ready = false;
+        for (i32 i = 0; i < 900 && !ready; ++i) {
+            mgr.update(near);
+            ready = mgr.isReadyAt(castle.center.x, castle.center.z) && mgr.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир вокруг замка построен");
+        if (!ready) { jobs::gJobs.stop(); return; }
+
+        auto bossesIn = [&](ecs::Registry& reg) {
+            std::vector<ecs::Entity> out;
+            auto& pool = reg.pool<mobs::MobTag>();
+            for (usize i = 0; i < pool.size(); ++i) {
+                const ecs::Entity e = pool.entityAt((u32)i);
+                if (auto* t = pool.get(e); t && mobs::mobRegistry().get(t->id).isBoss)
+                    out.push_back(e);
+            }
+            return out;
+        };
+
+        ecs::Registry reg;
+        mobs::Spawner sp;
+        world::DayCycle day;
+        day.reset(0.5f, 0);
+        for (i32 i = 0; i < 12; ++i) sp.update(mgr, reg, near, day, SEED, 0.5f);
+        check(bossesIn(reg).size() == 1, "босс в замке поставлен");
+
+        // ---- Уход ----
+        const glm::vec3 away = near + glm::vec3(200.f, 0.f, 0.f);
+        for (i32 i = 0; i < 20; ++i) sp.update(mgr, reg, away, day, SEED, 0.5f);
+        check(bossesIn(reg).size() == 1, "игрок ушёл на двести блоков — босс на месте");
+
+        // ---- Смерть ----
+        const auto bosses = bossesIn(reg);
+        if (!bosses.empty())
+            if (auto* ag = reg.get<ecs::AIAgent>(bosses[0])) ag->state = ecs::AIAgent::Dead;
+        sp.update(mgr, reg, near, day, SEED, 0.016f);
+        check(sp.bossDefeated(key), "смерть босса замечена");
+        for (ecs::Entity e : bossesIn(reg)) reg.destroy(e);
+        for (i32 i = 0; i < 12; ++i) sp.update(mgr, reg, near, day, SEED, 0.5f);
+        check(bossesIn(reg).empty(), "убитый босс не появляется снова");
+
+        // ---- Сохранение и возвращение в игру ----
+        //
+        // Возврат окна — это новый реестр и новый спавнер, а побеждённые
+        // приходят из сейва.
+        save::ByteWriter w;
+        save::serializeBosses(w, &sp);
+        mobs::Spawner sp2;
+        save::ByteReader rd(w.data());
+        check(save::deserializeBosses(rd, &sp2), "список побеждённых прочитан");
+        check(sp2.bossDefeated(key), "и в нём этот замок");
+        ecs::Registry reg2;
+        for (i32 i = 0; i < 12; ++i) sp2.update(mgr, reg2, near, day, SEED, 0.5f);
+        check(bossesIn(reg2).empty(), "после загрузки убитый босс не воскресает");
+
+        // Без спавнера пишется пустой список, и файл читается.
+        save::ByteWriter w0;
+        save::serializeBosses(w0, nullptr);
+        save::ByteReader r0(w0.data());
+        check(save::deserializeBosses(r0, nullptr), "без спавнера список пуст, но цел");
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
 void testBossesAndDaylightMonsters() {
     group("боссы в залах, твари при солнце");
 
@@ -28492,6 +28591,7 @@ int main() {
     testFellingTakesTheWholeTree();
     testFloraBatch();
     testBossesAndDaylightMonsters();
+    testBossStaysAndStaysDead();
     testStepsSoundLikeStepsAndRainLikeRain();
     testContinueLastWorldAndFilePicker();
     testFallsTrapsAndAmbushes();
