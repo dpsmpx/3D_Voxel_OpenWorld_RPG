@@ -20,6 +20,13 @@
 //
 //   ./tools/gpubench/run.sh
 //   ./tools/gpubench/run.sh --size 2306 1080 --iters 8
+//   ./tools/gpubench/run.sh --cloud 0.6 --sun -0.3   # небо с тучами, ночь
+//
+// Небо меряется по умолчанию при ясной погоде и дневном солнце. Цена
+// шейдера неба от погоды и суток зависит (тучи считаются только при
+// облачности), поэтому их можно задать: --cloud (доля неба под
+// тучами), --rain (сила осадков), --sun (высота солнца, −1..1).
+// --sky-only меряет одно небо — для сравнения «до/после».
 // ============================================================
 #include "core/types.h"
 #include <vulkan/vulkan.h>
@@ -109,14 +116,19 @@ u32 findMem(VkPhysicalDevice phys, u32 bits, VkMemoryPropertyFlags want) {
 int main(int argc, char** argv) {
     u32 W = 2306, H = 1080;      // разрешение телефона из журнала
     int iters = 8;               // проходов на замер
+    float cloud = 0.f, rain = 0.f, sunY = 0.6f;
+    bool skyOnly = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : "0"; };
         if      (a == "--size")   { W = (u32)atoi(next()); H = (u32)atoi(next()); }
         else if (a == "--iters")  iters = atoi(next());
-        else if (a == "--assets") g_assets = std::string(next()) + "/";
         else if (a == "--assets")       g_assets = std::string(next()) + "/";
         else if (a == "--bench-assets") g_benchAssets = std::string(next()) + "/";
+        else if (a == "--cloud")    cloud = (float)atof(next());
+        else if (a == "--rain")     rain = (float)atof(next());
+        else if (a == "--sun")      sunY = (float)atof(next());
+        else if (a == "--sky-only") skyOnly = true;
     }
 
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -246,9 +258,13 @@ int main(int argc, char** argv) {
         c.invViewProj = glm::inverse(c.viewProj);
         c.cameraPos   = glm::vec4(eye, 1.f);
         c.screenSize  = glm::vec4((f32)W, (f32)H, 0.f, 0.f);
-        c.sunDir      = glm::vec4(glm::normalize(glm::vec3(0.4f, 0.6f, 0.7f)), 1.f);
+        c.sunDir      = glm::vec4(glm::normalize(glm::vec3(0.4f, sunY, 0.7f)), 1.f);
         c.fogParams   = glm::vec4(120.f, 224.f, 0.5f, 0.f);
-        c.skyColor    = glm::vec4(0.42f, 0.62f, 0.92f, 1.f);
+        // Доля дня — по высоте солнца, как у world::DayCycle: ночью в
+        // небе считаются звёзды и луна, днём — нет.
+        const f32 dayFrac = glm::smoothstep(-0.25f, 0.10f, glm::normalize(glm::vec3(0.4f, sunY, 0.7f)).y);
+        c.skyColor    = glm::vec4(glm::mix(glm::vec3(0.03f, 0.04f, 0.10f),
+                                           glm::vec3(0.42f, 0.62f, 0.92f), dayFrac), dayFrac);
 
         // Свет суток — теми же выражениями, что в render::Camera::toUbo.
         // Инструмент гоняет НАСТОЯЩИЕ шейдеры игры: разойдись эта
@@ -258,7 +274,7 @@ int main(int argc, char** argv) {
         {
             auto toLin = [](const glm::vec3& v) { return v * v; };
             const glm::vec3 sd{ c.sunDir };
-            const f32 day   = 1.f;
+            const f32 day   = c.skyColor.w;
             const f32 above = glm::smoothstep(-0.10f, 0.06f, sd.y);
             const glm::vec3 sunTint =
                 toLin(glm::mix(glm::vec3(1.00f, 0.52f, 0.26f),
@@ -272,10 +288,10 @@ int main(int argc, char** argv) {
             c.sunLight  = glm::vec4(sunTint, day * above);
             c.ambLight  = glm::vec4(ambTint, glm::mix(0.14f, 0.60f, day));
             c.skyLinear = glm::vec4(skyLin, above);
-            // Погода: замер идёт по ясному небу, иначе цена шейдера
-            // зависела бы от того, какая нынче облачность.
-            c.weather   = glm::vec4(0.f);
-            c.wind      = glm::vec4(0.f);
+            // Погода: по умолчанию ясно; облачность и осадки задаются
+            // ключами — цена неба от них зависит.
+            c.weather   = glm::vec4(cloud, rain, 0.f, 0.f);
+            c.wind      = glm::vec4(2.f, 1.f, 30.f, 0.f);
         }
         void* p = nullptr;
         VKOK(vkMapMemory(dev, uboMem, 0, sizeof(CameraUbo), 0, &p));
@@ -433,13 +449,14 @@ int main(int argc, char** argv) {
     measure(pWater, 1);
 
     double best_flat = 1e9, best_sky = 1e9, best_vox = 1e9, best_wat = 1e9;
-    for (int r = 0; r < 3; ++r) {
+    for (int r = 0; r < (skyOnly ? 5 : 3); ++r) {
         const double f = measure(pFlat, iters);
         const double s = measure(pSky, iters);
-        const double v = measure(pVoxel, iters);
-        const double w = measure(pWater, iters);
         if (f < best_flat) best_flat = f;
         if (s < best_sky)  best_sky  = s;
+        if (skyOnly) continue;
+        const double v = measure(pVoxel, iters);
+        const double w = measure(pWater, iters);
         if (v < best_vox)  best_vox  = v;
         if (w < best_wat)  best_wat  = w;
     }
@@ -452,6 +469,9 @@ int main(int argc, char** argv) {
                 best_sky, best_sky * 1e6 / px);
     std::printf("  из них собственно небо         %8.2f мс   (%.1fx к ровному цвету)\n",
                 best_sky - best_flat, best_flat > 0 ? best_sky / best_flat : 0.0);
+    std::printf("  (облачность %.2f, осадки %.2f, солнце на высоте %.2f)\n",
+                (double)cloud, (double)rain, (double)sunY);
+    if (skyOnly) { vkDeviceWaitIdle(dev); return 0; }
     std::printf("  шейдер вокселей                %8.2f мс   %6.2f нс/пиксель\n",
                 best_vox, best_vox * 1e6 / px);
     std::printf("  из них собственно воксели      %8.2f мс   (%.1fx к ровному цвету)\n",

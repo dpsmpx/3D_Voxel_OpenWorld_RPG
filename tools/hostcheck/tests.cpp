@@ -2259,117 +2259,123 @@ void testBuildStampIsNotStale() {
 }
 
 
-/// Небо: степени считаются дёшево, и БЕЗ ветвей.
+/// Число из объявления константы шейдера: «NAME = 1.5;» -> 1.5.
+/// Проверки читают числа ИЗ ИСХОДНИКА, а не повторяют их у себя —
+/// иначе проверка становится копией шейдера и правится вместе с ним.
+static double shaderConst(const std::string& src, const char* name) {
+    const usize len = std::strlen(name);
+    for (usize at = src.find(name); at != std::string::npos; at = src.find(name, at + 1)) {
+        usize e = at + len;
+        while (e < src.size() && src[e] == ' ') ++e;
+        if (e < src.size() && src[e] == '=') return std::strtod(src.c_str() + e + 1, nullptr);
+    }
+    return -1.0;
+}
+
+
+/// Небо: дорогих операций мало, а ветви — только по uniform.
 ///
-/// Здесь записан самый дорого доставшийся урок этого этапа.
+/// Здесь записан самый дорого доставшийся урок неба.
 ///
-/// Небо — самый дорогой шейдер кадра на пиксель: 8.5 мс на полный
-/// экран, 3.4 нс на пиксель, дороже фрагментной математики ландшафта
-/// (2.9). Дороги в нём степени: пять `pow` на диски и ореолы светил,
-/// которые дают ноль почти везде.
+/// Прежнее небо платило за диски и ореолы светил степенями — пять
+/// `pow`, дающих ноль почти везде. Напрашивалось спрятать их под
+/// ветвь по пикселю. На хосте это снимало 27% шейдера, на устройстве —
+/// НОЛЬ: 8.57 -> 8.49 и 8.38 при разбросе замера 0.11 мс. А удаление
+/// тех же членов БЕЗУСЛОВНО снимало 1.77 мс, то есть 21%. Драйвер
+/// разворачивает короткую ветвь в предикаты: считает обе стороны и
+/// выбирает. Пропустить работу условием по пикселю на этом GPU нельзя —
+/// её можно только не делать.
 ///
-/// Напрашивалось спрятать их под ветвь. На хосте это снимало 27%
-/// шейдера. На устройстве — НОЛЬ: 8.57 -> 8.49 и 8.38 при разбросе
-/// самого замера 0.11 мс. А удаление тех же членов БЕЗУСЛОВНО снимало
-/// 1.77 мс, то есть 21%.
-///
-/// Значит арифметика действительно дорога, но драйвер разворачивает
-/// короткую ветвь в предикаты: считает обе стороны и выбирает.
-/// Пропустить работу условием на этом GPU нельзя — её можно только не
-/// делать. Отсюда и проверка: во фрагментном шейдере неба не должно
-/// появляться ветвей «ради скорости».
+/// Воксельное небо (светила из клеток, облака из столбов) степеней не
+/// содержит вовсе: круг клетками — это сравнение квадрата радиуса.
+/// Ветви остались только по uniform — условию, одинаковому для всего
+/// кадра: ночью не считать солнца, днём — луны и звёзд, в ясную погоду —
+/// облаков.
 void testSkyPaysForMathNotBranches() {
-    group("небо: степени дёшевы, ветвей ради скорости нет");
+    group("небо: дорогих операций мало, ветви только по uniform");
 
     const std::string f = readSource("app/src/main/cpp/shaders/sky.frag");
     if (f.empty()) { check(true, "sky.frag не найден, проверка пропущена"); return; }
     const std::string src = stripComments(f);
     const usize NONE = std::string::npos;
+    const usize mainAt = src.find("void main");
+    check(mainAt != NONE, "в шейдере есть main");
+    if (mainAt == NONE) return;
 
-    // ---- 1. Ветвей вокруг светил нет ----
+    // ---- 1. Ветви — только по uniform ----
     //
-    // Именно они не работают: `if (d > ...)` и `if (m > ...)` вокруг
-    // диска и ореола были измерены и не дали ничего.
-    check(src.find("if (d >") == NONE && src.find("if (d>") == NONE,
-          "диск и ореол солнца считаются без ветви");
-    check(src.find("if (m >") == NONE && src.find("if (m>") == NONE,
-          "и луны тоже");
-
-    // ---- 2. Степени одного основания делят логарифм ----
-    //
-    // pow(x, k) это exp2(k * log2(x)). У четырёх степеней два
-    // основания, значит логарифмов нужно два, а не четыре.
-    check(src.find("log2(d)") != NONE && src.find("log2(m)") != NONE,
-          "логарифм считается по разу на основание");
-    for (const char* dead : { "powSafe(d, 900.0)", "powSafe(d, 48.0)",
-                              "powSafe(m, 2400.0)", "powSafe(m, 160.0)" })
-        if (src.find(dead) != NONE) {
-            std::printf("       осталась отдельная степень: %s\n", dead);
-            check(false, "отдельных pow на светила не осталось");
+    // Каждое условие в main — одно из известных: доля ночи, солнце над
+    // горизонтом, облачность, радуга (все из cam.*) и номер яруса в
+    // цикле с постоянным числом шагов. Новое условие по лучу или по
+    // шуму — это ветвь по пикселю, и она здесь не пройдёт.
+    const char* uniformIfs[] = { "if (night > ", "if (above > ", "if (cloudAmt > ",
+                                 "if (rb > ", "if (k == 0)" };
+    usize ifs = 0;
+    bool allUniform = true;
+    for (usize at = src.find("if (", mainAt); at != NONE; at = src.find("if (", at + 1)) {
+        ++ifs;
+        bool known = false;
+        for (const char* u : uniformIfs)
+            if (src.compare(at, std::strlen(u), u) == 0) known = true;
+        if (!known) {
+            std::printf("       ветвь не по uniform: %s\n",
+                        src.substr(at, src.find('\n', at) - at).c_str());
+            allUniform = false;
+        }
+    }
+    check(ifs > 0 && allUniform, "все ветви неба — по uniform");
+    for (const char* def : { "float night   = 1.0 - cam.skyColor.w;",
+                             "float above   = cam.skyLinear.w;",
+                             "float cloudAmt = cam.weather.x;",
+                             "float rb = cam.weather.z;" })
+        if (src.find(def) == NONE) {
+            std::printf("       нет объявления: %s\n", def);
+            check(false, "условия ветвей берутся из uniform");
             return;
         }
-    check(true, "отдельных pow на светила не осталось");
-    check(src.find("exp2(900.0 * ld)") != NONE &&
-          src.find("exp2( 48.0 * ld)") != NONE,
-          "диск и ореол солнца — через общий логарифм");
-    check(src.find("exp2(2400.0 * lm)") != NONE &&
-          src.find("exp2( 160.0 * lm)") != NONE,
-          "диск и ореол луны — тоже");
+    check(true, "условия ветвей берутся из uniform");
 
-    // ---- 3. Широкому сиянию логарифм не нужен вовсе ----
+    // ---- 2. Круги светил — без корня и без степени ----
+    check(src.find("SUN_RADIUS * SUN_RADIUS") != NONE &&
+          src.find("MOON_RADIUS * MOON_RADIUS") != NONE,
+          "диски светил — сравнение квадрата радиуса");
+
+    // ---- 3. Плавное — умножениями ----
     //
-    // Шестая степень — три умножения. Обрезать её нельзя (она заметна
-    // далеко от солнца), а считать через pow незачем.
-    check(src.find("powSafe(d, 6.0)") == NONE,
-          "широкое сияние считается без pow");
-    check(src.find("d2 * d2 * d2") != NONE,
-          "оно считается умножениями");
-    check(src.find("powSafe(toSun, 3.0)") == NONE &&
-          src.find("toSun * toSun * toSun") != NONE,
-          "полоса у горизонта — тоже умножениями");
+    // Шестая степень широкого сияния — три умножения. Обрезать её
+    // нельзя (она заметна далеко от солнца), а считать через pow незачем.
+    check(src.find("d2 * d2 * d2") != NONE, "широкое сияние — умножениями");
+    check(src.find("toSun * toSun * toSun") != NONE, "полоса у горизонта — тоже");
 
     // ---- 4. Сколько дорогих операций осталось ----
     //
-    // Это и есть цена прохода. Ветвь их не уменьшает — доказано
-    // замером, — поэтому единственный способ удешевить небо — уменьшить
-    // это число.
-    //
-    // Первая редакция счётчика пропустила мутацию «добавлена лишняя
-    // exp»: она не считала `powSafe` (её имя не совпадает с «pow(») и
-    // брала порог с запасом. Теперь считаются все поимённо, а порог
-    // равен ровно тому, что есть: 2 log2 + 4 exp2 + 1 exp + 1 powSafe
-    // (градиент к зениту) + 1 sin (звёзды).
+    // Это и есть цена прохода: ветвь её не уменьшает, поэтому
+    // удешевить небо можно только уменьшив это число. Считается по
+    // всему шейдеру, с функциями: exp — тёплая полоса у горизонта,
+    // acos — радуга (под ветвью по uniform), sqrt — градиент к зениту,
+    // перевод в sRGB и размер пикселя на слое облаков, normalize —
+    // луч, полоса у горизонта (два) и ось светил.
     struct Op { const char* name; usize want; };
     const Op ops[] = {
-        { "log2(",    2 },
-        { "exp2(",    4 },
-        { "exp(",     1 },
-        { "powSafe(", 1 },
-        { "pow(",     0 },   // отдельных pow в теле быть не должно
-        { "sin(",     1 },
+        { "log2(", 0 }, { "exp2(", 0 }, { "exp(", 1 }, { "pow(", 0 }, { "powSafe(", 0 },
+        { "sin(", 0 }, { "cos(", 0 }, { "acos(", 1 }, { "sqrt(", 3 }, { "normalize(", 4 },
+        { "length(", 0 },
     };
-    const usize mainAt = src.find("void main");
-    usize heavy = 0;
     bool counted = true;
     for (const auto& op : ops) {
         usize n = 0;
-        for (usize at = src.find(op.name, mainAt); at != NONE;
-             at = src.find(op.name, at + 1)) {
-            // «powSafe(» содержит «pow» — но не «pow(», так что
-            // пересечения нет; страховка на случай переименования.
-            if (std::strcmp(op.name, "pow(") == 0 &&
-                at >= 4 && src.compare(at - 4, 4, "Safe") == 0) continue;
+        for (usize at = src.find(op.name); at != NONE; at = src.find(op.name, at + 1)) {
+            // Имя, а не хвост другого: «cos(» внутри «acos(» не в счёт.
+            if (at > 0 && (std::isalnum((unsigned char)src[at - 1]) || src[at - 1] == '_'))
+                continue;
             ++n;
         }
-        heavy += n;
         if (n != op.want) {
-            std::printf("       «%s» в небе: %zu, ожидалось %zu\n",
-                        op.name, n, op.want);
+            std::printf("       «%s» в небе: %zu, ожидалось %zu\n", op.name, n, op.want);
             counted = false;
         }
     }
-    check(counted && heavy == 9,
-          "дорогих операций в небе ровно столько, сколько измерено (9)");
+    check(counted, "дорогих операций в небе ровно столько, сколько измерено");
 }
 
 
@@ -28161,15 +28167,101 @@ void testLogCanBeTurnedOff() {
 }
 
 // ------------------------------------------------------------
-// Облака перестали быть одного цвета.
+// Облака — клетки мира, столбы в ярусы, свет ступенями.
 //
-// Цвет тучи не зависел от плотности ВООБЩЕ: шум решал, ГДЕ облако,
-// и не решал, КАКОЕ оно. На весь полог приходился один тон, гулявший
-// только по углу к солнцу — то есть плавным градиентом через
-// полнеба, одинаковым сразу для всех облаков.
+// Прежние облака были мягким шумом: форма без края и один тон на весь
+// полог. Теперь облако собрано из клеток мира, как и всё остальное:
+// у него ступенчатый край, плоский низ, бок и три тона граней.
 // ------------------------------------------------------------
 void testCloudsAreNotOneColour() {
-    group("небо: у облаков есть толщина и своя тень");
+    group("небо: облака — клетки мира в ярусах, свет ступенями");
+
+    const std::string raw = readSource("app/src/main/cpp/shaders/sky.frag");
+    check(!raw.empty(), "sky.frag прочитан");
+    if (raw.empty()) return;
+    const std::string src = stripComments(raw);
+    const usize NONE = std::string::npos;
+    const usize mainAt = src.find("void main");
+
+    // ---- 1. Клетки — в мире, а не на экране ----
+    //
+    // Точка берётся на слое облаков в МИРОВЫХ координатах, с ветром;
+    // клетка — пол от неё. Пикселизация экрана дала бы ступени, которые
+    // плывут при повороте и зависят от разрешения.
+    check(src.find("vec2 p = cam.cameraPos.xz + dir.xz * t - drift;") != NONE,
+          "точка на слое — в мировых координатах, со сносом ветром");
+    check(src.find("vec2 cell = floor(p * (1.0 / CLOUD_CELL));") != NONE,
+          "клетка облака — пол от мировой точки");
+    const double cellSize = shaderConst(src, "CLOUD_CELL");
+    check(cellSize >= 6.0 && cellSize <= 16.0, "клетка облака — от 6 до 16 блоков");
+
+    // ---- 2. Высота — ярусами, без марша по лучу ----
+    const double layers = shaderConst(src, "CLOUD_LAYERS");
+    check(layers >= 2.0 && layers <= 3.0,
+          "ярусов два-три: объём есть, а проб луча — единицы");
+    check(src.find("for (int k = 0; k < CLOUD_LAYERS; ++k)") != NONE,
+          "луч пробует ровно столько ярусов, цикл постоянной длины");
+    check(src.find("thr + float(k) * CLOUD_TIER") != NONE,
+          "ярус выше требует плотнее клетку — столбы разной высоты");
+
+    // ---- 3. Свет — три тона, а не заливка ----
+    //
+    // Числа тонов читаются из исходника; проверяется, что их три и
+    // что они различимы, а не их точные значения.
+    const double under = shaderConst(src, "CLOUD_UNDER");
+    const double lit   = shaderConst(src, "CLOUD_LIT");
+    const double shade = shaderConst(src, "CLOUD_SHADE");
+    char m[176];
+    std::snprintf(m, sizeof(m), "бок к солнцу %.2f > бок от солнца %.2f > низ %.2f, с шагом от 0.1",
+                  lit, shade, under);
+    check(lit - shade >= 0.1 && shade - under >= 0.1, m);
+    check(src.find("dot(nrm, cam.sunDir.xz)") != NONE,
+          "бок светлый или тёмный — по стороне к солнцу");
+    check(src.find("CLOUD_CORE * step(") != NONE,
+          "плотное ядро темнее ступенью, а не градиентом");
+
+    // ---- 4. Вдали ступень не мерцает ----
+    //
+    // Клетка в пару пикселей мерцает при каждом движении; там облако
+    // переходит в то же поле, но гладкое. Мерило — пиксель на слое.
+    check(src.find("dFdx(p0)") != NONE && src.find("CLOUD_FAR_PX") != NONE,
+          "дальние клетки сглаживаются по размеру пикселя на слое");
+    // Решётка шума у середины клетки и у самой точки одна (CLOUD_MASS
+    // целое) — на этом держится то, что гладкое поле хэшей не просит.
+    const double mass = shaderConst(src, "CLOUD_MASS");
+    check(mass >= 2.0 && mass == std::floor(mass), "массив облаков — целое число клеток");
+
+    // ---- 5. Ночью облако тёмное ----
+    const double night = shaderConst(src, "CLOUD_NIGHT");
+    check(night > 0.0 && night < 0.5 && src.find("mix(CLOUD_NIGHT, 1.0, above)") != NONE,
+          "без солнца облако светит меньше половины дневного");
+
+    // ---- 6. Цена: хэшей на пиксель ----
+    //
+    // Ярус — четыре угла решётки и хэш клетки; дальнее поле углы берёт
+    // у нижнего яруса. Замер (tools/gpubench): третий ярус стоил 2.5 мс
+    // на полном экране lavapipe при почти неразличимой картинке.
+    usize corners = 0, cellHashes = 0;
+    for (usize i = src.find("latticeCorners(", mainAt); i != NONE; i = src.find("latticeCorners(", i + 1))
+        ++corners;
+    const usize cloudsAt = src.find("float cloudAmt");
+    for (usize i = src.find("hash21(", cloudsAt); i != NONE; i = src.find("hash21(", i + 1))
+        ++cellHashes;
+    const usize taps = (usize)(layers > 0 ? layers : 0) * (corners * 4 + cellHashes);
+    std::snprintf(m, sizeof(m), "хэшей облаков на пиксель неба: %zu", taps);
+    check(corners == 1 && cellHashes == 1 && taps <= 10, m);
+}
+
+
+// ------------------------------------------------------------
+// Светила и звёзды — клетки в мировых направлениях.
+//
+// Солнце, луна и звёзды — ступенчатые, но ступень считается по лучу,
+// а не по пикселю экрана: поворот камеры клеток не двигает, а
+// разрешение меняет только число пикселей в клетке.
+// ------------------------------------------------------------
+void testSkyObjectsAreCells() {
+    group("небо: светила и звёзды — клетки в направлениях, не на экране");
 
     const std::string raw = readSource("app/src/main/cpp/shaders/sky.frag");
     check(!raw.empty(), "sky.frag прочитан");
@@ -28177,79 +28269,46 @@ void testCloudsAreNotOneColour() {
     const std::string src = stripComments(raw);
     const usize NONE = std::string::npos;
 
-    // ---- 1. Октавы больше не теряются ----
+    // ---- 1. Экран нужен только для луча ----
+    usize frag = 0;
+    for (usize i = src.find("gl_FragCoord"); i != NONE; i = src.find("gl_FragCoord", i + 1)) ++frag;
+    check(frag == 1, "gl_FragCoord читается один раз — чтобы найти луч");
+
+    // ---- 2. Круг клетками: решает середина клетки ----
+    check(src.find("floor(p) + 0.5") != NONE,
+          "клетка светила решает по своей середине — ступенчатый круг, не квадрат");
+    check(src.find("bodyCell(frame, SUN_CELL)") != NONE,
+          "солнце — в своих клетках");
+    // Луна напротив солнца: её плоскость — та же с обратным знаком, оси
+    // считаются один раз.
+    check(src.find("bodyCell(vec3(-frame.x, frame.y, -frame.z), MOON_CELL)") != NONE,
+          "луна — в клетках той же плоскости, развёрнутой к ней");
+    check(src.find("float mare") != NONE && src.find("float crater") != NONE,
+          "у луны есть рисунок: моря и кратер");
+
+    // ---- 3. Звёзды ----
+    check(src.find("dir.xz * (STAR_GRID / s)") != NONE,
+          "звёзды — на сетке направлений (стереографическая проекция)");
+    check(src.find("STAR_CHANCE * s * s") != NONE,
+          "шанс звезды поправлен на размер клетки — звёзд по небу поровну");
+    check(src.find("/ fw + 0.5, 0.0, 1.0)") != NONE,
+          "край звезды — долей пикселя: точка не мигает 1x1 / 1x2");
+
+    // ---- 4. Облик — в одном месте ----
     //
-    // Сумма трёх октав не раскладывается обратно, а затенению нужна
-    // базовая отдельно: сравнивать трёхоктавную сумму с одноктавной
-    // пробой — сравнивать разные величины.
-    check(src.find("vec2 cloudField(") != NONE,
-          "поле облаков отдаёт и сумму октав, и базовую");
-    check(src.find("return vec2(v, base);") != NONE,
-          "именно эти две величины");
-
-    // ---- 2. Цвет зависит от плотности ----
-    check(src.find("float dens = smoothstep(") != NONE,
-          "толщина считается из того же шума, что и покрытие");
-    // Ищем по ФОРМЕ, а не по числам: числа проверяются ниже, и
-    // привязка к ним превратила бы проверку в копию исходника.
-    const usize densUse = src.find("cloudCol *= mix(");
-    check(densUse != NONE && src.find(", dens);", densUse) != NONE,
-          "и цвет тучи на неё умножается");
-
-    // Размах не должен усохнуть до незаметного: ради него всё и
-    // делалось. Числа читаются ИЗ ИСХОДНИКА, а не повторяются здесь.
-    if (densUse != NONE) {
-        double edge = 0.0, core = 0.0;
-        const int got = std::sscanf(src.c_str() + densUse,
-                                    "cloudCol *= mix(%lf, %lf, dens)",
-                                    &edge, &core);
-        char m[176];
-        std::snprintf(m, sizeof(m),
-                      "край и ядро расходятся в яркости: %.2f против %.2f",
-                      edge, core);
-        check(got == 2 && edge - core > 0.30, m);
-    }
-
-    // ---- 3. Есть собственная тень ----
-    check(src.find("cam.sunDir.xz") != NONE,
-          "шум пробуется со стороны солнца");
-    check(src.find("float shade") != NONE && src.find("shade * 0.30") != NONE,
-          "и результат затеняет тучу");
-
-    // Ночью тени нет: лепить нечем, а множитель ушёл бы в минус.
-    check(src.find("shade * 0.30 * above") != NONE,
-          "и гаснет вместе с солнцем");
-
-    // ---- 4. Смещение тени НЕ нормируется ----
-    //
-    // Короткий вектор у высокого солнца даёт короткую тень — ровно
-    // как в полдень. Нормировка это свойство стёрла бы, сделав тень
-    // одинаковой в любое время дня.
-    {
-        const usize tap = src.find("cam.sunDir.xz");
-        check(tap != NONE, "проба со стороны солнца на месте");
-        if (tap != NONE) {
-            const usize lineStart = src.rfind('\n', tap);
-            const std::string line =
-                src.substr(lineStart + 1, src.find('\n', tap) - lineStart - 1);
-            check(line.find("normalize") == NONE,
-                  "и смещение к солнцу не нормируется");
+    // Все числа формы — константы в начале шейдера, до первой функции.
+    const usize firstFn = src.find("vec3 toLinear(");
+    bool central = firstFn != NONE;
+    for (const char* c : { "SUN_CELL", "SUN_RADIUS", "MOON_CELL", "MOON_RADIUS",
+                           "STAR_GRID", "STAR_CHANCE", "CLOUD_BASE", "CLOUD_CELL",
+                           "CLOUD_LAYERS", "CLOUD_UNDER" }) {
+        const usize at = src.find(c);
+        if (at == NONE || at > firstFn) {
+            std::printf("       %s объявлена не в начале шейдера\n", c);
+            central = false;
         }
     }
-
-    // ---- 5. Цена прохода не выросла ----
-    //
-    // Дорогие операции в main считает соседняя проверка; здесь —
-    // число проб шума, единственное, что добавилось.
-    const usize mainAt = src.find("void main");
-    usize taps = 0;
-    for (usize i = src.find("vnoise(", mainAt); i != NONE;
-         i = src.find("vnoise(", i + 1)) ++taps;
-    for (usize i = src.find("cloudField(", mainAt); i != NONE;
-         i = src.find("cloudField(", i + 1)) taps += 3;   // три октавы внутри
-    char m[160];
-    std::snprintf(m, sizeof(m), "проб шума на пиксель неба: %zu", taps);
-    check(taps == 4, m);
+    check(central, "числа облика неба собраны в начале шейдера");
 }
 
 
@@ -28670,6 +28729,7 @@ int main() {
     testHudWasFinallyLookedAt();
     testLogCanBeTurnedOff();
     testCloudsAreNotOneColour();
+    testSkyObjectsAreCells();
 
     std::printf("\n  итог: %d из %d проверок пройдено\n", g_total - g_failed, g_total);
     if (g_failed) {
