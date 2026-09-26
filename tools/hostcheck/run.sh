@@ -356,7 +356,25 @@ for TOOL in bench vkcheck isocheck; do
         exit 1
     fi
 done
-echo "✓ bench, vkcheck, isocheck линкуются со своими списками"
+# soak и uishot берут все объекты разом — у них ломается не список, а
+# вызовы: SaveManager::save/load получили жителей и клады, и soak
+# перестал собираться, никем не замеченный.
+for TOOL in soak uishot; do
+    MAIN="$PROJ/tools/$TOOL/$TOOL.cpp"
+    [ -f "$MAIN" ] || continue
+    if ! "$CXX" -std=c++20 -O0 -g0 \
+            -D__ANDROID__ -DVK_USE_PLATFORM_ANDROID_KHR \
+            -DGLM_FORCE_DEPTH_ZERO_TO_ONE -DGLM_ENABLE_EXPERIMENTAL -DENTT_NO_ETO -DHOSTCHECK=1 \
+            -I "$SRC_DIR" -I "$PROJ/tools/hostcheck/include" \
+            -isystem "$TP/glm" -isystem "$TP/entt/include" -isystem "$TP/Vulkan-Headers/include" \
+            -o "$OUT/tools/$TOOL" "$MAIN" "$OUT"/obj/*.o \
+            -lz -lpthread -ldl 2> "$OUT/tools/$TOOL.err"; then
+        echo "✗ $TOOL не собирается с текущим кодом игры:"
+        grep -E "error|undefined" "$OUT/tools/$TOOL.err" | sed 's/^/    /' | head -20
+        exit 1
+    fi
+done
+echo "✓ bench, vkcheck, isocheck, soak, uishot собираются"
 
 # ---- две конфигурации сборки ----
 #
