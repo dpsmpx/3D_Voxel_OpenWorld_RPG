@@ -4,6 +4,12 @@
 генерацией, боевая система «Резонанс», прокачка, деревни с живыми
 жителями, погода, смена суток и настоящий свет от факелов.
 
+![Build](https://github.com/dpsmpx/3D_Voxel_OpenWorld_RPG/actions/workflows/build.yml/badge.svg)
+![Lines](https://img.shields.io/badge/lines-116k-blue)
+![Checks](https://img.shields.io/badge/checks-3261-green)
+![Android](https://img.shields.io/badge/Android-7.0%2B-orange)
+![Vulkan](https://img.shields.io/badge/Vulkan-1.1-red)
+
 **Технологии:** C++20, Vulkan 1.1, AAudio, EnTT, Android NDK 26.
 Более 115 000 строк собственного кода; hostcheck сейчас компилирует
 137 единиц трансляции. Сторонних ассетов нет — вся графика, звук и
