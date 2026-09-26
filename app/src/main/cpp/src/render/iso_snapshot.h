@@ -24,7 +24,14 @@
  *   * `render::voxelPipelineDesc`     — то же описание конвейера;
  *   * `shaders/voxel.vert|frag`       — те же шейдеры и материалы;
  *   * `render::CameraUbo`             — тот же блок формы;
- *   * `vk::createVoxelRenderPass`     — тот же проход рендера.
+ *   * `vk::createVoxelRenderPass`     — тот же проход рендера;
+ *   * `world::Chunk::flora`            — те же растения, отобранные
+ *                                        `floraStillStands`, как при
+ *                                        мешировании чанка;
+ *   * `render::buildFloraMeshes`,
+ *     `render::FloraBatch`,
+ *     `render::floraPipelineDesc`     — те же модели, экземпляры и
+ *                                        конвейер, что у FloraRenderer.
  *
  * Своего здесь: ортографическая камера (iso_projection), цель
  * рендера с тайлами, подготовка территории и запись PNG.
@@ -43,24 +50,40 @@
  * ЧТО ПОПАДАЕТ В КАРТИНКУ
  * ============================================================
  *
- * Только территория. Сущностей здесь нет не потому, что их отключили,
- * а потому, что этот рендер о них не знает вовсе: он рисует ровно два
- * прохода — непрозрачный ландшафт и воду, — и в нём нет ни
- * инстансов, ни неба, ни интерфейса, ни осадков. Выключать нечего.
+ * Территория: ландшафт, растения и мелкие природные вещи мира, вода.
+ * Сущностей здесь нет не потому, что их отключили, а потому, что этот
+ * рендер о них не знает вовсе: он читает только чанки мира — воксели
+ * и их Chunk::flora — и рисует ровно три прохода: непрозрачный
+ * ландшафт, растения, воду. Ни игрока, ни мобов, ни NPC, ни
+ * предметов, ни снарядов, ни неба, ни интерфейса, ни осадков.
+ * Выключать нечего.
+ *
+ * Растения на снимке — те же, что в игре, и стоят там же: список чанка
+ * не пересобирается, а отбирается по вокселям ровно как при
+ * мешировании. Своего два правила. Дальности нет: при ортографии блок
+ * везде одного размера, и ступень детальности выбирается по размеру
+ * вокселя в пикселях (FloraBatch::beginOrtho), а не по расстоянию до
+ * камеры. И растение, которое не помещается в область целиком — крона
+ * свешивается за кромку, — не рисуется: кадр кроится по коробке
+ * области, и свес за неё был бы обрезан краем картинки.
  *
  * Свет закреплён (см. `fixedLightUbo`): два снимка одного мира,
  * сделанные днём и ночью, обязаны совпасть.
  */
 #pragma once
 #include "../core/types.h"
+#include "../core/math.h"
 #include "../vk/vk_buffer.h"
 #include "../vk/vk_descriptors.h"
 #include "../vk/vk_pipeline.h"
 #include "../vk/vk_shader.h"
 #include "../world/chunk_manager.h"
 #include "camera.h"
+#include "flora_batch.h"
+#include "flora_models.h"
 #include "mesh_builder.h"
 #include "iso_projection.h"
+#include "mesh_table.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -79,6 +102,9 @@ struct IsoRequest {
     /// Потолок стороны итоговой картинки. При превышении уменьшается
     /// масштаб, а не область: игрок просил территорию, а не пиксели.
     u32  maxSide = 8192;
+    /// Растения и мелкие природные вещи. Выключаются только проверкой:
+    /// без них снимок обязан совпасть с прежним голым ландшафтом.
+    bool nature = true;
 };
 
 /// Где сейчас процесс. Порядок — порядок прохождения.
@@ -155,6 +181,10 @@ public:
     /// Диапазон высот, который вошёл в кадр. Считается по вокселям.
     i32 yMin() const { return yMin_; }
     i32 yMax() const { return yMax_; }
+    /// Растений на снимке — сколько попало в область целиком.
+    u32 floraCount() const { return floraCount_; }
+    /// Высшая точка растительности, блоков; ниже yMax по построению.
+    f32 floraTop() const { return floraTop_; }
 
     /// Блок формы с ЗАКРЕПЛЁННЫМ светом.
     ///
@@ -168,6 +198,12 @@ public:
     /// землю, чем та, по которой игрок ходит.
     static CameraUbo fixedLightUbo(const iso::Camera& cam, iso::View view,
                                    f32 tintSeed = 0.f);
+
+    /// Оставить от меша чанка только то, что в коробке снимка: в
+    /// области по X и Z и не ниже yMin. Чанк шире области, если она не
+    /// выровнена по чанкам, и глубже её дна. Открыто ради проверки.
+    static void clipQuadsToBox(const iso::Area& area, i32 yMin,
+                               world::ChunkCoord coord, std::vector<world::Quad>& quads);
 
 private:
     /// Зерно крапчатости блоков, снятое с мира в step().
@@ -183,6 +219,10 @@ private:
         glm::vec3 origin{0.f};
         glm::vec3 blendCenter{0.f};
         bool valid = false;
+        /// Растения чанка, стоящие при нынешних вокселях и целиком
+        /// внутри области, и их общая коробка в мире.
+        std::vector<world::FloraInstance> flora;
+        glm::vec3 floraLo{0.f}, floraHi{0.f};
     };
 
     bool ensureTarget(u32 w, u32 h);
@@ -192,6 +232,15 @@ private:
     void appendAreaWalls(const world::Chunk& chunk, world::ChunkCoord coord,
                          std::vector<world::Quad>& quads) const;
     bool renderTile(const Tile& t);
+    /// Модели растений: строятся при первом снимке с растениями и
+    /// живут до destroy(). Большинство игроков снимков не делает, и
+    /// держать ради них меши в видеопамяти с самого старта незачем.
+    bool ensureFloraModels();
+    /// Растения чанка: отбор и габариты. Зовётся под замками вокселей.
+    void collectFlora(const world::Chunk& chunk, ChunkMeshGpu& m);
+    /// Нарисовать растения чанков, попавших в тайл.
+    void drawFlora(const math::Frustum& fr);
+    bool natureOn() const { return req_.nature && floraReady_; }
     void computeTiles();
     void scanHeights(world::ChunkManager& world);
     void releaseMeshes();
@@ -205,6 +254,16 @@ private:
     vk::ShaderCache      shaders_;
     vk::DescriptorSet    descriptors_;
     vk::GraphicsPipeline opaquePipe_, blendPipe_;
+    // Растения: конвейер создаётся с остальными, модели — лениво.
+    vk::GraphicsPipeline floraPipe_;
+    MeshTable            floraMeshes_;
+    std::vector<u32>     floraQuads_;
+    std::vector<FloraExtent> floraExtents_;
+    vk::Buffer           floraInst_;
+    FloraBatch           floraBatch_;
+    bool                 floraReady_ = false;
+    u32                  floraCount_ = 0;
+    f32                  floraTop_   = 0.f;
     vk::Buffer           ubo_;
     VkRenderPass         renderPass_ = VK_NULL_HANDLE;
 

@@ -49,20 +49,31 @@ bool grounded(world::ChunkManager& world, const glm::vec3& feet,
     return overlapsSolid(world, bmin, bmax);
 }
 
-bool settle(world::ChunkManager& world, glm::vec3& feet,
-            const CreatureBody& b, i32 maxUp)
+bool spawnFooting(world::ChunkManager& world, const glm::vec3& feet,
+                  const CreatureBody& b)
 {
-    // Незагруженный чанк отвечает «камень» на любой вопрос — так
-    // устроено чтение вокселей, и это правильно: мир там ещё не
-    // построен, и пускать сквозь него нельзя. Но и судить по такому
-    // ответу о месте нельзя тоже: проверка сказала бы «всюду камень»
-    // и не дала бы родиться никому. Раз мир не может ответить —
-    // оставляем точку как есть; за то, чтобы чанк был готов, отвечает
-    // тот, кто заказывает рождение.
-    if (!world.findChunk((i32)std::floor(feet.x) >> 5,
-                         (i32)std::floor(feet.z) >> 5))
-        return true;
+    const i32 x = (i32)std::floor(feet.x);
+    const i32 y = (i32)std::floor(feet.y + 1e-3f);
+    const i32 z = (i32)std::floor(feet.z);
+    switch (world::footingOf(world.getVoxel(x, y - 1, z))) {
+        case world::Footing::Ground: return true;
+        case world::Footing::Never:  return false;
+        case world::Footing::Built:  break;
+    }
+    // Постройка годится только изнутри: над головой должно быть
+    // перекрытие. Кровля и верх стены стоят под открытым небом.
+    auto& reg = world::blocks();
+    for (i32 up = y + (i32)std::ceil(b.height); up < world::CHUNK_SIZE_Y; ++up)
+        if (reg.isSolid(world.getVoxel(x, up, z))) return true;
+    return false;
+}
 
+namespace {
+
+/// Поиск высоты в одной колонке — см. settle.
+bool settleColumn(world::ChunkManager& world, glm::vec3& feet,
+                  const CreatureBody& b, i32 maxUp)
+{
     // Уровни перебираются ЦЕЛЫЕ: стоят в воксельном мире на верхней
     // грани блока. Спавнеры дают то `y`, то `y + 0.5`, и перебор
     // «плюс единица» от дробной высоты не попадал на опору ни разу.
@@ -91,12 +102,51 @@ bool settle(world::ChunkManager& world, glm::vec3& feet,
     if (up > maxUp) return false;
 
     // Тело обязано поместиться здесь — или на пару блоков ниже, если
-    // точку дали чуть выше земли.
+    // точку дали чуть выше земли. И стоять на том, на чём рождаются.
     for (i32 down = 0; down <= 2; ++down) {
         const i32 yy = y - down;
         if (down > 0 && feetSolid(yy)) break;
         const glm::vec3 p{ feet.x, (f32)yy, feet.z };
-        if (fits(world, p, b) && grounded(world, p, b)) { feet = p; return true; }
+        if (fits(world, p, b) && grounded(world, p, b) && spawnFooting(world, p, b)) {
+            feet = p;
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+bool settle(world::ChunkManager& world, glm::vec3& feet,
+            const CreatureBody& b, i32 maxUp)
+{
+    // Незагруженный чанк отвечает «камень» на любой вопрос — так
+    // устроено чтение вокселей, и это правильно: мир там ещё не
+    // построен, и пускать сквозь него нельзя. Но и судить по такому
+    // ответу о месте нельзя тоже: проверка сказала бы «всюду камень»
+    // и не дала бы родиться никому. Раз мир не может ответить —
+    // оставляем точку как есть; за то, чтобы чанк был готов, отвечает
+    // тот, кто заказывает рождение.
+    auto loaded = [&](const glm::vec3& p) {
+        return world.findChunk((i32)std::floor(p.x) >> 5,
+                               (i32)std::floor(p.z) >> 5) != nullptr;
+    };
+    if (!loaded(feet)) return true;
+
+    // Сначала сама точка, потом соседние клетки — ближние раньше
+    // дальних. Точка у ствола или в стене дома — обычное дело: дома и
+    // деревья ставит генератор, спавнер о них не знает. Лезть наверх
+    // нельзя — там крона и кровля; шаг в сторону — можно.
+    static constexpr i8 OFFSETS[][2] = {
+        { 0, 0 },
+        { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 },
+        { 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 },
+        { 2, 0 }, { -2, 0 }, { 0, 2 }, { 0, -2 },
+    };
+    for (const auto& o : OFFSETS) {
+        glm::vec3 p = feet + glm::vec3((f32)o[0], 0.f, (f32)o[1]);
+        if (!loaded(p)) continue;
+        if (settleColumn(world, p, b, maxUp)) { feet = p; return true; }
     }
     return false;
 }

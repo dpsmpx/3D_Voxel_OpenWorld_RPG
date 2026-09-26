@@ -45,4 +45,13 @@ std::vector<VoxelMesh> buildFloraMeshes();
 /// немного, дерево — едва, камень — никак.
 f32 floraSway(world::FloraKind k);
 
+/// Габарит модели в её собственных единицах (до размера экземпляра):
+/// высота над основанием и радиус от оси, покрывающий любой поворот.
+struct FloraExtent { f32 height = 0.f; f32 radius = 0.f; };
+
+/// Габарит первой ступени каждой модели — по мешам из buildFloraMeshes,
+/// индекс — floraModelIndex. Первая ступень самая подробная, и её
+/// коробка не меньше коробки любой другой.
+std::vector<FloraExtent> floraExtents(const std::vector<VoxelMesh>& meshes);
+
 } // namespace render

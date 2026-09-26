@@ -33,7 +33,6 @@ bool findSpawnSpot(world::ChunkManager& world,
                    i32 cx, i32 cz,
                    i32& outX, i32& outY, i32& outZ)
 {
-    auto& reg = world::blocks();
     // Все двенадцать попыток бьют в один и тот же чанк, а каждая
     // проходит колонку сверху донизу по три чтения на шаг: до четырёх
     // с половиной тысяч чтений на вызов, и так шесть раз дважды в
@@ -43,12 +42,14 @@ bool findSpawnSpot(world::ChunkManager& world,
         i32 x = cx * world::CHUNK_SIZE + (i32)(urand() % world::CHUNK_SIZE);
         i32 z = cz * world::CHUNK_SIZE + (i32)(urand() % world::CHUNK_SIZE);
 
-        // Все годные места колонки, а не первое сверху.
+        // Все годные места колонки, а не первое сверху: поверхность и
+        // дно пещер под ней.
         //
-        // Первое сверху — это всегда крыша: земля, кровля дома,
-        // пол исполинского дерева, взятый снаружи. Внутри построек и
-        // в пещерах из-за этого не появлялось НИКОГО: данж в дереве
-        // стоял с одним боссом наверху и пустыми этажами под ним.
+        // Годное — только на земле (world::Footing::Ground). Первое
+        // сверху «воздух над твёрдым» — это то кровля дома, то верх
+        // невидимого ствола под кроной: там твари и рождались. Внутри
+        // построек рождаются свои: в подземельях и замках — гарнизон
+        // (updateGarrison), в деревнях — жители (npc::NpcSpawner).
         constexpr i32 MAX_SPOTS = 8;
         i32 spotY[MAX_SPOTS];
         i32 spots = 0;
@@ -56,8 +57,8 @@ bool findSpawnSpot(world::ChunkManager& world,
             const u16 b   = rd.at(x, y, z);
             const u16 bel = rd.at(x, y - 1, z);
             const u16 abv = rd.at(x, y + 1, z);
-            if (!reg.isSolid(bel) || b != world::AIR || abv != world::AIR) continue;
-            if (bel == world::WATER || bel == world::LAVA) continue;
+            if (b != world::AIR || abv != world::AIR) continue;
+            if (world::footingOf(bel) != world::Footing::Ground) continue;
             if (spots < MAX_SPOTS) spotY[spots++] = y;
         }
         if (spots == 0) continue;

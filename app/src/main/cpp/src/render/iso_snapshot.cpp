@@ -3,12 +3,14 @@
  * @brief Изометрический снимок мира: подготовка, рендер, картинка.
  */
 #include "iso_snapshot.h"
+#include "flora_pipeline.h"
 #include "mesh_builder.h"
 #include "voxel_pipeline.h"
 #include "../core/log.h"
 #include "../core/math.h"
 #include "../vk/vk_context.h"
 #include "../world/block.h"
+#include "../world/flora.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -153,6 +155,11 @@ bool IsoSnapshot::init(VkDevice dev, VkPhysicalDevice phys, VkQueue queue,
             return false;
         }
     }
+    // Растения — тем же описанием, что у FloraRenderer, на свой проход.
+    // Без них снимок всё равно годен: голый ландшафт лучше, чем никакого.
+    if (!floraPipe_.create(dev, shaders_,
+                           floraPipelineDesc(renderPass_, descriptors_.layout(), depthFormat)))
+        LOGW("снимок: конвейер растений не создан — снимки будут без них");
 
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.queueFamilyIndex = queueFamily;
@@ -181,6 +188,10 @@ void IsoSnapshot::destroy() {
     destroyTarget();
     if (fence_)   vkDestroyFence(dev_, fence_, nullptr);
     if (cmdPool_) vkDestroyCommandPool(dev_, cmdPool_, nullptr);
+    floraMeshes_.destroy();
+    floraInst_.destroy();
+    floraPipe_.destroy();
+    floraReady_ = false;
     blendPipe_.destroy();
     opaquePipe_.destroy();
     if (renderPass_) vkDestroyRenderPass(dev_, renderPass_, nullptr);
@@ -329,6 +340,8 @@ void IsoSnapshot::begin(const IsoRequest& req) {
     meshes_.assign(drawChunks_.size(), ChunkMeshGpu{});
     meshCursor_ = 0;
     prepareTicks_ = 0;
+    floraCount_ = 0;
+    floraTop_ = 0.f;
     stage_ = IsoStage::Preparing;
     error_ = IsoError::None;
     pixels_.clear();
@@ -435,6 +448,59 @@ void IsoSnapshot::computeTiles() {
 // Оси квада берутся из той же таблицы FACES, что и в мешере:
 //   +X/-X: u вдоль Y, v вдоль Z
 //   +Z/-Z: u вдоль X, v вдоль Y
+// ============================================================
+// Меш — только в коробке снимка
+// ============================================================
+//
+// Область не обязана быть выровнена по чанкам: сто блоков вокруг
+// игрока — это четыре чанка в ширину, и из крайних в кадр попадает
+// только часть. Чанк же мешируется целиком, и остаток за кромкой
+// ложился поверх среза: на ближних сторонах — полоса земли перед
+// разрезом, на дальних — ландшафт до самых краёв картинки. Снизу то
+// же: под дном коробки (yMin) оставались пещеры и лавовые озёра и
+// висели под срезом обрывками. С растениями, которые рисуются строго
+// в области, это стало видно сразу: за кромкой — голая земля.
+//
+// Поэтому грани обрезаются по коробке. Грань — прямоугольник вдоль
+// двух осей (FACES мешера: du и dv положительны, по одной оси каждый),
+// и обрезать её — сузить диапазон клеток по двум осям. Затенение и
+// открытость неба в углах слитой грани одинаковы у всех её клеток
+// (с разными мешер не сливает), поэтому часть грани светится ровно
+// так же, как целая. Внутри коробки не меняется ни одна грань.
+void IsoSnapshot::clipQuadsToBox(const iso::Area& area, i32 yMin,
+                                 world::ChunkCoord coord,
+                                 std::vector<world::Quad>& quads)
+{
+    const i32 ox = coord.x * world::CHUNK_SIZE;
+    const i32 oz = coord.z * world::CHUNK_SIZE;
+    const f32 lo[3] = { (f32)(area.x0 - ox), (f32)yMin, (f32)(area.z0 - oz) };
+    const f32 hi[3] = { (f32)(area.x1() - ox), 1e9f, (f32)(area.z1() - oz) };
+
+    usize w = 0;
+    for (usize i = 0; i < quads.size(); ++i) {
+        world::Quad q = quads[i];
+        const i32 normal = q.v0.face / 2;               // ось нормали: 0 — X, 1 — Y, 2 — Z
+        const bool positive = (q.v0.face % 2) == 0;
+        bool keep = true;
+        for (i32 axis = 0; axis < 3 && keep; ++axis) {
+            if (normal == axis) {
+                // Грань поперёк оси: клетка — та, чья это грань.
+                const f32 cell = positive ? q.v0.pos[axis] - 1.f : q.v0.pos[axis];
+                if (cell < lo[axis] || cell + 1.f > hi[axis]) keep = false;
+                continue;
+            }
+            glm::vec3& d = q.du[axis] != 0.f ? q.du : q.dv;
+            const f32 a = std::max(q.v0.pos[axis], lo[axis]);
+            const f32 b = std::min(q.v0.pos[axis] + d[axis], hi[axis]);
+            if (a >= b) { keep = false; continue; }
+            q.v0.pos[axis] = a;
+            d[axis] = b - a;
+        }
+        if (keep) quads[w++] = q;
+    }
+    quads.resize(w);
+}
+
 void IsoSnapshot::appendAreaWalls(const world::Chunk& chunk,
                                   world::ChunkCoord coord,
                                   std::vector<world::Quad>& quads) const
@@ -447,9 +513,17 @@ void IsoSnapshot::appendAreaWalls(const world::Chunk& chunk,
     constexpr u8 WALL_SKY = 3;
     constexpr u8 WALL_AO  = 3;
 
+    // Ствол дерева в сетке мира — невидимый блок: его рисует модель
+    // растения. С растениями на снимке срез по нему дал бы бурый
+    // квадрат поверх ствола модели — или на месте дерева, которое за
+    // кромку не поместилось и не рисуется.
+    const bool skipInvisible = natureOn();
+    auto hidden = [&](u16 b) {
+        return b == world::AIR || (skipInvisible && world::blocks().get(b).isInvisible);
+    };
     auto emit = [&](i32 lx, i32 ly, i32 lz, u8 face) {
         const u16 b = chunk.at(lx, ly, lz);
-        if (b == world::AIR) return;
+        if (hidden(b)) return;
         world::Quad q{};
         q.v0.block = b;
         q.v0.face  = face;
@@ -500,7 +574,7 @@ void IsoSnapshot::appendAreaWalls(const world::Chunk& chunk,
                 const i32 lx = wx - ox;
                 if (lx < 0 || lx >= world::CHUNK_SIZE) continue;
                 const u16 b = chunk.at(lx, y0, lz);
-                if (b == world::AIR) continue;
+                if (hidden(b)) continue;
                 world::Quad q{};
                 q.v0.block = b;
                 q.v0.face  = 3;                       // -Y
@@ -552,7 +626,11 @@ bool IsoSnapshot::buildOneMesh(world::ChunkManager& world, usize index) {
         nb.pz = pz && pz->generated.load(std::memory_order_acquire) ? pz.get() : nullptr;
 
         world::buildGreedyMesh(*self, nb, scratchQuads_);
+        clipQuadsToBox(req_.area, yMin_, c, scratchQuads_);
         appendAreaWalls(*self, c, scratchQuads_);
+        meshes_[index].origin = glm::vec3((f32)(c.x * world::CHUNK_SIZE), 0.f,
+                                          (f32)(c.z * world::CHUNK_SIZE));
+        if (natureOn()) collectFlora(*self, meshes_[index]);
         buildChunkVertices(*self, scratchQuads_, scratchVerts_, scratchIdx_,
                            meshes_[index].opaqueIndices,
                            &meshes_[index].blendCenter);
@@ -627,6 +705,12 @@ bool IsoSnapshot::step(world::ChunkManager& world) {
         }
 
         case IsoStage::Meshing: {
+            // Модели растений — отдельным шагом: это сотня с лишним
+            // мешей, и в один шаг с чанками они растянули бы кадр.
+            if (req_.nature && !floraReady_ && floraPipe_.valid()) {
+                ensureFloraModels();
+                return true;
+            }
             for (usize n = 0; n < MESHES_PER_STEP && meshCursor_ < meshes_.size(); ++n) {
                 if (!buildOneMesh(world, meshCursor_)) {
                     if (error_ != IsoError::None) { stage_ = IsoStage::Failed; return true; }
@@ -635,6 +719,10 @@ bool IsoSnapshot::step(world::ChunkManager& world) {
                 ++meshCursor_;
             }
             if (meshCursor_ >= meshes_.size()) {
+                // Верх кадра — по растительности тоже: высокое дерево на
+                // вершине иначе осталось бы без макушки.
+                if (floraCount_ > 0)
+                    yMax_ = std::max(yMax_, (i32)std::ceil(floraTop_) + 1);
                 const iso::Box box{ req_.area, (f32)yMin_, (f32)yMax_ };
                 cam_ = iso::makeCamera(box, req_.view, req_.pixelsPerBlock,
                                        req_.maxSide);
@@ -664,7 +752,7 @@ bool IsoSnapshot::rerender(const IsoRequest& req) {
     if (meshes_.empty() || meshCursor_ < meshes_.size()) return false;
     // Область та же — иначе пришлось бы пересобирать меши.
     if (req.area.x0 != req_.area.x0 || req.area.z0 != req_.area.z0 ||
-        req.area.size != req_.area.size) return false;
+        req.area.size != req_.area.size || req.nature != req_.nature) return false;
 
     req_ = req;
     const iso::Box box{ req_.area, (f32)yMin_, (f32)yMax_ };
@@ -675,6 +763,109 @@ bool IsoSnapshot::rerender(const IsoRequest& req) {
     stage_ = IsoStage::Rendering;
     error_ = IsoError::None;
     return true;
+}
+
+// ============================================================
+// Растения
+// ============================================================
+
+bool IsoSnapshot::ensureFloraModels() {
+    if (floraReady_) return true;
+    const std::vector<VoxelMesh> meshes = buildFloraMeshes();
+    floraQuads_.resize(meshes.size());
+    for (usize i = 0; i < meshes.size(); ++i) floraQuads_[i] = meshes[i].quadCount();
+    floraExtents_ = floraExtents(meshes);
+    if (!floraMeshes_.setHostVisible(dev_, phys_, meshes)) {
+        // Не вышло — снимок будет без растений, но будет.
+        LOGW("снимок: модели растений не загружены");
+        floraPipe_.destroy();
+        return false;
+    }
+    floraReady_ = true;
+    LOGI("снимок: моделей растений %u, мешей %zu", floraModelCount(), meshes.size());
+    return true;
+}
+
+// Растения чанка — те же, что увидит игра: отбор по вокселям тем же
+// floraStillStands, что и в задаче меширования чанка. Срубленное
+// дерево, вскопанная трава и цветок под водой отсеиваются здесь.
+//
+// Своё правило одно: растение целиком внутри области. Кадр кроится по
+// коробке области (iso::makeCamera), и крона, свешенная за кромку,
+// была бы обрезана краем картинки; растение соседнего чанка за
+// кромкой висело бы над срезом. Габарит — коробка модели на размер
+// экземпляра плюс наибольший наклон макушки на ветру (flora.vert:
+// направление 0.036, порыв до 1.25, растёт с квадратом высоты).
+void IsoSnapshot::collectFlora(const world::Chunk& chunk, ChunkMeshGpu& m) {
+    m.flora.clear();
+    auto voxel = [&](i32 x, i32 y, i32 z) -> u16 {
+        return (u32)y < (u32)world::CHUNK_SIZE_Y ? chunk.voxels[world::chunkIndex(x, y, z)]
+                                                 : world::AIR;
+    };
+    const f32 x0 = (f32)req_.area.x0, x1 = (f32)req_.area.x1();
+    const f32 z0 = (f32)req_.area.z0, z1 = (f32)req_.area.z1();
+    constexpr f32 LEAN = 0.036f * 1.25f;
+    glm::vec3 lo(1e30f), hi(-1e30f);
+    for (const world::FloraInstance& f : chunk.flora) {
+        if (!world::floraStillStands(f, voxel)) continue;
+        const u32 model = floraModelIndex(f.kind, f.variant);
+        if (model >= floraExtents_.size()) continue;
+        const FloraExtent& e = floraExtents_[model];
+        const f32 scale = std::min(world::floraScale(f), FLORA_MAX_SCALE);
+        const f32 h = e.height * scale;
+        const f32 r = e.radius * scale + LEAN * floraSway(f.kind) * h * h;
+        const glm::vec3 b = FloraBatch::basePosition(m.origin, f);
+        if (b.x - r < x0 || b.x + r > x1 || b.z - r < z0 || b.z + r > z1) continue;
+        m.flora.push_back(f);
+        lo = glm::min(lo, glm::vec3(b.x - r, b.y, b.z - r));
+        hi = glm::max(hi, glm::vec3(b.x + r, b.y + h, b.z + r));
+        floraTop_ = std::max(floraTop_, b.y + h);
+    }
+    m.floraLo = lo;
+    m.floraHi = hi;
+    floraCount_ += (u32)m.flora.size();
+}
+
+// Растения тайла: те чанки, чья коробка растений в тайл попадает. Не
+// по коробке чанка: крона дерева у края чанка свешивается в соседний,
+// и тайл, в который попадает только она, отбросил бы её вместе с
+// чанком — на стыке тайлов крону срезало бы.
+//
+// Ступень — по размеру вокселя в пикселях, а не по расстоянию:
+// FloraBatch::beginOrtho. Камеры из fixedLightUbo здесь нет вовсе —
+// она унесена на сто тысяч блоков ради блика воды, и любое расстояние
+// от неё отдало бы всё самой грубой ступени.
+void IsoSnapshot::drawFlora(const math::Frustum& fr) {
+    floraBatch_.beginOrtho(cam_.pixelsPerUnit);
+    for (const ChunkMeshGpu& m : meshes_) {
+        if (m.flora.empty()) continue;
+        math::AABB bb; bb.expand(m.floraLo); bb.expand(m.floraHi);
+        if (!fr.intersectsAABB(bb)) continue;
+        floraBatch_.addChunk(m.origin, m.flora);
+    }
+    floraBatch_.finish(&floraQuads_);
+    const auto& inst = floraBatch_.instances();
+    if (inst.empty() || floraBatch_.draws().empty()) return;
+
+    const u64 bytes = (u64)inst.size() * sizeof(FloraGpuInstance);
+    if (!floraInst_.handle() || floraInst_.size() < bytes) {
+        floraInst_.destroy();
+        if (!floraInst_.create(dev_, phys_, bytes, vk::BufferUsage::Vertex, true)) {
+            LOGE("снимок: буфер растений не создан");
+            return;
+        }
+    }
+    // Тайлы идут строго по очереди и каждый дожидается своей заборки,
+    // поэтому один буфер на все тайлы переписывать можно.
+    floraInst_.write(inst.data(), bytes);
+
+    VkDescriptorSet ds = descriptors_.set(0);
+    vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, floraPipe_.handle());
+    vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, floraPipe_.layout(),
+                            0, 1, &ds, 0, nullptr);
+    floraMeshes_.bind(cmd_, floraInst_.handle());
+    for (const FloraBatch::Draw& d : floraBatch_.draws())
+        floraMeshes_.draw(cmd_, d.mesh, d.count, d.first);
 }
 
 // ============================================================
@@ -783,7 +974,9 @@ bool IsoSnapshot::renderTile(const Tile& t) {
             vkCmdDrawIndexed(cmd_, count, 1, first, 0, 0);
         }
     };
+    // Порядок игрового кадра: ландшафт, растения, вода.
     drawList(opaque,  opaquePipe_.handle(), false);
+    if (natureOn()) drawFlora(fr);
     drawList(blended, blendPipe_.handle(),  true);
 
     vkCmdEndRenderPass(cmd_);

@@ -139,6 +139,12 @@ struct EnchantContext {
     i32 selectedIdx = -1;
 };
 
+/// Подпись над поясом: имя того, что в ВЫБРАННОЙ ячейке, на языке
+/// игрока. Пустая ячейка — в дело идёт то, что в руке, и подпись его;
+/// пустые и ячейка, и рука — подписи нет (nullptr).
+const char* hotbarCaption(const items::Inventory* inv,
+                          const combat::EquippedWeapon& hand);
+
 class UiSystem {
 public:
     bool init(vk::Context& ctx, AAssetManager* mgr);

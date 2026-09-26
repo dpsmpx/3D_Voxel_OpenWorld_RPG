@@ -59,6 +59,25 @@ public:
     static constexpr u32 MAX_INSTANCES = 1u << 16;
 
     void begin(const glm::vec3& camera);
+    /// Снимок без перспективы (render/iso_snapshot.h): блок на картинке
+    /// одного размера везде, и расстояние до камеры не значит ничего.
+    /// Рисуется всё, что дали, без дальности и без «вырастания» у её
+    /// границы; ступень детальности — по размеру вокселя в пикселях
+    /// (orthoLod). Предел экземпляров — ORTHO_MAX_INSTANCES.
+    void beginOrtho(f32 pixelsPerBlock);
+
+    /// Воксель мельче стольких пикселей — берётся ступень крупнее:
+    /// вокселя в долю пикселя на снимке не различить, а стоит он как
+    /// любой другой.
+    static constexpr f32 ORTHO_MIN_VOXEL_PX = 1.5f;
+    /// Снимок берёт территорию до 512 блоков в сторону целиком: трава
+    /// там считается сотнями тысяч, а не тысячами, как в кадре.
+    static constexpr u32 ORTHO_MAX_INSTANCES = 1u << 21;
+    /// Ступень вида на снимке с таким масштабом.
+    static u32 orthoLod(world::FloraKind k, f32 pixelsPerBlock);
+    /// Где стоит основание растения в мире: дерево — ровно на своём
+    /// стволе, мелочь сдвинута внутри блока. origin — угол чанка.
+    static glm::vec3 basePosition(const glm::vec3& origin, const world::FloraInstance& f);
     /// Растения чанка с началом origin (мировые координаты угла).
     void addChunk(const glm::vec3& origin, const std::vector<world::FloraInstance>& list);
     /// Разложить по мешам. meshQuads — квадов в каждом меше (номер
@@ -72,6 +91,8 @@ public:
 
 private:
     glm::vec3 camera_{0.f};
+    bool ortho_ = false;
+    f32  orthoPx_ = 0.f;
     struct Pending { u32 key; FloraGpuInstance inst; };
     std::vector<Pending> pending_;
     std::vector<u32> counts_;   ///< начало каждого ключа; последний — всего

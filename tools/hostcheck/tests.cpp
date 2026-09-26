@@ -13318,6 +13318,9 @@ void testIsoSnapshotIsTerrainOnlyAndTimeless() {
             { "DayCycle",           "время суток" },
             { "Weather",            "погода" },
             { "LightField",         "источники света" },
+            { "ecs::",              "сущности ECS" },
+            { "Registry",           "реестр сущностей" },
+            { "ItemEntity",         "предметы на земле" },
         };
         int found = 0;
         char m[220];
@@ -13341,6 +13344,142 @@ void testIsoSnapshotIsTerrainOnlyAndTimeless() {
               "и собирает вершины тем же сборщиком");
         check(both.find("voxelPipelineDesc") != std::string::npos,
               "и берёт то же описание конвейера");
+
+        // Растения — те же, что в игре, и тем же путём.
+        check(src.find("world::floraStillStands(f, voxel)") != std::string::npos,
+              "растения отбираются по вокселям тем же floraStillStands, что при мешировании");
+        check(src.find("buildFloraMeshes()") != std::string::npos &&
+              src.find("floraPipelineDesc(") != std::string::npos,
+              "и рисуются теми же моделями и тем же описанием конвейера");
+        check(src.find("floraBatch_.beginOrtho(cam_.pixelsPerUnit)") != std::string::npos,
+              "ступень растений — по размеру вокселя в пикселях, а не по дальности");
+        // Камера fixedLightUbo унесена на сто тысяч блоков ради блика
+        // воды: расстояние от неё отдало бы всё грубейшей ступени.
+        {
+            const usize at = src.find("void IsoSnapshot::drawFlora(");
+            const usize end = at == std::string::npos ? at : src.find("\n}\n", at);
+            const std::string body = (at != std::string::npos && end != std::string::npos)
+                                   ? src.substr(at, end - at) : std::string();
+            check(!body.empty() && body.find("cameraPos") == std::string::npos &&
+                  body.find("begin(eye") == std::string::npos,
+                  "дальняя камера блока формы для растений не берётся");
+        }
+        check(src.find("yMax_ = std::max(yMax_, (i32)std::ceil(floraTop_) + 1)") != std::string::npos,
+              "верх кадра учитывает макушки растений");
+        check(src.find("clipQuadsToBox(req_.area, yMin_, c, scratchQuads_)") != std::string::npos,
+              "меш чанка обрезается по коробке снимка");
+    }
+}
+
+// ------------------------------------------------------------
+// Снимок: растения мира — те же, что в игре, и в кадре целиком.
+// ------------------------------------------------------------
+void testIsoSnapshotShowsNature() {
+    group("снимок: растения мира, обрезка по коробке");
+    char m[220];
+
+    // ---- 1. Ступень детальности при ортографии ----
+    //
+    // Блок везде одного размера: ступень — по размеру вокселя в
+    // пикселях. Мельче полутора пикселей воксель не различить.
+    {
+        using world::FloraKind;
+        bool ok = true, monotone = true;
+        for (u32 k = 0; k < (u32)FloraKind::Count; ++k) {
+            u32 prev = 0;
+            for (f32 ppb : { 32.f, 16.f, 12.f, 8.f, 4.f, 2.f, 1.f }) {
+                const u32 lod = render::FloraBatch::orthoLod((FloraKind)k, ppb);
+                if (lod >= render::FLORA_LODS) ok = false;
+                if (lod < prev) monotone = false;
+                prev = lod;
+                const f32 px = render::floraVoxelSize((FloraKind)k) * ppb * (f32)(1u << lod);
+                if (lod + 1 < render::FLORA_LODS &&
+                    px < render::FloraBatch::ORTHO_MIN_VOXEL_PX) ok = false;
+            }
+        }
+        check(ok, "ступень не мельче полутора пикселей на воксель, пока есть куда огрублять");
+        check(monotone, "чем мельче масштаб, тем грубее ступень");
+        std::snprintf(m, sizeof(m), "на обычных 12 пикселях на блок трава — ступень %u, дерево — %u",
+                      render::FloraBatch::orthoLod(world::FloraKind::Grass, 12.f),
+                      render::FloraBatch::orthoLod(world::FloraKind::Oak, 12.f));
+        check(render::FloraBatch::orthoLod(world::FloraKind::Grass, 12.f) == 0 &&
+              render::FloraBatch::orthoLod(world::FloraKind::Oak, 12.f) == 0, m);
+    }
+
+    // ---- 2. Дальности нет: рисуется всё, что дали ----
+    {
+        world::FloraInstance grass{};
+        grass.kind = world::FloraKind::Grass;
+        grass.lx = 4; grass.lz = 4; grass.y = 60;
+        std::vector<world::FloraInstance> list(1, grass);
+        const glm::vec3 far{ 5000.f, 0.f, 5000.f };
+
+        render::FloraBatch game;
+        game.begin(glm::vec3(0.f));
+        game.addChunk(far, list);
+        game.finish(nullptr);
+        render::FloraBatch ortho;
+        ortho.beginOrtho(12.f);
+        ortho.addChunk(far, list);
+        ortho.finish(nullptr);
+        check(game.instances().empty(), "в игре трава за сорок блоков не рисуется");
+        check(ortho.instances().size() == 1, "на снимке — рисуется, где бы ни стояла");
+        if (!ortho.instances().empty()) {
+            const glm::vec3 base = render::FloraBatch::basePosition(far, grass);
+            check(ortho.instances()[0].pos == base,
+                  "и стоит там же, где её поставила бы игра");
+        }
+    }
+
+    // ---- 3. Габариты моделей ----
+    {
+        const std::vector<render::VoxelMesh> meshes = render::buildFloraMeshes();
+        const std::vector<render::FloraExtent> ext = render::floraExtents(meshes);
+        bool all = ext.size() == render::floraModelCount();
+        for (const auto& e : ext)
+            if (!(e.height > 0.f && e.radius > 0.f)) all = false;
+        check(all, "у каждой модели растения есть высота и радиус");
+        const f32 oak = ext[render::floraModelIndex(world::FloraKind::Oak, 0)].height;
+        const f32 grass = ext[render::floraModelIndex(world::FloraKind::Grass, 0)].height;
+        std::snprintf(m, sizeof(m), "дуб выше травы: %.1f против %.2f блока", (double)oak, (double)grass);
+        check(oak > grass * 4.f && oak > 3.f, m);
+    }
+
+    // ---- 4. Обрезка меша по коробке ----
+    //
+    // Чанк (0, 0), область x 10..20, z 5..15, дно на 30.
+    {
+        const render::iso::Area area{ 10, 5, 10 };   // x0, z0, сторона
+        auto quad = [](u8 face, glm::vec3 pos, glm::vec3 du, glm::vec3 dv) {
+            world::Quad q{};
+            q.v0.face = face; q.v0.pos = pos; q.du = du; q.dv = dv;
+            for (int i = 0; i < 4; ++i) { q.ao[i] = (u8)i; q.sky[i] = (u8)(7 - i); }
+            return q;
+        };
+        std::vector<world::Quad> qs = {
+            quad(2, { 0, 40, 0 }, { 32, 0, 0 }, { 0, 0, 32 }),   // верх на весь чанк
+            quad(0, { 5, 40, 8 }, { 0, 1, 0 }, { 0, 0, 1 }),     // +X клетки 4 — вне
+            quad(1, { 12, 0, 8 }, { 0, 50, 0 }, { 0, 0, 1 }),    // -X, до самого низа
+            quad(2, { 12, 40, 8 }, { 2, 0, 0 }, { 0, 0, 3 }),    // целиком внутри
+            quad(2, { 12, 20, 8 }, { 2, 0, 0 }, { 0, 0, 3 }),    // ниже дна
+        };
+        const world::Quad inside = qs[3];
+        render::IsoSnapshot::clipQuadsToBox(area, 30, { 0, 0 }, qs);
+        std::snprintf(m, sizeof(m), "за коробкой отброшено %zu граней из 5", 5 - qs.size());
+        check(qs.size() == 3, m);
+        if (qs.size() == 3) {
+            const world::Quad& top = qs[0];
+            check(top.v0.pos == glm::vec3(10, 40, 5) && top.du == glm::vec3(10, 0, 0) &&
+                  top.dv == glm::vec3(0, 0, 10),
+                  "грань на весь чанк сужена ровно до области");
+            check(top.ao[1] == 1 && top.sky[2] == 5,
+                  "затенение углов у обрезанной грани прежнее");
+            const world::Quad& side = qs[1];
+            check(side.v0.pos.y == 30.f && side.du.y == 20.f,
+                  "бок до самого низа обрезан по дну коробки");
+            check(std::memcmp(&qs[2], &inside, sizeof(world::Quad)) == 0,
+                  "грань внутри коробки не тронута");
+        }
     }
 }
 
@@ -19141,6 +19280,229 @@ void testBossStaysAndStaysDead() {
 }
 
 // ------------------------------------------------------------
+// Существа рождаются на земле и в домах — не на кровле и не на
+// дереве.
+//
+// Место искали по «воздуху над твёрдым», а первым сверху в колонке
+// оказывались кровля дома и верх невидимого ствола под кроной. Точка
+// в стене дома или у ствола тоже выходила наверх: подъём «из толщи»
+// шёл ровно до кровли.
+// ------------------------------------------------------------
+
+/// Опора под ступнями существа: блок под серединой и то, есть ли
+/// над головой перекрытие.
+struct SpawnFoot { u16 below = world::AIR; world::Footing kind{}; bool covered = false; };
+static SpawnFoot spawnFootAt(world::ChunkManager& w, const glm::vec3& p, f32 height) {
+    SpawnFoot f;
+    const i32 x = (i32)std::floor(p.x), z = (i32)std::floor(p.z);
+    const i32 y = (i32)std::floor(p.y + 1e-3f);
+    f.below = w.getVoxel(x, y - 1, z);
+    f.kind  = world::footingOf(f.below);
+    for (i32 up = y + (i32)std::ceil(height); up < world::CHUNK_SIZE_Y && !f.covered; ++up)
+        f.covered = world::blocks().isSolid(w.getVoxel(x, up, z));
+    return f;
+}
+
+void testSpawnsStandOnGround() {
+    group("спавн: на земле и в домах, не на кровле и не на дереве");
+
+    world::blocks();
+    items::items();
+    mobs::mobRegistry();
+    npc::npcRegistry();
+    if (!jobs::gJobs.running()) jobs::gJobs.start(2);
+    char m[220];
+
+    // ---- 0. Разметка опор ----
+    check(world::footingOf(world::GRASS) == world::Footing::Ground &&
+          world::footingOf(world::STONE) == world::Footing::Ground,
+          "трава и камень — земля");
+    check(world::footingOf(world::THATCH) == world::Footing::Built &&
+          world::footingOf(world::PLANK) == world::Footing::Built,
+          "солома и доска — постройка");
+    check(world::footingOf(world::TRUNK) == world::Footing::Never &&
+          world::footingOf(world::LEAVES) == world::Footing::Never &&
+          world::footingOf(world::CACTUS_CORE) == world::Footing::Never,
+          "ствол, листва и кактус опорой не бывают");
+
+    // ---- 1. Рукотворная площадка: ствол, куст, дом, настил ----
+    {
+        constexpr u64 SEED = 0x5A1Fu;
+        world::ChunkManager world(SEED, 2);
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            world.update({ 8.f, 70.f, 8.f });
+            ready = world.isReadyAt(8, 8) && world.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "мир построен");
+        if (ready) {
+            // Каменный пол и чистое небо над ним до самого верха мира.
+            const i32 F = world.generator().surfaceHeight(8, 8) + 6;
+            for (i32 z = -8; z <= 24; ++z)
+                for (i32 x = -8; x <= 24; ++x) {
+                    world.setVoxel(x, F - 1, z, world::STONE);
+                    for (i32 y = F; y < world::CHUNK_SIZE_Y; ++y)
+                        world.setVoxel(x, y, z, world::AIR);
+                }
+            physics::CreatureBody body;
+            body.halfWidth = 0.35f;
+            body.height    = 1.75f;
+
+            // Ствол в пять блоков: точка прямо в нём.
+            for (i32 y = F; y < F + 5; ++y) world.setVoxel(4, y, 4, world::TRUNK);
+            glm::vec3 spot{ 4.5f, (f32)F, 4.5f };
+            const bool okTrunk = physics::settle(world, spot, body);
+            std::snprintf(m, sizeof(m), "точка в стволе: (%.1f, %.1f, %.1f) при поле %d",
+                          (double)spot.x, (double)spot.y, (double)spot.z, (int)F);
+            check(okTrunk && std::fabs(spot.y - (f32)F) < 0.01f, m);
+            check(!((i32)std::floor(spot.x) == 4 && (i32)std::floor(spot.z) == 4),
+                  "и существо отошло от ствола, а не залезло на него");
+
+            // Куст из листвы: точка над ним.
+            world.setVoxel(10, F, 10, world::LEAVES);
+            spot = { 10.5f, (f32)F + 1.f, 10.5f };
+            const bool okBush = physics::settle(world, spot, body);
+            check(okBush && std::fabs(spot.y - (f32)F) < 0.01f,
+                  "на листве не стоят — рядом на земле");
+
+            // Дом: пол из доски, стены в три блока, соломенная кровля.
+            const i32 X0 = 14, X1 = 20, Z0 = 2, Z1 = 8;
+            for (i32 z = Z0; z <= Z1; ++z)
+                for (i32 x = X0; x <= X1; ++x) {
+                    world.setVoxel(x, F - 1, z, world::PLANK);
+                    const bool wall = x == X0 || x == X1 || z == Z0 || z == Z1;
+                    for (i32 y = F; y < F + 3; ++y)
+                        if (wall) world.setVoxel(x, y, z, world::PLANK);
+                    world.setVoxel(x, F + 3, z, world::THATCH);
+                }
+            spot = { (f32)X0 + 0.5f, (f32)F, 5.5f };            // в стене
+            const bool okWall = physics::settle(world, spot, body);
+            std::snprintf(m, sizeof(m), "точка в стене дома — y %.1f (кровля %d)",
+                          (double)spot.y, (int)F + 4);
+            check(okWall && spot.y < (f32)F + 1.f, m);
+            spot = { 17.5f, (f32)F + 4.f, 5.5f };               // на кровле
+            const bool onRoof = physics::settle(world, spot, body);
+            check(!onRoof || spot.y < (f32)F + 3.f,
+                  "на кровле под открытым небом не рождаются");
+            spot = { 17.5f, (f32)F, 5.5f };                     // в доме
+            check(physics::settle(world, spot, body) &&
+                  std::fabs(spot.y - (f32)F) < 0.01f && spot.x > X0 && spot.x < X1,
+                  "а на полу в доме — можно: над головой крыша");
+
+            // Открытый настил: доска под небом — это не пол.
+            for (i32 z = 14; z <= 20; ++z)
+                for (i32 x = 0; x <= 6; ++x) world.setVoxel(x, F, z, world::PLANK);
+            spot = { 3.5f, (f32)F + 1.f, 17.5f };
+            const bool onDeck = physics::settle(world, spot, body);
+            check(!onDeck, "на открытом настиле из доски не рождаются");
+        }
+    }
+
+    // ---- 2. Настоящий мир: деревня и лес ----
+    //
+    // Тварей и жителей ставят их собственные спавнеры, как в игре;
+    // проверяется, на чём каждый стоит.
+    auto audit = [&](const char* what, world::ChunkManager& mgr, u64 seed,
+                     const glm::vec3& at, bool withNpc) {
+        ecs::Registry reg;
+        mobs::Spawner sp;
+        npc::NpcSpawner ns;
+        world::DayCycle day;
+        i32 mobs = 0, npcs = 0, never = 0, roof = 0, mobIndoors = 0, onTree = 0;
+        for (i32 round = 0; round < 2; ++round) {
+            day.reset(round == 0 ? 0.02f : 0.40f, 0);
+            for (i32 i = 0; i < 240; ++i) {
+                sp.update(mgr, reg, at, day, seed, 0.5f);
+                if (withNpc) ns.update(mgr, reg, at, seed, 0.5f);
+            }
+        }
+        auto judge = [&](const glm::vec3& p, f32 h, bool isMob) {
+            const SpawnFoot f = spawnFootAt(mgr, p, h);
+            if (f.kind == world::Footing::Never) {
+                ++never;
+                if (f.below == world::TRUNK || f.below == world::LEAVES) ++onTree;
+            }
+            if (f.kind == world::Footing::Built && !f.covered) ++roof;
+            if (isMob && f.kind == world::Footing::Built) ++mobIndoors;
+        };
+        auto& mp = reg.pool<mobs::MobTag>();
+        for (usize i = 0; i < mp.size(); ++i) {
+            const ecs::Entity e = mp.entityAt((u32)i);
+            const auto* tag = mp.get(e);
+            const auto* tf  = reg.get<ecs::Transform>(e);
+            if (!tag || !tf) continue;
+            ++mobs;
+            judge(tf->position, mobs::mobRegistry().get(tag->id).bodyHeight, true);
+        }
+        auto& np = reg.pool<npc::NpcTag>();
+        for (usize i = 0; i < np.size(); ++i) {
+            const ecs::Entity e = np.entityAt((u32)i);
+            const auto* tf = reg.get<ecs::Transform>(e);
+            if (!tf) continue;
+            ++npcs;
+            judge(tf->position, 1.8f, false);
+        }
+        std::snprintf(m, sizeof(m),
+                      "%s: тварей %d, жителей %d; без опоры %d (на дереве %d), "
+                      "на кровле %d, тварей в постройках %d",
+                      what, mobs, npcs, never, onTree, roof, mobIndoors);
+        check(true, m);
+        check(mobs > 0, "твари появились");
+        if (withNpc) check(npcs > 0, "жители появились");
+        check(never == 0, "никто не стоит на стволе, листве или в пустоте");
+        check(roof == 0, "никто не стоит на кровле или стене под небом");
+        check(mobIndoors == 0, "твари мира не рождаются в чужих домах");
+    };
+
+    {
+        constexpr u64 SEED = 0xDEED16ull;
+        world::ChunkManager wd(SEED, 2);
+        world::VillageSite site{};
+        for (i32 sz = -3; sz <= 3 && !site.exists; ++sz)
+            for (i32 sx = -3; sx <= 3 && !site.exists; ++sx) {
+                const auto v = world::villageAt(sx, sz, SEED, &wd.generator());
+                if (v.exists) site = v;
+            }
+        check(site.exists, "деревня нашлась");
+        if (site.exists && loadAroundWell(wd, site))
+            audit("деревня", wd, SEED,
+                  { (f32)site.center.x + 0.5f, (f32)site.center.y + 1.f,
+                    (f32)site.center.z + 0.5f }, true);
+    }
+    {
+        // Густой лес: там стволы на каждом шагу.
+        constexpr u64 SEED = 0xF0F0u;
+        world::ChunkManager wd(SEED, 2);
+        glm::ivec2 forest{ 0, 0 };
+        bool found = false;
+        for (i32 r = 0; r < 40 && !found; ++r)
+            for (i32 a = -r; a <= r && !found; ++a)
+                for (i32 b = -r; b <= r && !found; ++b) {
+                    if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                    if (wd.generator().biomeAt(a * 64, b * 64) == world::Forest) {
+                        forest = { a * 64, b * 64 };
+                        found = true;
+                    }
+                }
+        check(found, "лес нашёлся");
+        if (found) {
+            const glm::vec3 at{ (f32)forest.x + 0.5f,
+                                (f32)wd.generator().surfaceHeight(forest.x, forest.y) + 1.f,
+                                (f32)forest.y + 0.5f };
+            bool ready = false;
+            for (i32 i = 0; i < 900 && !ready; ++i) {
+                wd.update(at);
+                ready = wd.isReadyAt(forest.x, forest.y) && wd.pendingJobs() == 0;
+                if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            check(ready, "лес построен");
+            if (ready) audit("лес", wd, SEED, at, false);
+        }
+    }
+}
+
+// ------------------------------------------------------------
 void testBossesAndDaylightMonsters() {
     group("боссы в залах, твари при солнце");
 
@@ -19362,7 +19724,9 @@ void testBossesAndDaylightMonsters() {
     //
     // Точка спавна бралась первой сверху по колонке, то есть всегда
     // на крыше: внутри исполинского дерева не появлялось никого, и
-    // подземелье в нём было пустым колодцем с боссом наверху.
+    // подземелье в нём было пустым колодцем с боссом наверху. Этажи
+    // населяет гарнизон (updateGarrison); обычный спавн мира берёт
+    // только землю — см. testSpawnsStandOnGround.
     {
         constexpr u64 SEED = 0x1B51Du;
         world::ChunkManager mgr(SEED, 2);
@@ -28167,6 +28531,66 @@ void testLogCanBeTurnedOff() {
 }
 
 // ------------------------------------------------------------
+// Подпись над поясом — имя выбранного предмета.
+//
+// Над поясом стояло имя оружия в руке: взяв кирку или хлеб, игрок
+// читал над ними «Iron Sword», а после смены оружия подсвеченная
+// ячейка показывала прежний клинок под именем нового.
+// ------------------------------------------------------------
+void testHotbarCaptionNamesTheSelectedItem() {
+    group("пояс: подпись — имя выбранного предмета");
+
+    items::items();
+    combat::weapons();
+    const usize NONE = std::string::npos;
+
+    items::Inventory inv;
+    inv.clearAll();
+    inv.at(items::INV_HOTBAR_OFFSET + 2) = items::ItemStack{ items::ITEM_BREAD, 3, {} };
+    inv.at(items::INV_HOTBAR_OFFSET + 4) = items::ItemStack{ items::ITEM_IRON_AXE, 1, {} };
+    combat::EquippedWeapon hand;
+    hand.weaponId = combat::WEAPON_IRON_SWORD;
+
+    for (const config::Language lang : { config::Language::English, config::Language::Russian }) {
+        config::L().setLanguage(lang);
+        const char* langName = lang == config::Language::English ? "en" : "ru";
+        char m[200];
+
+        inv.activeHotbar = 2;
+        const char* c = ui::hotbarCaption(&inv, hand);
+        std::snprintf(m, sizeof(m), "[%s] хлеб в выбранной ячейке — «%s»", langName, c ? c : "(нет)");
+        check(c && std::strcmp(c, items::items().name(items::ITEM_BREAD)) == 0, m);
+        check(c && std::strcmp(c, config::tr("Iron Sword")) != 0,
+              "а не имя меча в руке");
+
+        inv.activeHotbar = 4;
+        c = ui::hotbarCaption(&inv, hand);
+        check(c && std::strcmp(c, items::items().name(items::ITEM_IRON_AXE)) == 0,
+              "топор в ячейке — топор, хотя в руке меч");
+
+        inv.activeHotbar = 0;
+        c = ui::hotbarCaption(&inv, hand);
+        std::snprintf(m, sizeof(m), "[%s] пустая ячейка — то, что в руке: «%s»", langName, c ? c : "(нет)");
+        check(c && std::strcmp(c, config::tr("Iron Sword")) == 0, m);
+    }
+    config::L().setLanguage(config::Language::Russian);
+
+    combat::EquippedWeapon empty;
+    inv.activeHotbar = 0;
+    check(ui::hotbarCaption(&inv, empty) == nullptr,
+          "пусто и в ячейке, и в руке — подписи нет");
+
+    // Рисуется именно она.
+    const std::string src = readSource("app/src/main/cpp/src/ui/ui_system.cpp");
+    const usize at = src.find("void UiSystem::drawHotbar(");
+    const usize end = src.find("\n}\n", at);
+    check(at != NONE && end != NONE &&
+          src.substr(at, end - at).find("hotbarCaption(inv, player.equipped)") != NONE,
+          "пояс подписывается этой функцией");
+}
+
+
+// ------------------------------------------------------------
 // Облака — клетки мира, столбы в ярусы, свет ступенями.
 //
 // Прежние облака были мягким шумом: форма без края и один тон на весь
@@ -28651,6 +29075,7 @@ int main() {
     testFloraBatch();
     testBossesAndDaylightMonsters();
     testBossStaysAndStaysDead();
+    testSpawnsStandOnGround();
     testStepsSoundLikeStepsAndRainLikeRain();
     testContinueLastWorldAndFilePicker();
     testFallsTrapsAndAmbushes();
@@ -28694,6 +29119,7 @@ int main() {
     testIsoAreaAndOrientation();
     testIsoChunksAndFileName();
     testIsoSnapshotIsTerrainOnlyAndTimeless();
+    testIsoSnapshotShowsNature();
     testShowcaseHoldsEveryModel();
     testEntityInstanceBudget();
     testInstanceColorByteOrder();
@@ -28728,6 +29154,7 @@ int main() {
     testYouCanSeeWhoYouFight();
     testHudWasFinallyLookedAt();
     testLogCanBeTurnedOff();
+    testHotbarCaptionNamesTheSelectedItem();
     testCloudsAreNotOneColour();
     testSkyObjectsAreCells();
 

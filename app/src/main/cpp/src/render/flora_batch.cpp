@@ -16,7 +16,30 @@ using world::FloraInstance;
 
 void FloraBatch::begin(const glm::vec3& camera) {
     camera_ = camera;
+    ortho_ = false;
     pending_.clear();
+}
+
+void FloraBatch::beginOrtho(f32 pixelsPerBlock) {
+    camera_ = glm::vec3(0.f);
+    ortho_ = true;
+    orthoPx_ = pixelsPerBlock;
+    pending_.clear();
+}
+
+glm::vec3 FloraBatch::basePosition(const glm::vec3& origin, const FloraInstance& f) {
+    // Дерево стоит ровно на своём стволе; мелочь сдвинута внутри блока.
+    const bool tree = world::floraIsTree(f.kind);
+    return { origin.x + (f32)f.lx + 0.5f + (tree ? 0.f : world::floraOffX(f)),
+             origin.y + (f32)f.y,
+             origin.z + (f32)f.lz + 0.5f + (tree ? 0.f : world::floraOffZ(f)) };
+}
+
+u32 FloraBatch::orthoLod(world::FloraKind k, f32 pixelsPerBlock) {
+    f32 px = floraVoxelSize(k) * pixelsPerBlock;
+    u32 lod = 0;
+    while (lod + 1 < FLORA_LODS && px < ORTHO_MIN_VOXEL_PX) { px *= 2.f; ++lod; }
+    return lod;
 }
 
 void FloraBatch::addChunk(const glm::vec3& origin, const std::vector<FloraInstance>& list) {
@@ -29,25 +52,31 @@ void FloraBatch::addChunk(const glm::vec3& origin, const std::vector<FloraInstan
     const f32 nearest = std::sqrt(ex * ex + ez * ez);
     const u32 models = floraModelCount();
 
+    const u32 cap = ortho_ ? ORTHO_MAX_INSTANCES : MAX_INSTANCES;
+
     for (const FloraInstance& f : list) {
         const FloraClass cls = world::floraClass(f.kind);
         const FloraRange& R = FLORA_RANGES[(u32)cls];
-        if (nearest > R.visible) break;
-        if (pending_.size() >= MAX_INSTANCES) return;
+        if (!ortho_ && nearest > R.visible) break;
+        if (pending_.size() >= cap) return;
 
         const bool tree = world::floraIsTree(f.kind);
-        // Дерево стоит ровно на своём стволе; мелочь сдвинута внутри блока.
-        const f32 px = origin.x + (f32)f.lx + 0.5f + (tree ? 0.f : world::floraOffX(f));
-        const f32 pz = origin.z + (f32)f.lz + 0.5f + (tree ? 0.f : world::floraOffZ(f));
-        const f32 dx = px - camera_.x, dz = pz - camera_.z;
-        const f32 d = std::sqrt(dx * dx + dz * dz);
-        if (d > R.visible) continue;
-        const u32 lod = d < R.lod1 ? 0u : d < R.lod2 ? 1u : d < R.lod3 ? 2u : 3u;
+        const glm::vec3 base = basePosition(origin, f);
+        const f32 px = base.x, pz = base.z;
 
         f32 scale = world::floraScale(f);
-        // У границы дальности мелочь вырастает из земли, а не
-        // выскакивает: последние восемь блоков размер идёт от нуля.
-        if (cls != FloraClass::Tree) scale *= std::clamp((R.visible - d) * 0.125f, 0.f, 1.f);
+        u32 lod = 0;
+        if (ortho_) {
+            lod = orthoLod(f.kind, orthoPx_);
+        } else {
+            const f32 dx = px - camera_.x, dz = pz - camera_.z;
+            const f32 d = std::sqrt(dx * dx + dz * dz);
+            if (d > R.visible) continue;
+            lod = d < R.lod1 ? 0u : d < R.lod2 ? 1u : d < R.lod3 ? 2u : 3u;
+            // У границы дальности мелочь вырастает из земли, а не
+            // выскакивает: последние восемь блоков размер идёт от нуля.
+            if (cls != FloraClass::Tree) scale *= std::clamp((R.visible - d) * 0.125f, 0.f, 1.f);
+        }
         if (scale < 0.02f) continue;
 
         // Деревья и кактусы — с шагом в четверть оборота: они
@@ -62,7 +91,7 @@ void FloraBatch::addChunk(const glm::vec3& origin, const std::vector<FloraInstan
 
         Pending p;
         p.key = lod * models + floraModelIndex(f.kind, f.variant);
-        p.inst.pos = { px, origin.y + (f32)f.y, pz };
+        p.inst.pos = base;
         p.inst.params = yaw | (sc << 8) | (sway << 16) | (tone << 24);
         pending_.push_back(p);
     }

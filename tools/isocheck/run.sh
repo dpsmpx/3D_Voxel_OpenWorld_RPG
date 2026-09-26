@@ -10,6 +10,7 @@
 #
 #   ./tools/isocheck/run.sh
 #   ./tools/isocheck/run.sh --all-views --size 100 --px 12
+#   ./tools/isocheck/run.sh --all-views --no-nature   # голый ландшафт, как раньше
 # ============================================================
 set -eu
 
@@ -53,6 +54,7 @@ echo "==> Сборка..."
     "$PROJ/tools/isocheck/isocheck.cpp" \
     "$SRC"/vk/{vk_buffer,vk_pipeline,vk_shader,vk_descriptors,vk_renderpass}.cpp \
     "$SRC"/render/{mesh_builder,voxel_pipeline,iso_projection,iso_png,iso_snapshot}.cpp \
+    "$SRC"/render/{voxel_model,mesh_table,flora_models,flora_batch}.cpp \
     "$SRC"/world/{chunk,chunk_manager,block,terrain,biome,noise,features,hydrology,landform,flora,debug_scene}.cpp \
     "$SRC"/core/{crashlog,shared_dir,job_system}.cpp \
     "$SRC"/save/zlib_util.cpp \

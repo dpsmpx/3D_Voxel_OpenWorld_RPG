@@ -130,6 +130,7 @@ add_library(native-lib SHARED
     src/render/item_renderer.cpp
     src/render/voxel_model.cpp
     src/render/voxel_model_renderer.cpp
+    src/render/mesh_table.cpp
     src/render/flora_models.cpp
     src/render/flora_batch.cpp
     src/render/flora_renderer.cpp

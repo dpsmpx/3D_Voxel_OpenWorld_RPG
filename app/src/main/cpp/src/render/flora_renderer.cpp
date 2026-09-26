@@ -18,22 +18,7 @@ bool FloraRenderer::init(vk::Context& ctx, AAssetManager* mgr, VkDescriptorSetLa
     instances_.init(dev_, ctx.physicalDevice());
     shaders_.init(dev_, mgr);
 
-    vk::PipelineDesc d{};
-    d.renderPass   = ctx.renderPass();
-    d.descLayout   = descLayout;
-    // Свет — тот же, что у существ и моделей предметов: растения стоят
-    // на тех же блоках под тем же солнцем.
-    d.vertName     = "shaders/flora.vert.spv";
-    d.fragName     = "shaders/mob.frag.spv";
-    d.depthFormat  = ctx.depthFormat();
-    d.cullMode     = VK_CULL_MODE_BACK_BIT;
-    d.depthTest    = true;
-    d.depthWrite   = true;
-    d.blend        = false;
-    d.bindings     = FLORA_BINDINGS;
-    d.bindingCount = 2;
-    d.attrs        = FLORA_ATTRS;
-    d.attrCount    = 5;
+    const vk::PipelineDesc d = floraPipelineDesc(ctx.renderPass(), descLayout, ctx.depthFormat());
     if (!pipeline_.create(dev_, shaders_, d)) return false;
 
     const auto t0 = std::chrono::steady_clock::now();

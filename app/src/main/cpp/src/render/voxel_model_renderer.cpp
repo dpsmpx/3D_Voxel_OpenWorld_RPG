@@ -69,19 +69,7 @@ bool VoxelModelRenderer::init(vk::Context& ctx, AAssetManager* mgr,
 bool MeshTable::set(vk::Context& ctx, const std::vector<VoxelMesh>& meshes) {
     std::vector<VoxelModelVertex> verts;
     std::vector<u32> idx;
-    ranges_.clear();
-    ranges_.reserve(meshes.size());
-    for (const VoxelMesh& m : meshes) {
-        Range r;
-        r.firstIndex   = (u32)idx.size();
-        r.indexCount   = (u32)m.indices.size();
-        r.vertexOffset = (i32)verts.size();
-        verts.insert(verts.end(), m.vertices.begin(), m.vertices.end());
-        idx.insert(idx.end(), m.indices.begin(), m.indices.end());
-        ranges_.push_back(r);
-    }
-    vbo_.destroy();
-    ibo_.destroy();
+    gather(meshes, verts, idx);
     if (verts.empty()) return true;
     if (!uploadStatic(ctx, vbo_, vk::BufferUsage::Vertex, verts.data(),
                       (u64)verts.size() * sizeof(VoxelModelVertex)) ||
@@ -95,25 +83,6 @@ bool MeshTable::set(vk::Context& ctx, const std::vector<VoxelMesh>& meshes) {
     LOGI("MeshTable: мешей %zu, вершин %zu, треугольников %zu",
          meshes.size(), verts.size(), idx.size() / 3);
     return true;
-}
-
-void MeshTable::destroy() {
-    vbo_.destroy();
-    ibo_.destroy();
-    ranges_.clear();
-}
-
-void MeshTable::bind(VkCommandBuffer cmd, VkBuffer instances) const {
-    VkBuffer vbs[2] = { vbo_.handle(), instances };
-    VkDeviceSize offs[2] = { 0, 0 };
-    vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offs);
-    vkCmdBindIndexBuffer(cmd, ibo_.handle(), 0, VK_INDEX_TYPE_UINT32);
-}
-
-void MeshTable::draw(VkCommandBuffer cmd, u32 mesh, u32 instanceCount, u32 firstInstance) const {
-    if (empty(mesh) || instanceCount == 0) return;
-    const Range& r = ranges_[mesh];
-    vkCmdDrawIndexed(cmd, r.indexCount, instanceCount, r.firstIndex, r.vertexOffset, firstInstance);
 }
 
 void VoxelModelRenderer::add(u32 model, const glm::vec3& pos, const glm::vec4& rot,

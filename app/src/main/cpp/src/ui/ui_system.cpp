@@ -911,14 +911,30 @@ void UiSystem::drawHotbar(player::Player& player) {
     }
 
     const Rect hb = layout_.hotbar();
-    const auto& wdef = combat::weapons().get(player.equipped.weaponId);
-    if (wdef.name) {
-        const char* wname = cfg::tr(wdef.name);
-        const f32 tw = ui_.textWidth(wname, theme::TEXT_LABEL);
-        ui_.text(wname, hb.x + hb.w * 0.5f - tw * 0.5f,
+    if (const char* caption = hotbarCaption(inv, player.equipped)) {
+        const f32 tw = ui_.textWidth(caption, theme::TEXT_LABEL);
+        ui_.text(caption, hb.x + hb.w * 0.5f - tw * 0.5f,
                  hb.y - layout_.dp(theme::SPACE_L_DP),
                  theme::TEXT_LABEL, theme::TextPrimary);
     }
+}
+
+// Подпись над поясом — имя предмета в выбранной ячейке: её значок
+// подсвечен, и имя обязано быть его.
+//
+// Прежде здесь стояло имя оружия в руке. Взяв кирку или хлеб, игрок
+// читал над ними «Iron Sword», а после смены оружия подсвеченная
+// ячейка показывала прежний клинок под именем нового: взятое оружие
+// уходит в руку, прежнее ложится на его место.
+const char* hotbarCaption(const items::Inventory* inv,
+                          const combat::EquippedWeapon& hand) {
+    if (inv) {
+        const auto& st = inv->activeSlot();
+        if (!st.empty() && items::items().get(st.itemId).name)
+            return items::items().name(st.itemId);
+    }
+    const auto& wdef = combat::weapons().get(hand.weaponId);
+    return wdef.name ? cfg::tr(wdef.name) : nullptr;
 }
 
 // ============================================================

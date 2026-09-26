@@ -13,9 +13,17 @@
  *
  *   ./tools/isocheck/run.sh
  *   ./tools/isocheck/run.sh --size 100 --view 2 --px 12
+ *   ./tools/isocheck/run.sh --all-views --no-nature
+ *
+ * Растения и мелкие природные вещи рисуются по умолчанию, тем же
+ * путём, что в игре. --no-nature выключает их: такой снимок обязан
+ * совпасть байт в байт с голым ландшафтом прежних версий — этим и
+ * проверяется, что воксели и вода от растений не поменялись.
  */
 #include "render/iso_snapshot.h"
 #include "render/iso_png.h"
+#include "render/flora_batch.h"
+#include "world/flora.h"
 #include "world/chunk_manager.h"
 #include "world/block.h"
 #include "core/job_system.h"
@@ -86,6 +94,10 @@ int main(int argc, char** argv) {
     u64 seed = 20260920ULL;
     const char* out = "build/isocheck/iso.png";
     bool allViews = false;
+    // Середина области. Выровненная по чанкам область (--pos 32 32
+    // --size 64) нужна сверке «до/после»: в ней нечего обрезать.
+    f32 posX = 8.5f, posZ = 8.5f;
+    bool nature = true;
 
     for (int i = 1; i < argc; ++i) {
         auto next = [&](const char* d) { return i + 1 < argc ? argv[++i] : d; };
@@ -95,6 +107,11 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--seed"))  seed = std::strtoull(next("1"), nullptr, 10);
         else if (!std::strcmp(argv[i], "--out"))   out = next(out);
         else if (!std::strcmp(argv[i], "--all-views")) allViews = true;
+        else if (!std::strcmp(argv[i], "--pos")) {
+            posX = (f32)std::atof(next("8.5"));
+            posZ = (f32)std::atof(next("8.5"));
+        }
+        else if (!std::strcmp(argv[i], "--no-nature")) nature = false;
     }
 
     int layerMsgs = 0;
@@ -173,7 +190,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const glm::vec3 player{ 8.5f, 70.f, 8.5f };
+    const glm::vec3 player{ posX, 70.f, posZ };
     const u32 first = allViews ? 0 : viewIdx;
     const u32 last  = allViews ? 3 : viewIdx;
     int rc = 0;
@@ -184,6 +201,7 @@ int main(int argc, char** argv) {
         req.view  = (render::iso::View)v;
         req.pixelsPerBlock = px;
         req.maxSide = 8192;
+        req.nature = nature;
 
         const auto t0 = std::chrono::steady_clock::now();
         snap.begin(req);
@@ -239,6 +257,53 @@ int main(int argc, char** argv) {
         if (drawn * 4 < total) {
             std::printf("isocheck: картинка почти пуста — рисовать было нечем\n");
             rc = 1;
+        }
+
+        // ---- Растения: есть и не срезаны сверху ----
+        //
+        // Верх кадра считается по коробке области, и растения обязаны
+        // в неё поместиться: макушка выше yMax ушла бы за край
+        // картинки.
+        //
+        // Сверка — с самим миром, а не с числом «побольше нуля»: в
+        // области над морем растений нет, и снимок без них верен.
+        // Сколько их стоит в области (тем же отбором, что у меширования
+        // чанка), столько снимок и обязан показать — за вычетом тех,
+        // что у кромки не помещаются целиком: их немного.
+        if (nature) {
+            u32 standing = 0;
+            const auto& A = req.area;
+            const render::iso::ChunkRange cr =
+                render::iso::chunkRange(A, world::CHUNK_SIZE, 0);
+            for (i32 cz = cr.z0; cz <= cr.z1; ++cz)
+                for (i32 cx = cr.x0; cx <= cr.x1; ++cx) {
+                    auto ch = world->findChunk(cx, cz);
+                    if (!ch) continue;
+                    auto voxel = [&](i32 x, i32 y, i32 z) -> u16 {
+                        return (u32)y < (u32)world::CHUNK_SIZE_Y
+                             ? ch->voxels[world::chunkIndex(x, y, z)] : world::AIR;
+                    };
+                    const glm::vec3 org{ (f32)(cx * world::CHUNK_SIZE), 0.f,
+                                         (f32)(cz * world::CHUNK_SIZE) };
+                    for (const auto& f : ch->flora) {
+                        if (!world::floraStillStands(f, voxel)) continue;
+                        const glm::vec3 b = render::FloraBatch::basePosition(org, f);
+                        if (b.x >= (f32)A.x0 && b.x < (f32)A.x1() &&
+                            b.z >= (f32)A.z0 && b.z < (f32)A.z1()) ++standing;
+                    }
+                }
+            std::printf("isocheck:   растений на снимке %u из %u стоящих в области, "
+                        "макушка %.1f при верхе кадра %d\n",
+                        snap.floraCount(), standing, (double)snap.floraTop(), snap.yMax());
+            if (snap.floraCount() > standing ||
+                (double)snap.floraCount() < 0.8 * (double)standing) {
+                std::printf("isocheck: растения на снимке не сходятся с миром\n");
+                rc = 1;
+            }
+            if (snap.floraTop() > (f32)snap.yMax()) {
+                std::printf("isocheck: макушки растений выше кадра\n");
+                rc = 1;
+            }
         }
 
         // ---- Швов на стыке тайлов нет ----

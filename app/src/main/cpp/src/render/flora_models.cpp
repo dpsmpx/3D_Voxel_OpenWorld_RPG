@@ -691,4 +691,18 @@ f32 floraSway(FloraKind k) {
     }
 }
 
+std::vector<FloraExtent> floraExtents(const std::vector<VoxelMesh>& meshes) {
+    std::vector<FloraExtent> out(floraModelCount());
+    for (u32 m = 0; m < (u32)out.size(); ++m) {
+        const u32 i = m * FLORA_LODS;
+        if (i >= meshes.size()) break;
+        const VoxelMesh& mesh = meshes[i];
+        const f32 ax = std::max(std::fabs(mesh.boundsMin.x), std::fabs(mesh.boundsMax.x));
+        const f32 az = std::max(std::fabs(mesh.boundsMin.z), std::fabs(mesh.boundsMax.z));
+        out[m].height = std::max(mesh.boundsMax.y, 0.f);
+        out[m].radius = std::sqrt(ax * ax + az * az);
+    }
+    return out;
+}
+
 } // namespace render

@@ -220,6 +220,32 @@ enum BlockId : u16 {
 /// blocks().get(UNKNOWN) — ошибка, и её видно сразу.
 constexpr u16 UNKNOWN = 0xFFFF;
 
+/// На чём существо может появиться.
+///
+/// Существа рождались на крышах домов и на верхушках деревьев: место
+/// искали по «воздуху над твёрдым», а кровля, верх стены и верх
+/// невидимого ствола под кроной — тоже твёрдое с воздухом сверху.
+enum class Footing : u8 {
+    Never,   ///< ствол, кактус, листва, жидкость, воздух — никогда
+    Ground,  ///< земля и камень: поверхность, дно пещеры, дорога
+    Built,   ///< постройка: только ПОД КРЫШЕЙ — пол дома, этаж
+             ///< подземелья; кровля и верх стены под небом — нет
+};
+
+constexpr Footing footingOf(u16 id) {
+    switch (id) {
+        case STONE: case DIRT: case GRASS: case SAND: case SNOW: case ICE:
+        case IRON_ORE: case GOLD_ORE: case BEDROCK: case GRAVEL: case DRY_GRASS:
+            return Footing::Ground;
+        case WOOD: case PLANK: case THATCH: case GLASS: case LANTERN: case BRICK:
+            return Footing::Built;
+        // Новый блок, пока о нём не решили, опорой не считается:
+        // лишний отказ в рождении безвреднее твари на крыше.
+        default:
+            return Footing::Never;
+    }
+}
+
 /// Можно ли решать по этому соседу, строить грань или нет.
 inline bool neighborKnown(u16 id) { return id != UNKNOWN; }
 
