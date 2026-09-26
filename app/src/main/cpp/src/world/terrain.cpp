@@ -127,58 +127,44 @@ bool TerrainGenerator::isCave(i32 x, i32 y, i32 z) const {
     return isCaveAt(caveDensity((f32)x, (f32)y, (f32)z), y);
 }
 
-u16 TerrainGenerator::oreAt(i32 x, i32 y, i32 z) const {
-    // Руды через хэш-сетки. Идея: решаем принадлежность (x,y,z) к жиле
-    // через хэш-ячейку 4×4×4. Внутри ячейки — шум для формы.
-
-    constexpr i32 CELL = 4;
-    i32 cx = x >> 2, cy = y >> 2, cz = z >> 2;
+bool TerrainGenerator::oreVeinAt(i32 vcx, i32 vcy, i32 vcz, OreVein& out) const {
+    constexpr i32 CELL = ORE_CELL;
+    if (vcy * CELL > 80) return false;   // нет руды у поверхности гор
 
     // Детерминированный хэш
-    auto hash3 = [](i32 a, i32 b, i32 c, u64 s) -> u32 {
-        u64 h = (u64)(u32)a * 0x9E3779B97F4A7C15ULL;
-        h ^= (u64)(u32)b * 0xC4CEB9FE1A85EC53ULL;
-        h ^= (u64)(u32)c * 0xFF51AFD7ED558CCDULL;
-        h ^= s;
-        h ^= h >> 33; h *= 0xFF51AFD7ED558CCDULL;
-        h ^= h >> 33;
-        return (u32)h;
-    };
+    u64 h64 = (u64)(u32)vcx * 0x9E3779B97F4A7C15ULL;
+    h64 ^= (u64)(u32)vcy * 0xC4CEB9FE1A85EC53ULL;
+    h64 ^= (u64)(u32)vcz * 0xFF51AFD7ED558CCDULL;
+    h64 ^= seed_ ^ 0x0AE5ULL;
+    h64 ^= h64 >> 33; h64 *= 0xFF51AFD7ED558CCDULL;
+    h64 ^= h64 >> 33;
+    const u32 h = (u32)h64;
 
-    // Проверяем 3x3x3 ячейки-соседа — жила может заходить в текущую
-    for (i32 ddy = -1; ddy <= 1; ++ddy) {
-        for (i32 ddz = -1; ddz <= 1; ++ddz) {
+    // 12% ячеек содержат жилу
+    if ((h & 0xFF) > 30) return false;
+    // Тип руды зависит от высоты
+    if (vcy * CELL > 50) out.kind = ((h >> 8) & 3) == 0 ? GOLD_ORE : IRON_ORE;
+    else                 out.kind = ((h >> 8) & 3) < 2 ? IRON_ORE : GOLD_ORE;
+    // Центр жилы внутри ячейки, радиус 1.5..2.5
+    out.center = { (f32)(vcx * CELL) + (f32)(h & 0xF) / 16.f * (f32)CELL,
+                   (f32)(vcy * CELL) + (f32)((h >> 8) & 0xF) / 16.f * (f32)CELL,
+                   (f32)(vcz * CELL) + (f32)((h >> 16) & 0xF) / 16.f * (f32)CELL };
+    out.radius = 1.5f + (f32)((h >> 24) & 0xFF) / 255.f;
+    return true;
+}
+
+u16 TerrainGenerator::oreAt(i32 x, i32 y, i32 z) const {
+    const i32 cx = x >> 2, cy = y >> 2, cz = z >> 2;
+    const glm::vec3 p = { (f32)x + 0.5f, (f32)y + 0.5f, (f32)z + 0.5f };
+    // 3x3x3 клетки-соседа: жила может заходить в текущую.
+    for (i32 ddy = -1; ddy <= 1; ++ddy)
+        for (i32 ddz = -1; ddz <= 1; ++ddz)
             for (i32 ddx = -1; ddx <= 1; ++ddx) {
-                i32 vcx = cx + ddx, vcy = cy + ddy, vcz = cz + ddz;
-                u32 h = hash3(vcx, vcy, vcz, seed_ ^ 0x0AE5ULL);
-                // 12% ячеек содержат жилу
-                if ((h & 0xFF) > 30) continue;
-                // Тип руды зависит от высоты
-                u16 oreKind;
-                if (vcy * CELL > 80) continue;   // нет руды на поверхности
-                if (vcy * CELL > 50) {
-                    oreKind = ((h >> 8) & 3) == 0 ? GOLD_ORE : IRON_ORE;
-                } else {
-                    oreKind = ((h >> 8) & 3) < 2 ? IRON_ORE : GOLD_ORE;
-                }
-                // Центр жилы внутри ячейки
-                f32 ox = (f32)(h & 0xF) / 16.f;
-                f32 oy = (f32)((h >> 8) & 0xF) / 16.f;
-                f32 oz = (f32)((h >> 16) & 0xF) / 16.f;
-                glm::vec3 center = {
-                    (f32)(vcx * CELL) + ox * (f32)CELL,
-                    (f32)(vcy * CELL) + oy * (f32)CELL,
-                    (f32)(vcz * CELL) + oz * (f32)CELL,
-                };
-                glm::vec3 p = { (f32)x + 0.5f, (f32)y + 0.5f, (f32)z + 0.5f };
-                glm::vec3 d = p - center;
-                f32 dist2 = glm::dot(d, d);
-                // Радиус жилы 1.5..2.5
-                f32 r = 1.5f + (f32)((h >> 24) & 0xFF) / 255.f;
-                if (dist2 < r * r) return oreKind;
+                OreVein v;
+                if (!oreVeinAt(cx + ddx, cy + ddy, cz + ddz, v)) continue;
+                const glm::vec3 d = p - v.center;
+                if (glm::dot(d, d) < v.radius * v.radius) return v.kind;
             }
-        }
-    }
     return STONE;
 }
 

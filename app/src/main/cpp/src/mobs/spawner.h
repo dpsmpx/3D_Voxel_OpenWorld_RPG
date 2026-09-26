@@ -49,6 +49,22 @@ public:
 
     u32 mobCount() const { return mobCount_; }
 
+    /// ---- Боссы ----
+    ///
+    /// Босс стоит в подземелье, пока его не убьют: уход игрока его не
+    /// снимает (иначе бой сбрасывался бы отходом на полсотни шагов), а
+    /// убитый не возвращается ни после загрузки, ни после сворачивания
+    /// игры. Помнить для этого нужно одно — где босс уже побеждён;
+    /// ключ — супер-чанк подземелья (siteKey), список живёт в сейве.
+    static u64 siteKey(i32 superX, i32 superZ) {
+        return ((u64)(u32)superX << 32) | (u32)superZ;
+    }
+    bool bossDefeated(u64 key) const;
+    /// Ключи побеждённых, в возрастающем порядке.
+    const std::vector<u64>& defeatedBosses() const { return bossDefeated_; }
+    /// Восстановление из сохранения.
+    void setDefeatedBosses(std::vector<u64> keys);
+
     /// Сколько засад уже сработало. Спрашивают проверки: «сработала
     /// ли» — это и есть всё поведение засады.
     u32 sprungAmbushCount() const { return (u32)sprung_.size(); }
@@ -92,7 +108,12 @@ private:
     /// развернуться.
     static constexpr u32 GARRISON_PER_SITE = 6;
 
-    std::unordered_set<u64> bossPlaced_;
+    /// Живые боссы по ключу подземелья. Сущность нужна, чтобы увидеть
+    /// смерть: тогда ключ уходит в bossDefeated_. Пропавший без смерти
+    /// (упал за мир, реестр очищен) будет поставлен снова.
+    std::unordered_map<u64, ecs::Entity> bossAlive_;
+    std::vector<u64> bossDefeated_;
+    void watchBosses(ecs::Registry& reg);
     /// Ячейки, чей гарнизон уже поставлен: второй раз он
     /// набивал бы дерево тварями до отказа.
     std::unordered_set<u64> garrisonPlaced_;
