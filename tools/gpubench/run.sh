@@ -32,18 +32,24 @@ mkdir -p "$OUT/assets/shaders"
 # будущей поставки, и однажды APK уехал на устройство со старым
 # voxel.frag: сборка была новая, шейдер в ней — прошлый, а замер на
 # устройстве молча повторил прежние числа.
+# Компилятор — через общий помощник, как у vkcheck и hostcheck: на
+# машине бывает то glslc, то glslangValidator.
+. "$PROJ/tools/glsl-cc.sh"
+glsl_find || { echo "gpubench: $(glsl_hint)"; exit 1; }
+OPT=""; [ "$GLSL_CC_KIND" = glslc ] && OPT="-O"
 for f in "$PROJ"/app/src/main/cpp/shaders/sky.vert "$PROJ"/app/src/main/cpp/shaders/sky.frag \
          "$PROJ"/app/src/main/cpp/shaders/voxel.frag; do
-    glslc -O "$f" -o "$OUT/assets/shaders/$(basename "$f").spv"
+    glsl_compile "$f" "$OUT/assets/shaders/$(basename "$f").spv" $OPT >/dev/null
 done
+
 # Опорный шейдер кладётся в каталог сборки, а НЕ в ассеты игры.
 #
 # Сначала он писался рядом с шейдерами игры — и уехал в APK: gradle
 # пакует весь assets/shaders целиком. Инструмент не имеет права
 # добавлять файлы в поставку.
-glslc -O "$PROJ/tools/gpubench/flat.frag" -o "$OUT/gpubench_flat.frag.spv"
-glslc -O "$PROJ/tools/gpubench/voxel_probe.vert" -o "$OUT/gpubench_voxel_probe.vert.spv"
-glslc -O -DWATER "$PROJ/tools/gpubench/voxel_probe.vert" -o "$OUT/gpubench_water_probe.vert.spv"
+glsl_compile "$PROJ/tools/gpubench/flat.frag" "$OUT/gpubench_flat.frag.spv" $OPT >/dev/null
+glsl_compile "$PROJ/tools/gpubench/voxel_probe.vert" "$OUT/gpubench_voxel_probe.vert.spv" $OPT >/dev/null
+glsl_compile "$PROJ/tools/gpubench/voxel_probe.vert" "$OUT/gpubench_water_probe.vert.spv" $OPT -DWATER >/dev/null
 
 "$CXX" -std=c++20 -O2 -g0 \
     -DGLM_FORCE_DEPTH_ZERO_TO_ONE -DGLM_ENABLE_EXPERIMENTAL \

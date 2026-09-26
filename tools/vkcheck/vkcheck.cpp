@@ -32,6 +32,7 @@
 #include "world/terrain.h"
 #include "world/features.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
@@ -173,6 +174,13 @@ int main(int argc, char** argv) {
     // Растения: модели, сборка кадра и шейдер — те же, что в игре.
     // Выключаются ключом --flora 0: сравнить «до» и «после».
     bool  drawFlora = true;
+    // Взгляд прямо на светило: небо проверяется глазами, и искать
+    // солнце перебором yaw/pitch незачем.
+    const char* look = "";
+    // Замер кадра целиком: команда отправляется N раз, берётся лучшее
+    // время от отправки до забора. Считает процессор (lavapipe) —
+    // переносится доля, а не миллисекунды.
+    int   repeat = 1;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : "0"; };
@@ -206,6 +214,8 @@ int main(int argc, char** argv) {
         // Свет от факела видно только глазами, а глаза здесь — кадр.
         else if (a == "--torch")   torch = (float)atof(next());
         else if (a == "--flora")   drawFlora = atoi(next()) != 0;
+        else if (a == "--look")    look = next();
+        else if (a == "--repeat")  repeat = std::max(1, atoi(next()));
         else if (a == "--scene") {
             const std::string v = next();
             if (v == "minimal") minimalScene = true;
@@ -544,6 +554,17 @@ int main(int argc, char** argv) {
                     (double)sd.z, (double)dc.skyLight());
     }
 
+    if (!std::strcmp(look, "sun") || !std::strcmp(look, "moon")) {
+        // forward = (cos p · sin y, sin p, cos p · cos y), см. Camera::forward.
+        glm::vec3 d = glm::vec3(cam.toUbo(world::SCENE_TIME_SEC).sunDir);
+        if (!std::strcmp(look, "moon")) d = -d;
+        yaw   = std::atan2(d.x, d.z);
+        pitch = std::asin(glm::clamp(d.y, -1.f, 1.f));
+        cam.setDebugCamera(eye, yaw, pitch);
+        std::printf("vkcheck: взгляд на %s — yaw %.3f, pitch %.3f\n", look,
+                    (double)yaw, (double)pitch);
+    }
+
     if (weatherGiven) {
         cam.setWeather(cloud, rain, rainbow, 0.f, glm::vec2(windX, windZ));
         std::printf("vkcheck: погода — тучи %.2f, осадки %.2f, радуга %.2f, "
@@ -781,7 +802,7 @@ int main(int argc, char** argv) {
     VkCommandBuffer cmd; VKOK(vkAllocateCommandBuffers(dev, &cai, &cmd));
 
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    bi.flags = repeat > 1 ? 0u : (VkCommandBufferUsageFlags)VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VKOK(vkBeginCommandBuffer(cmd, &bi));
 
     // Небо шейдером здесь НЕ рисуется: инструмент про геометрию и свет
@@ -903,8 +924,17 @@ int main(int argc, char** argv) {
     si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
     VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     VkFence fence; VKOK(vkCreateFence(dev, &fi, nullptr, &fence));
-    VKOK(vkQueueSubmit(queue, 1, &si, fence));
-    VKOK(vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX));
+    double bestFrameMs = 1e30;
+    for (int r = 0; r < repeat; ++r) {
+        if (r) VKOK(vkResetFences(dev, 1, &fence));
+        const auto t0 = std::chrono::steady_clock::now();
+        VKOK(vkQueueSubmit(queue, 1, &si, fence));
+        VKOK(vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX));
+        bestFrameMs = std::min(bestFrameMs, std::chrono::duration<double, std::milli>(
+                                                std::chrono::steady_clock::now() - t0).count());
+    }
+    if (repeat > 1)
+        std::printf("vkcheck: кадр целиком %.2f мс (лучший из %d, lavapipe)\n", bestFrameMs, repeat);
 
     void* mapped = nullptr;
     VKOK(vkMapMemory(dev, readMem, 0, bytes, 0, &mapped));
