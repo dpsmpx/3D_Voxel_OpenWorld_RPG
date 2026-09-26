@@ -34,7 +34,7 @@ mkdir -p "$OUT"
     -isystem "$TP/glm" -isystem "$TP/Vulkan-Headers/include" \
     -o "$OUT/bench" \
     "$PROJ/tools/bench/bench.cpp" \
-    "$SRC"/world/{chunk,block,terrain,biome,noise,features,chunk_manager,debug_scene}.cpp \
+    "$SRC"/world/{chunk,block,terrain,biome,noise,features,hydrology,chunk_manager,debug_scene}.cpp \
     "$SRC"/render/mesh_builder.cpp \
     "$SRC"/world/ai/pathfinding.cpp \
     "$SRC"/audio/{audio_engine,sound_registry}.cpp \

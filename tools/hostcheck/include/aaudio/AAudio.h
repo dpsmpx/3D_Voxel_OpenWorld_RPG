@@ -8,7 +8,7 @@ typedef int32_t aaudio_format_t;
 typedef int32_t aaudio_direction_t;
 typedef int32_t aaudio_performance_mode_t;
 typedef int32_t aaudio_data_callback_result_t;
-enum { AAUDIO_OK = 0, AAUDIO_ERROR_BASE = -900 };
+enum { AAUDIO_OK = 0, AAUDIO_ERROR_BASE = -900, AAUDIO_ERROR_DISCONNECTED = -899 };
 enum { AAUDIO_FORMAT_PCM_I16 = 1, AAUDIO_FORMAT_PCM_FLOAT = 2 };
 enum { AAUDIO_DIRECTION_OUTPUT = 0, AAUDIO_DIRECTION_INPUT = 1 };
 enum { AAUDIO_PERFORMANCE_MODE_NONE = 10, AAUDIO_PERFORMANCE_MODE_POWER_SAVING = 11, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY = 12 };

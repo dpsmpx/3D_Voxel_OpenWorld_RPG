@@ -445,6 +445,30 @@ void testJobSystem() {
     check(single.load() == 1, "пустой диапазон ничего не выполняет");
 
     jobs::gJobs.stop();
+
+    // Регрессия: без воркеров задачи некому было разбирать, и
+    // parallelFor ждал вечно.
+    {
+        jobs::JobSystem idle;                       // не запущен
+        std::atomic<int> n{0};
+        idle.parallelFor(1000, 16, [&](u32 b, u32 e) { n.fetch_add((int)(e - b)); });
+        check(n.load() == 1000, "parallelFor без воркеров выполняется на месте, а не виснет");
+    }
+    // Регрессия: из задачи единственного воркера parallelFor раскладывал
+    // куски в его же очередь и ждал их, не разбирая её, — вечно.
+    {
+        jobs::JobSystem js;
+        js.start(1);
+        struct Ctx { jobs::JobSystem* js; std::atomic<int> n{0}; } ctx{ &js };
+        jobs::Counter c;
+        js.submit(&c, [](void* p) {
+            auto* x = (Ctx*)p;
+            x->js->parallelFor(100, 4, [x](u32 b, u32 e) { x->n.fetch_add((int)(e - b)); });
+        }, &ctx);
+        c.wait();
+        check(ctx.n.load() == 100, "parallelFor из воркера не блокирует его навсегда");
+        js.stop();
+    }
 }
 
 // ------------------------------------------------------------
@@ -4066,6 +4090,103 @@ void testFramePassOrder() {
     if (!skyVert.empty())
         check(skyVert.find("uv * 2.0 - 1.0, 1.0, 1.0") != NONE,
               "небо лежит на дальней плоскости (z = 1)");
+}
+
+// ------------------------------------------------------------
+// Инженерный аудит: возврат в приложение и владение ресурсами.
+//
+// Окно на Android пропадает при каждом сворачивании, и движок
+// перестраивает мир, игрока и кнопки заново — а реестр и сенсорный
+// ввод живут дольше окна. Всё, что они держали от прошлого сеанса,
+// обязано уйти: иначе рядом с новым игроком стоял бы прежний, а
+// кнопки «прыжок» и «удар» лежали бы на экране в двух экземплярах,
+// и зажатие ловила бы не та.
+// ------------------------------------------------------------
+void testResumeLeavesNoGhosts() {
+    group("аудит: возврат в приложение не оставляет призраков");
+
+    // 1. Реестр пустеет целиком — вместе с сущностями без Transform.
+    {
+        ecs::Registry reg;
+        const ecs::Entity a = reg.create();
+        reg.add(a, ecs::Transform{ glm::vec3(1.f, 2.f, 3.f) });
+        const ecs::Entity b = reg.create();          // без компонентов
+        reg.add(reg.create(), ecs::Transform{});
+        check(reg.aliveCount() == 3, "три сущности до очистки");
+        reg.clear();
+        check(reg.aliveCount() == 0, "clear() уничтожает все сущности");
+        check(!reg.alive(a) && !reg.alive(b), "прежние дескрипторы недействительны");
+        u32 left = 0;
+        reg.view<ecs::Transform>().each([&](ecs::Entity, ecs::Transform&) { ++left; });
+        check(left == 0, "и в обходе по Transform никого не осталось");
+        const ecs::Entity c = reg.create();
+        check(reg.alive(c) && reg.aliveCount() == 1, "после очистки реестр снова работает");
+    }
+
+    // 2. Кнопки: вторая раскладка не ложится поверх первой, а зажатая
+    //    в прошлом сеансе кнопка отпускается, а не залипает.
+    {
+        input::TouchInput t;
+        t.setViewport(2400, 1080);
+        u32 released = 0;
+        const u32 jump = t.addButton(glm::vec2(0.8f, -0.6f), 60.f, nullptr,
+                                     [&](u32) { ++released; });
+        t.addButton(glm::vec2(0.5f, -0.6f), 60.f);
+        check(t.buttonCount() == 2, "две кнопки заведены");
+
+        // Палец на кнопке прыжка: центр кнопки в пикселях.
+        const glm::vec2 c = t.buttonCenterPx(jump);
+        t.onTouch(AMOTION_EVENT_ACTION_DOWN, 0, 7, c.x, c.y, 0.f);
+        check(t.isButtonHeld(jump), "кнопка прыжка зажата");
+
+        t.clearButtons();
+        check(t.buttonCount() == 0, "clearButtons() убирает все кнопки");
+        check(released == 1, "зажатая кнопка отпущена, а не брошена зажатой");
+
+        const u32 again = t.addButton(glm::vec2(0.8f, -0.6f), 60.f);
+        check(t.buttonCount() == 1, "новая раскладка — единственная");
+        check(!t.isButtonHeld(again), "новая кнопка не наследует чужое нажатие");
+        t.onTouch(AMOTION_EVENT_ACTION_UP, 0, 7, c.x, c.y, 0.1f);
+        t.onTouch(AMOTION_EVENT_ACTION_DOWN, 0, 8, c.x, c.y, 0.2f);
+        check(t.isButtonHeld(again), "и ловит касание сама");
+    }
+
+    // 3. Настройки пишутся целиком или никак: через временный файл,
+    //    который не остаётся лежать рядом.
+    {
+        const std::string path = "build/hostcheck/settings_atomic.cfg";
+        std::remove(path.c_str());
+        config::Settings s;
+        s.masterVolume = 0.25f;
+        check(s.save(path), "настройки записаны");
+        struct stat st{};
+        check(::stat((path + ".tmp").c_str(), &st) != 0, "временный файл не остался");
+        config::Settings back;
+        check(back.load(path) && std::fabs(back.masterVolume - 0.25f) < 1e-3f,
+              "записанное читается обратно");
+
+        // Писать некуда — отказ, и старый файл цел.
+        config::Settings bad;
+        check(!bad.save("build/hostcheck/нет/такой/папки/settings.cfg"),
+              "запись в несуществующую папку — отказ, а не молчание");
+        config::Settings still;
+        check(still.load(path) && std::fabs(still.masterVolume - 0.25f) < 1e-3f,
+              "прежний файл не тронут неудачной записью");
+    }
+
+    // 4. Поле биомов владеет своим шумом: копия означала бы двойное
+    //    освобождение, поэтому её нет вовсе.
+    static_assert(!std::is_copy_constructible_v<world::BiomeField>,
+                  "BiomeField владеет Impl и не копируется");
+    {
+        const world::BiomeField* first = new world::BiomeField(0xA0D17u);
+        const auto a = first->fields(123, -456);
+        delete first;                                  // раньше Impl терялся
+        const world::BiomeField second(0xA0D17u);
+        const auto b = second.fields(123, -456);
+        check(a.temperature == b.temperature && a.humidity == b.humidity,
+              "поле биомов пересоздаётся с тем же результатом");
+    }
 }
 
 // ------------------------------------------------------------
@@ -12502,6 +12623,9 @@ struct Arena {
             if (!c->generated.load(std::memory_order_acquire)) return false;
 
         for (auto& c : got) {
+            // Под замком: соседние чанки в это время уже мешаются на
+            // рабочих потоках и читают края этого (TSan это видел).
+            std::unique_lock lk(c->voxelMutex);
             for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
                 for (i32 z = 0; z < world::CHUNK_SIZE; ++z) {
                     const i32 wx = c->coord.x * world::CHUNK_SIZE + x;
@@ -20628,7 +20752,7 @@ void testNoRunningOnWater() {
             top = std::max(top, cc.state().position.y);
         }
         const f32 went = cc.state().position.x - x0;
-        char m[160];
+        char m[256];   // кириллица — по два байта на букву
         std::snprintf(m, sizeof(m),
                       "за четыре секунды с прыжком и рывками: проплыл %.1f блока, "
                       "ступни поднимались до %.2f (вода до %d)",
@@ -27910,6 +28034,7 @@ int main() {
     testFrameGpuBreakdown();
     testFrameRateIsMeasuredByWallClock();
     testFrameRateLimitSetting();
+    testResumeLeavesNoGhosts();
     testClipboardLogTrimming();
     testWaterSortedByWaterCenter();
     testSettingsTogglesActuallyToggle();

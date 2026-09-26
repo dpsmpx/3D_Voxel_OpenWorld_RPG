@@ -311,6 +311,7 @@ void Spawner::updateGarrison(world::ChunkManager& world, ecs::Registry& reg,
                 static const u16 KIND[3] = { MOB_SKELETON, MOB_GOBLIN, MOB_BANDIT };
                 const u16 id = KIND[(h >> 24) % 3u];
                 const glm::vec3 pos{ (f32)wx + 0.5f, (f32)y, (f32)wz + 0.5f };
+                rd.release();   // spawnMob сам читает мир через менеджер
                 if (spawnMob(world, reg, id, pos).valid()) {
                     ++placed;
                     ++mobCount_;

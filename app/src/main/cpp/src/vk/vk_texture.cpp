@@ -74,23 +74,50 @@ bool Texture2D::create(VkDevice dev, VkPhysicalDevice phys, VkQueue queue, u32 q
     VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     mai.allocationSize  = req.size;
     mai.memoryTypeIndex = findMemoryType(phys, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(dev, &mai, nullptr, &mem_) != VK_SUCCESS) return false;
-    vkBindImageMemory(dev, image_, mem_, 0);
+    if (mai.memoryTypeIndex == 0xFFFFFFFFu ||
+        vkAllocateMemory(dev, &mai, nullptr, &mem_) != VK_SUCCESS) {
+        LOGE("Texture2D::create: память под изображение %ux%u не выделена", w, h);
+        destroy();
+        return false;
+    }
+    if (vkBindImageMemory(dev, image_, mem_, 0) != VK_SUCCESS) { destroy(); return false; }
 
-    // Staging
-    VkBuffer sBuf; VkDeviceMemory sMem;
+    // Промежуточный буфер. Каждый шаг проверяется: раньше результаты
+    // не спрашивались вовсе, и неудавшееся отображение памяти
+    // оставляло указатель неинициализированным — пиксели копировались
+    // по случайному адресу.
+    VkBuffer sBuf = VK_NULL_HANDLE; VkDeviceMemory sMem = VK_NULL_HANDLE;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    auto fail = [&](const char* what) {
+        LOGE("Texture2D::create: %s", what);
+        if (pool) vkDestroyCommandPool(dev, pool, nullptr);
+        if (sBuf) vkDestroyBuffer(dev, sBuf, nullptr);
+        if (sMem) vkFreeMemory(dev, sMem, nullptr);
+        destroy();
+        return false;
+    };
     {
         VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bci.size = bytes; bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        vkCreateBuffer(dev, &bci, nullptr, &sBuf);
+        if (vkCreateBuffer(dev, &bci, nullptr, &sBuf) != VK_SUCCESS) {
+            sBuf = VK_NULL_HANDLE;
+            return fail("промежуточный буфер не создан");
+        }
         VkMemoryRequirements r2; vkGetBufferMemoryRequirements(dev, sBuf, &r2);
         VkMemoryAllocateInfo m2{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         m2.allocationSize = r2.size;
         m2.memoryTypeIndex = findMemoryType(phys, r2.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkAllocateMemory(dev, &m2, nullptr, &sMem);
-        vkBindBufferMemory(dev, sBuf, sMem, 0);
-        void* m; vkMapMemory(dev, sMem, 0, bytes, 0, &m);
+        if (m2.memoryTypeIndex == 0xFFFFFFFFu ||
+            vkAllocateMemory(dev, &m2, nullptr, &sMem) != VK_SUCCESS) {
+            sMem = VK_NULL_HANDLE;
+            return fail("память промежуточного буфера не выделена");
+        }
+        if (vkBindBufferMemory(dev, sBuf, sMem, 0) != VK_SUCCESS)
+            return fail("память промежуточного буфера не привязана");
+        void* m = nullptr;
+        if (vkMapMemory(dev, sMem, 0, bytes, 0, &m) != VK_SUCCESS || !m)
+            return fail("промежуточный буфер не отображён");
         std::memcpy(m, pixels, bytes);
         vkUnmapMemory(dev, sMem);
     }
@@ -98,11 +125,16 @@ bool Texture2D::create(VkDevice dev, VkPhysicalDevice phys, VkQueue queue, u32 q
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.queueFamilyIndex = queueFamily;
     pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    VkCommandPool pool; vkCreateCommandPool(dev, &pci, nullptr, &pool);
+    if (vkCreateCommandPool(dev, &pci, nullptr, &pool) != VK_SUCCESS) {
+        pool = VK_NULL_HANDLE;
+        return fail("пул команд не создан");
+    }
 
     VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cbai.commandPool = pool; cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cbai.commandBufferCount = 1;
-    VkCommandBuffer cmd; vkAllocateCommandBuffers(dev, &cbai, &cmd);
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(dev, &cbai, &cmd) != VK_SUCCESS)
+        return fail("командный буфер не выделен");
 
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;

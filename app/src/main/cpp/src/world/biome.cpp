@@ -8,6 +8,7 @@
 #include <cmath>
 #include <array>
 #include <algorithm>
+#include <memory>
 
 namespace world {
 
@@ -104,7 +105,8 @@ struct BiomeField::Impl {
     }
 };
 
-BiomeField::BiomeField(u64 seed) : impl_(new Impl(seed)) {}
+BiomeField::BiomeField(u64 seed) : impl_(std::make_unique<Impl>(seed)) {}
+BiomeField::~BiomeField() = default;
 
 HomeKind BiomeField::home() const { return impl_->home; }
 // (в реальном проекте — unique_ptr, но здесь упрощаем для краткости)

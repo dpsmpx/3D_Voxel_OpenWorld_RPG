@@ -94,6 +94,13 @@ void TouchInput::cancelAll() {
     cameraDelta_ = {0, 0};
 }
 
+void TouchInput::clearButtons() {
+    cancelAll();
+    buttons_.clear();
+    draggedBtn_ = 0;
+    dragTouch_  = -1;
+}
+
 // ============================================================
 // Кнопки
 // ============================================================

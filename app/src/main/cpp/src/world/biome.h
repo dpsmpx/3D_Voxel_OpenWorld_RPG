@@ -5,6 +5,7 @@
 #pragma once
 #include "../core/types.h"
 #include <glm/glm.hpp>
+#include <memory>
 
 namespace world {
 
@@ -102,6 +103,9 @@ class SimplexNoise;  // fwd
 class BiomeField {
 public:
     explicit BiomeField(u64 seed);
+    ~BiomeField();
+    BiomeField(const BiomeField&) = delete;
+    BiomeField& operator=(const BiomeField&) = delete;
 
     struct Sample {
         BiomeId biome;
@@ -151,7 +155,10 @@ public:
 
 private:
     struct Impl;
-    Impl* impl_;   // PIMPL чтобы не тащить шум в заголовок
+    // PIMPL чтобы не тащить шум в заголовок. Раньше был голый
+    // указатель без деструктора: каждый мир (а мир пересоздаётся при
+    // каждом возврате в приложение) терял несколько КБ шумовых таблиц.
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace world

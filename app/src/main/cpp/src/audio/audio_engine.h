@@ -117,6 +117,14 @@ public:
 
     void mixInto(f32* out, u32 frames);
 
+    /// Из обратного вызова ошибки AAudio (его поток). Поток, отключённый
+    /// системой (сняли наушники, отвалился Bluetooth), больше не играет,
+    /// и закрывать его из этого обратного вызова нельзя — только
+    /// пометить, а переоткрыть в update() на игровом потоке.
+    void onStreamDisconnected() {
+        disconnected_.store(true, std::memory_order_release);
+    }
+
     u32 activeVoiceCount() const;
     u32 sampleRate() const { return sampleRate_; }
 
@@ -130,9 +138,17 @@ private:
     Voice* resolve(VoiceHandle h);
     const Voice* resolve(VoiceHandle h) const;
     void applySpatial(Voice& v, const AudioListener& L);
+    bool openStream();
+    void closeStream();
 
     AAudioStream* stream_ = nullptr;
     u32 sampleRate_ = 48000;
+    u32 requestedRate_ = 48000;
+    /// Между init() и shutdown(): звук нужен, даже если поток сейчас
+    /// потерян и переоткрыть его пока не вышло.
+    bool wantStream_ = false;
+    f32  reopenIn_ = 0.f;          ///< сек до следующей попытки
+    std::atomic<bool> disconnected_{ false };
 
     Voice voices_[MAX_VOICES];
 
