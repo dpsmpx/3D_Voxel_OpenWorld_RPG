@@ -1,0 +1,175 @@
+VoxelRPG Proprietary Source-Available License 1.0
+
+Copyright (c) 2026 dpsmpx
+
+All rights reserved.
+
+This license applies to the original source code and other original materials of the VoxelRPG project (the "Software") authored by dpsmpx, except for Third-Party Components identified in the repository or otherwise distributed under their own licenses.
+
+1. Ownership
+
+The Software is proprietary software.
+
+All copyrights and other intellectual property rights in the Software remain with the copyright holder, except for rights in Third-Party Components owned by their respective authors.
+
+This license grants only the limited rights expressly stated below. No other rights are granted.
+
+2. Source Availability
+
+The source code of the Software may be made publicly available for the purpose of inspection, study, learning, evaluation, and discussion.
+
+Public access to the source code does not grant a general right to redistribute, republish, sublicense, sell, or otherwise exploit the source code.
+
+The source code remains copyrighted and proprietary.
+
+3. Permitted Use
+
+Subject to the terms of this license, you may:
+
+1. view and study the publicly available source code;
+
+2. download a copy for your own personal inspection or development purposes;
+
+3. compile and run the Software privately for personal use;
+
+4. make private modifications for personal use, provided that the resulting modified source code and modified binaries are not distributed, published, sublicensed, sold, or otherwise made available to third parties;
+
+5. install and use an unmodified official build of the Software obtained from the copyright holder or an authorized distributor, including for lawful commercial or internal use.
+
+Private modifications do not create any right to distribute or publicly release those modifications.
+
+4. Official Distribution
+
+Official builds of the Software may be distributed only by the copyright holder or by parties expressly authorized by the copyright holder.
+
+You may obtain, install, and use official builds distributed through authorized channels.
+
+You may provide links to authorized official download pages, stores, or distribution channels, provided that you do not independently host, mirror, repackage, or redistribute the Software.
+
+5. Prohibited Actions
+
+Except where expressly permitted by this license or by a separate written agreement with the copyright holder, you may not:
+
+1. redistribute, publish, mirror, or republish the source code of the Software;
+
+2. upload or distribute the Software or any portion of it through third-party repositories, file hosts, package repositories, torrents, peer-to-peer networks, or other distribution services;
+
+3. distribute, publish, sell, rent, sublicense, or otherwise provide modified versions of the Software to any third party;
+
+4. distribute modified source code, modified binaries, modified APKs, forks, ports, or derivative versions of the Software;
+
+5. create or maintain a public or private fork intended for independent redistribution or development of a competing or derivative version of the Software;
+
+6. incorporate substantial portions of the Software into another software product, game, engine, framework, library, service, or commercial product;
+
+7. sell or sublicense the source code or derivative works based on the Software;
+
+8. remove, obscure, or alter copyright notices or other notices identifying the Software or its copyright holder;
+
+9. represent a modified or independently distributed version of the Software as an official release;
+
+10. use the Software's source code to create or distribute a competing product or a derivative commercial product.
+
+6. Private Modifications
+
+Private modifications are permitted only when the modified version remains under the exclusive control of the person or organization making the modification.
+
+A private modification must not be:
+
+- published;
+- uploaded to a public repository;
+- distributed to customers, users, friends, or other third parties;
+- included in a publicly distributed application or service;
+- sold, licensed, sublicensed, or otherwise transferred.
+
+Nothing in this section prevents the copyright holder from granting separate written permission for such activities.
+
+7. Commercialization by the Copyright Holder
+
+The copyright holder retains the unrestricted right to:
+
+- sell the Software;
+- distribute official builds;
+- offer paid versions, editions, expansions, updates, services, or other commercial products based on the Software;
+- license the Software under separate commercial agreements;
+- grant additional permissions to selected parties by written agreement.
+
+Nothing in this public license limits those rights.
+
+8. Separate Commercial Licenses
+
+The copyright holder may grant additional rights under a separate written commercial or proprietary license.
+
+A separate written agreement may permit rights otherwise prohibited by this license, including source-code redistribution, modification, integration, commercial redistribution, or creation of derivative works.
+
+Unless such an agreement expressly states otherwise, this license remains applicable.
+
+9. Third-Party Components
+
+The Software may contain or depend upon Third-Party Components distributed under separate licenses.
+
+Those components are not relicensed by this document.
+
+You must comply with the applicable license of each Third-Party Component.
+
+Where a Third-Party Component grants rights broader than this license, those rights apply only to that Third-Party Component and do not extend to the original VoxelRPG code.
+
+10. Trademarks and Branding
+
+This license does not grant any right to use the name "VoxelRPG", associated logos, trademarks, service marks, artwork, or other branding of the copyright holder except as necessary to accurately identify the official Software.
+
+No modified or derivative product may represent itself as an official VoxelRPG release.
+
+11. No Patent License
+
+No patent license is granted by this license except to the limited extent that such a license is legally unavoidable for exercising the rights expressly granted herein.
+
+12. Termination
+
+Your rights under this license terminate automatically if you materially violate its terms.
+
+Upon termination, you must stop exercising the rights granted by this license and, where legally required, cease distribution or use of unauthorized copies or modified versions.
+
+The copyright holder may, at its sole discretion and in writing, reinstate rights after a violation.
+
+Sections concerning ownership, prohibited use, third-party rights, trademarks, warranty disclaimer, limitation of liability, and applicable legal rights survive termination to the extent permitted by law.
+
+13. No Warranty
+
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW.
+
+THE COPYRIGHT HOLDER DISCLAIMS ALL WARRANTIES INCLUDING, WITHOUT LIMITATION, WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT, EXCEPT WHERE SUCH DISCLAIMERS ARE NOT PERMITTED BY APPLICABLE LAW.
+
+14. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE COPYRIGHT HOLDER SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR OTHER DAMAGES ARISING FROM OR RELATED TO THE SOFTWARE OR THE USE OR INABILITY TO USE THE SOFTWARE.
+
+NOTHING IN THIS LICENSE EXCLUDES OR LIMITS LIABILITY THAT CANNOT LAWFULLY BE EXCLUDED OR LIMITED.
+
+15. No Implied Rights
+
+Nothing in this license grants any rights by implication, estoppel, exhaustion, or otherwise beyond the rights expressly stated herein, except where such rights cannot legally be excluded.
+
+16. Changes to the License
+
+The copyright holder may publish future versions of this license.
+
+Unless explicitly stated otherwise, a particular version of the Software remains governed by the license version supplied with that version.
+
+The copyright holder may also distribute the Software under different terms under a separate written agreement.
+
+17. Severability
+
+If any provision of this license is found to be invalid or unenforceable, that provision shall be interpreted or limited to the minimum extent necessary to make it enforceable, and the remaining provisions shall remain in effect to the fullest extent permitted by applicable law.
+
+18. Acceptance
+
+By exercising any rights granted by this license, you agree to be bound by its terms.
+
+If you do not agree to these terms, you may view publicly accessible repository pages only to the extent permitted by the applicable platform's terms and applicable law, but you may not exercise the additional rights granted by this license.
+
+---
+
+VoxelRPG is proprietary source-available software.
+
+Copyright (c) 2026 dpsmpx. All rights reserved.
