@@ -262,6 +262,188 @@ void testTerrain() {
 }
 
 // ------------------------------------------------------------
+// Рельеф по масштабам (landform.h): регион → формы → мелочь.
+//
+// Проверяется не «похоже ли на горы», а свойства, которые ломаются
+// тихо: детерминизм между экземплярами генератора, совпадение
+// точечного запроса с генерацией чанка (крупные поля берутся по
+// решётке, и две дороги к ним обязаны сходиться до бита), отсутствие
+// швов по границам чанков, разнообразие форм и отсутствие искажений
+// вдали от начала мира.
+// ------------------------------------------------------------
+void testLandformHierarchy() {
+    group("рельеф: масштабы, детерминизм, швы, разнообразие");
+    world::blocks();
+
+    // ---- 1. Детерминизм и здравость на всём мире ----
+    {
+        world::TerrainGenerator a(0x1A7DF0ull), b(0x1A7DF0ull);
+        u64 st = 0x9E3779B97F4A7C15ull;
+        auto rnd = [&]() { st ^= st << 13; st ^= st >> 7; st ^= st << 17; return st; };
+        bool same = true, finite = true, inRange = true, routeOk = true;
+        for (i32 k = 0; k < 3000; ++k) {
+            const i32 x = (i32)(rnd() % 400001ull) - 200000;
+            const i32 z = (i32)(rnd() % 400001ull) - 200000;
+            const auto ca = a.column(x, z), cb = b.column(x, z);
+            if (ca.surface != cb.surface || ca.heightF != cb.heightF ||
+                ca.heightRoute != cb.heightRoute || ca.landform != cb.landform ||
+                ca.climate.biome != cb.climate.biome) same = false;
+            if (!std::isfinite(ca.heightF) || !std::isfinite(ca.heightRoute) ||
+                !std::isfinite(ca.ridge)) finite = false;
+            if (ca.surface < 1 || ca.surface > 124) inRange = false;
+            if (ca.surface > world::TerrainGenerator::SEA_LEVEL &&
+                ca.heightRoute <= (f32)world::TerrainGenerator::SEA_LEVEL) routeOk = false;
+        }
+        check(same, "два генератора одного зерна совпадают до бита на всём мире");
+        check(finite, "ни NaN, ни бесконечностей в высотах");
+        check(inRange, "высота в пределах мира");
+        check(routeOk, "суша для стока всегда выше моря");
+    }
+
+    // ---- 2. Точечный запрос = генерация чанка (решётка крупных полей) ----
+    {
+        world::TerrainGenerator gen(0x5EA11ull);
+        const i32 pts[5][2] = { { 0, 0 }, { -1, -1 }, { 37, -210 }, { -4100, 3333 }, { 51234, -76543 } };
+        bool same = true;
+        std::vector<world::TerrainGenerator::Column> cols;
+        for (const auto& p : pts) {
+            world::computeChunkColumns(gen, p[0], p[1], cols);
+            for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
+                for (i32 z = 0; z < world::CHUNK_SIZE; ++z) {
+                    const auto c = gen.column(p[0] * 32 + x, p[1] * 32 + z);
+                    const auto& d = cols[(usize)x * world::CHUNK_SIZE + z];
+                    if (c.heightF != d.heightF || c.surface != d.surface ||
+                        c.climate.biome != d.climate.biome) same = false;
+                }
+        }
+        check(same, "колонка точечным запросом совпадает с колонкой чанка до бита");
+    }
+
+    // ---- 3. Швы: граница чанка ничем не отличается от середины ----
+    //
+    // Точно, а не статистикой: у каждой колонки есть ответ, не
+    // зависящий от чанка, — naturalSurface() по мировым координатам.
+    // Чанк считает крутизну по кайме соседей; одностороннее окно на
+    // краю дало бы на границе свой материал. Сравниваются все колонки
+    // без рек (реки проверяет rivercheck) — и на границе, и в
+    // середине: построек и дорог на границе не больше, чем внутри.
+    {
+        const u64 SEEDM = 0x5EA11ull;
+        world::TerrainGenerator gen(SEEDM);
+        auto ch = std::make_unique<world::Chunk>();
+        std::vector<world::TerrainGenerator::Column> cols;
+        i64 nEdge = 0, badEdge = 0, nIn = 0, badIn = 0;
+        const i32 starts[6][2] = { { 10, 20 }, { -300, 150 }, { 900, -700 },
+                                   { 40, -90 }, { -1200, -400 }, { 2500, 1800 } };
+        for (const auto& st : starts)
+            for (i32 i = 0; i < 6; ++i) {
+                ch->coord = { st[0] + i, 0, st[1] };
+                world::computeChunkColumns(gen, ch->coord.x, ch->coord.z, cols);
+                world::generateChunkVoxels(*ch, gen, cols.data(), SEEDM);
+                for (i32 x = 0; x < 32; ++x)
+                    for (i32 z = 0; z < 32; ++z) {
+                        const auto& c = cols[(usize)x * 32 + z];
+                        const i32 wx = ch->coord.x * 32 + x, wz = ch->coord.z * 32 + z;
+                        if (c.surface <= world::TerrainGenerator::SEA_LEVEL + 1) continue;
+                        if (gen.hydrology().column(wx, wz, c.surface).kind !=
+                            world::hydro::ColumnWater::None) continue;
+                        const u16 top = ch->voxels[world::chunkIndex(x, c.surface - 1, z)];
+                        const bool edge = x == 0 || x == 31 || z == 0 || z == 31;
+                        const bool bad = top != world::naturalSurface(gen, wx, wz, SEEDM).top;
+                        (edge ? nEdge : nIn)++;
+                        if (bad) (edge ? badEdge : badIn)++;
+                    }
+            }
+        const f64 re = (f64)badEdge / (f64)std::max<i64>(1, nEdge);
+        const f64 ri = (f64)badIn / (f64)std::max<i64>(1, nIn);
+        char m[200];
+        std::snprintf(m, sizeof(m), "материал не тот, что по мировым координатам: на границе %.2f%% из %lld, внутри %.2f%% из %lld",
+                      100.0 * re, (long long)nEdge, 100.0 * ri, (long long)nIn);
+        check(true, m);
+        check(re <= ri + 0.005,
+              "на границе чанка материал поверхности тот же, что дала бы любая другая сборка");
+        check(ri < 0.03, "и внутри он почти всюду природный: дороги и постройки — редкость");
+    }
+
+    // ---- 4. Разнообразие форм и областей ----
+    {
+        world::TerrainGenerator gen(0xF0A3ull);
+        u32 forms[(u32)world::Landform::Count] = {};
+        u32 n = 0;
+        for (i32 x = -24000; x <= 24000; x += 97)
+            for (i32 z = -24000; z <= 24000; z += 101) {
+                ++forms[(u32)gen.column(x, z).landform];
+                ++n;
+            }
+        std::string list;
+        u32 missing = 0;
+        for (u32 f = 0; f < (u32)world::Landform::Count; ++f) {
+            char b[48];
+            std::snprintf(b, sizeof(b), " %s %.1f%%", world::landformName((world::Landform)f),
+                          100.0 * forms[f] / n);
+            list += b;
+            if (forms[f] * 1000 < n * 2) ++missing;   // меньше 0.2 %
+        }
+        check(true, ("формы:" + list).c_str());
+        check(missing == 0, "есть все формы рельефа: от низин до высокогорья");
+        const f64 mount = (f64)(forms[(u32)world::Landform::Mountains] +
+                                forms[(u32)world::Landform::Peaks]) / n;
+        check(mount > 0.02 && mount < 0.25, "горная страна есть, но мир не из одних гор");
+
+        // Области разные: перепад высот в окне 256 блоков у одних
+        // областей мал (равнина), у других велик (горы, холмы).
+        std::vector<i32> relief;
+        for (i32 wx = -16000; wx < 16000; wx += 1024)
+            for (i32 wz = -16000; wz < 16000; wz += 1024) {
+                i32 lo = 999, hi = -999;
+                for (i32 x = 0; x < 256; x += 8)
+                    for (i32 z = 0; z < 256; z += 8) {
+                        const i32 h = gen.surfaceHeight(wx + x, wz + z);
+                        if (h <= world::TerrainGenerator::SEA_LEVEL) continue;
+                        lo = std::min(lo, h); hi = std::max(hi, h);
+                    }
+                if (hi > lo) relief.push_back(hi - lo);
+            }
+        std::sort(relief.begin(), relief.end());
+        const i32 p10 = relief[relief.size() / 10], p90 = relief[relief.size() * 9 / 10];
+        char m[120];
+        std::snprintf(m, sizeof(m), "перепад в окне 256 по суше: p10 %d, p90 %d", p10, p90);
+        check(true, m);
+        check(p90 >= p10 * 3, "области разного характера: ровные и изрезанные");
+    }
+
+    // ---- 5. Вдали от начала мира узор не искажён ----
+    //
+    // Направление хребтов меняется от области к области. Поворот
+    // мировых координат на меняющийся угол сжимал бы узор тем
+    // сильнее, чем дальше от начала; здесь — сравнение крутизны гор у
+    // начала и в сотне тысяч блоков от него.
+    {
+        world::TerrainGenerator gen(0x77AA1ull);
+        auto steep = [&](i32 cx, i32 cz) {
+            std::vector<f32> g;
+            for (i32 x = cx - 12000; x <= cx + 12000; x += 53)
+                for (i32 z = cz - 12000; z <= cz + 12000; z += 59) {
+                    const auto c = gen.column(x, z);
+                    if (c.landform != world::Landform::Mountains &&
+                        c.landform != world::Landform::Peaks) continue;
+                    const f32 dx = gen.column(x + 2, z).heightF - gen.column(x - 2, z).heightF;
+                    const f32 dz = gen.column(x, z + 2).heightF - gen.column(x, z - 2).heightF;
+                    g.push_back(std::sqrt(dx * dx + dz * dz) * 0.25f);
+                }
+            std::sort(g.begin(), g.end());
+            return g.empty() ? 0.f : g[g.size() * 9 / 10];
+        };
+        const f32 near = steep(0, 0), far = steep(150000, -120000);
+        char m[120];
+        std::snprintf(m, sizeof(m), "крутизна гор (p90): у начала %.2f, вдали %.2f", near, far);
+        check(true, m);
+        check(near > 0.3f && far > 0.3f, "горы крутые и там и там");
+        check(far < near * 1.6f && far > near / 1.6f, "вдали узор не сжат и не растянут");
+    }
+}
+
+// ------------------------------------------------------------
 // ECS: поколения, переиспользование индексов, пулы
 // ------------------------------------------------------------
 struct Pos { float x, y; };
@@ -18547,7 +18729,10 @@ void testTreesHaveBranchesAndCrowns() {
     };
     const Case cases[] = {
         { world::Forest,  "лес",        true,  true,  false, 1, 2 },
-        { world::Taiga,   "тайга",      true,  false, true,  1, 2 },
+        // У ели нет деревянных сучьев — только лапник, и он проверен
+        // ярусами. Размах по древесине у неё ноль по устройству; раньше
+        // двойка проходила, потому что в образец попадали дубы соседа.
+        { world::Taiga,   "тайга",      true,  false, true,  1, 0 },
         { world::Plains,  "равнина",    true,  true,  false, 2, 2 },
         { world::Savanna, "саванна",    false, true,  false, 2, 2 },
         { world::Desert,  "пустыня",    false, true,  false, 2, 1 },
@@ -27916,13 +28101,19 @@ void testRivers() {
     i32 pointMismatch = 0;
     {
         const auto T = tiles[{ 0, 0 }];
-        std::set<std::pair<i32, i32>> wanted;
+        // Чанки — вразброс по всей сети, а не первые десять рёбер
+        // списка: те лежат рядом, на одной реке, и доля стоячей воды
+        // по ним — жребий одного озера, а не свойство сети.
+        std::vector<std::pair<i32, i32>> all;
         for (const auto& p : T->paths) {
             if (p.kind != hy::PATH_RIVER || p.flow < 60.f || p.mouth) continue;
             const auto& mid = T->samples[p.first + p.count / 2];
-            wanted.insert({ (i32)std::floor(mid.x / 32.f), (i32)std::floor(mid.z / 32.f) });
-            if (wanted.size() >= 10) break;
+            all.push_back({ (i32)std::floor(mid.x / 32.f), (i32)std::floor(mid.z / 32.f) });
         }
+        std::set<std::pair<i32, i32>> wanted;
+        const usize stride = std::max<usize>(1, all.size() / 40);
+        for (usize i = 0; i < all.size() && wanted.size() < 40; i += stride)
+            wanted.insert(all[i]);
         auto chunk = std::make_unique<world::Chunk>();
         std::vector<world::TerrainGenerator::Column> cols;
         for (const auto& [cx, cz] : wanted) {
@@ -27993,6 +28184,7 @@ int main() {
     std::printf("hostcheck: проверки логики\n");
     testNoise();
     testTerrain();
+    testLandformHierarchy();
     testRivers();
     testRegistry();
     testMemory();

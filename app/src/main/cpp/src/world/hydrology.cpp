@@ -244,7 +244,9 @@ Hydrology::heightTile(i32 hx, i32 hz) const
                 const i32 x = (hx * HT_NODES + li) * NODE;
                 const i32 z = (hz * HT_NODES + lj) * NODE;
                 const TerrainGenerator::Column col = terrain_.column(x, z);
-                t->hf[k] = col.heightF;
+                // Сток — по крупному рельефу (heightRoute), без холмов:
+                // иначе каждая ямка между ними становилась озером.
+                t->hf[k] = col.heightRoute;
                 t->hs[k] = (i16)col.surface;
                 t->humid[k] = col.climate.humidity;
                 t->cont[k] = col.climate.continent;
@@ -1282,7 +1284,17 @@ ColumnWater Hydrology::evaluate(const ChunkView& v, i32 wx, i32 wz, i32 raw,
             }
             continue;
         }
-        if (flags & SF_IN_LAKE) continue;
+        if (flags & SF_IN_LAKE) {
+            // Долину в озере не режем, но берег у воды держим: русло,
+            // входящее в озеро выше его зеркала, стоит на своём уровне,
+            // и берег по уровню озера оставлял воду рядом с воздухом.
+            const f32 dd = std::max(0.f, de - core);
+            if (dd <= 1.5f) {
+                levee = std::max(levee, y + 1);
+                nearWater = true;
+            }
+            continue;
+        }
 
         const f32 dd = std::max(0.f, de - core);
         const f32 base = (isBar || (flags & SF_DELTA)) ? 1.f : 2.f;

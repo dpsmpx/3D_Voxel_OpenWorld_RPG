@@ -644,15 +644,24 @@ void applyRivers(Chunk& chunk, const FeatureContext& ctx,
 
             if (r.kind == hydro::ColumnWater::Ground) {
                 const i32 s = std::clamp(r.surface, 2, CHUNK_SIZE_Y - 2);
+                // Что лежало сверху до реки — выбор surfaceFor: сухая
+                // трава, щебень, снег. Долина наследует его.
+                const u16 was = (raw >= 1 && raw <= CHUNK_SIZE_Y)
+                              ? chunk.voxels[chunkIndex(lx, raw - 1, lz)] : biome.surfaceBlock;
                 // Врезанная долина: выше новой поверхности — воздух.
                 for (i32 y = s; y < raw; ++y) set(y, AIR);
                 // Береговой вал, коса, край озера: подсыпаем землю.
                 for (i32 y = raw; y < s - 1; ++y) set(y, DIRT);
                 if (s != raw || sandy || rocky) {
-                    u16 top = biome.surfaceBlock;
+                    u16 top = was;
                     if (sandy) top = SAND;
-                    else if (rocky) top = STONE;
+                    // Берег горного потока — галька, а не скала.
+                    else if (rocky) top = GRAVEL;
                     else if (snowy) top = SNOW;
+                    // Дно горной долины — луг: вода намыла почву, и
+                    // долина читается зелёной лентой среди скал.
+                    else if (col.climate.biome == Mountains) top = GRASS;
+                    else if (top == AIR || top == WATER || top == LAVA) top = biome.surfaceBlock;
                     set(s - 1, top);
                 }
                 groundOut[k] = (i16)s;
@@ -669,7 +678,7 @@ void applyRivers(Chunk& chunk, const FeatureContext& ctx,
 
             u16 floor = DIRT;
             if (r.kind == hydro::ColumnWater::Channel) {
-                if (r.flags & hydro::SF_STONE_BED) floor = STONE;
+                if (r.flags & hydro::SF_STONE_BED) floor = GRAVEL;
                 else if (r.flags & (hydro::SF_SAND_BANK | hydro::SF_DELTA)) floor = SAND;
             } else if (top - bed <= 0) {
                 floor = SAND;   // мелководье у берега озера
@@ -684,6 +693,28 @@ void applyRivers(Chunk& chunk, const FeatureContext& ctx,
             }
             groundOut[k] = (i16)bed;
             wetOut[k] = 1;
+        }
+
+    // Берег у пещеры. Пещеры выгрызены раньше рек, и ход, вышедший к
+    // руслу, оставлял у воды пустоту на её же уровне: стенка воды
+    // стояла над провалом. Заделываем такую пустоту землёй — только в
+    // своём чанке, и решение зависит только от его же вокселей.
+    for (i32 lx = 0; lx < CHUNK_SIZE; ++lx)
+        for (i32 lz = 0; lz < CHUNK_SIZE; ++lz) {
+            const usize k = (usize)lx * CHUNK_SIZE + lz;
+            if (!wetOut[k] || chunk.waterFlowY[k] == 0) continue;
+            const i32 top = (i32)chunk.waterFlowY[k] - 1;
+            if (top < 2 || top >= CHUNK_SIZE_Y - 1) continue;
+            if (chunk.voxels[chunkIndex(lx, top, lz)] != WATER) continue;
+            static const i32 DX[4] = { 1, -1, 0, 0 }, DZ[4] = { 0, 0, 1, -1 };
+            for (i32 d = 0; d < 4; ++d) {
+                const i32 nx = lx + DX[d], nz = lz + DZ[d];
+                if ((u32)nx >= (u32)CHUNK_SIZE || (u32)nz >= (u32)CHUNK_SIZE) continue;
+                if (chunk.voxels[chunkIndex(nx, top, nz)] != AIR) continue;
+                const u16 below = chunk.voxels[chunkIndex(nx, top - 1, nz)];
+                if (below == AIR || below == WATER) continue;
+                chunk.voxels[chunkIndex(nx, top, nz)] = DIRT;
+            }
         }
 }
 
@@ -860,8 +891,14 @@ bool castleBlocks(i32 wx, i32 wz, u64 seed, const TerrainGenerator* terrain) {
             // тем ячейкам, чей замок и правда накрыл бы эту точку.
             i32 cx = 0, cz = 0;
             if (!castleCandidate(sc0x + dx, sc0z + dz, seed, cx, cz)) continue;
-            if (std::abs(wx - cx) > KEEP || std::abs(wz - cz) > KEEP) continue;
-            if (castleAt(sc0x + dx, sc0z + dz, seed, terrain).exists) return true;
+            // Замок может сместиться от кандидата (см. castleAt), но
+            // не дальше CASTLE_SHIFT: дальше — точно не накроет.
+            if (std::abs(wx - cx) > KEEP + CASTLE_SHIFT ||
+                std::abs(wz - cz) > KEEP + CASTLE_SHIFT) continue;
+            const CastleSite site = castleAt(sc0x + dx, sc0z + dz, seed, terrain);
+            if (!site.exists) continue;
+            if (std::abs(wx - site.center.x) <= KEEP && std::abs(wz - site.center.z) <= KEEP)
+                return true;
         }
     return false;
 }
@@ -1099,7 +1136,10 @@ void putOnGround(Chunk& c, const FeatureContext& ctx, i32 wx, i32 wz, u16 block)
     const i32 y = ctx.groundAt(lx, lz, wx, wz) - 1;
     if (y < 1) return;
     const u16 cur = getWorld(c, wx, y, wz);
-    if (cur != GRASS && cur != DIRT && cur != SAND) return;
+    // Земля, а не постройка: щебень, сухая трава и снег — тоже земля,
+    // и дорога через перевал или степь не должна рваться на них.
+    if (cur != GRASS && cur != DIRT && cur != SAND && cur != DRY_GRASS &&
+        cur != GRAVEL && cur != SNOW) return;
     putWorld(c, wx, y, wz, block, true);
 }
 
@@ -2193,14 +2233,23 @@ CastleSite castleAt(i32 superX, i32 superZ, u64 worldSeed,
     i32 cx = 0, cz = 0;
     if (!castleCandidate(superX, superZ, worldSeed, cx, cz)) return site;
 
-    // Замок стоит в Чёрном лесу, и только в нём.
-    if (terrain->biomeAt(cx, cz) != Blight) return site;
-
-    const i32 wy = terrain->surfaceHeight(cx, cz);
-    if (wy < TerrainGenerator::SEA_LEVEL + 3) return site;
-
-    site.exists = true;
-    site.center = { cx, wy, cz };
+    // Замок стоит в Чёрном лесу, и только в нём. Пробуем несколько
+    // мест в середине ячейки, а не одно: одна точка попадала в лес
+    // по совпадению, и замок был в одном клочке порчи из двух-трёх —
+    // при том, что порча сама по себе редкость. Порядок проб
+    // неизменен, и все, кто спрашивает (лес, спавн, поиск), получают
+    // одно и то же место.
+    static const i32 TRY[5][2] = { { 0, 0 }, { 48, 32 }, { -40, 44 }, { 36, -46 }, { -46, -38 } };
+    static_assert(48 <= CASTLE_SHIFT && 46 <= CASTLE_SHIFT, "смещение в пределах CASTLE_SHIFT");
+    for (const auto& t : TRY) {
+        const i32 x = cx + t[0], z = cz + t[1];
+        const TerrainGenerator::Column col = terrain->column(x, z);
+        if (col.climate.biome != Blight) continue;
+        if (col.surface < TerrainGenerator::SEA_LEVEL + 3) continue;
+        site.exists = true;
+        site.center = { x, col.surface, z };
+        return site;
+    }
     return site;
 }
 
@@ -2445,11 +2494,124 @@ void computeChunkColumns(const TerrainGenerator& terrain, i32 chunkX, i32 chunkZ
             out[(usize)x * CHUNK_SIZE + z] = terrain.column(baseX + x, baseZ + z);
 }
 
+namespace {
+
+inline f32 smooth01(f32 a, f32 b, f32 x) {
+    const f32 t = std::clamp((x - a) / (b - a), 0.f, 1.f);
+    return t * t * (3.f - 2.f * t);
+}
+
+/// Чем покрыта земля — по биому, высоте и крутизне.
+///
+/// Раньше поверхность знала только биом: горы были камнем от подножия
+/// до вершины, а равнина — травой даже на отвесном уступе. Горная
+/// страна читалась каменным полем в изолиниях, а обрыв — зелёной
+/// лестницей. Теперь скала выходит там, где крутизна не держит почву,
+/// щебень лежит у скал и в высокогорье, снег — на вершинах, но не на
+/// отвесах, а сухая трава переходит в живую по влажности.
+///
+/// j — дрожание 0..1 из хэша колонки: границы материалов рваные, а не
+/// по линейке, и одинаковые у любого, кто строит эту колонку.
+SurfaceSpec surfaceFor(const BiomeDef& bd, const TerrainGenerator::Column& col,
+                       i32 slope, f32 j)
+{
+    SurfaceSpec s{ bd.surfaceBlock, bd.subsurfaceBlock };
+    const i32 y = col.surface - 1;
+    const bool cliff = slope >= 3;
+    switch (col.climate.biome) {
+        case Mountains: {
+            const f32 snowLine = (f32)TerrainGenerator::SNOW_LINE - 3.f + j * 6.f;
+            // Снег держится на всём, кроме отвеса у самой линии: по
+            // снеговой шапке вершину узнают издали, и голые уступы в
+            // ней читались бы проплешинами.
+            if ((f32)y >= snowLine && (slope < 5 || (f32)y >= snowLine + 8.f)) {
+                s = { SNOW, STONE };
+            } else if (cliff || col.ridge > 0.62f + j * 0.12f) {
+                s = { STONE, STONE };
+            } else if ((f32)y > 74.f + j * 8.f) {
+                // Высокогорье: луг вперемешку с осыпями.
+                s = { j < 0.45f ? GRAVEL : GRASS, STONE };
+            } else if (slope == 2 && j < 0.35f) {
+                s = { GRAVEL, DIRT };
+            } else {
+                s = { GRASS, DIRT };
+            }
+            break;
+        }
+        case Volcanic:
+            s = { (slope < 2 && j < 0.3f) ? GRAVEL : STONE, STONE };
+            break;
+        case Tundra:
+            if (cliff) s = { STONE, STONE };
+            break;
+        case Desert:
+        case Beach:
+            if (cliff) s = { STONE, STONE };
+            break;
+        case Savanna:
+            s = { DRY_GRASS, DIRT };
+            if (cliff) s = { j < 0.3f ? GRAVEL : STONE, STONE };
+            break;
+        case Ocean:
+            // Дно: глубже — щебень пятнами, у берега песок.
+            if (y < 14 && j < 0.5f) s = { GRAVEL, GRAVEL };
+            break;
+        default:
+            if (cliff) {
+                s = { j < 0.25f ? GRAVEL : STONE, STONE };
+            } else if (bd.surfaceBlock == GRASS) {
+                // Сухой край: трава выгорает пятнами, и равнина
+                // переходит в саванну, а не упирается в неё стеной.
+                const f32 dry = smooth01(-0.02f, -0.30f, col.climate.humidity) *
+                                smooth01(0.0f, 0.25f, col.climate.temperature);
+                if (j < dry * 0.85f) s.top = DRY_GRASS;
+            }
+            break;
+    }
+    return s;
+}
+
+/// Дрожание материала колонки: одно на всех, кто её строит.
+inline f32 surfaceJitter(i32 wx, i32 wz, u64 seed) {
+    return (f32)(feat_util::hashXZ(wx, wz, seed ^ 0x5F0C1ull) & 0xFFu) / 255.f;
+}
+
+} // namespace
+
+SurfaceSpec naturalSurface(const TerrainGenerator& terrain, i32 wx, i32 wz, u64 seed) {
+    const TerrainGenerator::Column col = terrain.column(wx, wz);
+    const i32 h0 = col.surface;
+    const i32 slope = std::max(
+        std::max(std::abs(terrain.surfaceHeight(wx + 1, wz) - h0),
+                 std::abs(terrain.surfaceHeight(wx - 1, wz) - h0)),
+        std::max(std::abs(terrain.surfaceHeight(wx, wz + 1) - h0),
+                 std::abs(terrain.surfaceHeight(wx, wz - 1) - h0)));
+    return surfaceFor(terrain.field().def(col.climate.biome), col, slope,
+                      surfaceJitter(wx, wz, seed));
+}
+
 void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
                          const TerrainGenerator::Column* columns, u64 seed)
 {
     chunk.waterFlow.fill(0);
     chunk.waterFlowY.fill(0);
+
+    // Высоты с каймой в один блок: крутизна на краю чанка считается
+    // по настоящим соседям, ровно так же, как её посчитает соседний
+    // чанк, — иначе материал склона менялся бы по шву.
+    constexpr i32 PW = CHUNK_SIZE + 2;
+    static thread_local std::array<i16, PW * PW> padded;
+    auto P = [&](i32 x, i32 z) -> i16& { return padded[(usize)(x + 1) * PW + (usize)(z + 1)]; };
+    const i32 bx = chunk.coord.x * CHUNK_SIZE, bz = chunk.coord.z * CHUNK_SIZE;
+    for (i32 x = 0; x < CHUNK_SIZE; ++x)
+        for (i32 z = 0; z < CHUNK_SIZE; ++z)
+            P(x, z) = (i16)columns[(usize)x * CHUNK_SIZE + z].surface;
+    for (i32 i = 0; i < CHUNK_SIZE; ++i) {
+        P(-1, i)         = (i16)terrain.surfaceHeight(bx - 1, bz + i);
+        P(CHUNK_SIZE, i) = (i16)terrain.surfaceHeight(bx + CHUNK_SIZE, bz + i);
+        P(i, -1)         = (i16)terrain.surfaceHeight(bx + i, bz - 1);
+        P(i, CHUNK_SIZE) = (i16)terrain.surfaceHeight(bx + i, bz + CHUNK_SIZE);
+    }
 
     for (i32 x = 0; x < CHUNK_SIZE; ++x) {
         for (i32 z = 0; z < CHUNK_SIZE; ++z) {
@@ -2457,29 +2619,28 @@ void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
             const i32 surface = col.surface;
             const BiomeDef& biome = terrain.field().def(col.climate.biome);
 
+            const i32 h0 = P(x, z);
+            const i32 slope = std::max(std::max(std::abs(P(x + 1, z) - h0), std::abs(P(x - 1, z) - h0)),
+                                       std::max(std::abs(P(x, z + 1) - h0), std::abs(P(x, z - 1) - h0)));
+            const SurfaceSpec ss = surfaceFor(biome, col, slope, surfaceJitter(bx + x, bz + z, seed));
+            // На отвесе почвы нет: скала выходит сразу под верхним блоком.
+            const i32 soil = slope >= 3 ? 1 : 4;
+
             for (i32 y = 0; y < CHUNK_SIZE_Y; ++y) {
                 u16 id = AIR;
                 if (y == 0) {
                     id = BEDROCK;
-                } else if (y < surface - 4) {
+                } else if (y < surface - soil) {
                     id = biome.stoneBlock;
                 } else if (y < surface - 1) {
-                    id = biome.subsurfaceBlock;
+                    id = ss.sub;
                 } else if (y < surface) {
-                    id = biome.surfaceBlock;
+                    id = ss.top;
                 } else if (col.lavaTop > 0 && y <= col.lavaTop) {
                     // Кратер вулкана. Наливается здесь, а не в
                     // applyLiquids: та знает только про уровень моря,
                     // а жерло стоит много выше него.
                     id = LAVA;
-                }
-
-                // Снеговая линия: выше неё вершина под снегом, и
-                // видно это за половину карты.
-                if (id == biome.surfaceBlock && y == surface - 1 &&
-                    surface > TerrainGenerator::SNOW_LINE &&
-                    col.climate.biome == Mountains) {
-                    id = SNOW;
                 }
                 chunk.voxels[chunkIndex(x, y, z)] = id;
             }

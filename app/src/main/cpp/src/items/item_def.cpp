@@ -167,6 +167,10 @@ ItemRegistry::ItemRegistry() {
     blockItem(ITEM_BRICK,    world::BRICK,    "Brick",     64,  3, ItemRarity::Common);
     // Факел. Стопка большая: в пещеру их берут пачками.
     blockItem(ITEM_TORCH,    world::TORCH,    "Torch",     64,  2, ItemRarity::Common);
+    // Природные блоки без своего предмета: щебень рассыпается камнем,
+    // сухая трава выкапывается травой.
+    blockToItem_[world::GRAVEL]    = ITEM_STONE;
+    blockToItem_[world::DRY_GRASS] = ITEM_GRASS;
 
     // ============ Материалы (не block) ============
     materialItem(ITEM_IRON_INGOT, "Iron Ingot", 25, ItemRarity::Uncommon, 20);

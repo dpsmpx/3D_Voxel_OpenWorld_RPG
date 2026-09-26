@@ -57,6 +57,15 @@ struct FeatureContext {
 void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
                          const TerrainGenerator::Column* columns, u64 seed);
 
+/// Поверхность колонки: верхний блок и то, что под ним.
+struct SurfaceSpec { u16 top; u16 sub; };
+
+/// Чем покрыта земля в колонке — по биому, высоте и крутизне, без
+/// рек, построек и растений. Ровно то, что кладёт generateChunkVoxels
+/// (он считает крутизну по кайме соседей, здесь — точечными
+/// запросами; ответ один). Нужно проверкам и картам.
+SurfaceSpec naturalSurface(const TerrainGenerator& terrain, i32 wx, i32 wz, u64 seed);
+
 /// Считает колонки чанка в переданный буфер (он будет нужного размера).
 void computeChunkColumns(const TerrainGenerator& terrain, i32 chunkX, i32 chunkZ,
                          std::vector<TerrainGenerator::Column>& out);
@@ -298,6 +307,11 @@ struct CastleSite {
 /// Живёт в заголовке, потому что спрашивают её двое и из разных мест:
 /// сам замок — когда строит, и лес — когда решает, где не расти.
 constexpr i32 CASTLE_HALF = 34;
+
+/// Насколько замок может отойти от середины своей ячейки в поисках
+/// Чёрного леса (см. castleAt). Край замка остаётся внутри ячейки:
+/// 128 − 48 − 34 > 0.
+constexpr i32 CASTLE_SHIFT = 48;
 
 /// Замок в супер-чанке (sx, sz), если он там есть.
 CastleSite castleAt(i32 superX, i32 superZ, u64 worldSeed,

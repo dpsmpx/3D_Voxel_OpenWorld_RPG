@@ -13,7 +13,7 @@ namespace world {
 
 TerrainGenerator::TerrainGenerator(u64 seed)
     : biome_(seed),
-      heightBase_(seed ^ 0xA55A),
+      landform_(seed ^ 0xA55A),
       cavesA_(seed ^ 0xC0DE),
       cavesB_(seed ^ 0xBEEF),
       seed_(seed),
@@ -29,17 +29,23 @@ TerrainGenerator::Column TerrainGenerator::column(i32 x, i32 z) const {
     // Шумовые поля не зависят от высоты — считаем их один раз.
     col.climate = biome_.fields(x, z);
 
-    f32 h = 32.f + col.climate.heightMod;
-
-    // Локальная детализация (мелкий рельеф)
-    h += heightBase_.fbm3D((f32)x * 0.015f, 0.f, (f32)z * 0.015f, 3) * 4.f;
-
-    // Скалы в горах
-    if (col.climate.peaks > 0.3f && col.climate.erosion < 0.5f) {
-        const f32 ridge =
-            1.f - std::fabs(heightBase_.sample3D((f32)x * 0.03f, 0.f, (f32)z * 0.03f));
-        h += ridge * col.climate.peaks * 12.f;
-    }
+    // Высота складывается масштабами — регион, формы, мелочь (см.
+    // landform.h), а не суммой шумов одного веса.
+    MacroFields mf;
+    mf.continent = col.climate.continent;
+    mf.humidity  = col.climate.humidity;
+    mf.erosion   = col.climate.erosion;
+    mf.peaks     = col.climate.peaks;
+    mf.mountain  = col.climate.uplift;
+    mf.hills     = col.climate.hills;
+    mf.plateau   = col.climate.plateau;
+    mf.basin     = col.climate.basin;
+    mf.region    = col.climate.region;
+    mf.orient    = col.climate.orient;
+    const LandformSample ls = landform_.sample(mf, x, z);
+    f32 h = ls.height;
+    col.landform = ls.form;
+    col.ridge = ls.ridge;
 
     // Мягкий потолок вместо жёсткого обрезания.
     //
@@ -47,10 +53,22 @@ TerrainGenerator::Column TerrainGenerator::column(i32 x, i32 z) const {
     // восемь: обрезание по линейке делало из вершин столовые горы —
     // ровные площадки ровно по потолку. Здесь верх сжимается и к
     // потолку только стремится, поэтому вершины разной высоты.
-    if (h > 100.f) h = 100.f + (h - 100.f) / (1.f + (h - 100.f) * 0.06f);
-
-    if (h < 1.f)   h = 1.f;
-    if (h > 124.f) h = 124.f;
+    //
+    // Сжатие экспонентой, а не дробью: дробь прижимала всё выше
+    // сотни к ста десяти, и вершины выходили столами под снегом.
+    auto ceilingOf = [](f32 v) {
+        if (v > 100.f) v = 100.f + 22.f * (1.f - std::exp(-(v - 100.f) / 22.f));
+        return std::clamp(v, 1.f, 124.f);
+    };
+    h = ceilingOf(h);
+    col.heightRoute = ceilingOf(ls.route);
+    // Суша для стока — всегда выше моря. Гидросеть решает, где море,
+    // по настоящей высоте, а заливает впадины — по этой; узел суши у
+    // берега с высотой стока ниже уровня моря получал тот же уровень
+    // заливки, что и море, не находил, куда стечь, и река обрывалась
+    // в шаге от устья.
+    if ((i32)h > SEA_LEVEL)
+        col.heightRoute = std::max(col.heightRoute, (f32)SEA_LEVEL + 0.5f);
     col.surface = (i32)h;
     col.heightF = h;
 
@@ -67,6 +85,7 @@ TerrainGenerator::Column TerrainGenerator::column(i32 x, i32 z) const {
             col.surface -= depth;
             if (col.surface < 2) col.surface = 2;
             col.heightF = (f32)col.surface;
+            col.heightRoute = std::min(col.heightRoute, col.heightF);
             // Лава не вровень с краем: полный до краёв кратер
             // читается как лужа, а не как жерло.
             col.lavaTop = rim - 3;

@@ -326,7 +326,7 @@ fi
 # собранными объектами и заглушками: забытый файл — ошибка сразу.
 echo "==> Списки исходников инструментов..."
 mkdir -p "$OUT/tools"
-for TOOL in bench vkcheck isocheck; do
+for TOOL in bench vkcheck isocheck worldmap; do
     SCRIPT="$PROJ/tools/$TOOL/run.sh"
     MAIN="$PROJ/tools/$TOOL/$TOOL.cpp"
     [ -f "$SCRIPT" ] && [ -f "$MAIN" ] || continue
@@ -374,7 +374,7 @@ for TOOL in soak uishot; do
         exit 1
     fi
 done
-echo "✓ bench, vkcheck, isocheck, soak, uishot собираются"
+echo "✓ bench, vkcheck, isocheck, worldmap, soak, uishot собираются"
 
 # ---- две конфигурации сборки ----
 #

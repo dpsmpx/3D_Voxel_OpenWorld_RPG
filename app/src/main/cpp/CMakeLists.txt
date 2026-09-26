@@ -114,6 +114,7 @@ add_library(native-lib SHARED
     src/world/particles.cpp
     src/world/spawn.cpp
     src/world/hydrology.cpp
+    src/world/landform.cpp
     src/world/terrain.cpp
     src/world/weather.cpp
     src/world/world_spec.cpp
