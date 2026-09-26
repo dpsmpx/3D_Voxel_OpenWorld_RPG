@@ -32,7 +32,7 @@ mkdir -p "$OUT"
     -isystem "$TP/glm" -isystem "$TP/Vulkan-Headers/include" \
     -o "$OUT/worldmap" \
     "$PROJ/tools/worldmap/worldmap.cpp" \
-    "$SRC"/world/{chunk,block,terrain,biome,noise,features,hydrology,landform,debug_scene}.cpp \
+    "$SRC"/world/{chunk,block,terrain,biome,noise,features,hydrology,landform,flora,debug_scene}.cpp \
     "$SRC"/render/iso_png.cpp \
     "$SRC"/save/zlib_util.cpp \
     "$SRC"/config/settings.cpp \

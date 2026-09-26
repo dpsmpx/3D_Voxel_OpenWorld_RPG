@@ -66,8 +66,8 @@ echo "==> Сборка..."
     -o "$OUT/vkcheck" \
     "$PROJ/tools/vkcheck/vkcheck.cpp" \
     "$SRC"/vk/{vk_buffer,vk_pipeline,vk_shader,vk_descriptors,vk_renderpass}.cpp \
-    "$SRC"/render/{mesh_builder,voxel_pipeline}.cpp \
-    "$SRC"/world/{chunk,block,terrain,biome,noise,features,hydrology,landform,debug_scene}.cpp \
+    "$SRC"/render/{mesh_builder,voxel_pipeline,voxel_model,flora_models,flora_batch}.cpp \
+    "$SRC"/world/{chunk,block,terrain,biome,noise,features,hydrology,landform,flora,debug_scene}.cpp \
     "$SRC"/core/crashlog.cpp \
     "$SRC"/core/shared_dir.cpp \
     -lvulkan -ldl -lpthread

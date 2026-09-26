@@ -15,14 +15,17 @@ namespace {
 SoundId footstepSoundForBlock(u16 id) {
     using namespace world;
     switch (id) {
-        case GRASS:  return SOUND_FOOTSTEP_GRASS;
+        case GRASS:
+        case DRY_GRASS: return SOUND_FOOTSTEP_GRASS;
         case SAND:   return SOUND_FOOTSTEP_SAND;
+        case GRAVEL: return SOUND_FOOTSTEP_STONE;
         case SNOW:   return SOUND_FOOTSTEP_SAND;   // похоже
         case STONE:  return SOUND_FOOTSTEP_STONE;
         case BEDROCK:return SOUND_FOOTSTEP_STONE;
         case IRON_ORE:
         case GOLD_ORE: return SOUND_FOOTSTEP_STONE;
-        case WOOD:   return SOUND_FOOTSTEP_WOOD;
+        case WOOD:
+        case TRUNK:  return SOUND_FOOTSTEP_WOOD;
         case LEAVES: return SOUND_FOOTSTEP_GRASS;
         case WATER:  return SOUND_FOOTSTEP_WATER;
         case DIRT:   return SOUND_FOOTSTEP_DIRT;
@@ -38,8 +41,10 @@ SoundId hitSoundForBlock(u16 id) {
         case BEDROCK:
         case IRON_ORE:
         case GOLD_ORE:
+        case GRAVEL:
         case ICE:      return SOUND_HIT_STONE;
         case WOOD:
+        case TRUNK:
         case LEAVES:   return SOUND_HIT_WOOD;
         case SAND:
         case DIRT:

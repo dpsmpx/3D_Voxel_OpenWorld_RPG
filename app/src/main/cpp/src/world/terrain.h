@@ -110,12 +110,15 @@ public:
     /// Доступ к климату и шуму для features
     const BiomeField& field() const { return biome_; }
     const SimplexNoise& noise() const { return cavesA_; }
+    /// Шум растительности: рощи, поляны, цветочные луга (world/flora.h).
+    const SimplexNoise& floraNoise() const { return flora_; }
 
 private:
     mutable BiomeField biome_;
     LandformNoise landform_;
     SimplexNoise cavesA_;
     SimplexNoise cavesB_;
+    SimplexNoise flora_;
     u64 seed_;
 
     // Гидросеть: кэш плиток водосборов, общий для всех потоков

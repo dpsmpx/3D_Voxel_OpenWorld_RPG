@@ -59,7 +59,10 @@ FireField& fires() {
 
 bool FireField::flammable(u16 block) {
     switch (block) {
-        case GRASS: case WOOD: case LEAVES: case PLANK: case THATCH:
+        case GRASS: case DRY_GRASS: case WOOD: case LEAVES: case PLANK: case THATCH:
+        // Ствол дерева: сгорает целиком — ChunkManager::setVoxel роняет
+        // весь столб, и модель дерева уходит вместе с ним.
+        case TRUNK:
             return true;
         default:
             return false;

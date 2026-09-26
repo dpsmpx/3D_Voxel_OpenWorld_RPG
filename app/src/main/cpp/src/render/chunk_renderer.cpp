@@ -94,6 +94,11 @@ ChunkRenderer::Upload ChunkRenderer::uploadMesh(vk::Context& ctx,
         // видеопамять: по этому номеру видно, что лежащий меш устарел
         // после правки блоков.
         gm.revision = chunk.mesh.revision;
+        // Растения едут вместе с мешем: список построен по тем же
+        // вокселям. Копия, а не перенос: если выгрузка сорвётся и чанк
+        // встанет в очередь заново, список у чанка должен остаться.
+        // Отпускается он вместе с квадами (releaseQuads).
+        gm.flora = chunk.mesh.flora;
         chunk.mesh.ready.store(false, std::memory_order_release);
     }
 
@@ -218,6 +223,7 @@ static void releaseQuads(world::Chunk& chunk) {
     std::lock_guard lk(chunk.meshMutex);
     chunk.mesh.built = false;
     std::vector<world::Quad>().swap(chunk.mesh.quads);
+    std::vector<world::FloraInstance>().swap(chunk.mesh.flora);
 }
 
 // ============================================================

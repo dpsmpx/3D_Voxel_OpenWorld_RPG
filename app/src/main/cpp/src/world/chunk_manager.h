@@ -199,7 +199,12 @@ public:
     void requeueMesh(const std::shared_ptr<Chunk>& chunk);
 
     /// ---- Управление вокселями ----
-    void setVoxel(i32 wx, i32 wy, i32 wz, u16 block);
+    ///
+    /// Ствол дерева (TRUNK, CACTUS_CORE) держится целиком: тронули
+    /// один его блок — рубка, огонь, взрыв, — и уходит весь столб, а
+    /// с ним и модель дерева (её отсеивает меширование). Возвращает,
+    /// сколько блоков изменилось: у срубленного дерева — весь ствол.
+    u32 setVoxel(i32 wx, i32 wy, i32 wz, u16 block);
     u16  getVoxel(i32 wx, i32 wy, i32 wz) const;
 
     /// ---- Перехват изменений блоков (Phase 11) ----
@@ -309,6 +314,9 @@ public:
     usize pendingJobs() const { return host_->inFlight.load(std::memory_order_relaxed); }
 
 private:
+    /// Один блок, без обрушения ствола. Возвращает прежний блок
+    /// (UNKNOWN — блока нет: вне мира или чанка).
+    u16 setOneVoxel(i32 wx, i32 wy, i32 wz, u16 block);
     /// Контекст задачи владеет чанком: задача не может застать его
     /// уничтоженным, даже если игрок ушёл и чанк выгружен.
     struct JobCtx {

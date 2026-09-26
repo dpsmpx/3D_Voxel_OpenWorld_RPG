@@ -19,34 +19,31 @@ namespace world {
 // ============================================================
 static const std::array<BiomeDef, BIOME_COUNT> BIOMES = {{
     // Ocean
-    { "Ocean",    SAND,    DIRT,    STONE, WATER, 0.00f, TreeType::None, 0,  -0.3f },
+    { "Ocean",    SAND,    DIRT,    STONE, WATER },
     // Beach
-    { "Beach",    SAND,    SAND,    STONE, WATER, 0.30f, TreeType::Palm, 0,   0.3f },
+    { "Beach",    SAND,    SAND,    STONE, WATER },
     // Plains
-    { "Plains",   GRASS,   DIRT,    STONE, WATER, 1.40f, TreeType::Oak, 2,   0.2f },
+    { "Plains",   GRASS,   DIRT,    STONE, WATER },
     // Forest
-    { "Forest",   GRASS,   DIRT,    STONE, WATER, 7.00f, TreeType::Oak, 3,   0.1f },
+    { "Forest",   GRASS,   DIRT,    STONE, WATER },
     // Taiga
-    { "Taiga",    GRASS,   DIRT,    STONE, WATER, 5.00f, TreeType::Pine, 4,  -0.5f },
+    { "Taiga",    GRASS,   DIRT,    STONE, WATER },
     // Desert
-    { "Desert",   SAND,    SAND,    STONE, WATER, 0.25f, TreeType::Cactus, 0,   0.6f },
+    { "Desert",   SAND,    SAND,    STONE, WATER },
     // Savanna
-    { "Savanna",  GRASS,   DIRT,    STONE, WATER, 1.20f, TreeType::Dead, 1,   0.5f },
+    { "Savanna",  GRASS,   DIRT,    STONE, WATER },
     // Tundra
-    { "Tundra",   SNOW,    DIRT,    STONE, ICE,   0.40f, TreeType::Pine, 3,  -0.8f },
+    { "Tundra",   SNOW,    DIRT,    STONE, ICE },
     // Mountains
-    { "Mountains",STONE,   STONE,   STONE, WATER, 0.60f, TreeType::Pine, 20, -0.4f },
+    { "Mountains",STONE,   STONE,   STONE, WATER },
     // Swamp
-    { "Swamp",    GRASS,   DIRT,    STONE, WATER, 2.50f, TreeType::Dead, -2,  0.4f },
+    { "Swamp",    GRASS,   DIRT,    STONE, WATER },
     // Volcanic
-    { "Volcanic", STONE,   STONE,   STONE, LAVA,  0.00f, TreeType::None, 15,  0.8f },
-    // Blight — Чёрный лес.
-    //
-    // Плотность 14 — вдвое против обычного леса: сквозь такой лес не
-    // видно, и это главное, что делает место зловещим. Поверхность
-    // голая земля, а не трава: в Чёрном лесу ничего не растёт, кроме
-    // самого леса.
-    { "Blight",   DIRT,    DIRT,    STONE, WATER, 14.00f, TreeType::Dead, 1,  0.0f },
+    { "Volcanic", STONE,   STONE,   STONE, LAVA },
+    // Blight — Чёрный лес. Поверхность — голая земля, а не трава: в
+    // Чёрном лесу ничего не растёт, кроме самого леса (густой
+    // сухостой, см. floraProfile).
+    { "Blight",   DIRT,    DIRT,    STONE, WATER },
 }};
 
 /// Климат, к которому подтягивается околица. Всё безопасное.
@@ -207,12 +204,10 @@ BiomeField::Sample BiomeField::fieldsExact(i32 x, i32 z) const {
     // Континенты — очень низкочастотный шум, со сдвигом точки выборки
     // другим шумом: без него берег обводит изолинию гладкого поля и
     // выходит овалом, с ним — заливами, мысами и полуостровами.
-    {
-        const f32 wx = impl_->warp.fbm3D(fx * 0.0009f, 0.f, fz * 0.0009f, 2) * 190.f;
-        const f32 wz = impl_->warp.fbm3D(fx * 0.0009f + 41.3f, 0.f, fz * 0.0009f - 17.9f, 2) * 190.f;
-        s.continent = impl_->continent.fbm3D((fx + wx) * 0.0004f, 0.f, (fz + wz) * 0.0004f,
-                                             4, 2.f, 0.5f);
-    }
+    const f32 wx = impl_->warp.fbm3D(fx * 0.0009f, 0.f, fz * 0.0009f, 2) * 190.f;
+    const f32 wz = impl_->warp.fbm3D(fx * 0.0009f + 41.3f, 0.f, fz * 0.0009f - 17.9f, 2) * 190.f;
+    s.continent = impl_->continent.fbm3D((fx + wx) * 0.0004f, 0.f, (fz + wz) * 0.0004f,
+                                         4, 2.f, 0.5f);
     // Температура — среднечастотная
     s.temperature = impl_->temperature.fbm3D(fx * 0.0012f, 0.f, fz * 0.0012f, 3);
     // Влажность
@@ -223,8 +218,10 @@ BiomeField::Sample BiomeField::fieldsExact(i32 x, i32 z) const {
     s.peaks = std::max(0.f, impl_->peaks.fbm3D(fx * 0.0030f, 0.f, fz * 0.0030f, 3));
     // Порча. Частота между континентами и температурой: пятна
     // Чёрного леса должны быть больше деревни и меньше материка —
-    // иначе это либо рощица, либо полмира.
-    s.weird = impl_->weird.fbm3D(fx * 0.0008f, 0.f, fz * 0.0008f, 3);
+    // иначе это либо рощица, либо полмира. Выборка — со сдвигом, как у
+    // континента: без него верхушка поля, чуть перевалившая порог,
+    // обводилась ромбом с прямыми краями.
+    s.weird = impl_->weird.fbm3D((fx + wx) * 0.0008f, 0.f, (fz - wz) * 0.0008f, 3);
 
     // ---- Характер области и направление её хребтов ----
     //
@@ -339,13 +336,17 @@ void BiomeField::classify(Sample& s, i32 surfaceY) const {
     // Порча сильнее климата, но слабее моря и гор: Чёрный лес растёт
     // на суше и не карабкается на скалы. Порог высокий — такие места
     // должны попадаться, а не встречаться на каждом шагу.
-    else if (s.weird > 0.52f)                             b = Blight;
+    else if (s.weird + s.edge * 0.06f > 0.52f)            b = Blight;
     else if (s.continent > 0.55f && tempAdjusted > 0.3f)  b = Volcanic;
     else if (humid < -0.35f && tempAdjusted > 0.25f) b = Desert;
     else if (humid < -0.10f && tempAdjusted > 0.15f) b = Savanna;
     else if (tempAdjusted < -0.45f)                       b = Tundra;
     else if (tempAdjusted < -0.10f && humid > 0.0f)  b = Taiga;
-    else if (humid > 0.35f && tempAdjusted > 0.0f && s.erosion > 0.5f) b = Swamp;
+    // Болото — в сырой низине: там, где вода стоит, а не просто там,
+    // где влажно. Низина (basin) делает болото вероятнее.
+    else if (tempAdjusted > 0.0f &&
+             ((humid > 0.35f && s.erosion > 0.5f) || (humid > 0.18f && s.basin > 0.55f)))
+                                                          b = Swamp;
     else if (humid > 0.05f)                          b = Forest;
     else                                                  b = Plains;
 

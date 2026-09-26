@@ -58,6 +58,33 @@ static_assert(offsetof(VoxelModelInstance, tintGpu) == 32);
 constexpr u32 VOXMODEL_BINDING_COUNT = 2;
 constexpr u32 VOXMODEL_ATTR_COUNT    = 7;
 
+/// Меши моделей в одном буфере вершин и одном буфере индексов. Общее
+/// у всех, кто рисует воксельные модели экземплярами: предметы,
+/// растения.
+class MeshTable {
+public:
+    /// Загрузить меши. Номер меша — индекс в массиве.
+    bool set(vk::Context& ctx, const std::vector<VoxelMesh>& meshes);
+    void destroy();
+
+    u32  count() const { return (u32)ranges_.size(); }
+    bool valid() const { return vbo_.handle() && ibo_.handle(); }
+    /// Нечего рисовать: номера нет или меш пуст.
+    bool empty(u32 i) const { return i >= ranges_.size() || ranges_[i].indexCount == 0; }
+    u32  quads(u32 i) const { return empty(i) ? 0u : ranges_[i].indexCount / 6u; }
+
+    /// Привязать буфер вершин (привязка 0) вместе с буфером экземпляров
+    /// (привязка 1) и буфер индексов.
+    void bind(VkCommandBuffer cmd, VkBuffer instances) const;
+    void draw(VkCommandBuffer cmd, u32 mesh, u32 instanceCount, u32 firstInstance) const;
+
+private:
+    vk::Buffer vbo_;
+    vk::Buffer ibo_;
+    struct Range { u32 firstIndex = 0, indexCount = 0; i32 vertexOffset = 0; };
+    std::vector<Range> ranges_;
+};
+
 /// Рисует сложные воксельные модели — сотни мелких вокселей каждая.
 ///
 /// Кубом-на-воксель такую модель рисовать нельзя: меч — полторы
@@ -72,8 +99,10 @@ public:
     void destroy();
 
     /// Загрузить меши. Номер модели — индекс в массиве.
-    bool setModels(vk::Context& ctx, const std::vector<VoxelMesh>& meshes);
-    u32  modelCount() const { return (u32)ranges_.size(); }
+    bool setModels(vk::Context& ctx, const std::vector<VoxelMesh>& meshes) {
+        return meshes_.set(ctx, meshes);
+    }
+    u32  modelCount() const { return meshes_.count(); }
 
     /// Экземпляры кадра.
     void begin() { pending_.clear(); }
@@ -96,12 +125,8 @@ private:
     VkDevice             dev_ = VK_NULL_HANDLE;
     vk::ShaderCache      shaders_;
     vk::GraphicsPipeline pipeline_;
-    vk::Buffer           vbo_;
-    vk::Buffer           ibo_;
+    MeshTable            meshes_;
     InstanceRing         instances_;
-
-    struct Range { u32 firstIndex = 0, indexCount = 0; i32 vertexOffset = 0; };
-    std::vector<Range> ranges_;
 
     std::vector<std::pair<u32, VoxelModelInstance>> pending_;
     std::vector<VoxelModelInstance> sorted_;

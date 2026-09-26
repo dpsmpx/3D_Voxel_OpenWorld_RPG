@@ -171,6 +171,9 @@ ItemRegistry::ItemRegistry() {
     // сухая трава выкапывается травой.
     blockToItem_[world::GRAVEL]    = ITEM_STONE;
     blockToItem_[world::DRY_GRASS] = ITEM_GRASS;
+    // Ствол дерева рубится древесиной, ствол кактуса — кактусом.
+    blockToItem_[world::TRUNK]       = ITEM_WOOD;
+    blockToItem_[world::CACTUS_CORE] = ITEM_CACTUS;
 
     // ============ Материалы (не block) ============
     materialItem(ITEM_IRON_INGOT, "Iron Ingot", 25, ItemRarity::Uncommon, 20);

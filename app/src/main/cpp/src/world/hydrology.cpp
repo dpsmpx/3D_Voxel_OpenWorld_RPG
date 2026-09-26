@@ -1213,6 +1213,7 @@ ColumnWater Hydrology::evaluate(const ChunkView& v, i32 wx, i32 wz, i32 raw,
     u8 chanFlow = 0, chanFlags = 0;
 
     f32 carve = INF;
+    f32 nearMax = 0.f;
     i32 levee = std::numeric_limits<i32>::min();
     f32 groundBest = INF;
     u8 groundFlags = 0;
@@ -1233,6 +1234,12 @@ ColumnWater Hydrology::evaluate(const ChunkView& v, i32 wx, i32 wz, i32 raw,
         const f32 d = std::sqrt((px - qx) * (px - qx) + (pz - qz) * (pz - qz));
         const f32 reach = lerp(A.reach, B.reach, t);
         if (d > reach) continue;
+        {
+            // Близость воды: по ширине долины, и большая река сырит
+            // берег сильнее ручья.
+            const f32 size = std::clamp(lerp(A.hw, B.hw, t) / 6.f, 0.35f, 1.f);
+            nearMax = std::max(nearMax, (1.f - d / reach) * size);
+        }
 
         const Sample& N = t < 0.5f ? A : B;
         const i32 y = N.waterY;
@@ -1337,6 +1344,10 @@ ColumnWater Hydrology::evaluate(const ChunkView& v, i32 wx, i32 wz, i32 raw,
         rim = lk >= 0 && !inLake && bestW > 0.15f;
     }
 
+    if (inLake) nearMax = 1.f;
+    else if (rim) nearMax = std::max(nearMax, 0.8f);
+    r.near = nearMax;
+
     if (lowland) {
         if (inLake && lk > SEA) {
             r.kind = ColumnWater::Lake;
@@ -1364,6 +1375,7 @@ ColumnWater Hydrology::evaluate(const ChunkView& v, i32 wx, i32 wz, i32 raw,
         i32 bed = chanY - dep + 1;
         if (lakeWater) bed = std::min(bed, s);
         r.kind = ColumnWater::Channel;
+        r.near = 1.f;
         r.surface = bed;
         r.waterTop = top;
         r.flow = lakeWater ? 0 : chanFlow;

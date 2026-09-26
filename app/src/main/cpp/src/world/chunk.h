@@ -5,6 +5,7 @@
 #pragma once
 #include "../core/types.h"
 #include "block.h"
+#include "flora_types.h"
 #include <array>
 #include <atomic>
 #include <glm/glm.hpp>
@@ -64,6 +65,10 @@ struct ChunkMesh {
     /// данных, которые уже лежат в видеопамяти. Если уровень
     /// понадобится снова, чанк перемешивается заново, в фоне.
     std::vector<Quad>  quads;
+    /// Растения, которые видно при этих вокселях: из Chunk::flora — те,
+    /// под которыми цела земля и у деревьев — ствол. Живут до выгрузки,
+    /// как и квады: рендер забирает список к себе.
+    std::vector<FloraInstance> flora;
     std::atomic<bool>  ready{false};   ///< есть неотправленные на GPU данные
     u64                revision = 0;   ///< Chunk::version на момент построения
     bool               built = false;  ///< quads заполнены хотя бы раз
@@ -120,6 +125,12 @@ struct Chunk {
     /// Высота верхней грани (y верхнего блока воды + 1), к которой
     /// относится waterFlow. Ноль — ничего не запечено.
     std::array<u8, CHUNK_SIZE * CHUNK_SIZE> waterFlowY{};
+
+    /// Растения и мелкие природные вещи чанка (world/flora.h). Пишет
+    /// генерация под voxelMutex, как и воксели; после неё список не
+    /// меняется — срубленное дерево или вскопанная трава отсеиваются
+    /// при мешировании по вокселям. Порядок — по FloraClass.
+    std::vector<FloraInstance> flora;
 
     // ------------------------------------------------------------
     // Готовый меш чанка.

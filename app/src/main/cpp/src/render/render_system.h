@@ -24,6 +24,7 @@
 #include "projectile_renderer.h"
 #include "npc_renderer.h"
 #include "item_renderer.h"
+#include "flora_renderer.h"
 #include "../ui/ui_system.h"
 #include <android/asset_manager.h>
 
@@ -98,6 +99,8 @@ public:
     u32 particleInstances() const { return projRenderer_.particleCount(); }
     u32 npcInstances()  const { return npcRenderer_.instanceCount(); }
     u32 itemInstances() const { return itemRenderer_.instanceCount(); }
+    u32 floraInstances() const { return floraRenderer_.instanceCount(); }
+    u32 floraQuads() const { return floraRenderer_.quadCount(); }
 
 private:
     vk::ShaderCache       shaders_;
@@ -115,6 +118,7 @@ private:
     ProjectileRenderer    projRenderer_;
     NpcRenderer           npcRenderer_;
     ItemRenderer          itemRenderer_;
+    FloraRenderer         floraRenderer_;
 
     Camera                camera_;
     LightField            lights_;

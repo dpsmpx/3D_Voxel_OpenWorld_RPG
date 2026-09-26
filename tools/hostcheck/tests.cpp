@@ -27,6 +27,8 @@
 #include "items/item_models.h"
 #include "render/voxel_model.h"
 #include "render/voxel_model_renderer.h"
+#include "render/flora_models.h"
+#include "render/flora_batch.h"
 #include "render/item_renderer.h"
 #include "ui/ui_atlas.h"
 #include "trade/trade.h"
@@ -71,6 +73,7 @@
 #include "ui/font_data.h"
 #include "world/biome.h"
 #include "world/features.h"
+#include "world/flora.h"
 #include "world/village_deeds.h"
 #include "core/memory.h"
 #include "ecs/registry.h"
@@ -2441,7 +2444,7 @@ void testWorldSharesOneLightingModel() {
     const char* files[] = {
         "voxel.vert", "voxel.frag", "sky.frag",
         "mob.vert", "mob.frag", "projectile.vert", "projectile.frag",
-        "outline.vert", "voxmodel.vert",
+        "outline.vert", "voxmodel.vert", "flora.vert",
     };
     std::string reference;
     const char* referenceName = nullptr;
@@ -4699,7 +4702,7 @@ std::vector<std::pair<std::string, std::string>> allShaders() {
         "voxel.vert", "voxel.frag", "sky.vert", "sky.frag",
         "mob.vert", "mob.frag",
         "outline.vert", "outline.frag", "projectile.vert", "projectile.frag",
-        "ui.vert", "ui.frag", "voxmodel.vert",
+        "ui.vert", "ui.frag", "voxmodel.vert", "flora.vert",
     };
     std::vector<std::pair<std::string, std::string>> out;
     for (const char* n : names) {
@@ -14793,29 +14796,39 @@ void testWellIsRespawnPoint() {
 }
 
 // ------------------------------------------------------------
-void testForestIsBigAndDense() {
-    group("лес: большие деревья, кусты и кроны через границу");
+// Лес из мелких растений: рощи, подлесок, стволы.
+//
+// Деревья больше не блоки: в чанке лежат короткие записи о растениях
+// (world/flora_types.h), а в сетке мира — только невидимые стволы, на
+// которых держатся столкновения и рубка. Проверяется то, что видит
+// игрок: лес густой, под ним подлесок и трава, каждый ствол стоит на
+// земле и целиком, и ни одно дерево не растёт вплотную к другому —
+// даже через границу чанков.
+// ------------------------------------------------------------
+void testForestGroves() {
+    group("лес: рощи, подлесок и стволы — из мелких растений");
 
     world::blocks();
     constexpr u64 SEED = 0xF04E57;
-    world::ChunkManager mgr(SEED, 1);
-    const auto& gen = mgr.generator();
+    world::TerrainGenerator gen(SEED);
 
-    // Ищем лесной чанк — биом берётся по его середине, как и в
-    // applyTrees.
+    // Чанк глубоко в лесу: и он, и восемь соседей — лес.
     i32 fcx = 0, fcz = 0;
     bool found = false;
-    for (i32 r = 0; r < 30 && !found; ++r)
+    for (i32 r = 0; r < 80 && !found; ++r)
         for (i32 a = -r; a <= r && !found; ++a)
             for (i32 b = -r; b <= r && !found; ++b) {
                 if (std::max(std::abs(a), std::abs(b)) != r) continue;
-                if (gen.biomeAt(a * 32 + 16, b * 32 + 16) != world::Forest) continue;
+                bool all = true;
+                for (i32 k = -1; k <= 1 && all; ++k)
+                    for (i32 l = -1; l <= 1 && all; ++l)
+                        all = gen.biomeAt((a + k) * 32 + 16, (b + l) * 32 + 16) == world::Forest;
+                if (!all) continue;
                 fcx = a; fcz = b; found = true;
             }
     check(found, "лесной чанк нашёлся");
     if (!found) return;
 
-    // Каждый чанк строится сам по себе — ровно как в игре.
     std::map<std::pair<i32, i32>, std::unique_ptr<world::Chunk>> chunks;
     std::vector<world::TerrainGenerator::Column> cols;
     for (i32 dz = -1; dz <= 1; ++dz)
@@ -14826,70 +14839,90 @@ void testForestIsBigAndDense() {
             world::generateChunkVoxels(*ch, gen, cols.data(), SEED);
             chunks.emplace(std::make_pair(fcx + dx, fcz + dz), std::move(ch));
         }
-    auto at = [&](i32 wx, i32 wy, i32 wz) -> u16 {
-        if (wy < 0 || wy >= world::CHUNK_SIZE_Y) return world::AIR;
-        const i32 ccx = wx >> 5, ccz = wz >> 5;
-        auto it = chunks.find({ ccx, ccz });
-        if (it == chunks.end()) return world::UNKNOWN;
-        return it->second->voxels[world::chunkIndex(wx - ccx * 32, wy,
-                                                   wz - ccz * 32)];
-    };
+    const world::Chunk& mid = *chunks[{ fcx, fcz }];
 
-    // ---- Стволы: сколько их и какой высоты ----
-    struct Trunk { i32 x, z, top, height; };
-    std::vector<Trunk> trunks;
-    usize bushLeaves = 0, allLeaves = 0;
-
-    const i32 wx0 = fcx * 32, wz0 = fcz * 32;
-    for (i32 wz = wz0; wz < wz0 + 32; ++wz)
-        for (i32 wx = wx0; wx < wx0 + 32; ++wx) {
-            const i32 surf = gen.surfaceHeight(wx, wz);
-            for (i32 y = surf; y < surf + 24; ++y) {
-                const u16 b = at(wx, y, wz);
-                if (b == world::LEAVES) {
-                    ++allLeaves;
-                    if (y <= surf + 2) ++bushLeaves;
-                }
-            }
-            if (at(wx, surf, wz) != world::WOOD) continue;
-            i32 top = surf;
-            while (top < surf + 24 && at(wx, top, wz) == world::WOOD) ++top;
-            trunks.push_back({ wx, wz, top, top - surf });
-        }
-
-    std::printf("       стволов %zu, листвы %zu, кустовой листвы %zu\n",
-                trunks.size(), allLeaves, bushLeaves);
-
-    check(trunks.size() >= 4, "лес густой: стволов в чанке хватает");
-    check(bushLeaves > 0, "и подлесок есть");
-
-    i32 tallest = 0;
-    for (const auto& t : trunks) tallest = std::max(tallest, t.height);
-    check(tallest >= 7, "деревья высокие, а не в четыре блока");
-
-    // ---- Крона переходит границу ----
-    //
-    // Берём ствол у самого края и смотрим, дотянулась ли его крона в
-    // соседний чанк. Сосед строился отдельно и про этот ствол знать
-    // не обязан — вот это и проверяем.
-    bool crossed = false, tested = false;
-    for (const auto& t : trunks) {
-        const i32 lx = t.x - wx0, lz = t.z - wz0;
-        i32 ox = 0, oz = 0;
-        if (lx <= 2)       ox = -3;
-        else if (lx >= 29) ox =  3;
-        else if (lz <= 2)  oz = -3;
-        else if (lz >= 29) oz =  3;
-        else continue;
-        tested = true;
-        for (i32 dy = -3; dy <= 0 && !crossed; ++dy)
-            if (at(t.x + ox, t.top + dy, t.z + oz) == world::LEAVES)
-                crossed = true;
-        if (crossed) break;
+    // ---- Состав ----
+    usize trees = 0, under = 0, grass = 0;
+    for (const auto& f : mid.flora) {
+        if (world::floraIsTree(f.kind)) ++trees;
+        else if (f.kind == world::FloraKind::Bush || f.kind == world::FloraKind::Fern) ++under;
+        else if (f.kind == world::FloraKind::Grass || f.kind == world::FloraKind::TallGrass ||
+                 f.kind == world::FloraKind::Flowers) ++grass;
     }
-    check(tested, "ствол у края чанка нашёлся");
-    check(!tested || crossed,
-          "крона такого ствола видна и в соседнем чанке");
+    std::printf("       чанк (%d,%d): записей %zu — деревьев %zu, подлеска %zu, травы %zu\n",
+                fcx, fcz, mid.flora.size(), trees, under, grass);
+    // Густоту меряем площадкой три на три: один чанк вправе прийтись
+    // на прогалину — рощи и поляны для того и заведены.
+    usize treesAround = 0;
+    for (const auto& [key, ch] : chunks)
+        for (const auto& f : ch->flora) treesAround += world::floraIsTree(f.kind) ? 1u : 0u;
+    check(treesAround >= 9 * 10, "лес густой: в среднем больше десяти деревьев на чанк");
+    check(under > 0, "под деревьями подлесок");
+    check(grass > 0, "и трава на прогалинах");
+
+    // ---- Стволы: целиком, на земле, ровно по записи ----
+    int bad = 0;
+    usize trunkSum = 0, trunkVoxels = 0;
+    for (const auto& f : mid.flora) {
+        if (!world::floraIsTree(f.kind)) continue;
+        trunkSum += f.trunk;
+        const u16 core = f.kind == world::FloraKind::Cactus ? world::CACTUS_CORE : world::TRUNK;
+        for (i32 k = 0; k < f.trunk; ++k)
+            if (mid.at(f.lx, f.y + k, f.lz) != core) ++bad;
+        if (mid.at(f.lx, f.y + f.trunk, f.lz) == core) ++bad;   // ствол выше записи
+        if (!world::floraGroundOk(f.kind, mid.at(f.lx, f.y - 1, f.lz))) ++bad;
+    }
+    for (i32 y = 0; y < world::CHUNK_SIZE_Y; ++y)
+        for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
+            for (i32 x = 0; x < world::CHUNK_SIZE; ++x) {
+                const u16 b = mid.at(x, y, z);
+                if (b == world::TRUNK || b == world::CACTUS_CORE) ++trunkVoxels;
+            }
+    check(bad == 0, "каждый ствол стоит на земле и целиком");
+    check(trunkVoxels == trunkSum, "и в сетке мира нет ничьих стволов");
+
+    // ---- Стволы не вплотную — и через шов ----
+    std::vector<glm::ivec2> pos;
+    for (const auto& [key, ch] : chunks)
+        for (const auto& f : ch->flora)
+            if (world::floraIsTree(f.kind))
+                pos.push_back({ key.first * 32 + f.lx, key.second * 32 + f.lz });
+    int tooClose = 0;
+    for (usize i = 0; i < pos.size(); ++i)
+        for (usize j = i + 1; j < pos.size(); ++j)
+            if (std::max(std::abs(pos[i].x - pos[j].x), std::abs(pos[i].y - pos[j].y)) < 2) ++tooClose;
+    {
+        char m[120];
+        std::snprintf(m, sizeof(m), "деревьев на площадке 3x3 чанка: %zu", pos.size());
+        check(true, m);
+    }
+    check(tooClose == 0, "стволы не стоят вплотную — и через границу чанков тоже");
+
+    // ---- Рощи и поляны ----
+    //
+    // Лес не ровный газон из деревьев: медленное поле рощ даёт и чащи,
+    // и прогалины. Меряем его по длинной прямой через весь лес.
+    usize dense = 0, open = 0, total = 0;
+    for (i32 t = 0; t < 4000; t += 8) {
+        const f32 g = world::floraGrove(gen, fcx * 32 + t, fcz * 32 + t / 3);
+        ++total;
+        if (g > 0.7f) ++dense;
+        if (g < 0.3f) ++open;
+    }
+    {
+        char m[120];
+        std::snprintf(m, sizeof(m), "чащ %.0f%%, прогалин %.0f%%",
+                      100.0 * (f64)dense / (f64)total, 100.0 * (f64)open / (f64)total);
+        check(true, m);
+    }
+    check(dense * 10 > total && open * 10 > total, "лес рощами: есть и чащи, и прогалины");
+
+    // ---- Деревья разного роста ----
+    std::set<u8> scales;
+    for (const auto& [key, ch] : chunks)
+        for (const auto& f : ch->flora)
+            if (world::floraIsTree(f.kind)) scales.insert((u8)(f.scale >> 4));
+    check(scales.size() >= 4, "деревья разного роста");
 }
 
 // ------------------------------------------------------------
@@ -16967,9 +17000,32 @@ void testSpawnSearchFindsGoodGround() {
         check(true, m);
         check(clean == 6, "во всех шести мирах на месте появления пусто");
 
-        // Проверка обязана СРАБАТЫВАТЬ: если она не отвергла ни
-        // одной точки, то её как будто и нет.
-        check(blockedSeen > 0, "и деревья на пути она отсеивает");
+        // Проверка обязана СРАБАТЫВАТЬ: если она не отвергает точку
+        // в стволе, то её как будто и нет. Деревья теперь занимают по
+        // одному столбцу, и перебор натыкается на них редко, — поэтому
+        // ставим пробу прямо в ствол.
+        {
+            constexpr u64 SD = 0xF04E57ull;
+            world::TerrainGenerator g(SD);
+            world::SpawnVoxelProbe pr(g, SD);
+            std::vector<world::TerrainGenerator::Column> cc;
+            bool tried = false, rejected = false;
+            for (i32 cx = 0; cx < 40 && !tried; ++cx) {
+                world::Chunk ch;
+                ch.coord = { cx, 0, 3 };
+                world::computeChunkColumns(g, cx, 3, cc);
+                world::generateChunkVoxels(ch, g, cc.data(), SD);
+                for (const auto& f : ch.flora) {
+                    if (!world::floraIsTree(f.kind)) continue;
+                    tried = true;
+                    rejected = !pr.standable(cx * 32 + f.lx, f.y, 3 * 32 + f.lz);
+                    break;
+                }
+            }
+            check(tried, "дерево для пробы нашлось");
+            check(rejected, "и точку в стволе дерева она отсеивает");
+        }
+        (void)blockedSeen;
 
         // И стоить она обязана недорого: чанк весит четверть
         // мегабайта, и строить их десятками ради одного места было бы
@@ -18565,277 +18621,417 @@ void testMountainsAndVolcanoes() {
 }
 
 // ------------------------------------------------------------
-void testTreesHaveBranchesAndCrowns() {
-    group("деревья: ветви, крона и ни одного голого столба");
+// Модели растений: мелкие воксели, ствол на оси, крона у дерева.
+//
+// Растение строится формами в блоках и пересчитывается в сетку для
+// каждой ступени детальности. Проверки держат то, ради чего это
+// затевалось: воксель растения в разы мельче блока, трава ниже
+// колена, дерево выше человека, но не башня; ствол стоит на оси — на
+// нём держится невидимый блок ствола; дальняя ступень дешевле
+// ближней и той же высоты — иначе лес у горизонта мигал бы при смене
+// ступени.
+// ------------------------------------------------------------
+void testFloraModels() {
+    group("растения: модели из мелких вокселей, мельче блока");
 
     world::blocks();
-    constexpr u64 SEED = 0xC0FFEEull;
-    world::TerrainGenerator gen(SEED);
+    using world::FloraKind;
 
-    /// Что выросло в чанке выше земли.
-    struct Grove {
-        i32 wood = 0;        ///< блоков древесины и кактуса
-        i32 leaves = 0;
-        i32 branchStarts = 0;///< древесина, под которой ПУСТО — это ветвь
-        i32 reach = 0;       ///< дальше всего от своего ствола по горизонтали
-        i32 trees = 0;       ///< стволов, стоящих на земле
-        /// Столбцов, где листва идёт ЯРУСАМИ: листва, пустота, снова
-        /// листва. У сплошного конуса таких нет ни одного.
-        i32 tiered = 0;
-    };
-
-    auto survey = [&](i32 wx, i32 wz) {
-        Grove g{};
-        world::Chunk ch;
-        ch.coord = { wx >> 5, 0, wz >> 5 };
-        std::vector<world::TerrainGenerator::Column> cols;
-        world::computeChunkColumns(gen, ch.coord.x, ch.coord.z, cols);
-        world::generateChunkVoxels(ch, gen, cols.data(), SEED);
-
-        // Стволы: древесина, стоящая прямо на поверхности.
-        std::vector<std::pair<i32, i32>> trunks;
-        for (i32 lx = 0; lx < world::CHUNK_SIZE; ++lx)
-            for (i32 lz = 0; lz < world::CHUNK_SIZE; ++lz) {
-                const i32 surf = cols[(usize)lx * world::CHUNK_SIZE + lz].surface;
-                if (surf < 2 || surf >= world::CHUNK_SIZE_Y - 2) continue;
-                const u16 b = ch.at(lx, surf, lz);
-                if (b == world::WOOD || b == world::CACTUS) {
-                    trunks.emplace_back(lx, lz);
-                    ++g.trees;
-                }
-                for (i32 y = surf; y < world::CHUNK_SIZE_Y; ++y) {
-                    const u16 v = ch.at(lx, y, lz);
-                    if (v == world::WOOD || v == world::CACTUS) {
-                        ++g.wood;
-                        // Ветвь узнаётся по опоре: у столба каждый
-                        // блок стоит на своём же столбе, у ветви под
-                        // ним пусто.
-                        if (ch.at(lx, y - 1, lz) == world::AIR) ++g.branchStarts;
-                    } else if (v == world::LEAVES) {
-                        ++g.leaves;
-                    }
-                }
-            }
-
-        // Ярусность считается ВОЗЛЕ СТВОЛА, а не по всему чанку.
-        //
-        // «Где-то в столбце листва, пустота, снова листва» бывает и
-        // просто оттого, что два дерева стоят рядом: одно закрывает
-        // другое. Смотреть надо в двух шагах от ствола — там у
-        // яруса и виден просвет между лапами.
-        for (const auto& t : trunks) {
-            for (i32 d = 0; d < 4; ++d) {
-                static const i32 ox[4] = { 2, -2, 0, 0 };
-                static const i32 oz[4] = { 0, 0, 2, -2 };
-                const i32 lx = t.first + ox[d], lz = t.second + oz[d];
-                if (lx < 0 || lz < 0 || lx >= world::CHUNK_SIZE ||
-                    lz >= world::CHUNK_SIZE) continue;
-                const i32 surf = cols[(usize)lx * world::CHUNK_SIZE + lz].surface;
-                if (surf < 2) continue;
-                // Считаем ВЫШЕ подлеска: куст рядом со стволом сам по
-                // себе даёт листву у земли, просвет и крону — три
-                // слоя, к ярусам лапника отношения не имеющие.
-                i32 runs = 0;
-                bool inLeaves = false;
-                for (i32 y = surf + 4; y < world::CHUNK_SIZE_Y; ++y) {
-                    const bool leaf = ch.at(lx, y, lz) == world::LEAVES;
-                    if (leaf && !inLeaves) ++runs;
-                    inLeaves = leaf;
-                }
-                if (runs >= 2) { ++g.tiered; break; }
-            }
-        }
-
-        // Размах: дальше всего отнесённая древесина от ближайшего ствола.
-        for (i32 lx = 0; lx < world::CHUNK_SIZE; ++lx)
-            for (i32 lz = 0; lz < world::CHUNK_SIZE; ++lz) {
-                const i32 surf = cols[(usize)lx * world::CHUNK_SIZE + lz].surface;
-                if (surf < 2) continue;
-                bool anyWood = false;
-                for (i32 y = surf; y < world::CHUNK_SIZE_Y && !anyWood; ++y) {
-                    const u16 v = ch.at(lx, y, lz);
-                    anyWood = (v == world::WOOD || v == world::CACTUS);
-                }
-                if (!anyWood) continue;
-                i32 best = 999;
-                for (const auto& t : trunks)
-                    best = std::min(best, std::abs(t.first - lx) +
-                                          std::abs(t.second - lz));
-                if (best < 999) g.reach = std::max(g.reach, best);
-            }
-        return g;
-    };
-
-    // Найти чанк, у которого середина — нужный биом.
-    //
-    // И все восемь соседних чанков тоже: обход ниже считает деревья
-    // по квадрату три на три, а первая попавшаяся колонка биома почти
-    // всегда лежит на его кромке. Тогда две трети площадки — уже
-    // чужой биом с чужими деревьями, и проверка меряет не то, о чём
-    // говорит. Раньше это сходило с рук на совпадении: у прежнего
-    // шума первым в обходе попадался кусок поглубже.
-    auto findBiome = [&](world::BiomeId want, i32 radius, i32& ox, i32& oz) {
-        for (i32 x = -300000; x <= 300000; x += 1013)
-            for (i32 z = -150000; z <= 150000; z += 1013) {
-                if (gen.biomeAt(x, z) != want) continue;
-                // Нужен не берег и не скала: дерево должно вырасти.
-                const i32 s = gen.surfaceHeight(x, z);
-                if (s <= world::TerrainGenerator::SEA_LEVEL + 2) continue;
-                if (s >= world::CHUNK_SIZE_Y - 24) continue;
-                bool solid = true;
-                for (i32 kx = -radius; kx <= radius && solid; ++kx)
-                    for (i32 kz = -radius; kz <= radius; ++kz)
-                        if (gen.biomeAt(x + kx * 32, z + kz * 32) != want) {
-                            solid = false;
-                            break;
-                        }
-                if (!solid) continue;
-                ox = x; oz = z;
-                return true;
-            }
-        return false;
-    };
-
-    struct Case {
-        world::BiomeId biome;
-        const char*    what;
-        bool           wantsLeaves;   ///< живое дерево или сухое
-        /// Чего ждём от силуэта: сучьев в стороны (дуб, сухостой,
-        /// кактус) или ярусов лапника (ель). У ели сучьев нет и быть
-        /// не должно — у неё лапы.
-        bool           wantsBranches;
-        bool           wantsTiers;
-        /// Сколько чанков в каждую сторону осматривать.
-        ///
-        /// Зависит от того, как густо в биоме растут деревья. У
-        /// пустыни плотность 0.25 на чанк: на квадрате три на три
-        /// вырастает пара кактусов, и «у деревьев есть размах»
-        /// меряется двумя кактусами — то есть удачей, а не свойством
-        /// биома. На пять на пять их полдюжины.
-        i32            radius;
-        /// Насколько далеко от ствола обязана уходить крона.
-        ///
-        /// У кактуса — ровно на блок, и это не придирка к числу, а
-        /// его устройство: рука ставится в СОСЕДНЮЮ колонку
-        /// (`bx + DIR8_X[dir]` в features.cpp) и оттуда идёт вверх.
-        /// Размаха в два блока у кактусовой заросли не бывает.
-        ///
-        /// Раньше здесь у всех стояла двойка, и пустыня её проходила.
-        /// Проходила потому, что образец брался по ПЕРВОЙ колонке
-        /// биома — то есть почти всегда на кромке, — и в квадрат
-        /// попадали деревья СОСЕДНЕГО биома. Проверка мерила их, а
-        /// говорила про кактусы.
-        i32            minReach;
-    };
-    const Case cases[] = {
-        { world::Forest,  "лес",        true,  true,  false, 1, 2 },
-        // У ели нет деревянных сучьев — только лапник, и он проверен
-        // ярусами. Размах по древесине у неё ноль по устройству; раньше
-        // двойка проходила, потому что в образец попадали дубы соседа.
-        { world::Taiga,   "тайга",      true,  false, true,  1, 0 },
-        { world::Plains,  "равнина",    true,  true,  false, 2, 2 },
-        { world::Savanna, "саванна",    false, true,  false, 2, 2 },
-        { world::Desert,  "пустыня",    false, true,  false, 2, 1 },
-        { world::Blight,  "Чёрный лес", false, true,  false, 1, 2 },
-    };
-
-    i32 bare = 0;
-    for (const Case& c : cases) {
-        i32 bx = 0, bz = 0;
-        if (!findBiome(c.biome, c.radius, bx, bz)) {
-            char m[120];
-            std::snprintf(m, sizeof(m), "%s: не нашёлся в мире", c.what);
-            check(false, m);
-            continue;
-        }
-
-        // Квадрат чанков вокруг точки, а не полоса на восток: полоса
-        // в три сотни блоков уходит из биома, и «в саванне не растёт
-        // ни одного дерева» означало бы, что мы смотрим уже не в
-        // саванне.
-        Grove sum{};
-        for (i32 kx = -c.radius; kx <= c.radius; ++kx)
-            for (i32 kz = -c.radius; kz <= c.radius; ++kz) {
-                const Grove g = survey(bx + kx * 32, bz + kz * 32);
-                sum.wood += g.wood;
-                sum.leaves += g.leaves;
-                sum.branchStarts += g.branchStarts;
-                sum.trees += g.trees;
-                sum.tiered += g.tiered;
-                sum.reach = std::max(sum.reach, g.reach);
-            }
-
-        char m[240];
-        std::snprintf(m, sizeof(m),
-                      "%s (%d,%d): стволов %d, древесины %d, листвы %d, "
-                      "сучьев %d, ярусных столбцов %d, размах %d",
-                      c.what, bx, bz, sum.trees, sum.wood, sum.leaves,
-                      sum.branchStarts, sum.tiered, sum.reach);
-        check(true, m);
-
-        check(sum.trees > 0, "деревья в биоме растут");
-        if (sum.trees == 0) continue;
-
-        // Главное: НИ ОДНОГО голого столба. Сухое дерево без листвы —
-        // это дерево, если у него есть сучья; без них это забор.
-        if (c.wantsBranches && sum.branchStarts == 0) {
-            ++bare;
-            char w[140];
-            std::snprintf(w, sizeof(w), "%s: деревья без единого сука", c.what);
-            check(false, w);
-        }
-        // У ели смотрим ДОЛЮ, а не ноль. Ели в тайге стоят плотно и
-        // перекрывают друг друга: просвет в чужой кроне даёт те же
-        // два слоя и при сплошном конусе. По замеру: ярусный
-        // лапник — восемь деревьев из десяти, сплошной конус —
-        // три с половиной.
-        if (c.wantsTiers && sum.tiered * 2 <= sum.trees) {
-            ++bare;
-            char w[160];
-            std::snprintf(w, sizeof(w),
-                          "%s: лапник сплошным конусом (ярусных %d из %d)",
-                          c.what, sum.tiered, sum.trees);
-            check(false, w);
-        }
-        check(sum.reach >= c.minReach, "крона и ветви уходят вбок от ствола");
-
-        if (c.wantsLeaves)
-            check(sum.leaves > sum.trees * 20, "и листвы на них вдоволь");
-    }
-    check(bare == 0, "ни в одном биоме силуэт не выродился в столб");
-
-    // ---- Деревья отличаются друг от друга ----
-    //
-    // Все дубы одной формы — это обои, а не лес. Форму задаёт зерно
-    // дерева, и оно у каждого своё.
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::vector<render::VoxelMesh> meshes = render::buildFloraMeshes();
+    const f64 ms = std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - t0).count();
     {
-        i32 fx = 0, fz = 0;
-        check(findBiome(world::Forest, 1, fx, fz), "лес для сравнения нашёлся");
-        std::map<i32, i32> heights;
-        i32 counted = 0;
-        for (i32 k = 0; k < 10; ++k) {
-            world::Chunk ch;
-            ch.coord = { (fx + k * 32) >> 5, 0, fz >> 5 };
-            std::vector<world::TerrainGenerator::Column> cols;
-            world::computeChunkColumns(gen, ch.coord.x, ch.coord.z, cols);
-            world::generateChunkVoxels(ch, gen, cols.data(), SEED);
-            for (i32 lx = 0; lx < world::CHUNK_SIZE; ++lx)
-                for (i32 lz = 0; lz < world::CHUNK_SIZE; ++lz) {
-                    const i32 surf = cols[(usize)lx * world::CHUNK_SIZE + lz].surface;
-                    if (surf < 2 || ch.at(lx, surf, lz) != world::WOOD) continue;
-                    i32 h = 0;
-                    while (surf + h < world::CHUNK_SIZE_Y &&
-                           ch.at(lx, surf + h, lz) == world::WOOD) ++h;
-                    heights[h]++;
-                    ++counted;
-                }
-        }
-        char m[140];
-        std::snprintf(m, sizeof(m), "стволов осмотрено %d, разной высоты %zu",
-                      counted, heights.size());
+        char m[120];
+        std::snprintf(m, sizeof(m), "моделей %u, мешей %zu, собраны за %.1f мс",
+                      render::floraModelCount(), meshes.size(), ms);
         check(true, m);
-        check(counted > 10, "стволов для сравнения хватило");
-        check(heights.size() >= 3, "и высота у них разная");
+    }
+    check(meshes.size() == render::floraModelCount() * render::FLORA_LODS,
+          "мешей по числу моделей и ступеней");
+    check(ms < 500.0, "все модели собираются быстро — это делается при старте");
+
+    int empty = 0, coarse = 0, badHeight = 0, offAxis = 0, heavy = 0, lodJump = 0;
+    usize quadsByLod[render::FLORA_LODS] = {};
+    for (u32 k = 0; k < (u32)FloraKind::Count; ++k)
+        for (u8 v = 0; v < world::FLORA_VARIANTS[k]; ++v) {
+            const FloraKind kind = (FloraKind)k;
+            const bool tree = world::floraIsTree(kind);
+            const u32 idx = render::floraModelIndex(kind, v);
+            const render::VoxelModel m0 = render::buildFloraModel(kind, v, 0);
+            if (meshes[idx * render::FLORA_LODS].indices.empty()) ++empty;
+            if (m0.voxelSize > 0.25f + 1e-6f) ++coarse;
+            const f32 h = (f32)m0.sy * m0.voxelSize;
+            if (tree && kind != FloraKind::Cactus && (h < 3.f || h > 8.5f)) ++badHeight;
+            if ((kind == FloraKind::Grass || kind == FloraKind::Flowers ||
+                 kind == FloraKind::Pebbles || kind == FloraKind::Mushroom) && h > 1.f) ++badHeight;
+            if (meshes[idx * render::FLORA_LODS].quadCount() > 700) ++heavy;
+            if (tree && meshes[idx * render::FLORA_LODS + render::FLORA_LODS - 1].quadCount() > 80) ++heavy;
+            for (u32 l = 0; l < render::FLORA_LODS; ++l)
+                quadsByLod[l] += meshes[idx * render::FLORA_LODS + l].quadCount();
+            if (!tree) continue;
+            for (u32 l = 0; l < render::FLORA_LODS; ++l) {
+                const render::VoxelModel m = render::buildFloraModel(kind, v, l);
+                // Сетка нечётная, середина — воксель: на нём ствол.
+                if (m.sx % 2 == 0 || !m.solid(m.sx / 2, 0, m.sz / 2)) ++offAxis;
+                const f32 hl = (f32)m.sy * m.voxelSize;
+                if (std::abs(hl - h) > 2.f * m.voxelSize + 0.3f) ++lodJump;
+            }
+        }
+    {
+        char m[200];
+        std::snprintf(m, sizeof(m), "квадов на все модели по ступеням: %zu, %zu, %zu, %zu",
+                      quadsByLod[0], quadsByLod[1], quadsByLod[2], quadsByLod[3]);
+        check(true, m);
+    }
+    check(empty == 0, "у каждого вида и варианта модель есть");
+    check(coarse == 0, "воксель растения — четверть блока и мельче");
+    check(badHeight == 0, "дерево выше человека, но не башня; трава и цветы ниже блока");
+    check(offAxis == 0, "ствол дерева стоит на оси модели на каждой ступени");
+    check(lodJump == 0, "ступени одной высоты — лес не прыгает при смене ступени");
+    check(heavy == 0, "модель не дороже бюджета: вблизи до 700 квадов, у горизонта до 80");
+    bool falling = true;
+    for (u32 l = 1; l < render::FLORA_LODS; ++l) falling = falling && quadsByLod[l] < quadsByLod[l - 1];
+    check(falling, "каждая следующая ступень дешевле предыдущей");
+
+    // ---- Крона у живого дерева — наверху и шире ствола ----
+    int noCrown = 0;
+    for (FloraKind kind : { FloraKind::Oak, FloraKind::Birch, FloraKind::Pine, FloraKind::Acacia,
+                            FloraKind::Palm })
+        for (u8 v = 0; v < world::FLORA_VARIANTS[(u32)kind]; ++v) {
+            const render::VoxelModel m = render::buildFloraModel(kind, v, 0);
+            i32 widestY = 0, widest = 0;
+            for (i32 y = 0; y < m.sy; ++y) {
+                i32 lo = m.sx, hi = -1;
+                for (i32 z = 0; z < m.sz; ++z)
+                    for (i32 x = 0; x < m.sx; ++x)
+                        if (m.solid(x, y, z)) { lo = std::min(lo, x); hi = std::max(hi, x); }
+                if (hi - lo + 1 > widest) { widest = hi - lo + 1; widestY = y; }
+            }
+            // Ель шире всего у земли — лапы нижнего яруса; её крона
+            // начинается над человеком, а не у корней.
+            const bool pine = kind == FloraKind::Pine;
+            const f32 at = (f32)widestY * m.voxelSize;
+            // Берёза узкая — крона под два блока; остальные шире.
+            if ((f32)widest * m.voxelSize < 1.75f || (!pine && at < 1.8f) || (pine && at < 0.9f)) {
+                ++noCrown;
+                std::printf("       вид %u, вариант %u: крона %.2f блока на высоте %.2f\n",
+                            (u32)kind, (u32)v, (f64)((f32)widest * m.voxelSize), (f64)at);
+            }
+        }
+    check(noCrown == 0, "у живого дерева крона шире ствола в разы и выше головы");
+
+    // ---- Сухое дерево — с ветвями, а не столб ----
+    int bare = 0;
+    for (u8 v = 0; v < world::FLORA_VARIANTS[(u32)FloraKind::DeadTree]; ++v) {
+        const render::VoxelModel m = render::buildFloraModel(FloraKind::DeadTree, v, 0);
+        const i32 c = m.sx / 2;
+        i32 reach = 0;
+        for (i32 y = (i32)(1.4f / m.voxelSize); y < m.sy; ++y)
+            for (i32 z = 0; z < m.sz; ++z)
+                for (i32 x = 0; x < m.sx; ++x)
+                    if (m.solid(x, y, z)) reach = std::max(reach, std::max(std::abs(x - c), std::abs(z - c)));
+        if ((f32)reach * m.voxelSize < 0.6f) ++bare;
+    }
+    check(bare == 0, "сухое дерево с ветвями, а не столб");
+
+    // ---- Варианты различаются ----
+    int twins = 0;
+    for (u32 k = 0; k < (u32)FloraKind::Count; ++k)
+        if (world::FLORA_VARIANTS[k] > 1 &&
+            render::buildFloraModel((FloraKind)k, 0, 0).cells ==
+            render::buildFloraModel((FloraKind)k, 1, 0).cells) ++twins;
+    check(twins == 0, "варианты вида — разные модели, а не копии");
+}
+
+// ------------------------------------------------------------
+// Растения: детерминизм и отсутствие шва по границе чанка.
+//
+// Решение о растении зависит только от мировых координат: клетки
+// размещения мировые, крутизна считается по кайме соседей, вода — по
+// гидрологии, а не по соседнему чанку в памяти. Значит, тот же чанк
+// даёт те же растения байт в байт, в каком бы порядке ни строился
+// мир, и колонка на краю чанка ничем не отличается от колонки в
+// середине. Второе меряется статистикой: по сотне чанков записей в
+// крайних столбцах столько же, сколько во внутренних той же фазы
+// сетки (клетки деревьев — четыре блока, и фаза у столбцов разная).
+// ------------------------------------------------------------
+void testFloraDeterministicAndSeamless() {
+    group("растения: одинаковы при любом порядке и без шва по границе чанка");
+
+    world::blocks();
+    constexpr u64 SEED = 0x5EA35ull;
+    world::TerrainGenerator gen(SEED);
+    std::vector<world::TerrainGenerator::Column> cols;
+    auto build = [&](const world::TerrainGenerator& g, i32 cx, i32 cz) {
+        auto ch = std::make_unique<world::Chunk>();
+        ch->coord = { cx, 0, cz };
+        world::computeChunkColumns(g, cx, cz, cols);
+        world::generateChunkVoxels(*ch, g, cols.data(), SEED);
+        return ch;
+    };
+    auto same = [](const world::Chunk& a, const world::Chunk& b) {
+        return a.flora.size() == b.flora.size() &&
+               (a.flora.empty() ||
+                std::memcmp(a.flora.data(), b.flora.data(),
+                            a.flora.size() * sizeof(world::FloraInstance)) == 0) &&
+               a.voxels == b.voxels;
+    };
+
+    const auto a = build(gen, 3, -2);
+    build(gen, 40, 17);
+    build(gen, -9, 5);
+    const auto b = build(gen, 3, -2);
+    world::TerrainGenerator gen2(SEED);
+    const auto c = build(gen2, 3, -2);
+    check(!a->flora.empty(), "в пробном чанке есть растения");
+    check(same(*a, *b), "тот же чанк — те же растения и стволы, байт в байт");
+    check(same(*a, *c), "и в другом экземпляре генератора — тоже");
+
+    // ---- Шов ----
+    std::array<u64, world::CHUNK_SIZE> byX{}, byZ{};
+    usize chunksSeen = 0;
+    for (i32 cz = -6; cz < 6; ++cz)
+        for (i32 cx = -6; cx < 6; ++cx) {
+            const auto ch = build(gen, cx, cz);
+            ++chunksSeen;
+            for (const auto& f : ch->flora) { ++byX[f.lx]; ++byZ[f.lz]; }
+        }
+    auto ratio = [](const std::array<u64, world::CHUNK_SIZE>& h, i32 edge) {
+        const i32 phase = edge & 3;
+        f64 sum = 0.0;
+        i32 n = 0;
+        for (i32 x = 4; x < world::CHUNK_SIZE - 4; ++x)
+            if ((x & 3) == phase) { sum += (f64)h[(usize)x]; ++n; }
+        const f64 mean = n ? sum / n : 0.0;
+        return mean > 0.0 ? (f64)h[(usize)edge] / mean : 0.0;
+    };
+    const f64 r[4] = { ratio(byX, 0), ratio(byX, world::CHUNK_SIZE - 1),
+                       ratio(byZ, 0), ratio(byZ, world::CHUNK_SIZE - 1) };
+    {
+        char m[200];
+        std::snprintf(m, sizeof(m), "чанков %zu; край к середине: x0 %.2f, x31 %.2f, z0 %.2f, z31 %.2f",
+                      chunksSeen, r[0], r[1], r[2], r[3]);
+        check(true, m);
+    }
+    bool ok = true;
+    for (f64 v : r) ok = ok && v > 0.75 && v < 1.33;
+    check(ok, "у границы чанка растений столько же, сколько в середине");
+}
+
+// ------------------------------------------------------------
+// Растения по всему миру: не висят, не тонут, не растут в стенах.
+//
+// Сотня с лишним чанков трёх миров, разбросанных на десятки тысяч
+// блоков: каждая запись сверяется с вокселями — так же, как это
+// делает меширование перед показом. Заодно считается, сколько
+// записей лежит в чанке: десять байт на растение, и память под них
+// обязана оставаться сотнями байт на чанк, а не мегабайтами.
+// ------------------------------------------------------------
+void testFloraSaneAcrossTheWorld() {
+    group("растения: не висят, не тонут и не растут в постройках — по всему миру");
+
+    world::blocks();
+    usize chunks = 0, records = 0, maxPer = 0;
+    int floating = 0, badGround = 0, inBuilding = 0, unsorted = 0;
+    std::array<usize, (usize)world::FloraKind::Count> kinds{};
+    std::vector<world::TerrainGenerator::Column> cols;
+    for (u64 seed : { 1ull, 777ull, 4242ull }) {
+        world::TerrainGenerator gen(seed);
+        for (i32 i = 0; i < 40; ++i) {
+            const i32 cx = -620 + (i % 8) * 157 + (i32)(seed % 13);
+            const i32 cz = -500 + (i / 8) * 211 - (i32)(seed % 7);
+            world::Chunk ch;
+            ch.coord = { cx, 0, cz };
+            world::computeChunkColumns(gen, cx, cz, cols);
+            world::generateChunkVoxels(ch, gen, cols.data(), seed);
+            ++chunks;
+            records += ch.flora.size();
+            maxPer = std::max(maxPer, ch.flora.size());
+            auto voxel = [&](i32 x, i32 y, i32 z) -> u16 {
+                return (u32)y < (u32)world::CHUNK_SIZE_Y ? ch.at(x, y, z) : world::AIR;
+            };
+            u8 prevClass = 0;
+            for (const auto& f : ch.flora) {
+                ++kinds[(usize)f.kind];
+                if (!world::floraStillStands(f, voxel)) ++floating;
+                if (!world::floraGroundOk(f.kind, voxel(f.lx, f.y - 1, f.lz))) ++badGround;
+                if (world::floraIsTree(f.kind) &&
+                    world::buildingNear(cx * 32 + f.lx, cz * 32 + f.lz, seed, &gen)) ++inBuilding;
+                const u8 cls = (u8)world::floraClass(f.kind);
+                if (cls < prevClass) ++unsorted;
+                prevClass = cls;
+            }
+        }
+    }
+    usize kindsSeen = 0;
+    for (usize n : kinds) kindsSeen += n ? 1u : 0u;
+    {
+        char m[220];
+        std::snprintf(m, sizeof(m), "чанков %zu, записей %zu (в среднем %.0f, до %zu на чанк, "
+                      "%.1f КБ на чанк), видов встретилось %zu из %u",
+                      chunks, records, (f64)records / (f64)chunks, maxPer,
+                      (f64)records * sizeof(world::FloraInstance) / 1024.0 / (f64)chunks,
+                      kindsSeen, (u32)world::FloraKind::Count);
+        check(true, m);
+    }
+    check(floating == 0, "ни одно растение не висит и не стоит внутри блока или воды");
+    check(badGround == 0, "каждое стоит на своей земле: кактус на песке, трава на траве");
+    check(inBuilding == 0, "в постройках и на дорогах деревья не растут");
+    check(unsorted == 0, "записи в чанке лежат по классам: мелочь дальних чанков отбрасывается разом");
+    check(maxPer < 1200, "записей в чанке — сотни, а не тысячи");
+    check(kindsSeen + 2 >= (usize)world::FloraKind::Count, "в мире встречается почти всё разнообразие видов");
+}
+
+// ------------------------------------------------------------
+// Рубка: дерево уходит целиком, и модель вместе с ним.
+//
+// Ствол в сетке мира — столб невидимых блоков. Тронули один — рубкой,
+// огнём, взрывом, — и уходит весь столб (ChunkManager::setVoxel), а
+// меширование, увидев, что ствола нет, перестаёт показывать модель.
+// Игрок получает древесину по числу блоков ствола.
+// ------------------------------------------------------------
+void testFellingTakesTheWholeTree() {
+    group("рубка: дерево уходит целиком, вместе с моделью");
+
+    world::blocks();
+    items::items();
+    check(items::items().blockToItem(world::TRUNK) == items::ITEM_WOOD,
+          "из ствола выходит древесина");
+    check(items::items().blockToItem(world::CACTUS_CORE) == items::ITEM_CACTUS,
+          "из кактуса — кактус");
+    check(world::blocks().get(world::TRUNK).isSolid && world::blocks().get(world::TRUNK).isInvisible,
+          "ствол твёрдый, но рисует его не мешер, а рендер растений");
+
+    constexpr u64 SEED = 0xF04E57;
+    jobs::gJobs.start(2);
+    {
+        world::ChunkManager mgr(SEED, 1);
+        const auto& gen = mgr.generator();
+        // Лесная точка поближе к началу.
+        glm::ivec2 at{ 0, 0 };
+        bool found = false;
+        for (i32 r = 0; r < 60 && !found; ++r)
+            for (i32 a = -r; a <= r && !found; ++a)
+                for (i32 b = -r; b <= r && !found; ++b) {
+                    if (std::max(std::abs(a), std::abs(b)) != r) continue;
+                    if (gen.biomeAt(a * 32 + 16, b * 32 + 16) != world::Forest) continue;
+                    at = { a * 32 + 16, b * 32 + 16 };
+                    found = true;
+                }
+        check(found, "лес нашёлся");
+        bool ready = false;
+        for (int i = 0; i < 900 && !ready; ++i) {
+            mgr.update({ (f32)at.x, 80.f, (f32)at.y });
+            ready = mgr.isReadyAt(at.x, at.y) && mgr.pendingJobs() == 0;
+            if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(ready, "лесной чанк построен и смеширован");
+        auto ch = mgr.findChunk(at.x >> 5, at.y >> 5);
+        const world::FloraInstance* tree = nullptr;
+        if (ch)
+            for (const auto& f : ch->flora)
+                if (world::floraIsTree(f.kind) && f.kind != world::FloraKind::Cactus && f.trunk >= 2) {
+                    tree = &f;
+                    break;
+                }
+        check(tree != nullptr, "дерево в чанке есть");
+        if (ready && ch && tree) {
+            const world::FloraInstance t = *tree;
+            auto shown = [&] {
+                std::lock_guard lk(ch->meshMutex);
+                for (const auto& f : ch->mesh.flora)
+                    if (f.lx == t.lx && f.lz == t.lz && f.kind == t.kind) return true;
+                return false;
+            };
+            check(shown(), "до рубки дерево видно");
+            const i32 wx = ch->coord.x * 32 + t.lx, wz = ch->coord.z * 32 + t.lz;
+            // Рубим середину ствола: уходит и низ, и верх.
+            const u32 felled = mgr.setVoxel(wx, t.y + 1, wz, world::AIR);
+            char m[120];
+            std::snprintf(m, sizeof(m), "ствол в %u блоков, срублено %u", (u32)t.trunk, felled);
+            check(true, m);
+            check(felled == t.trunk, "срублен весь ствол, а не один блок");
+            int left = 0;
+            for (i32 k = 0; k < t.trunk; ++k)
+                if (mgr.getVoxel(wx, t.y + k, wz) != world::AIR) ++left;
+            check(left == 0, "от ствола ничего не осталось");
+            for (int i = 0; i < 300 && mgr.pendingJobs() != 0; ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            check(!shown(), "и модель дерева больше не показывается");
+            check(mgr.setVoxel(wx, t.y - 1, wz, world::AIR) == 1,
+                  "обычный блок по-прежнему меняется один");
+        }
+    }
+    jobs::gJobs.stop();
+}
+
+// ------------------------------------------------------------
+// Сборка кадра растений: по мешам, по дальности, со ступенями.
+//
+// Проверяется без видеокарты: FloraBatch — ровно то, что рендер
+// кладёт в буфер экземпляров и в вызовы отрисовки.
+// ------------------------------------------------------------
+void testFloraBatch() {
+    group("растения: сборка кадра — по мешам, по дальности, со ступенями");
+
+    using world::FloraKind;
+    auto rec = [](FloraKind k, u8 lx, u8 lz, u8 yaw = 77) {
+        world::FloraInstance f;
+        f.kind = k; f.lx = lx; f.lz = lz; f.y = 64; f.yaw = yaw; f.scale = 160;
+        f.trunk = world::floraIsTree(k) ? 3 : 0;
+        return f;
+    };
+    // Чанк с деревом, кустом и травой — в порядке классов, как их
+    // кладёт генерация.
+    const std::vector<world::FloraInstance> list = {
+        rec(FloraKind::Oak, 2, 2), rec(FloraKind::Bush, 6, 6), rec(FloraKind::Grass, 10, 10),
+    };
+    render::FloraBatch batch;
+    batch.begin({ 0.f, 70.f, 0.f });
+    batch.addChunk({ 0.f, 0.f, 0.f }, list);        // рядом: всё видно
+    batch.addChunk({ 64.f, 0.f, 0.f }, list);       // 66..74 блока: трава и куст уже нет
+    batch.addChunk({ 320.f, 0.f, 0.f }, list);      // у горизонта: одно дерево
+    batch.finish(nullptr);
+
+    const auto& inst = batch.instances();
+    const auto& draws = batch.draws();
+    check(inst.size() == 5, "видно пять: три рядом, по дереву в дальних чанках");
+    usize sum = 0;
+    bool contiguous = true;
+    u32 next = 0;
+    for (const auto& d : draws) {
+        sum += d.count;
+        contiguous = contiguous && d.first == next;
+        next = d.first + d.count;
+    }
+    check(sum == inst.size() && contiguous, "каждый экземпляр — ровно в одном вызове, подряд");
+
+    std::set<u32> lods;
+    for (const auto& d : draws)
+        if (d.mesh / render::FLORA_LODS == render::floraModelIndex(FloraKind::Oak, 0))
+            lods.insert(d.mesh % render::FLORA_LODS);
+    check(lods == std::set<u32>{ 0u, 2u, 3u }, "дерево рядом — первая ступень, дальше — грубее");
+
+    // Дерево стоит в сетке: поворот — четверть оборота.
+    bool quarter = true;
+    for (const auto& d : draws)
+        if (d.mesh / render::FLORA_LODS == render::floraModelIndex(FloraKind::Oak, 0))
+            for (u32 i = d.first; i < d.first + d.count; ++i)
+                quarter = quarter && (inst[i].params & 0x3Fu) == 0u;
+    check(quarter, "дерево повёрнуто на четверть оборота, а не вкось");
+
+    // У границы дальности трава вырастает, а не выскакивает.
+    render::FloraBatch edge;
+    edge.begin({ 0.f, 70.f, 0.f });
+    edge.addChunk({ 0.f, 0.f, 0.f }, { rec(FloraKind::Grass, 5, 0) });
+    edge.addChunk({ 32.f, 0.f, 0.f }, { rec(FloraKind::Grass, 6, 0) });   // 38.5 блока
+    edge.finish(nullptr);
+    const auto& e = edge.instances();
+    check(e.size() == 2, "обе травинки в пределах дальности");
+    if (e.size() == 2) {
+        const u32 s0 = (e[0].params >> 8) & 0xFFu, s1 = (e[1].params >> 8) & 0xFFu;
+        const u32 nearS = e[0].pos.x < e[1].pos.x ? s0 : s1, farS = e[0].pos.x < e[1].pos.x ? s1 : s0;
+        check(farS < nearS / 2, "у края дальности трава меньше — вырастает из земли");
     }
 }
 
@@ -19551,19 +19747,19 @@ void testBlightForestAndCastles() {
     // ---- 2. Лес там гуще обычного, и он мёртвый ----
     {
         const world::BiomeDef& bl = gen.field().def(world::Blight);
-        const world::BiomeDef& fo = gen.field().def(world::Forest);
-        check(bl.treeDensity > fo.treeDensity,
-              "в Чёрном лесу деревьев больше, чем в обычном");
-        check(bl.treeType == world::TreeType::Dead,
+        const world::FloraProfile& fb = world::floraProfile(world::Blight);
+        // Обычный лес считается по влажности; сырее всего — 0.52.
+        check(fb.cover > 0.52f, "в Чёрном лесу деревьев больше, чем в обычном");
+        check(fb.tree == world::FloraKind::DeadTree && fb.tree2 == world::FloraKind::DeadTree,
               "и деревья в нём сухие");
         check(bl.surfaceBlock != world::GRASS,
               "трава там не растёт");
     }
 
-    // Считаем настоящие стволы в чанке Чёрного леса против чанка
-    // обычного: таблица — это намерение, а проверять надо мир.
+    // Считаем настоящие стволы в чанке Чёрного леса: таблица — это
+    // намерение, а проверять надо мир.
     {
-        auto woodIn = [&](i32 wx, i32 wz) {
+        auto treesIn = [&](i32 wx, i32 wz) {
             const i32 cx = (i32)std::floor((f32)wx / world::CHUNK_SIZE);
             const i32 cz = (i32)std::floor((f32)wz / world::CHUNK_SIZE);
             world::Chunk ch;
@@ -19572,20 +19768,18 @@ void testBlightForestAndCastles() {
             world::computeChunkColumns(gen, cx, cz, cols);
             world::generateChunkVoxels(ch, gen, cols.data(), SEED);
             int n = 0;
-            for (i32 y = 0; y < world::CHUNK_SIZE_Y; ++y)
-                for (i32 z = 0; z < world::CHUNK_SIZE; ++z)
-                    for (i32 x = 0; x < world::CHUNK_SIZE; ++x)
-                        if (ch.at(x, y, z) == world::WOOD) ++n;
+            for (const auto& f : ch.flora)
+                if (f.kind == world::FloraKind::DeadTree) ++n;
             return n;
         };
-        const int inBlight = woodIn(bx, bz);
+        const int inBlight = treesIn(bx, bz);
         char m[140];
-        std::snprintf(m, sizeof(m), "стволов в чанке Чёрного леса: %d", inBlight);
+        std::snprintf(m, sizeof(m), "сухих деревьев в чанке Чёрного леса: %d", inBlight);
         check(true, m);
-        // Четырнадцать деревьев на чанк — это сотня блоков ствола и
-        // больше. Пустой или редкий чанк означал бы, что плотность из
+        // Клеток 4x4 в чанке — 64; при доле 0.62 и рощах — три-четыре
+        // десятка. Пустой или редкий чанк означал бы, что плотность из
         // таблицы до расстановки не дошла.
-        check(inBlight > 40, "Чёрный лес и правда густой");
+        check(inBlight > 20, "Чёрный лес и правда густой");
     }
 
     // ---- 3. Там водятся только чудовища ----
@@ -21830,16 +22024,17 @@ void testDesertGrowsCactus() {
     // планировщик задач для этого не нужен, а результат детерминирован
     // по (seed, координате чанка).
     //
-    // Кактусов приходится искать долго: treeDensity у пустыни 0.05,
-    // то есть один кактус на двадцать чанков, и биом берётся по ЦЕНТРУ
-    // чанка. Полтора десятка пустынных чанков ничего не докажут —
-    // ноль там законен. Поэтому обход идёт по сотням.
+    // Кактус теперь — модель из мелких вокселей, а в сетке мира от
+    // него стоит невидимый столб CACTUS_CORE: на нём столкновение и
+    // добыча. Кактусы в пустыне редки (доля клеток 0.035, рощами), и
+    // полтора десятка пустынных чанков ничего не докажут — поэтому
+    // обход идёт по сотням.
     constexpr u64 SEED = 0xCAC705ULL;
     world::ChunkManager mgr(SEED, 1);
     const auto& gen = mgr.generator();
 
     constexpr usize WANT_CHUNKS = 80;
-    usize desertChunks = 0, withCactus = 0, cactusVoxels = 0, woodVoxels = 0;
+    usize desertChunks = 0, withCactus = 0, cactusVoxels = 0, cactusModels = 0;
     std::vector<world::TerrainGenerator::Column> cols;
 
     for (i32 cz = -64; cz <= 64 && desertChunks < WANT_CHUNKS; ++cz) {
@@ -21855,28 +22050,27 @@ void testDesertGrowsCactus() {
             world::generateChunkVoxels(*chunk, gen, cols.data(), SEED);
 
             usize here = 0;
-            for (i32 lz = 0; lz < world::CHUNK_SIZE; ++lz)
-                for (i32 lx = 0; lx < world::CHUNK_SIZE; ++lx)
-                    for (i32 y = 0; y < world::CHUNK_SIZE_Y; ++y) {
-                        const u16 b = chunk->voxels[world::chunkIndex(lx, y, lz)];
-                        if (b == world::CACTUS) { ++here; ++cactusVoxels; }
-                        if (b == world::WOOD)   ++woodVoxels;
-                    }
+            for (const auto& f : chunk->flora) {
+                if (f.kind != world::FloraKind::Cactus) continue;
+                ++here;
+                ++cactusModels;
+                for (i32 k = 0; k < f.trunk; ++k)
+                    if (chunk->at(f.lx, f.y + k, f.lz) == world::CACTUS_CORE) ++cactusVoxels;
+            }
             if (here) ++withCactus;
         }
     }
 
-    std::printf("       пустынных чанков %zu, с кактусом %zu, вокселей кактуса %zu\n",
-                desertChunks, withCactus, cactusVoxels);
+    std::printf("       пустынных чанков %zu, с кактусом %zu, кактусов %zu, блоков стебля %zu\n",
+                desertChunks, withCactus, cactusModels, cactusVoxels);
     check(desertChunks == WANT_CHUNKS, "пустынные чанки нашлись");
-    // Ровно эта проверка отличает «кактус есть» от «кактус из дуба»:
-    // до правки ствол ставился блоком WOOD, и CACTUS в мире не
-    // появлялся ни разу.
-    check(cactusVoxels > 0, "в пустыне вырос кактус");
+    check(cactusModels > 0, "в пустыне вырос кактус");
+    // Стебель — кактус, а не дерево: столб CACTUS_CORE, из которого
+    // выходит кактус, а не древесина.
+    check(cactusVoxels >= cactusModels, "и стебель у него из кактуса");
+    check(items::items().blockToItem(world::CACTUS_CORE) == items::ITEM_CACTUS,
+          "срубленный, он даёт кактус");
     check(withCactus >= 2, "и не в одном-единственном чанке на весь обход");
-    // Дерево в пустыне встречается и законно — деревни строятся из
-    // него в любом биоме, — поэтому «дерева нет» проверять нельзя.
-    (void)woodVoxels;
 }
 
 // ------------------------------------------------------------
@@ -28280,7 +28474,7 @@ int main() {
     testNpcsVaryBetweenIndividuals();
     testLocomotionStatesAndTransitions();
     testWellIsRespawnPoint();
-    testForestIsBigAndDense();
+    testForestGroves();
     testRoadConnectsVillages();
     testCourierWalksTheRoad();
     testLairHoldsOneBeast();
@@ -28292,7 +28486,11 @@ int main() {
     testWeatherCyclonesAndSeasons();
     testRainAndSnowParticles();
     testMountainsAndVolcanoes();
-    testTreesHaveBranchesAndCrowns();
+    testFloraModels();
+    testFloraDeterministicAndSeamless();
+    testFloraSaneAcrossTheWorld();
+    testFellingTakesTheWholeTree();
+    testFloraBatch();
     testBossesAndDaylightMonsters();
     testStepsSoundLikeStepsAndRainLikeRain();
     testContinueLastWorldAndFilePicker();

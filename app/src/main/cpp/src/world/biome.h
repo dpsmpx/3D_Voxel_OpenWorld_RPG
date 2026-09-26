@@ -34,25 +34,14 @@ enum BiomeId : u8 {
     BIOME_COUNT
 };
 
-enum class TreeType : u8 {
-    None,
-    Oak,       // широкий blob
-    Pine,      // конус
-    Palm,      // зонтик
-    Cactus,    // без листвы
-    Dead       // сухое дерево
-};
-
 struct BiomeDef {
     const char* name;
     u16 surfaceBlock;
     u16 subsurfaceBlock;    // 2-4 блока под поверхностью
     u16 stoneBlock;
     u16 liquidBlock;        // вода/лава/нет
-    f32 treeDensity;        // деревьев на чанк (в среднем)
-    TreeType treeType;
-    i8 baseHeightOffset;    // смещение базовой высоты (может быть ниже базы)
-    f32 temperature;        // справочная
+    // Что растёт — не здесь, а в world/flora.cpp (floraProfile):
+    // растения решаются по месту, а не по одной строке на биом.
 };
 
 // ============================================================

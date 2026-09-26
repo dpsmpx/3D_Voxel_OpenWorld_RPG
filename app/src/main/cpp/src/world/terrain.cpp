@@ -16,6 +16,7 @@ TerrainGenerator::TerrainGenerator(u64 seed)
       landform_(seed ^ 0xA55A),
       cavesA_(seed ^ 0xC0DE),
       cavesB_(seed ^ 0xBEEF),
+      flora_(seed ^ 0xF10A),
       seed_(seed),
       hydro_(std::make_unique<hydro::Hydrology>(*this, seed))
 {}

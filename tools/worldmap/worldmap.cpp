@@ -13,16 +13,25 @@
 //   ./tools/worldmap/run.sh --seed 1 --layer relief --out build/worldmap/s1
 //   ./tools/worldmap/run.sh --seed 1 --layer all --stats
 //
-// Слои: relief (рельеф с отмывкой, цвет поверхности, вода), height,
-// biome, humidity, temperature, slope, water, landform, region.
+// Слои — по звеньям цепочки генерации:
+//   macro       крупный рельеф: высота, по которой течёт вода;
+//   meso        средние формы: холмы, гребни, террасы (высота минус крупная);
+//   height      итоговая высота;  slope — крутизна;
+//   landform    тип рельефа;  region — характер области;
+//   humidity, temperature — климат;  biome — биом;
+//   water       реки, озёра, море;  influence — близость воды (сырость);
+//   vegetation  доля деревьев;  decor — густота мелочи (трава, цветы, камни);
+//   relief      сводная карта: рельеф с отмывкой, цвет поверхности, вода.
 // all — все подряд.
 //
 // --stats печатает цифры для сравнения до/после: распределение высот
 // и уклонов, перепад высот по областям, доли биомов, резкость границ,
-// доля воды, а также время генерации чанков (p50/p95/p99/худший).
+// доля воды, а также время генерации чанков (p50/p95/p99/худший) и
+// растения в них: записей на чанк, память, виды.
 // ============================================================
 #include "world/terrain.h"
 #include "world/features.h"
+#include "world/flora.h"
 #include "world/block.h"
 #include "world/chunk.h"
 #include "render/iso_png.h"
@@ -56,12 +65,20 @@ struct Cell {
     TerrainGenerator::Column col;
     hydro::ColumnWater water;
     i32 ground = 0;            ///< земля после рек
+    i32 wx = 0, wz = 0;
 };
+
 
 u8 clamp8(f32 v) { return (u8)std::clamp(v, 0.f, 255.f); }
 
 void rgbOf(u32 c, f32& r, f32& g, f32& b) {
     r = (f32)((c >> 24) & 0xFF); g = (f32)((c >> 16) & 0xFF); b = (f32)((c >> 8) & 0xFF);
+}
+
+/// Зелёная шкала 0..1: от голой земли к чаще.
+void greens(f32 v, u8* o) {
+    v = std::clamp(v, 0.f, 1.f);
+    o[0] = clamp8(236 - v * 206); o[1] = clamp8(232 - v * 112); o[2] = clamp8(210 - v * 180);
 }
 
 /// Цвет для числа в [-1, 1]: синий — ноль — красный.
@@ -84,6 +101,7 @@ void grid(const Opts& o, const TerrainGenerator& gen, std::vector<Cell>& cells) 
         for (i32 i = 0; i < n; ++i) {
             const i32 wx = x0 + i * o.scale, wz = z0 + j * o.scale;
             Cell& c = cells[(usize)j * n + i];
+            c.wx = wx; c.wz = wz;
             c.col = gen.column(wx, wz);
             c.water = gen.hydrology().column(wx, wz, c.col.surface);
             c.ground = c.water.kind == hydro::ColumnWater::None ? c.col.surface
@@ -97,8 +115,8 @@ bool wetCell(const Cell& c) {
     return c.ground <= TerrainGenerator::SEA_LEVEL;
 }
 
-void layerPixel(const Opts& o, const std::vector<Cell>& cells, i32 i, i32 j,
-                const std::string& layer, u8* p)
+void layerPixel(const Opts& o, const TerrainGenerator& gen, const std::vector<Cell>& cells,
+                i32 i, i32 j, const std::string& layer, u8* p)
 {
     const i32 n = o.px;
     const Cell& c = cells[(usize)j * n + i];
@@ -113,6 +131,23 @@ void layerPixel(const Opts& o, const std::vector<Cell>& cells, i32 i, i32 j,
     if (layer == "height") {
         const u8 v = clamp8((f32)c.ground * 2.f);
         p[0] = p[1] = p[2] = v;
+    } else if (layer == "macro") {
+        const u8 v = clamp8(c.col.heightRoute * 2.f);
+        p[0] = p[1] = p[2] = v;
+    } else if (layer == "meso") {
+        diverging(((f32)c.col.surface - c.col.heightRoute) / 24.f, p);
+    } else if (layer == "influence") {
+        if (wetCell(c)) { p[0] = 40; p[1] = 90; p[2] = 200; }
+        else {
+            const f32 v = std::clamp(c.water.near, 0.f, 1.f);
+            p[0] = clamp8(240 - v * 170); p[1] = clamp8(236 - v * 60); p[2] = clamp8(220 - v * 60);
+        }
+    } else if (layer == "vegetation") {
+        if (wetCell(c)) { p[0] = 40; p[1] = 90; p[2] = 200; }
+        else greens(floraTreeCover(gen, c.col, c.wx, c.wz, c.water.near) / 0.85f, p);
+    } else if (layer == "decor") {
+        if (wetCell(c)) { p[0] = 40; p[1] = 90; p[2] = 200; }
+        else greens(floraDecorDensity(gen, c.col, c.wx, c.wz, c.water.near), p);
     } else if (layer == "biome") {
         const u32 rgb = BIOME_RGB[c.col.climate.biome];
         p[0] = (u8)(rgb >> 16); p[1] = (u8)(rgb >> 8); p[2] = (u8)rgb;
@@ -153,11 +188,12 @@ void layerPixel(const Opts& o, const std::vector<Cell>& cells, i32 i, i32 j,
     }
 }
 
-void writeLayer(const Opts& o, const std::vector<Cell>& cells, const std::string& layer) {
+void writeLayer(const Opts& o, const TerrainGenerator& gen, const std::vector<Cell>& cells,
+                const std::string& layer) {
     std::vector<u8> rgb((usize)o.px * o.px * 3);
     for (i32 j = 0; j < o.px; ++j)
         for (i32 i = 0; i < o.px; ++i)
-            layerPixel(o, cells, i, j, layer, &rgb[((usize)j * o.px + i) * 3]);
+            layerPixel(o, gen, cells, i, j, layer, &rgb[((usize)j * o.px + i) * 3]);
     const std::string path = o.out + "_" + layer + ".png";
     if (render::writePngFile(path.c_str(), rgb.data(), (u32)o.px, (u32)o.px))
         std::printf("worldmap: %s\n", path.c_str());
@@ -236,6 +272,8 @@ void printStats(const Opts& o, const TerrainGenerator& gen, const std::vector<Ce
     auto chunk = std::make_unique<Chunk>();
     std::vector<TerrainGenerator::Column> cols;
     std::vector<f64> msCols, msGen;
+    std::vector<f64> perChunk;
+    usize kinds[(usize)FloraKind::Count] = {};
     u64 state = o.seed * 0x9E3779B97F4A7C15ull + 7;
     auto rnd = [&]() { state ^= state << 13; state ^= state >> 7; state ^= state << 17; return state; };
     const i32 half = n * o.scale / 2 / CHUNK_SIZE;
@@ -258,10 +296,25 @@ void printStats(const Opts& o, const TerrainGenerator& gen, const std::vector<Ce
         const auto t2 = std::chrono::steady_clock::now();
         msCols.push_back(std::chrono::duration<f64, std::milli>(t1 - t0).count());
         msGen.push_back(std::chrono::duration<f64, std::milli>(t2 - t0).count());
+        perChunk.push_back((f64)chunk->flora.size());
+        for (const auto& f : chunk->flora) ++kinds[(usize)f.kind];
     }
     std::printf("чанк: колонки p50 %.2f мс; целиком p50 %.2f  p95 %.2f  p99 %.2f  худший %.2f мс (%d чанков)\n",
                 pct(msCols, 0.5), pct(msGen, 0.5), pct(msGen, 0.95), pct(msGen, 0.99),
                 pct(msGen, 1.0), o.chunks);
+    f64 sum = 0.0;
+    for (f64 v : perChunk) sum += v;
+    std::printf("растения: на чанк p50 %.0f  p95 %.0f  max %.0f, в среднем %.0f (%.2f КБ записей)\n",
+                pct(perChunk, 0.5), pct(perChunk, 0.95), pct(perChunk, 1.0),
+                sum / (f64)o.chunks, sum / (f64)o.chunks * sizeof(FloraInstance) / 1024.0);
+    static const char* NAMES[] = { "дуб", "берёза", "ель", "акация", "пальма", "сухостой", "кактус",
+                                   "куст", "сухой куст", "папоротник", "трава", "высокая трава",
+                                   "цветы", "тростник", "галька", "камень", "бревно", "пень", "грибы" };
+    static_assert(sizeof(NAMES) / sizeof(NAMES[0]) == (usize)FloraKind::Count);
+    std::printf("растения по видам:");
+    for (usize k = 0; k < (usize)FloraKind::Count; ++k)
+        if (kinds[k]) std::printf(" %s %.1f%%", NAMES[k], 100.0 * (f64)kinds[k] / std::max(1.0, sum));
+    std::printf("\n");
 }
 
 } // namespace
@@ -289,10 +342,11 @@ int main(int argc, char** argv) {
     const f64 ms = std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::printf("worldmap: %d x %d колонок за %.0f мс (с гидросетью)\n", o.px, o.px, ms);
 
-    static const char* ALL[] = { "relief", "height", "biome", "humidity", "temperature",
-                                 "slope", "water", "landform", "region" };
-    if (o.layer == "all") for (const char* l : ALL) writeLayer(o, cells, l);
-    else if (o.layer != "none") writeLayer(o, cells, o.layer);
+    static const char* ALL[] = { "relief", "macro", "meso", "height", "biome", "humidity",
+                                 "temperature", "slope", "water", "influence", "landform",
+                                 "region", "vegetation", "decor" };
+    if (o.layer == "all") for (const char* l : ALL) writeLayer(o, gen, cells, l);
+    else if (o.layer != "none") writeLayer(o, gen, cells, o.layer);
     if (o.stats) printStats(o, gen, cells);
     return 0;
 }
