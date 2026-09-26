@@ -317,6 +317,65 @@ if ! "$OUT/rivercheck"; then
     exit 1
 fi
 
+# ---- списки исходников у инструментов ----
+#
+# bench, vkcheck и isocheck собирают игру из СВОИХ списков файлов, а
+# CI их не запускает (Vulkan есть не везде). Когда появился
+# world/hydrology.cpp, все три перестали линковаться — и этого никто
+# не видел. Здесь каждый список линкуется (без запуска) с уже
+# собранными объектами и заглушками: забытый файл — ошибка сразу.
+echo "==> Списки исходников инструментов..."
+mkdir -p "$OUT/tools"
+for TOOL in bench vkcheck isocheck worldmap; do
+    SCRIPT="$PROJ/tools/$TOOL/run.sh"
+    MAIN="$PROJ/tools/$TOOL/$TOOL.cpp"
+    [ -f "$SCRIPT" ] && [ -f "$MAIN" ] || continue
+    TOOL_OBJS=()
+    # "$SRC"/dir/{a,b}.cpp и "$SRC"/dir/a.cpp — ровно как в скрипте;
+    # фигурные скобки раскрывает сам bash. Свои заглушки Android у
+    # инструментов свои, поэтому повтор определения разрешён: ищем здесь
+    # только НЕРАЗРЕШЁННЫЕ символы, и побеждает определение инструмента.
+    while read -r SPEC; do
+        for F in $(eval echo "$SPEC"); do
+            TOOL_OBJS+=("$OUT/obj/src_$(echo "${F%.cpp}" | tr '/' '_').o")
+        done
+    done < <(grep -o '"\$SRC"/[A-Za-z0-9_/{},.-]*\.cpp' "$SCRIPT" | sed 's|"\$SRC"/||')
+    for O in "${TOOL_OBJS[@]}"; do
+        [ -f "$O" ] || { echo "✗ $TOOL: в списке файл, которого нет: $O"; exit 1; }
+    done
+    if ! "$CXX" -std=c++20 -O0 -g0 \
+            -D__ANDROID__ -DVK_USE_PLATFORM_ANDROID_KHR \
+            -DGLM_FORCE_DEPTH_ZERO_TO_ONE -DGLM_ENABLE_EXPERIMENTAL -DENTT_NO_ETO -DHOSTCHECK=1 \
+            -I "$SRC_DIR" -I "$PROJ/tools/hostcheck/include" \
+            -isystem "$TP/glm" -isystem "$TP/entt/include" -isystem "$TP/Vulkan-Headers/include" \
+            -o "$OUT/tools/$TOOL" "$MAIN" "${TOOL_OBJS[@]}" "$OUT/obj/_stubs.o" \
+            -Wl,--allow-multiple-definition \
+            -lz -lpthread -ldl 2> "$OUT/tools/$TOOL.err"; then
+        echo "✗ $TOOL не линкуется со своим списком исходников (tools/$TOOL/run.sh):"
+        grep -E "undefined|error" "$OUT/tools/$TOOL.err" | sed 's/^/    /' | head -20
+        exit 1
+    fi
+done
+# soak и uishot берут все объекты разом — у них ломается не список, а
+# вызовы: SaveManager::save/load получили жителей и клады, и soak
+# перестал собираться, никем не замеченный.
+for TOOL in soak uishot; do
+    MAIN="$PROJ/tools/$TOOL/$TOOL.cpp"
+    [ -f "$MAIN" ] || continue
+    if ! "$CXX" -std=c++20 -O0 -g0 \
+            -D__ANDROID__ -DVK_USE_PLATFORM_ANDROID_KHR \
+            -DGLM_FORCE_DEPTH_ZERO_TO_ONE -DGLM_ENABLE_EXPERIMENTAL -DENTT_NO_ETO -DHOSTCHECK=1 \
+            -I "$SRC_DIR" -I "$PROJ/tools/hostcheck/include" \
+            -isystem "$TP/glm" -isystem "$TP/entt/include" -isystem "$TP/Vulkan-Headers/include" \
+            -o "$OUT/tools/$TOOL" "$MAIN" "$OUT"/obj/*.o \
+            -lz -lpthread -ldl 2> "$OUT/tools/$TOOL.err"; then
+        echo "✗ $TOOL не собирается с текущим кодом игры:"
+        grep -E "error|undefined" "$OUT/tools/$TOOL.err" | sed 's/^/    /' | head -20
+        exit 1
+    fi
+done
+echo "✓ bench, vkcheck, isocheck, worldmap, soak, uishot собираются"
+
 # ---- две конфигурации сборки ----
 #
 # debug_scene включается флагом времени компиляции, значит проверить

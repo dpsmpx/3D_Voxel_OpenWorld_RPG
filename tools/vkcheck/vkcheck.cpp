@@ -22,6 +22,9 @@
 #include "render/camera.h"
 #include "render/lights.h"
 #include "render/voxel_pipeline.h"
+#include "render/flora_models.h"
+#include "render/flora_renderer.h"
+#include "world/flora.h"
 #include "world/day_cycle.h"
 #include "world/debug_scene.h"
 #include "world/chunk.h"
@@ -167,6 +170,9 @@ int main(int argc, char** argv) {
     // Факел в руке. Светит из точки камеры; без ключа источников нет
     // вовсе, и прежние снимки повторяются байт в байт.
     float torch = 0.f;
+    // Растения: модели, сборка кадра и шейдер — те же, что в игре.
+    // Выключаются ключом --flora 0: сравнить «до» и «после».
+    bool  drawFlora = true;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : "0"; };
@@ -199,6 +205,7 @@ int main(int argc, char** argv) {
         else if (a == "--wind")    { windX = (float)atof(next()); windZ = (float)atof(next()); weatherGiven = true; }
         // Свет от факела видно только глазами, а глаза здесь — кадр.
         else if (a == "--torch")   torch = (float)atof(next());
+        else if (a == "--flora")   drawFlora = atoi(next()) != 0;
         else if (a == "--scene") {
             const std::string v = next();
             if (v == "minimal") minimalScene = true;
@@ -561,6 +568,98 @@ int main(int argc, char** argv) {
     u.screenSize = glm::vec4((float)W, (float)H, (float)shading, 0.f);
     ubo.write(&u, sizeof(u));
 
+    // ---- растения: те же модели, та же сборка кадра, тот же шейдер ----
+    //
+    // Меши здесь лежат в памяти, видимой процессору, — копировать через
+    // промежуточный буфер инструменту незачем. Всё остальное — как в
+    // render::FloraRenderer: отбор по вокселям (floraStillStands),
+    // FloraBatch, один вызов на меш.
+    vk::GraphicsPipeline floraPipe;
+    vk::Buffer floraVb, floraIb, floraInst;
+    struct FloraRange { u32 first = 0, count = 0; i32 vertexOffset = 0; };
+    std::vector<FloraRange> floraRanges;
+    render::FloraBatch floraBatch;
+    if (drawFlora && !minimalScene) {
+        const std::vector<render::VoxelMesh> fm = render::buildFloraMeshes();
+        std::vector<render::VoxelModelVertex> fv;
+        std::vector<u32> fi, fq;
+        for (const auto& m : fm) {
+            floraRanges.push_back({ (u32)fi.size(), (u32)m.indices.size(), (i32)fv.size() });
+            fq.push_back(m.quadCount());
+            fv.insert(fv.end(), m.vertices.begin(), m.vertices.end());
+            fi.insert(fi.end(), m.indices.begin(), m.indices.end());
+        }
+        if (!floraVb.create(dev, phys, fv.size() * sizeof(render::VoxelModelVertex),
+                            vk::BufferUsage::Vertex, true) ||
+            !floraIb.create(dev, phys, fi.size() * sizeof(u32), vk::BufferUsage::Index, true))
+            return 1;
+        floraVb.write(fv.data(), fv.size() * sizeof(render::VoxelModelVertex));
+        floraIb.write(fi.data(), fi.size() * sizeof(u32));
+
+        vk::PipelineDesc d{};
+        d.renderPass   = rp;
+        d.descLayout   = desc.layout();
+        d.vertName     = "shaders/flora.vert.spv";
+        d.fragName     = "shaders/mob.frag.spv";
+        d.depthFormat  = DEPTH;
+        d.cullMode     = VK_CULL_MODE_BACK_BIT;
+        d.depthTest    = true;
+        d.depthWrite   = true;
+        d.blend        = false;
+        d.bindings     = render::FLORA_BINDINGS;
+        d.bindingCount = 2;
+        d.attrs        = render::FLORA_ATTRS;
+        d.attrCount    = 5;
+        if (!floraPipe.create(dev, shaders, d)) { std::printf("vkcheck: конвейер растений\n"); return 1; }
+
+        usize records = 0;
+        std::vector<world::FloraInstance> standing;
+        floraBatch.begin(eye);
+        for (auto& c : chunks) {
+            records += c->flora.size();
+            standing.clear();
+            auto voxel = [&](i32 x, i32 y, i32 z) -> u16 {
+                return (u32)y < (u32)world::CHUNK_SIZE_Y ? c->voxels[world::chunkIndex(x, y, z)]
+                                                         : world::AIR;
+            };
+            for (const auto& f : c->flora)
+                if (world::floraStillStands(f, voxel)) standing.push_back(f);
+            floraBatch.addChunk({ (float)c->coord.x * world::CHUNK_SIZE, 0.f,
+                                  (float)c->coord.z * world::CHUNK_SIZE }, standing);
+        }
+        floraBatch.finish(&fq);
+        const auto& fin = floraBatch.instances();
+        if (!fin.empty()) {
+            if (!floraInst.create(dev, phys, fin.size() * sizeof(render::FloraGpuInstance),
+                                  vk::BufferUsage::Vertex, true)) return 1;
+            floraInst.write(fin.data(), fin.size() * sizeof(render::FloraGpuInstance));
+        }
+        {
+            // Разбор по ступеням и видам: куда уходят квады.
+            usize q[render::FLORA_LODS] = {}, n[render::FLORA_LODS] = {};
+            std::map<std::string, std::pair<usize, usize>> byKind;
+            for (const auto& dr : floraBatch.draws()) {
+                const u32 lod = dr.mesh % render::FLORA_LODS;
+                q[lod] += (usize)dr.count * fq[dr.mesh];
+                n[lod] += dr.count;
+                u32 model = dr.mesh / render::FLORA_LODS, kind = 0;
+                for (u32 k = 0; k < (u32)world::FloraKind::Count; ++k)
+                    if (render::floraModelIndex((world::FloraKind)k, 0) <= model) kind = k;
+                auto& e = byKind[std::to_string(kind)];
+                e.first += dr.count; e.second += (usize)dr.count * fq[dr.mesh];
+            }
+            std::printf("vkcheck: растения по ступеням (шт/квадов):");
+            for (u32 l = 0; l < render::FLORA_LODS; ++l) std::printf(" %u — %zu/%zu", l, n[l], q[l]);
+            std::printf("\n");
+            for (auto& [k, e] : byKind)
+                std::printf("  вид %s: %zu шт, %zu квадов\n", k.c_str(), e.first, e.second);
+        }
+        std::printf("vkcheck: растений в чанках %zu, в кадре %zu, вызовов %zu, квадов %u "
+                    "(мешей %zu, вершин %zu)\n",
+                    records, fin.size(), floraBatch.draws().size(), floraBatch.quads(),
+                    fm.size(), fv.size());
+    }
+
     if (minimalScene) {
         // Та же строка, что печатает игра: числа обязаны сойтись.
         std::printf("vkcheck: debug_scene=true | камера %.3f %.3f %.3f, "
@@ -749,6 +848,21 @@ int main(int argc, char** argv) {
         drawOne(opaquePipe, bestMesh, bestTri);
     } else {
         drawAll(opaquePipe, false);
+
+        // Растения — сразу за ландшафтом, как в игре.
+        if (floraPipe.valid() && floraInst.handle()) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, floraPipe.handle());
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, floraPipe.layout(),
+                                    0, 1, &set, 0, nullptr);
+            VkBuffer vbs[2] = { floraVb.handle(), floraInst.handle() };
+            VkDeviceSize offs[2] = { 0, 0 };
+            vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offs);
+            vkCmdBindIndexBuffer(cmd, floraIb.handle(), 0, VK_INDEX_TYPE_UINT32);
+            for (const auto& dr : floraBatch.draws()) {
+                const FloraRange& r = floraRanges[dr.mesh];
+                vkCmdDrawIndexed(cmd, r.count, dr.count, r.first, r.vertexOffset, dr.first);
+            }
+        }
 
         // Небо — после непрозрачного и до воды, ровно как в игре.
         if (drawSky && skyPipe.valid()) {

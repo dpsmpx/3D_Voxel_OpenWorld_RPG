@@ -117,10 +117,14 @@ aaudio_data_callback_result_t onAudioData(AAudioStream* /*stream*/,
 }
 
 void onAudioError(AAudioStream* /*stream*/,
-                  void* /*userData*/,
+                  void* userData,
                   aaudio_result_t error)
 {
     LOGE("AAudio error: %d", (int)error);
+    // Раньше ошибка только писалась в журнал: после смены устройства
+    // вывода звук пропадал до перезапуска игры.
+    if (error == AAUDIO_ERROR_DISCONNECTED)
+        ((AudioEngine*)userData)->onStreamDisconnected();
 }
 
 } // namespace
@@ -138,6 +142,7 @@ AudioEngine::~AudioEngine() {
 bool AudioEngine::init(u32 sampleRate) {
     if (stream_) return true;
     sampleRate_ = sampleRate;
+    requestedRate_ = sampleRate;
 
     // Проверяем доступность AAudio до синтеза банка звуков: на
     // Android 7 иначе впустую тратились бы секунды и мегабайты на то,
@@ -146,6 +151,17 @@ bool AudioEngine::init(u32 sampleRate) {
     if (!aa) return false;
 
     SoundRegistry::instance().init(sampleRate);
+
+    disconnected_.store(false, std::memory_order_relaxed);
+    reopenIn_ = 0.f;
+    if (!openStream()) return false;
+    wantStream_ = true;
+    return true;
+}
+
+bool AudioEngine::openStream() {
+    const AAudioApi* aa = aaudioApi();
+    if (!aa) return false;
 
     AAudioStreamBuilder* builder = nullptr;
     aaudio_result_t r = aa->createStreamBuilder(&builder);
@@ -158,7 +174,7 @@ bool AudioEngine::init(u32 sampleRate) {
     aa->setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
     aa->setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
     aa->setChannelCount(builder, 2);
-    aa->setSampleRate(builder, (i32)sampleRate);
+    aa->setSampleRate(builder, (i32)requestedRate_);
     aa->setDataCallback(builder, onAudioData, this);
     aa->setErrorCallback(builder, onAudioError, this);
 
@@ -172,6 +188,13 @@ bool AudioEngine::init(u32 sampleRate) {
     }
     stream_ = stream;
 
+    // Частоту узнаём ДО пуска: её читает микшер на звуковом потоке, и
+    // запись после requestStart была гонкой с первым же обратным вызовом.
+    i32 actualRate = aa->getSampleRate(stream_);
+    i32 actualChannels = aa->getChannelCount(stream_);
+    i32 framesPerBurst = aa->getFramesPerBurst(stream_);
+    if (actualRate > 0) sampleRate_ = (u32)actualRate;
+
     r = aa->requestStart(stream_);
     if (r != AAUDIO_OK) {
         LOGE("AudioEngine: requestStart fail: %d", (int)r);
@@ -180,18 +203,12 @@ bool AudioEngine::init(u32 sampleRate) {
         return false;
     }
 
-    i32 actualRate = aa->getSampleRate(stream_);
-    i32 actualChannels = aa->getChannelCount(stream_);
-    i32 framesPerBurst = aa->getFramesPerBurst(stream_);
-
     LOGI("AudioEngine: stream open at %d Hz, %d ch, burst=%d",
          actualRate, actualChannels, framesPerBurst);
-
-    sampleRate_ = (u32)actualRate;
     return true;
 }
 
-void AudioEngine::shutdown() {
+void AudioEngine::closeStream() {
     if (!stream_) return;
     // Поток открыт — значит, таблица символов точно загрузилась.
     const AAudioApi* aa = aaudioApi();
@@ -200,6 +217,14 @@ void AudioEngine::shutdown() {
         aa->closeStream(stream_);
     }
     stream_ = nullptr;
+}
+
+void AudioEngine::shutdown() {
+    const bool wanted = wantStream_;
+    wantStream_ = false;
+    disconnected_.store(false, std::memory_order_relaxed);
+    if (!stream_ && !wanted) return;
+    closeStream();
 
     // Через freeVoice, а не напрямую: иначе дескрипторы, выданные до
     // остановки, остались бы действительными после повторного пуска.
@@ -380,6 +405,20 @@ void AudioEngine::applySpatial(Voice& v, const AudioListener& L) {
 }
 
 void AudioEngine::update(f32 dt, const AudioListener& listener) {
+    // Потерянный поток переоткрываем здесь, на игровом потоке. Голоса
+    // не трогаем: музыка и эффекты доиграют уже в новое устройство.
+    // Новое устройство может быть ещё не готово — тогда раз в секунду.
+    if (wantStream_ &&
+        (!stream_ || disconnected_.load(std::memory_order_acquire))) {
+        reopenIn_ -= dt;
+        if (reopenIn_ <= 0.f) {
+            disconnected_.store(false, std::memory_order_relaxed);
+            closeStream();
+            if (openStream()) LOGI("AudioEngine: поток переоткрыт");
+            else              reopenIn_ = 1.f;
+        }
+    }
+
     listenerCache_ = listener;
     listenerCache_.updateBasis();
 

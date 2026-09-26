@@ -114,6 +114,27 @@ BlockRegistry& blocks() {
         // огонь, а не палка.
         reg(TORCH,    "Torch",     false, true,  false, true, 14, bcolor(255,186, 84),   bcolor(126, 88, 52),   bcolor(126, 88, 52),   0.1f);
 
+        // Щебень — между камнем и землёй и по цвету, и по светлоте:
+        // осыпь под скалой обязана читаться переходом, а не пятном.
+        // Крапчатый, как всё природное и разнородное.
+        reg(GRAVEL,   "Gravel",    true,  false, false, false, 0, bcolor(132,126,118),   bcolor(132,126,118),   bcolor(132,126,118),   0.7f, 2);
+        // Выгоревшая трава: соломенная зелень, бок — та же земля, что у
+        // травы. Светлее травы: сухое светлее живого.
+        reg(DRY_GRASS,"Dry Grass", true,  false, false, false, 0, bcolor(176,178, 94),   bcolor(122, 89, 56),   bcolor(122, 89, 56),   0.6f, 2);
+
+        // Стволы. Твёрдые и прозрачные: столкновение есть, а мешер к
+        // ним выводит грани соседей. Невидимые — см. BlockDef::isInvisible.
+        // Верх окрашен в цвет кроны: сверху (карта, снимок мира) дерево
+        // видно кроной, а не спилом; бок — кора, и летящие при рубке
+        // щепки окрашены ею.
+        reg(TRUNK,      "Trunk",   true,  true,  false, false, 0, bcolor( 70,128, 58),   bcolor(104, 74, 44),   bcolor(104, 74, 44),   1.2f);
+        reg(CACTUS_CORE,"Cactus",  true,  true,  false, false, 0, bcolor( 96,150, 88),   bcolor( 68,118, 66),   bcolor( 68,118, 66),   0.4f);
+        for (u16 id : { (u16)TRUNK, (u16)CACTUS_CORE }) {
+            BlockDef d = inst.get(id);
+            d.isInvisible = 1;
+            inst.registerBlock(id, d);
+        }
+
         // ---- Как блок принимает падение ----
         //
         // В блоках высоты падения (см. BlockImpact). Безопасно

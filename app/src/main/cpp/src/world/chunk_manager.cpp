@@ -4,6 +4,7 @@
  */
 #include "chunk_manager.h"
 #include "debug_scene.h"
+#include "flora.h"
 #include "../config/settings.h"
 #include "../core/log.h"
 #include "../core/memory.h"
@@ -275,6 +276,17 @@ void ChunkManager::jobMesh(void* data) {
 
         buildGreedyMesh(*c, nb, quads);
 
+        // Растения — те, что стоят при нынешних вокселях: срубленное
+        // дерево, вскопанная из-под травы земля, вода на месте цветка
+        // отсеиваются здесь, по тем же вокселям, что и меш.
+        static thread_local std::vector<FloraInstance> flora;
+        flora.clear();
+        auto voxel = [c](i32 x, i32 y, i32 z) -> u16 {
+            return (u32)y < (u32)CHUNK_SIZE_Y ? c->voxels[chunkIndex(x, y, z)] : AIR;
+        };
+        for (const FloraInstance& f : c->flora)
+            if (floraStillStands(f, voxel)) flora.push_back(f);
+
         std::lock_guard mlk(c->meshMutex);
 
         // Последняя сверка перед записью — уже под замком меша.
@@ -289,6 +301,7 @@ void ChunkManager::jobMesh(void* data) {
 
         // Копия в обычный vector: меш переживает арену воркера.
         c->mesh.quads.assign(quads.begin(), quads.end());
+        c->mesh.flora.assign(flora.begin(), flora.end());
         c->mesh.revision = ctx->version;
         c->mesh.built    = true;
         c->mesh.ready.store(true, std::memory_order_release);
@@ -586,13 +599,29 @@ void ChunkManager::removeChunks(const std::vector<ChunkCoord>& coords) {
 // Изменение вокселей
 // ============================================================
 
-void ChunkManager::setVoxel(i32 wx, i32 wy, i32 wz, u16 block) {
-    if (wy < 0 || wy >= CHUNK_SIZE_Y) return;
+u32 ChunkManager::setVoxel(i32 wx, i32 wy, i32 wz, u16 block) {
+    const u16 old = setOneVoxel(wx, wy, wz, block);
+    if (old == UNKNOWN) return 0;
+    u32 changed = 1;
+    // Ствол падает целиком: столб того же блока вверх и вниз.
+    if ((old == TRUNK || old == CACTUS_CORE) && block != old) {
+        for (i32 dir : { 1, -1 })
+            for (i32 y = wy + dir; y >= 0 && y < CHUNK_SIZE_Y; y += dir) {
+                if (getVoxel(wx, y, wz) != old) break;
+                setOneVoxel(wx, y, wz, AIR);
+                ++changed;
+            }
+    }
+    return changed;
+}
+
+u16 ChunkManager::setOneVoxel(i32 wx, i32 wy, i32 wz, u16 block) {
+    if (wy < 0 || wy >= CHUNK_SIZE_Y) return UNKNOWN;
 
     const i32 cx = wx >> 5;
     const i32 cz = wz >> 5;
     auto c = getChunk(cx, cz);
-    if (!c) return;
+    if (!c) return UNKNOWN;
 
     // Прежний блок известен, только если чанк уже построен: в пустой
     // заготовке лежит воздух, а не то, что сгенерирует мир.
@@ -616,6 +645,7 @@ void ChunkManager::setVoxel(i32 wx, i32 wy, i32 wz, u16 block) {
     if (lx == CHUNK_SIZE - 1) enqueueMesh({cx + 1, cz});
     if (lz == 0)              enqueueMesh({cx, cz - 1});
     if (lz == CHUNK_SIZE - 1) enqueueMesh({cx, cz + 1});
+    return old;
 }
 
 // ============================================================

@@ -66,7 +66,7 @@ bool VoxelModelRenderer::init(vk::Context& ctx, AAssetManager* mgr,
     return true;
 }
 
-bool VoxelModelRenderer::setModels(vk::Context& ctx, const std::vector<VoxelMesh>& meshes) {
+bool MeshTable::set(vk::Context& ctx, const std::vector<VoxelMesh>& meshes) {
     std::vector<VoxelModelVertex> verts;
     std::vector<u32> idx;
     ranges_.clear();
@@ -88,13 +88,32 @@ bool VoxelModelRenderer::setModels(vk::Context& ctx, const std::vector<VoxelMesh
         !uploadStatic(ctx, ibo_, vk::BufferUsage::Index, idx.data(),
                       (u64)idx.size() * sizeof(u32)))
     {
-        LOGE("VoxelModelRenderer: меши моделей не загружены");
+        LOGE("MeshTable: меши моделей не загружены");
         ranges_.clear();
         return false;
     }
-    LOGI("VoxelModelRenderer: моделей %zu, вершин %zu, треугольников %zu",
+    LOGI("MeshTable: мешей %zu, вершин %zu, треугольников %zu",
          meshes.size(), verts.size(), idx.size() / 3);
     return true;
+}
+
+void MeshTable::destroy() {
+    vbo_.destroy();
+    ibo_.destroy();
+    ranges_.clear();
+}
+
+void MeshTable::bind(VkCommandBuffer cmd, VkBuffer instances) const {
+    VkBuffer vbs[2] = { vbo_.handle(), instances };
+    VkDeviceSize offs[2] = { 0, 0 };
+    vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offs);
+    vkCmdBindIndexBuffer(cmd, ibo_.handle(), 0, VK_INDEX_TYPE_UINT32);
+}
+
+void MeshTable::draw(VkCommandBuffer cmd, u32 mesh, u32 instanceCount, u32 firstInstance) const {
+    if (empty(mesh) || instanceCount == 0) return;
+    const Range& r = ranges_[mesh];
+    vkCmdDrawIndexed(cmd, r.indexCount, instanceCount, r.firstIndex, r.vertexOffset, firstInstance);
 }
 
 void VoxelModelRenderer::add(u32 model, const glm::vec3& pos, const glm::vec4& rot,
@@ -128,10 +147,7 @@ void VoxelModelRenderer::upload(vk::Context& ctx) {
     (void)ctx;
     // Модели без меша (номер вне таблицы) рисовать нечем.
     pending_.erase(std::remove_if(pending_.begin(), pending_.end(),
-                                  [&](const auto& p) {
-                                      return p.first >= ranges_.size() ||
-                                             ranges_[p.first].indexCount == 0;
-                                  }),
+                                  [&](const auto& p) { return meshes_.empty(p.first); }),
                    pending_.end());
     batch(pending_, sorted_, draws_);
     instanceCount_ = (u32)sorted_.size();
@@ -143,8 +159,7 @@ void VoxelModelRenderer::upload(vk::Context& ctx) {
 }
 
 void VoxelModelRenderer::render(vk::Context& ctx, VkDescriptorSet set) {
-    if (instanceCount_ == 0 || !instances_.handle() || !pipeline_.valid() ||
-        !vbo_.handle() || !ibo_.handle())
+    if (instanceCount_ == 0 || !instances_.handle() || !pipeline_.valid() || !meshes_.valid())
         return;
     VkCommandBuffer cmd = ctx.currentCmd();
     ctx.setFullViewport(cmd);
@@ -152,24 +167,15 @@ void VoxelModelRenderer::render(vk::Context& ctx, VkDescriptorSet set) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.handle());
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline_.layout(), 0, 1, &set, 0, nullptr);
-    VkBuffer vbs[2] = { vbo_.handle(), instances_.handle() };
-    VkDeviceSize offs[2] = { 0, 0 };
-    vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offs);
-    vkCmdBindIndexBuffer(cmd, ibo_.handle(), 0, VK_INDEX_TYPE_UINT32);
-    for (const Draw& d : draws_) {
-        const Range& r = ranges_[d.model];
-        vkCmdDrawIndexed(cmd, r.indexCount, d.count, r.firstIndex, r.vertexOffset,
-                         d.firstInstance);
-    }
+    meshes_.bind(cmd, instances_.handle());
+    for (const Draw& d : draws_) meshes_.draw(cmd, d.model, d.count, d.firstInstance);
 }
 
 void VoxelModelRenderer::destroy() {
-    vbo_.destroy();
-    ibo_.destroy();
+    meshes_.destroy();
     instances_.destroy();
     pipeline_.destroy();
     shaders_.destroyAll();
-    ranges_.clear();
     dev_ = VK_NULL_HANDLE;
 }
 

@@ -26,6 +26,7 @@ PAIRS = [
     ('src/render/projectile_renderer.cpp','projectile.vert'),
     ('src/render/item_renderer.cpp',      'mob.vert'),
     ('src/render/voxel_model_renderer.cpp', 'voxmodel.vert'),
+    ('src/render/flora_renderer.cpp',     'flora.vert'),
 ]
 
 # Сколько компонентов несёт формат Vulkan.

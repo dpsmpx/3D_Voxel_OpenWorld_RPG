@@ -37,6 +37,14 @@ struct FeatureContext {
     /// рек в этой генерации не было.
     const i16* ground = nullptr;
     const u8*  wet = nullptr;
+    /// Близость воды по колонкам чанка, 0..255 (ColumnWater::near).
+    /// От неё — сырость: трава у берега и то, что там растёт.
+    const u8*  near = nullptr;
+
+    /// Высоты рельефа до рек с каймой в блок, (CHUNK_SIZE+2)², индекс
+    /// (x+1)*(CHUNK_SIZE+2) + (z+1). Крутизна — по ним: так её видит
+    /// и выбор материала поверхности, и соседний чанк.
+    const i16* padded = nullptr;
 
     /// Высота земли с учётом рек: своя колонка — из готовой карты,
     /// чужая — точечным запросом к гидрологии. Ответ совпадает с тем,
@@ -57,6 +65,15 @@ struct FeatureContext {
 void generateChunkVoxels(Chunk& chunk, const TerrainGenerator& terrain,
                          const TerrainGenerator::Column* columns, u64 seed);
 
+/// Поверхность колонки: верхний блок и то, что под ним.
+struct SurfaceSpec { u16 top; u16 sub; };
+
+/// Чем покрыта земля в колонке — по биому, высоте и крутизне, без
+/// рек, построек и растений. Ровно то, что кладёт generateChunkVoxels
+/// (он считает крутизну по кайме соседей, здесь — точечными
+/// запросами; ответ один). Нужно проверкам и картам.
+SurfaceSpec naturalSurface(const TerrainGenerator& terrain, i32 wx, i32 wz, u64 seed);
+
 /// Считает колонки чанка в переданный буфер (он будет нужного размера).
 void computeChunkColumns(const TerrainGenerator& terrain, i32 chunkX, i32 chunkZ,
                          std::vector<TerrainGenerator::Column>& out);
@@ -69,9 +86,6 @@ void computeChunkColumns(const TerrainGenerator& terrain, i32 chunkX, i32 chunkZ
 // Система рассчитана на детерминированность: один и тот же
 // (seed, chunk) всегда даёт один результат.
 // ============================================================
-
-/// --- Деревья: анкерные позиции в чанке, canopy может пересекать границу ---
-void applyTrees(Chunk& chunk, const FeatureContext& ctx);
 
 /// --- Пещеры: карвинг после слоёв, до руд ---
 void applyCaves(Chunk& chunk, const FeatureContext& ctx);
@@ -89,7 +103,7 @@ void applyLiquids(Chunk& chunk, const FeatureContext& ctx);
 /// groundOut/wetOut (CHUNK_SIZE^2) землю после рек и запекает
 /// течение воды в chunk.waterFlow.
 void applyRivers(Chunk& chunk, const FeatureContext& ctx,
-                 i16* groundOut, u8* wetOut);
+                 i16* groundOut, u8* wetOut, u8* nearOut);
 
 /// --- Структуры: деревни, подземелья, руины, алтари ---
 /// Работают через super-chunk grid: 8×8 чанков = 256×256 блоков.
@@ -99,7 +113,7 @@ void applyRivers(Chunk& chunk, const FeatureContext& ctx,
 void applyStructures(Chunk& chunk, const FeatureContext& ctx);
 
 /// --- Дороги: от деревни к соседней деревне ---
-/// Кладутся после структур и до деревьев: мостовая деревни должна
+/// Кладутся после структур и до растений: мостовая деревни должна
 /// остаться сверху, а лес — не прорасти сквозь дорогу.
 void applyRoads(Chunk& chunk, const FeatureContext& ctx);
 
@@ -299,6 +313,11 @@ struct CastleSite {
 /// сам замок — когда строит, и лес — когда решает, где не расти.
 constexpr i32 CASTLE_HALF = 34;
 
+/// Насколько замок может отойти от середины своей ячейки в поисках
+/// Чёрного леса (см. castleAt). Край замка остаётся внутри ячейки:
+/// 128 − 48 − 34 > 0.
+constexpr i32 CASTLE_SHIFT = 48;
+
 /// Замок в супер-чанке (sx, sz), если он там есть.
 CastleSite castleAt(i32 superX, i32 superZ, u64 worldSeed,
                     const TerrainGenerator* terrain);
@@ -319,6 +338,11 @@ LairSite lairCovering(i32 wx, i32 wz, u64 worldSeed,
 /// разойдутся молча, и разойдутся именно там, где дом.
 bool structureCovers(i32 wx, i32 wz, u64 worldSeed,
                      const TerrainGenerator* terrain);
+
+/// Нельзя ли здесь расти дереву из-за построек: деревня, руины,
+/// алтарь, подземелье, дорога или замок. Растения садятся после
+/// построек и обходят их; вопрос один на всех, кто сажает.
+bool buildingNear(i32 wx, i32 wz, u64 worldSeed, const TerrainGenerator* terrain);
 
 // ============================================================
 // Утилиты, доступные features

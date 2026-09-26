@@ -114,6 +114,8 @@ add_library(native-lib SHARED
     src/world/particles.cpp
     src/world/spawn.cpp
     src/world/hydrology.cpp
+    src/world/landform.cpp
+    src/world/flora.cpp
     src/world/terrain.cpp
     src/world/weather.cpp
     src/world/world_spec.cpp
@@ -128,6 +130,9 @@ add_library(native-lib SHARED
     src/render/item_renderer.cpp
     src/render/voxel_model.cpp
     src/render/voxel_model_renderer.cpp
+    src/render/flora_models.cpp
+    src/render/flora_batch.cpp
+    src/render/flora_renderer.cpp
     src/render/lights.cpp
     src/render/mesh_builder.cpp
     src/render/pass_sweep.cpp

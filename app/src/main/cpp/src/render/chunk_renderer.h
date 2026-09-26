@@ -85,6 +85,14 @@ public:
                        VkPipelineLayout layout,
                        VkDescriptorSet set);
 
+    /// Растения видимых чанков: fn(угол чанка в мире, список). Зовётся
+    /// после renderOpaque/cullOnly того же кадра — отбор делает он.
+    template <class Fn>
+    void forEachVisibleFlora(Fn&& fn) const {
+        for (const Visible& v : visible_)
+            if (!v.mesh->flora.empty()) fn(v.origin, v.mesh->flora);
+    }
+
     /// Метрики
     u32 lastDrawnChunks() const { return lastDrawnChunks_; }
     u32 lastDrawnIndices() const { return lastDrawnIndices_; }
@@ -135,6 +143,9 @@ private:
         /// нельзя: он на половине высоты мира, в шестидесяти блоках
         /// над прудом. См. mesh_builder.
         glm::vec3 blendCenter{ 0.f };
+        /// Растения, видимые при этих вокселях: забираются из
+        /// ChunkMesh::flora вместе с квадами. Рисует их FloraRenderer.
+        std::vector<world::FloraInstance> flora;
     };
     struct ChunkGpu {
         GpuMesh                        mesh;

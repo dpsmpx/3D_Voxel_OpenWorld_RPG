@@ -5,6 +5,7 @@
 #pragma once
 #include "biome.h"
 #include "hydrology.h"
+#include "landform.h"
 #include "noise.h"
 #include "../core/types.h"
 #include <glm/glm.hpp>
@@ -39,6 +40,13 @@ public:
         /// равнина состоит из плоских ступеней, и сток на них не
         /// знает, куда течь.
         f32                heightF = 0.f;
+        /// Высота для стока (LandformSample::route): крупный рельеф
+        /// без холмов. Её, а не heightF, читает гидросеть.
+        f32                heightRoute = 0.f;
+        /// Характер местности (landform.h): равнина, холмы, плато, горы.
+        Landform           landform = Landform::Plains;
+        /// 0..1: близость к гребню хребта — где выходит скала.
+        f32                ridge = 0.f;
     };
 
     /// Выше этой высоты горы лежат под снегом.
@@ -102,12 +110,15 @@ public:
     /// Доступ к климату и шуму для features
     const BiomeField& field() const { return biome_; }
     const SimplexNoise& noise() const { return cavesA_; }
+    /// Шум растительности: рощи, поляны, цветочные луга (world/flora.h).
+    const SimplexNoise& floraNoise() const { return flora_; }
 
 private:
     mutable BiomeField biome_;
-    SimplexNoise heightBase_;
+    LandformNoise landform_;
     SimplexNoise cavesA_;
     SimplexNoise cavesB_;
+    SimplexNoise flora_;
     u64 seed_;
 
     // Гидросеть: кэш плиток водосборов, общий для всех потоков

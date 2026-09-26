@@ -153,9 +153,9 @@ void timeChunks(u64 seed) {
         world::computeChunkColumns(gen, cx, cz, cols);
         const auto a = std::chrono::steady_clock::now();
         std::array<i16, world::CHUNK_SIZE * world::CHUNK_SIZE> ground;
-        std::array<u8, world::CHUNK_SIZE * world::CHUNK_SIZE> wet;
+        std::array<u8, world::CHUNK_SIZE * world::CHUNK_SIZE> wet, nearW;
         world::FeatureContext ctx{ &gen, seed, cols.data() };
-        world::applyRivers(*chunk, ctx, ground.data(), wet.data());
+        world::applyRivers(*chunk, ctx, ground.data(), wet.data(), nearW.data());
         riverMs += std::chrono::duration<f64, std::milli>(
             std::chrono::steady_clock::now() - a).count();
     }

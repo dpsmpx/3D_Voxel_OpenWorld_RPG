@@ -178,6 +178,15 @@ void JobSystem::parallelFor(u32 count, u32 minChunk,
     if (count == 0) return;
     if (minChunk == 0) minChunk = 1;
 
+    // Без воркеров (до start() или после stop()) задачи никто не
+    // разберёт, и c.wait() ниже стал бы вечным. Из самого воркера —
+    // тоже нельзя: он ждал бы, не разбирая очередь, и несколько таких
+    // ожиданий разом занимают все потоки. В обоих случаях — на месте.
+    if (!running() || workers_.empty() || tlsWorkerId_ != 0xFFFFFFFFu) {
+        fn(0, count);
+        return;
+    }
+
     u32 chunks = (count + minChunk - 1) / minChunk;
     u32 nWorkers = workerCount() + 1; // +1 — вызывающий поток тоже работает
     u32 perJob = std::max(1u, chunks / nWorkers);

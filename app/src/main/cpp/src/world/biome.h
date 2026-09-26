@@ -5,6 +5,7 @@
 #pragma once
 #include "../core/types.h"
 #include <glm/glm.hpp>
+#include <memory>
 
 namespace world {
 
@@ -33,25 +34,14 @@ enum BiomeId : u8 {
     BIOME_COUNT
 };
 
-enum class TreeType : u8 {
-    None,
-    Oak,       // широкий blob
-    Pine,      // конус
-    Palm,      // зонтик
-    Cactus,    // без листвы
-    Dead       // сухое дерево
-};
-
 struct BiomeDef {
     const char* name;
     u16 surfaceBlock;
     u16 subsurfaceBlock;    // 2-4 блока под поверхностью
     u16 stoneBlock;
     u16 liquidBlock;        // вода/лава/нет
-    f32 treeDensity;        // деревьев на чанк (в среднем)
-    TreeType treeType;
-    i8 baseHeightOffset;    // смещение базовой высоты (может быть ниже базы)
-    f32 temperature;        // справочная
+    // Что растёт — не здесь, а в world/flora.cpp (floraProfile):
+    // растения решаются по месту, а не по одной строке на биом.
 };
 
 // ============================================================
@@ -102,6 +92,9 @@ class SimplexNoise;  // fwd
 class BiomeField {
 public:
     explicit BiomeField(u64 seed);
+    ~BiomeField();
+    BiomeField(const BiomeField&) = delete;
+    BiomeField& operator=(const BiomeField&) = delete;
 
     struct Sample {
         BiomeId biome;
@@ -127,7 +120,20 @@ public:
         /// Чёрного леса: где оно высоко, там горы, и высоко оно
         /// полосами, потому что хребты полосами и идут.
         f32     uplift;
-        f32     heightMod;     // модификатор высоты (-20..+40)
+        // ---- Крупные формы рельефа (см. landform.h) ----
+        //
+        // Того же масштаба, что климат, и считаются вместе с ним.
+        // Высоту из них складывает LandformNoise.
+        f32     hills;         ///< 0..1: маска холмов
+        f32     plateau;       ///< 0..1: маска плато, край резкий
+        f32     basin;         ///< 0..1: маска низины
+        f32     region;        ///< 0..1: характер области
+        f32     orient;        ///< направление хребтов области, радианы
+        /// -1..1: дрожание порогов классификации. Граница биома —
+        /// изолиния гладкого поля, то есть ровная дуга по циркулю; с
+        /// дрожанием она изрезана, как граница леса и поля в природе.
+        /// Сам климат не трогается — только решение, какой здесь биом.
+        f32     edge;
     };
 
     /// Полный запрос: шум + классификация. Эквивалентен
@@ -138,6 +144,10 @@ public:
     /// Выделено отдельно, потому что высота сама считается из них:
     /// иначе один и тот же шум пришлось бы считать дважды.
     Sample fields(i32 x, i32 z) const;
+
+    /// Шаг решётки крупных полей (см. fields()): узлы считаются точно,
+    /// между ними — билинейно.
+    static constexpr i32 LATTICE = 8;
 
     /// Классификация биома по готовым полям и фактической высоте.
     /// Шум не трогает — только пороги.
@@ -150,8 +160,15 @@ public:
     HomeKind home() const;
 
 private:
+    /// Поля без решётки — ровно в точке. Считаются только в узлах.
+    Sample fieldsExact(i32 x, i32 z) const;
+    Sample latticeNode(i32 nx, i32 nz) const;
+
     struct Impl;
-    Impl* impl_;   // PIMPL чтобы не тащить шум в заголовок
+    // PIMPL чтобы не тащить шум в заголовок. Раньше был голый
+    // указатель без деструктора: каждый мир (а мир пересоздаётся при
+    // каждом возврате в приложение) терял несколько КБ шумовых таблиц.
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace world

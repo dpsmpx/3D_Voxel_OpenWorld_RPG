@@ -300,6 +300,10 @@ struct Engine {
     /// Первая цель выдана. Без неё первые минуты — лес, пустые руки
     /// и строка «текущее задание», которой нечего показать.
     bool firstStepsDone_   = false;
+    /// Последнее конечное положение игрока: к нему возвращаем, если
+    /// физика (или испорченное сохранение) даст NaN/бесконечность.
+    glm::vec3 lastFinitePlayerPos_{ 0.f };
+    bool      haveFinitePlayerPos_ = false;
     i32  cachedHostiles_   = 0;
     bool cachedUnderground_= false;
 
@@ -871,6 +875,15 @@ struct Engine {
         ui.reset();
         player.reset();
         world.reset();
+        // Сущности этого сеанса уходят вместе с игроком и спавнерами:
+        // при возвращении окна мир, игрок и все жители строятся заново
+        // из сохранения, и оставленные здесь стояли бы вторым набором.
+        registry.clear();
+        spatialHash.invalidate();   // держал дескрипторы только что убитых
+        // Кнопки заведёт setupButtons() при следующем окне.
+        touch.clearButtons();
+        for (u32& id : buttonIds_) id = 0;
+        padButtonsVisible_ = true;
 
         vk.shutdown();
     }
@@ -883,6 +896,8 @@ struct Engine {
     /// значит однажды забыть в одном из них про спавнеры, и жители
     /// прежнего мира останутся стоять в новом.
     void makeWorld(u64 seed) {
+        haveFinitePlayerPos_ = false;   // точка из прежнего мира не годится
+
         // Меши старого мира лежат в видеопамяти и к новому рельефу
         // отношения не имеют. Забыть их обязан рендер, и поимённо —
         // иначе по тем же координатам покажется прежняя земля.
@@ -1188,6 +1203,12 @@ struct Engine {
             rgba[i * 4 + 3] = 255;
         }
 
+        // Прежнюю картинку ещё читают кадры, ушедшие в GPU: экран
+        // снимка рисует её каждый кадр. Уничтожать её и переписывать
+        // набор дескрипторов, привязанный в этих кадрах, можно только
+        // после того, как они отработают. Готовый снимок приходит раз
+        // в несколько секунд, и ожидание здесь ничего не стоит.
+        vk.waitIdle();
         isoPreviewTex.destroy();
         if (!isoPreviewTex.create(vk.device(), vk.physicalDevice(),
                                   vk.gfxQueue(), vk.gfxFamily(),
@@ -1206,6 +1227,8 @@ struct Engine {
         // действия: две копии чисел уже однажды разъехались, и
         // «CAM» оказалась поверх «ATT».
         if (!ui) return;
+        // Набор кнопок — ровно один, сколько бы раз ни появлялось окно.
+        touch.clearButtons();
         const ui::HudLayout& L = ui->layout();
         auto add = [&](u32 slot, std::function<void(u32)> onPress) {
             const u32 id = touch.addButton(input::buttonCenterNdc(L, slot),
@@ -1604,6 +1627,11 @@ struct Engine {
             // рост pitch — вниз (камера задирается вверх).
             const glm::vec2 camDelta = touch.cameraDelta();
             cameraYawPitch.x -= camDelta.x * 3.0f;
+            // Угол копился без предела: за долгую игру набегали тысячи
+            // радиан, у float оставалось меньше точности на мелкое
+            // движение пальца, а приведение угла в hurtAngle крутило
+            // цикл тем дольше, чем больше угол. Синусам всё равно.
+            cameraYawPitch.x = std::remainder(cameraYawPitch.x, 6.28318531f);
             cameraYawPitch.y = glm::clamp(
                 cameraYawPitch.y - camDelta.y * 3.0f, -1.5f, 1.5f);
 
@@ -1755,14 +1783,27 @@ struct Engine {
                 // сделанные до этой починки, хранят игрока далеко внизу, да
                 // и любая будущая щель в столкновениях не должна означать
                 // падение без возврата.
-                const glm::vec3 p = player->controller.state().position;
-                if (p.y < 0.f || p.y > (f32)world::CHUNK_SIZE_Y + 16.f) {
+                glm::vec3 p = player->controller.state().position;
+                // NaN проходил мимо обеих проверок высоты (сравнения с NaN
+                // ложны), а (i32)floor(NaN) — неопределённое поведение: игрок
+                // навсегда «исчезал», и то же NaN уходило в сохранение.
+                const bool finite = std::isfinite(p.x) && std::isfinite(p.y) &&
+                                    std::isfinite(p.z);
+                if (!finite) {
+                    p = haveFinitePlayerPos_ ? lastFinitePlayerPos_
+                                             : glm::vec3(0.f, -1.f, 0.f);
+                    p.y = -1.f;                // пусть спасёт ветка ниже
+                }
+                if (!finite || p.y < 0.f || p.y > (f32)world::CHUNK_SIZE_Y + 16.f) {
                     const i32 surf = world->generator().surfaceHeight(
                         (i32)std::floor(p.x), (i32)std::floor(p.z));
                     const glm::vec3 rescued{ p.x, (f32)surf + 1.5f, p.z };
                     LOGW("Игрок вне мира (y=%.1f) — возвращён на поверхность y=%.1f",
                          (double)p.y, (double)rescued.y);
                     player->controller.setPosition(rescued);
+                } else {
+                    lastFinitePlayerPos_ = p;
+                    haveFinitePlayerPos_ = true;
                 }
             }
 

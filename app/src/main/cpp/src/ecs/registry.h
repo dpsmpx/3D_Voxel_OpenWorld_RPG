@@ -138,6 +138,15 @@ public:
         for (auto h : doomed) if (reg_.valid(h)) reg_.destroy(h);
     }
 
+    /// Уничтожает все сущности.
+    ///
+    /// Реестр живёт в движке дольше окна: окно пропадает при каждом
+    /// сворачивании, а с ним уходят игрок, спавнеры и мир. Сущности
+    /// прошлого сеанса оставались в реестре — и рядом с новым игроком
+    /// стоял прежний (рендер рисует всех с PlayerTag), а новые
+    /// спавнеры ставили вторых жителей и мобов поверх первых.
+    void clear() { destroyAllExcept(Entity{}); }
+
     usize aliveCount() const {
         const auto* storage = reg_.storage<EnttEntity>();
         return storage ? storage->free_list() : 0;

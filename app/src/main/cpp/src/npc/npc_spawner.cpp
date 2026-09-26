@@ -66,7 +66,7 @@ ecs::Entity spawnNpc(world::ChunkManager& world,
     // иначе селянин менял бы рост и цвет рубахи всякий раз, как чанк
     // выгружался и загружался обратно.
     const u32 look = persistKey ? (u32)(persistKey ^ (persistKey >> 32))
-                                : (u32)((i32)at.x * 73856093) ^ (u32)((i32)at.z * 19349663);
+                                : ((u32)(i32)at.x * 73856093u) ^ ((u32)(i32)at.z * 19349663u);
     reg.add(e, ecs::Appearance{ look });
 
     // Длина шага — из ТОЙ ЖЕ оснастки, которую нарисует рендер: у
@@ -198,7 +198,10 @@ bool generateVillageNpcs(world::ChunkManager& world,
     if (style == world::VillageStyle::Farmstead) villagers += 3;
     for (i32 i = 0; i < villagers; ++i) {
         f32 ang = (f32)((h >> (i + 4)) & 0xFF) / 255.f * 6.28318f;
-        f32 r   = 6.f + (f32)((h >> (i * 3 + 8)) & 0xF);
+        // До девяти жителей: сдвиг 8 + 3·8 = 32 для 32-битного h — UB.
+        // «& 31» даёт то же, что процессор делал и так (ARM и x86
+        // берут сдвиг по модулю 32), — раскладка деревень не меняется.
+        f32 r   = 6.f + (f32)((h >> ((i * 3 + 8) & 31)) & 0xF);
         addNpc(NPC_VILLAGER, std::cos(ang) * r, std::sin(ang) * r);
     }
 

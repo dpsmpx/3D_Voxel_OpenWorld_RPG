@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 namespace config {
 
@@ -167,9 +168,14 @@ bool Settings::isValid() const {
 }
 
 bool Settings::save(const std::string& path) const {
-    FILE* f = std::fopen(path.c_str(), "wb");
+    // Пишем во временный файл и подменяем им старый: запись прямо в
+    // settings.ini, прерванная убийством процесса (Android делает так
+    // с фоновыми приложениями) или нехваткой места, оставляла пустой
+    // или обрезанный файл — и все настройки молча сбрасывались.
+    const std::string tmpPath = path + ".tmp";
+    FILE* f = std::fopen(tmpPath.c_str(), "wb");
     if (!f) {
-        LOGE("Settings: не удалось открыть %s для записи", path.c_str());
+        LOGE("Settings: не удалось открыть %s для записи", tmpPath.c_str());
         return false;
     }
 
@@ -240,7 +246,15 @@ bool Settings::save(const std::string& path) const {
     wb("exit_after_sweep",   exitAfterSweep);
     wb("debug_scene",        debugScene);
 
-    std::fclose(f);
+    const bool written = std::ferror(f) == 0;
+    const bool flushed = std::fflush(f) == 0 && ::fsync(::fileno(f)) == 0;
+    const bool closed  = std::fclose(f) == 0;
+    if (!written || !flushed || !closed ||
+        std::rename(tmpPath.c_str(), path.c_str()) != 0) {
+        std::remove(tmpPath.c_str());
+        LOGE("Settings: не удалось записать %s", path.c_str());
+        return false;
+    }
     LOGI("Settings сохранены: %s", path.c_str());
     return true;
 }

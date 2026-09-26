@@ -40,7 +40,10 @@ u32 findMemoryType(VkPhysicalDevice dev, u32 typeBits, VkMemoryPropertyFlags pro
             (mp.memoryTypes[i].propertyFlags & props) == props)
             return i;
     }
-    return 0;
+    // Не нулевой тип «на авось»: он мог оказаться неподходящим, и
+    // ошибка всплыла бы в драйвере, а не здесь. Недопустимый номер
+    // отвергается выделением памяти, и VKCHECK скажет где.
+    return UINT32_MAX;
 }
 
 /// Есть ли слой среди тех, что предлагает загрузчик.
@@ -256,9 +259,16 @@ bool Context::createLogicalDevice() {
 
     const char* exts[] = { "VK_KHR_swapchain" };
 
+    // Особых возможностей устройства не просим ни одной.
+    //
+    // Здесь стояли samplerAnisotropy и fillModeNonSolid — и ни то ни
+    // другое не используется: сэмплеры создаются без анизотропии,
+    // конвейеры рисуют только заливкой. Зато запрошенная и не
+    // поддержанная возможность роняет vkCreateDevice с
+    // VK_ERROR_FEATURE_NOT_PRESENT: fillModeNonSolid есть далеко не на
+    // всех мобильных GPU, и на таком телефоне игра не запускалась бы
+    // вовсе — ради того, чем она не пользуется.
     VkPhysicalDeviceFeatures feats{};
-    feats.samplerAnisotropy = VK_TRUE;
-    feats.fillModeNonSolid  = VK_TRUE;
 
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.queueCreateInfoCount    = 1;
@@ -472,8 +482,12 @@ bool Context::createDepthResources() {
     ai.allocationSize = req.size;
     ai.memoryTypeIndex = findMemoryType(physical_, req.memoryTypeBits,
                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (ai.memoryTypeIndex == UINT32_MAX) {
+        LOGE("Не найден тип памяти для буфера глубины");
+        return false;
+    }
     VKCHECK(vkAllocateMemory(device_, &ai, nullptr, &depthMem_));
-    vkBindImageMemory(device_, depthImage_, depthMem_, 0);
+    VKCHECK(vkBindImageMemory(device_, depthImage_, depthMem_, 0));
 
     VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vci.image = depthImage_;
@@ -973,15 +987,40 @@ void Context::shutdown() {
             vkDestroyQueryPool(device_, timeQuery_, nullptr);
             timeQuery_ = VK_NULL_HANDLE;
         }
-        for (u32 i = 0; i < MAX_FRAMES; ++i) {
-            vkDestroySemaphore(device_, imgAvailable_[i], nullptr);
-            vkDestroyFence(device_, inFlight_[i], nullptr);
-        }
+        for (VkSemaphore s : imgAvailable_) vkDestroySemaphore(device_, s, nullptr);
+        for (VkFence f : inFlight_)         vkDestroyFence(device_, f, nullptr);
+        imgAvailable_.clear();
+        inFlight_.clear();
         destroySwapchain();
         vkDestroyRenderPass(device_, renderPass_, nullptr);
         vkDestroyCommandPool(device_, cmdPool_, nullptr);
         vkDestroyDevice(device_, nullptr);
     }
+    // Всё, что держало дескрипторы, — в исходное состояние.
+    //
+    // Контекст живёт в движке дольше окна: shutdown зовётся при каждом
+    // сворачивании, init — при возвращении. Старые дескрипторы
+    // оставались в полях, и если следующий init обрывался на полпути
+    // (поверхность пропала, окно нулевого размера), новый shutdown
+    // уничтожал их второй раз. А признаки «кадр в работе» и «метки
+    // ждут чтения» от прошлого устройства спрашивали запросы у пула,
+    // которого эти метки никогда не видели.
+    renderPass_ = VK_NULL_HANDLE;
+    cmdPool_    = VK_NULL_HANDLE;
+    cmdBuffers_.clear();
+    swapImages_.clear();
+    gfxQueue_   = VK_NULL_HANDLE;
+    physical_   = VK_NULL_HANDLE;
+    for (u32 i = 0; i < MAX_FRAMES; ++i) {
+        framePending_[i]     = false;
+        timeQueryPending_[i] = false;
+    }
+    timestampPeriod_ = 0.f;
+    currentFrame_    = 0;
+    frameStarted_    = false;
+    needsResize_     = false;
+    transferCmd_     = VK_NULL_HANDLE;
+    transferSlot_    = 0;
     if (surface_)  vkDestroySurfaceKHR(instance_, surface_, nullptr);
     if (debugMessenger_ != VK_NULL_HANDLE) {
         auto destroy = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(

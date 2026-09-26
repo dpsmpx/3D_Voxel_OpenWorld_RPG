@@ -30,6 +30,8 @@
 #include "items/item_def.h"
 #include "items/currency.h"
 #include "world/day_cycle.h"
+#include "world/hazards.h"
+#include "npc/npc_spawner.h"
 
 #include <algorithm>
 #include <chrono>
@@ -179,6 +181,10 @@ int main(int argc, char** argv) {
         world::ChunkManager world(0x5EEDULL, 8);
 
         save::SaveManager saves;
+        // Сейв пишет и читает ещё жителей и открытые клады: без них
+        // save/load не собирались, и soak молча перестал строиться.
+        npc::NpcSpawner npcs;
+        hazards::TreasureKeeper treasures;
         saves.init("build/soak");
         save::WorldDeltaStore deltas;
         world::DayCycle day;
@@ -292,7 +298,7 @@ int main(int argc, char** argv) {
                 if (auto* tf = reg.get<ecs::Transform>(player)) tf->position = pos;
                 p0 = Clock::now();
                 const auto st = saves.save(slot, world, reg, player, deltas,
-                                           0x5EEDULL, (u32)t, day);
+                                           0x5EEDULL, (u32)t, day, npcs, treasures);
                 phSave.add(phase(p0));
                 (st == save::SaveStatus::Ok) ? ++saveOk : ++saveFail;
             }
@@ -347,7 +353,10 @@ int main(int argc, char** argv) {
             save::WorldDeltaStore d2;
             u64 seed = 0; u32 play = 0;
             world::DayCycle day2;
-            const auto st = saves.load(slot, w2, r2, p2, d2, &seed, &play, &day2);
+            npc::NpcSpawner npcs2;
+            hazards::TreasureKeeper treasures2;
+            const auto st = saves.load(slot, w2, r2, p2, d2, &seed, &play, &day2,
+                                       npcs2, treasures2);
             (st == save::SaveStatus::Ok) ? ++loadOk : ++loadFail;
         }
 

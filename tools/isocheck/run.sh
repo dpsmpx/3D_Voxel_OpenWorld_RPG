@@ -53,7 +53,7 @@ echo "==> Сборка..."
     "$PROJ/tools/isocheck/isocheck.cpp" \
     "$SRC"/vk/{vk_buffer,vk_pipeline,vk_shader,vk_descriptors,vk_renderpass}.cpp \
     "$SRC"/render/{mesh_builder,voxel_pipeline,iso_projection,iso_png,iso_snapshot}.cpp \
-    "$SRC"/world/{chunk,chunk_manager,block,terrain,biome,noise,features,debug_scene}.cpp \
+    "$SRC"/world/{chunk,chunk_manager,block,terrain,biome,noise,features,hydrology,landform,flora,debug_scene}.cpp \
     "$SRC"/core/{crashlog,shared_dir,job_system}.cpp \
     "$SRC"/save/zlib_util.cpp \
     "$SRC"/config/settings.cpp \

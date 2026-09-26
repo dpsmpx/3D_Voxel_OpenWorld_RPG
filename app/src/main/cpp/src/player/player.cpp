@@ -774,7 +774,9 @@ bool Player::tryBreakBlock(world::ChunkManager& world) {
     auto hit = targetBlock(world);
     if (!hit.hit) return false;
     if (hit.blockType == world::BEDROCK) return false;
-    world.setVoxel(hit.block.x, hit.block.y, hit.block.z, world::AIR);
+    // У дерева рубится весь ствол разом (ChunkManager::setVoxel), и
+    // древесины выходит по блоку ствола.
+    const u32 felled = world.setVoxel(hit.block.x, hit.block.y, hit.block.z, world::AIR);
 
     // Блок уходил в никуда: воксель обращался в воздух, и на этом всё.
     // Таблица «блок → предмет» была построена при старте и ни разу не
@@ -788,8 +790,18 @@ bool Player::tryBreakBlock(world::ChunkManager& world) {
                                 (f32)hit.block.z + 0.5f };
         items::ItemStack drop;
         drop.itemId = itemId;
-        drop.count  = 1;
+        drop.count  = (u16)std::max(1u, felled);
         items::spawnPickup(*reg_, centre, drop, glm::vec3(0.f, 1.5f, 0.f));
+        // С кроны — листва: из неё крафтят, и дерево не должно давать
+        // меньше, чем давало, пока было из блоков.
+        if (hit.blockType == world::TRUNK) {
+            items::ItemStack leaves;
+            leaves.itemId = items::items().blockToItem(world::LEAVES);
+            leaves.count  = (u16)(1 + felled / 2);
+            if (leaves.itemId != items::ITEM_NONE)
+                items::spawnPickup(*reg_, centre + glm::vec3(0.f, 1.f, 0.f), leaves,
+                                   glm::vec3(0.4f, 1.8f, 0.2f));
+        }
     }
     return true;
 }

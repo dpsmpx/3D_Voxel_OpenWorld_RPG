@@ -402,6 +402,8 @@ u32 buildGreedyMeshInto(const Chunk& chunk, const ChunkNeighbors& nb,
                     c[ax.u] = iu; c[ax.v] = iv; c[ax.w] = slice;
                     const u16 cur = vol.at(c[0], c[1], c[2]);
                     if (cur == AIR || cur == UNKNOWN) continue;
+                    // Невидимый блок (ствол дерева) рисует рендер растений.
+                    if (reg.get(cur).isInvisible) continue;
 
                     i32 n[3] = { c[0], c[1], c[2] };
                     n[ax.w] += ax.sign;

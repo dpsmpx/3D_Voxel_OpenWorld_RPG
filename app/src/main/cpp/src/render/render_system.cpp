@@ -55,6 +55,9 @@ bool RenderSystem::init(vk::Context& ctx, AAssetManager* mgr) {
     if (!itemRenderer_.init(ctx, mgr, descriptors_.layout())) {
         LOGW("ItemRenderer не инициализирован");
     }
+    if (!floraRenderer_.init(ctx, mgr, descriptors_.layout())) {
+        LOGW("FloraRenderer не инициализирован");
+    }
 
     LOGI("RenderSystem готов (Phase 13)");
     return true;
@@ -229,7 +232,12 @@ void RenderSystem::render(vk::Context& ctx) {
         chunkRenderer_.renderOpaque(ctx, voxelPipeline_.handle(),
                                     voxelPipeline_.layout(),
                                     ds, fr, camera_.position());
-        stats_.drawCalls[(u32)Pass::Terrain] = chunkRenderer_.lastDrawnChunks();
+        // Растения — сразу за ландшафтом, в том же проходе: они
+        // непрозрачные и стоят на нём, а список видимых чанков только
+        // что отобран.
+        floraRenderer_.render(ctx, ds, chunkRenderer_, camera_.position());
+        stats_.drawCalls[(u32)Pass::Terrain] =
+            chunkRenderer_.lastDrawnChunks() + floraRenderer_.drawCount();
     } else {
         // Отбор всё равно нужен: по нему считаются видимые чанки, и
         // без него выключение прохода меняло бы не только рисование,
@@ -278,6 +286,7 @@ void RenderSystem::render(vk::Context& ctx) {
 }
 
 void RenderSystem::shutdown() {
+    floraRenderer_.destroy();
     itemRenderer_.destroy();
     npcRenderer_.destroy();
     projRenderer_.destroy();
